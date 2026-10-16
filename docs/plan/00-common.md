@@ -55,7 +55,7 @@
 - Codex は `scripts/check.sh --inside-codex` を使う。Codex は macOS のサンドボックスの中で動くので、その中では `sandbox-exec` を重ねて掛けられず、Apple の `container` も使えない。`--inside-codex` は、OS のサンドボックスと Linux のコンテナを要するテスト（後述）を走らせず、走らせなかったことを最後に示す。
 - オーケストレータは、取り込む前に、サンドボックスの外で `scripts/check.sh`（すべて）を走らせる。失敗すれば、記録を添えて直しを依頼する。
 
-OS のサンドボックスを要するテストは、統合テストのファイルの名前を `tests/sandbox_*.rs` とし、ほかのテストと混ぜない。Linux のコンテナで走らせるテストは、`scripts/check.sh` の `linux` の段（P0-01 で作る）が、Linux 向けにビルドしたテストの実行ファイルを `container` の中で走らせる。
+OS のサンドボックスを要するテストは、統合テストのファイルの名前を `tests/sandbox_*.rs` とし、ほかのテストと混ぜない。TLS の接続を使うテストは、テストの関数の名前に `tls` を含める。`linux` の段の x86_64 の対象は Rosetta で動き、TLS の暗号の実装（`graviola`）が要する CPU の ADX の命令を Rosetta が持たないので、名前で除く。Linux のコンテナで走らせるテストは、`scripts/check.sh` の `linux` の段（P0-01 で作る）が、Linux 向けにビルドしたテストの実行ファイルを `container` の中で走らせる。
 
 ## 完了の報告
 
