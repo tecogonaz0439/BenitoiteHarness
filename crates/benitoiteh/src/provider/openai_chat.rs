@@ -179,6 +179,16 @@ impl fmt::Debug for OpenAiChatStream {
 }
 
 impl OpenAiChatStream {
+    /// 取り消した要求の読み取りのスレッドが終了したかを返す。
+    pub fn is_finished(&self) -> bool {
+        self.http.is_finished()
+    }
+
+    /// 読み取りのスレッドの終了を待つ。途中では先に取り消す。
+    pub fn join(&mut self) -> Result<(), HttpError> {
+        self.http.join()
+    }
+
     /// 別のスレッドからも要求を取り消せるハンドルを返す。
     pub fn cancellation(&self) -> Cancellation {
         self.http.cancellation()
