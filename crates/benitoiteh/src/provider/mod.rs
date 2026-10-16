@@ -1,5 +1,6 @@
 //! 提供者に依らない会話と SSE の読み取りを扱う（設計書 02-01「層の分け方」）。
 
+pub mod anthropic;
 pub mod ids;
 pub mod sse;
 mod text;
