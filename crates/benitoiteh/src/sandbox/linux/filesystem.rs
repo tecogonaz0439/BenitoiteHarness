@@ -1,4 +1,4 @@
-//! 読ませない部分木を除き、既存ファイルだけに書く権利を与える（設計書 03-02、BH-049、実装プラン P0-05）。
+//! bubblewrap の見え方に、読み書きと実行の権利を重ねる（設計書 03-02、実装プラン P0-07）。
 
 use std::fs::{self, File};
 use std::path::{Path, PathBuf};
@@ -27,10 +27,9 @@ pub(super) fn restrict(policy: &SandboxPolicy, required: u64) -> Result<()> {
         ReadAccess::Roots(roots) => roots.clone(),
     };
     for root in readable {
-        grant_tree(
+        grant(
             &mut rules,
             &root,
-            &config.denied_read,
             // from_read(V3) は Execute も含む。実行は programs の規則だけで許す。
             // 同じ層の許可は足し合わされるため、読み取りに混ぜると一覧を迂回できる
             // （設計書 03-02「方針の要素」「制限モードで実行を許すプログラム」）。
@@ -56,7 +55,7 @@ pub(super) fn restrict(policy: &SandboxPolicy, required: u64) -> Result<()> {
                 if !config.deny_exec_in_writable
                     || !config.writable.iter().any(|root| program.starts_with(root))
                 {
-                    let file = open_path(program)?;
+                    let file = open_path(program).map_err(error)?;
                     if !file.metadata().map_err(error)?.is_file() {
                         return Err(error(text::INVALID_PROGRAM));
                     }
@@ -68,7 +67,7 @@ pub(super) fn restrict(policy: &SandboxPolicy, required: u64) -> Result<()> {
         }
     }
     for root in &config.writable {
-        grant_existing_files(&mut rules, root, &config.protected_names)?;
+        grant(&mut rules, root, AccessFs::from_write(ABI::V3))?;
     }
     let status = rules.restrict_self().map_err(error)?;
     if status.ruleset != RulesetStatus::FullyEnforced || !status.no_new_privs {
@@ -103,7 +102,7 @@ fn error(error: impl std::fmt::Display) -> SandboxError {
     failure(text::LANDLOCK, error)
 }
 
-fn open_path(path: &Path) -> Result<File> {
+fn open_path(path: &Path) -> std::io::Result<File> {
     // 検査したパスの途中が置き換わってもシンボリックリンクへ権利を渡さない。
     // V3 のカーネルより前からある openat2 を使い、使えなければ適用に失敗させる。
     let fd = openat2(
@@ -112,13 +111,17 @@ fn open_path(path: &Path) -> Result<File> {
         OFlags::PATH | OFlags::NOFOLLOW | OFlags::CLOEXEC,
         Mode::empty(),
         ResolveFlags::NO_SYMLINKS,
-    )
-    .map_err(error)?;
+    )?;
     Ok(File::from(fd))
 }
 
 fn grant(rules: &mut RulesetCreated, path: &Path, access: BitFlags<AccessFs>) -> Result<()> {
-    let file = open_path(path)?;
+    let file = match open_path(path) {
+        Ok(file) => file,
+        // 探索中に消えた項目には権利を与えない（実装プラン P0-07「辿る途中で消えた項目」）。
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(failure) => return Err(error(failure)),
+    };
     let metadata = file.metadata().map_err(error)?;
     // シンボリックリンクを経た別名に許可を与えない。
     if metadata.file_type().is_symlink() {
@@ -149,57 +152,25 @@ fn grant_tree(
     if !excluded.iter().any(|path| path.starts_with(root)) {
         return grant(rules, root, access);
     }
-    // ReadDir も子孫へ継承されるので、除外先の祖先には一切の権利を与えない。
-    // このため、その祖先の一覧も読めないが、許した兄弟のパスを直接開くことはできる。
-    // 内容も一覧も秘密から除くための制約である（設計書 03-02「サンドボックスの掛け方」）。
-    for entry in fs::read_dir(root).map_err(error)? {
-        let entry = entry.map_err(error)?;
-        if !entry.file_type().map_err(error)?.is_symlink() {
+    // 実行の権利だけを、書ける場所を除いた部分木に与える。読み取りには使わない。
+    let entries = match fs::read_dir(root) {
+        Ok(entries) => entries,
+        Err(failure) if failure.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(failure) => return Err(error(failure)),
+    };
+    for entry in entries {
+        let entry = match entry {
+            Ok(entry) => entry,
+            Err(failure) if failure.kind() == std::io::ErrorKind::NotFound => continue,
+            Err(failure) => return Err(error(failure)),
+        };
+        let kind = match entry.file_type() {
+            Ok(kind) => kind,
+            Err(failure) if failure.kind() == std::io::ErrorKind::NotFound => continue,
+            Err(failure) => return Err(error(failure)),
+        };
+        if !kind.is_symlink() {
             grant_tree(rules, &entry.path(), excluded, access)?;
-        }
-    }
-    Ok(())
-}
-
-fn grant_existing_files(
-    rules: &mut RulesetCreated,
-    root: &Path,
-    protected: &[String],
-) -> Result<()> {
-    // ディレクトリに MakeReg/MakeDir/Remove*/Refer を与えると、まだない保護名を
-    // 作ることも許してしまう。試作では全階層で作成・削除・rename を拒み、既存の
-    // 通常ファイルの更新に限る。新しいディレクトリの中の保護名も許す形にはしない。
-    // この制約と、名前を付け替えて書く道具との不一致を P0-05 の結果として報告する。
-    let mut pending = vec![root.to_path_buf()];
-    while let Some(directory) = pending.pop() {
-        if directory.components().any(|part| {
-            protected
-                .iter()
-                .any(|name| part.as_os_str().eq_ignore_ascii_case(name))
-        }) {
-            continue;
-        }
-        for entry in fs::read_dir(directory).map_err(error)? {
-            let entry = entry.map_err(error)?;
-            if protected
-                .iter()
-                .any(|name| entry.file_name().eq_ignore_ascii_case(name))
-            {
-                continue;
-            }
-            let path = entry.path();
-            let file = open_path(&path)?;
-            let metadata = file.metadata().map_err(error)?;
-            if metadata.is_dir() {
-                pending.push(path);
-            } else if metadata.is_file() {
-                rules
-                    .add_rule(PathBeneath::new(
-                        &file,
-                        AccessFs::WriteFile | AccessFs::Truncate,
-                    ))
-                    .map_err(error)?;
-            }
         }
     }
     Ok(())

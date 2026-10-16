@@ -4,7 +4,7 @@ mod text;
 
 use std::ffi::{OsStr, OsString};
 use std::fs::{self, File};
-use std::io;
+use std::io::{self, Read, Write};
 use std::net::TcpStream;
 use std::os::fd::AsRawFd;
 use std::os::unix::net::{UnixDatagram, UnixStream};
@@ -32,7 +32,10 @@ fn main() -> ExitCode {
                 operation.to_string_lossy(),
                 error.kind()
             );
-            if error.kind() == io::ErrorKind::PermissionDenied {
+            if error.raw_os_error().is_some_and(|code| {
+                code == rustix::io::Errno::PERM.raw_os_error()
+                    || code == rustix::io::Errno::ACCESS.raw_os_error()
+            }) {
                 10
             } else {
                 11
@@ -49,9 +52,23 @@ fn run(operation: &OsStr, args: &[OsString]) -> io::Result<Option<u8>> {
     match (operation, args) {
         ("read", [path]) => fs::read(path).map(|_| ()),
         ("read-dir", [path]) => fs::read_dir(path).map(|_| ()),
+        ("wait-stdin", []) => {
+            // 親はマウントの準備完了を見てから、EOF で子の終了を指示する。
+            writeln!(io::stdout(), "{}", text::READY)?;
+            io::stdout().flush()?;
+            io::stdin().read_to_end(&mut Vec::new()).map(|_| ())
+        }
         ("write", [path]) => fs::write(path, b"sandbox-probe\n"),
         ("mkdir", [path]) => fs::create_dir(path),
+        ("remove-file", [path]) => fs::remove_file(path),
+        ("remove-dir", [path]) => fs::remove_dir(path),
         ("rename", [from, to]) => fs::rename(from, to),
+        #[cfg(target_os = "linux")]
+        ("umount", [path]) => {
+            rustix::mount::unmount(path, rustix::mount::UnmountFlags::empty()).map_err(Into::into)
+        }
+        #[cfg(target_os = "linux")]
+        ("bind-mount", [from, to]) => rustix::mount::mount_bind(from, to).map_err(Into::into),
         ("unix-connect", [path]) => UnixStream::connect(path).map(|_| ()),
         ("unix-dgram-send", [path]) => UnixDatagram::unbound()?.send_to(b"probe", path).map(|_| ()),
         ("tcp-connect", [address]) => {

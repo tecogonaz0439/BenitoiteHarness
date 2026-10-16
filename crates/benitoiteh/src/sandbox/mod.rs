@@ -14,12 +14,16 @@ use std::error::Error;
 use std::ffi::OsString;
 use std::fmt;
 use std::io;
-use std::path::{Path, PathBuf};
+#[cfg(not(target_os = "linux"))]
+use std::path::Path;
+use std::path::PathBuf;
 use std::process::Command;
 use std::{os::unix::process::CommandExt, process::Stdio};
 
 #[cfg(target_os = "linux")]
-pub use linux::run_helper;
+pub use linux::{
+    CapabilityStatus, LinuxAvailability, PreparedSandbox, SandboxChild, probe_linux, run_helper,
+};
 pub use macos::SeatbeltProfile;
 pub use policy::{PolicyConfig, ProgramAccess, ReadAccess, SandboxPolicy};
 
@@ -85,7 +89,8 @@ pub struct SandboxCommand {
 }
 
 impl SandboxCommand {
-    /// サンドボックスを掛ける `Command` を作る。`helper` は Linux の補助の実行ファイル。
+    /// macOS の `sandbox-exec` の `Command` を作る。`helper` は使わない。
+    #[cfg(not(target_os = "linux"))]
     pub fn to_command(&self, _helper: &Path) -> Result<Command, SandboxError> {
         self.policy.validate()?;
         policy::canonical_path(&self.program)?;
@@ -105,23 +110,6 @@ impl SandboxCommand {
                 command.arg(argument);
             }
             command.arg("--").arg(&self.program).args(&self.args);
-            self.configure(command)
-        }
-        #[cfg(target_os = "linux")]
-        {
-            policy::canonical_path(_helper)?;
-            let json =
-                serde_json::to_string(&self.policy).map_err(|error| SandboxError::Setup {
-                    stage: text::POLICY,
-                    detail: error.to_string(),
-                })?;
-            let mut command = Command::new(_helper);
-            command
-                .arg("__sandbox")
-                .arg(json)
-                .arg("--")
-                .arg(&self.program)
-                .args(&self.args);
             self.configure(command)
         }
         #[cfg(not(any(target_os = "macos", target_os = "linux")))]

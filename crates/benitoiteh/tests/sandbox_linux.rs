@@ -1,4 +1,4 @@
-//! 本物の Linux の補助・Landlock・seccomp を子プロセスで検証する（設計書 03-02、07-01、実装プラン P0-05）。
+//! 本物の Linux の補助・Landlock・seccomp を子プロセスで検証する（設計書 03-02、07-01、実装プラン P0-07）。
 
 #![cfg(target_os = "linux")]
 
@@ -6,18 +6,20 @@ use std::collections::BTreeMap;
 use std::error::Error;
 use std::ffi::{OsStr, OsString};
 use std::fs::{self, File};
+use std::io::{BufRead, BufReader};
 use std::net::TcpListener;
 use std::os::fd::AsRawFd;
-use std::os::unix::fs::symlink;
+use std::os::unix::fs::{PermissionsExt, symlink};
 use std::os::unix::net::{UnixDatagram, UnixListener};
 use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
-use std::process::{Command, Output};
+use std::process::{Command, Output, Stdio};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use benitoiteh::sandbox::{
-    PolicyConfig, ProgramAccess, ReadAccess, SandboxCommand, SandboxPolicy, SandboxStdin,
+    CapabilityStatus, PolicyConfig, PreparedSandbox, ProgramAccess, ReadAccess, SandboxCommand,
+    SandboxError, SandboxPolicy, SandboxStdin, probe_linux,
 };
 
 type TestResult = Result<(), Box<dyn Error>>;
@@ -68,7 +70,11 @@ impl Fixture {
         PolicyConfig::new(vec![self.writable.clone()])
     }
 
-    fn command(&self, config: PolicyConfig, args: &[&OsStr]) -> Result<Command, Box<dyn Error>> {
+    fn command(
+        &self,
+        config: PolicyConfig,
+        args: &[&OsStr],
+    ) -> Result<PreparedSandbox, Box<dyn Error>> {
         self.command_for(config, &self.probe, args)
     }
 
@@ -77,7 +83,7 @@ impl Fixture {
         config: PolicyConfig,
         program: &Path,
         args: &[&OsStr],
-    ) -> Result<Command, Box<dyn Error>> {
+    ) -> Result<PreparedSandbox, Box<dyn Error>> {
         Ok(SandboxCommand {
             policy: SandboxPolicy::new(config)?,
             program: program.to_path_buf(),
@@ -86,7 +92,7 @@ impl Fixture {
             env: BTreeMap::new(),
             stdin: SandboxStdin::Null,
         }
-        .to_command(&self.helper)?)
+        .prepare(&self.helper, &self.root)?)
     }
 
     fn run(&self, config: PolicyConfig, args: &[&OsStr], expected: i32) -> TestResult {
@@ -157,6 +163,11 @@ fn kernel_landlock_and_seccomp_are_available() -> TestResult {
         return Ok(());
     }
     let f = Fixture::new()?;
+    let availability = probe_linux(&f.helper, &f.root)?;
+    assert_eq!(availability.bubblewrap, CapabilityStatus::Available);
+    assert_eq!(availability.user_namespaces, CapabilityStatus::Available);
+    assert_eq!(availability.landlock_v3, CapabilityStatus::Available);
+    assert_eq!(availability.seccomp, CapabilityStatus::Available);
     let info = Command::new(std::env::current_exe()?)
         .args([
             "--exact",
@@ -187,13 +198,17 @@ fn reading_excludes_secrets_and_confines_readable_roots() -> TestResult {
     let f = Fixture::new()?;
     let secret = f.root.join("secret");
     let public = f.root.join("public");
+    let secret_file = f.writable.join("secret-file");
     fs::create_dir(&secret)?;
     fs::write(secret.join("key"), b"secret")?;
     fs::write(&public, b"public")?;
+    fs::write(&secret_file, b"secret-file")?;
     let alias = f.root.join("alias");
     symlink(secret.join("key"), &alias)?;
     let mut config = f.config();
     config.denied_read.push(secret.clone());
+    config.denied_read.push(secret.join("key"));
+    config.denied_read.push(secret_file.clone());
     for readable in [ReadAccess::All, ReadAccess::Roots(vec![f.root.clone()])] {
         config.readable = readable;
         f.run(config.clone(), &[OsStr::new("read"), public.as_os_str()], 0)?;
@@ -207,14 +222,19 @@ fn reading_excludes_secrets_and_confines_readable_roots() -> TestResult {
         }
         f.run(
             config.clone(),
+            &[OsStr::new("read"), secret_file.as_os_str()],
+            10,
+        )?;
+        f.run(
+            config.clone(),
             &[OsStr::new("read-dir"), secret.as_os_str()],
             10,
         )?;
-        // 部分木への許可は祖先に付けられないので、祖先の一覧も拒否される。
+        // 秘密は bubblewrap で覆うため、祖先の一覧は読める（設計書 03-02）。
         f.run(
             config.clone(),
             &[OsStr::new("read-dir"), f.root.as_os_str()],
-            10,
+            0,
         )?;
     }
     f.run(
@@ -222,69 +242,327 @@ fn reading_excludes_secrets_and_confines_readable_roots() -> TestResult {
         &[OsStr::new("read"), OsStr::new("/etc/alpine-release")],
         10,
     )?;
+    assert_eq!(fs::read(secret.join("key"))?, b"secret");
+    assert_eq!(fs::read(secret_file)?, b"secret-file");
     Ok(())
 }
 
-// 作成時の関門: BH-049 の狭い書き込みの契約を OS の結果で固定する。
-// MakeReg/MakeDir や rename を許す退行は、未作成の保護名を作る否定の行で失敗する。
+// 作成時の関門: 書き込み権の不足と、守るマウントの欠落を、外の FS の状態でも検出する。
 #[test]
-fn writing_updates_existing_files_but_cannot_create_or_replace_protected_names() -> TestResult {
+fn writing_creates_removes_and_atomically_replaces_files_only_in_writable_roots() -> TestResult {
     let f = Fixture::new()?;
-    let existing = f.writable.join("existing");
-    fs::write(&existing, b"old")?;
-    f.run(f.config(), &[OsStr::new("write"), existing.as_os_str()], 0)?;
-    assert_eq!(fs::read(&existing)?, b"sandbox-probe\n");
-    let outside = f.root.join("outside");
-    fs::write(&outside, b"unchanged")?;
-    f.run(f.config(), &[OsStr::new("write"), outside.as_os_str()], 10)?;
-    assert_eq!(fs::read(&outside)?, b"unchanged");
     let nested = f.writable.join("nested");
     fs::create_dir(&nested)?;
     for parent in [&f.writable, &nested] {
-        for ordinary in ["new-file", "new-directory"] {
-            let path = parent.join(ordinary);
-            f.run(f.config(), &[OsStr::new("write"), path.as_os_str()], 10)?;
-            f.run(f.config(), &[OsStr::new("mkdir"), path.as_os_str()], 10)?;
-            assert!(!path.exists());
+        let file = parent.join("new");
+        let temp = parent.join("temporary");
+        let directory = parent.join("directory");
+        for path in [&file, &temp] {
+            f.run(f.config(), &[OsStr::new("write"), path.as_os_str()], 0)?;
+            assert_eq!(fs::read(path)?, b"sandbox-probe\n");
         }
-        for name in [".git", ".benitoiteh", ".GIT"] {
-            let target = parent.join(name);
-            f.run(f.config(), &[OsStr::new("write"), target.as_os_str()], 10)?;
-            f.run(f.config(), &[OsStr::new("mkdir"), target.as_os_str()], 10)?;
-            let replacement = parent.join(format!("replacement-{name}"));
-            fs::create_dir(&replacement)?;
-            f.run(
-                f.config(),
-                &[
-                    OsStr::new("rename"),
-                    replacement.as_os_str(),
-                    target.as_os_str(),
-                ],
-                10,
-            )?;
-            assert!(replacement.is_dir());
-            assert!(!target.exists());
-            fs::create_dir(&target)?;
-            let file = target.join("config");
-            fs::write(&file, b"protected")?;
-            f.run(f.config(), &[OsStr::new("write"), file.as_os_str()], 10)?;
-            f.run(
-                f.config(),
-                &[
-                    OsStr::new("rename"),
-                    target.as_os_str(),
-                    parent.join(format!("moved-{name}")).as_os_str(),
-                ],
-                10,
-            )?;
-            assert_eq!(fs::read(file)?, b"protected");
-            // worktree の .git ファイルの形でも、既存のファイルに与える権利から除く。
-            fs::remove_dir_all(&target)?;
-            fs::write(&target, b"gitdir: /outside")?;
-            f.run(f.config(), &[OsStr::new("write"), target.as_os_str()], 10)?;
-            assert_eq!(fs::read(target)?, b"gitdir: /outside");
-        }
+        fs::write(&file, b"old")?;
+        f.run(
+            f.config(),
+            &[OsStr::new("rename"), temp.as_os_str(), file.as_os_str()],
+            0,
+        )?;
+        assert_eq!(fs::read(&file)?, b"sandbox-probe\n");
+        assert!(!temp.exists());
+        f.run(
+            f.config(),
+            &[OsStr::new("remove-file"), file.as_os_str()],
+            0,
+        )?;
+        assert!(!file.exists());
+        f.run(f.config(), &[OsStr::new("mkdir"), directory.as_os_str()], 0)?;
+        assert!(directory.is_dir());
+        f.run(
+            f.config(),
+            &[OsStr::new("remove-dir"), directory.as_os_str()],
+            0,
+        )?;
+        assert!(!directory.exists());
     }
+    let outside = f.root.join("outside");
+    fs::write(&outside, b"unchanged")?;
+    f.run(f.config(), &[OsStr::new("write"), outside.as_os_str()], 11)?;
+    assert_eq!(fs::read(&outside)?, b"unchanged");
+    Ok(())
+}
+
+// 作成時の関門: すでにあるマウントと、まだない名前の塞ぎの両方を本物の OS で確かめる。
+#[test]
+fn root_protection_blocks_creation_writing_removal_and_replacement() -> TestResult {
+    let f = Fixture::new()?;
+    for name in [".git", ".benitoiteh"] {
+        let target = f.writable.join(name);
+        for operation in ["write", "mkdir", "remove-dir"] {
+            f.run(f.config(), &[OsStr::new(operation), target.as_os_str()], 11)?;
+            assert!(!target.exists(), "placeholder was not cleaned up");
+        }
+        let replacement = f.writable.join("replacement");
+        fs::create_dir(&replacement)?;
+        f.run(
+            f.config(),
+            &[
+                OsStr::new("rename"),
+                replacement.as_os_str(),
+                target.as_os_str(),
+            ],
+            11,
+        )?;
+        assert!(replacement.is_dir());
+        assert!(!target.exists());
+        fs::remove_dir(&replacement)?;
+        fs::create_dir(&target)?;
+        let contents = target.join("config");
+        fs::write(&contents, b"protected")?;
+        for operation in ["write", "remove-file"] {
+            f.run(
+                f.config(),
+                &[OsStr::new(operation), contents.as_os_str()],
+                11,
+            )?;
+            assert_eq!(fs::read(&contents)?, b"protected");
+        }
+        let moved = f.writable.join("moved");
+        f.run(
+            f.config(),
+            &[OsStr::new("rename"), target.as_os_str(), moved.as_os_str()],
+            11,
+        )?;
+        assert!(!moved.exists());
+        assert_eq!(fs::read(&contents)?, b"protected");
+    }
+    Ok(())
+}
+
+// 作成時の関門: 外部 gitdir の重ね忘れと、大小文字・深さの境界を区別する。
+#[test]
+fn gitdir_targets_and_existing_nested_metadata_are_read_only() -> TestResult {
+    let f = Fixture::new()?;
+    let gitdir = f.writable.join("metadata");
+    fs::create_dir(&gitdir)?;
+    let gitfile = f.writable.join(".git");
+    fs::write(&gitfile, b"gitdir: metadata\n")?;
+    let data = gitdir.join("config");
+    fs::write(&data, b"protected")?;
+    for path in [&gitfile, &data] {
+        f.run(f.config(), &[OsStr::new("write"), path.as_os_str()], 11)?;
+    }
+    let moved = f.writable.join("moved");
+    for path in [&gitfile, &gitdir] {
+        f.run(
+            f.config(),
+            &[OsStr::new("rename"), path.as_os_str(), moved.as_os_str()],
+            11,
+        )?;
+        assert!(!moved.exists());
+    }
+    assert_eq!(fs::read(&gitfile)?, b"gitdir: metadata\n");
+    assert_eq!(fs::read(&data)?, b"protected");
+    for name in [".GIT", "a/.git", "a/b/.git", "a/b/.GIT", "a/.benitoiteh"] {
+        let target = f.writable.join(name);
+        fs::create_dir_all(&target)?;
+        let data = target.join("config");
+        fs::write(&data, b"protected")?;
+        f.run(f.config(), &[OsStr::new("write"), data.as_os_str()], 11)?;
+        f.run(
+            f.config(),
+            &[OsStr::new("rename"), target.as_os_str(), moved.as_os_str()],
+            11,
+        )?;
+        assert_eq!(fs::read(&data)?, b"protected");
+        assert!(!moved.exists());
+    }
+    Ok(())
+}
+
+// 作成時の関門: 保証の範囲を広く見せない。未作成の入れ子と深さ 4 以上は範囲外（設計書 03-02）。
+#[test]
+fn uncreated_nested_and_deep_metadata_and_uncreated_uppercase_root_are_outside_guarantee()
+-> TestResult {
+    let f = Fixture::new()?;
+    for name in ["a/.git", "a/b/c/.git", ".GIT"] {
+        let target = f.writable.join(name);
+        fs::create_dir_all(target.parent().ok_or("Missing parent")?)?;
+        // 根の直下でも、まだない .GIT は塞がない（設計書 03-02「Linux のファイルシステムの見え方」）。
+        f.run(f.config(), &[OsStr::new("mkdir"), target.as_os_str()], 0)?;
+        assert!(target.is_dir());
+    }
+    let deep = f.writable.join("a/b/c/.git/config");
+    f.run(f.config(), &[OsStr::new("write"), deep.as_os_str()], 0)?;
+    assert_eq!(fs::read(&deep)?, b"sandbox-probe\n");
+    Ok(())
+}
+
+// 作成時の関門: 読み取り専用の覆いを中から外す・上書きする操作を、実際の mount で試す。
+#[test]
+fn protected_and_denied_mounts_cannot_be_removed_or_overmounted() -> TestResult {
+    let f = Fixture::new()?;
+    let secret = f.root.join("secret");
+    let file = f.root.join("secret-file");
+    let source = f.writable.join("source");
+    fs::create_dir(&secret)?;
+    fs::create_dir(&source)?;
+    fs::write(secret.join("key"), b"secret")?;
+    fs::write(&file, b"secret-file")?;
+    let mut config = f.config();
+    config.denied_read = vec![secret.clone(), file.clone()];
+    for target in [
+        f.writable.join(".git"),
+        f.writable.join(".benitoiteh"),
+        secret.clone(),
+        file.clone(),
+    ] {
+        f.run(
+            config.clone(),
+            &[OsStr::new("umount"), target.as_os_str()],
+            10,
+        )?;
+        let from = if target == file { &file } else { &source };
+        f.run(
+            config.clone(),
+            &[
+                OsStr::new("bind-mount"),
+                from.as_os_str(),
+                target.as_os_str(),
+            ],
+            10,
+        )?;
+        assert_eq!(fs::read(secret.join("key"))?, b"secret");
+        assert_eq!(fs::read(&file)?, b"secret-file");
+        assert!(!f.writable.join(".git").exists());
+        assert!(!f.writable.join(".benitoiteh").exists());
+    }
+    Ok(())
+}
+
+// 作成時の関門: 待機前の rmdir と、起動前からあった空のディレクトリの削除を捕まえる。
+#[test]
+fn cleanup_waits_for_exit_and_preserves_preexisting_empty_directories() -> TestResult {
+    let f = Fixture::new()?;
+    let existing = f.writable.join(".git");
+    let created = f.writable.join(".benitoiteh");
+    let occupied = f.writable.join(".keep");
+    fs::create_dir(&existing)?;
+    let mut config = f.config();
+    config.protected_names.push(".keep".into());
+    let sandbox = f.command(config, &[OsStr::new("wait-stdin")])?;
+    let mut command = Command::new(sandbox.get_program());
+    command
+        .args(sandbox.get_args())
+        .env_clear()
+        .current_dir(&f.root)
+        .process_group(0)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped());
+    let mut child = sandbox.spawn_wrapped(command)?;
+    let stdout = child.child_mut().stdout.take().ok_or("Missing stdout")?;
+    let mut ready = String::new();
+    BufReader::new(stdout).read_line(&mut ready)?;
+    // 先に EOF を渡しておき、検査の失敗でも子を待てるようにする。
+    let present_while_running = created.is_dir();
+    let occupied_result = (|| -> std::io::Result<()> {
+        // 外の利用者が置いた内容を、終了後の後始末が消してはいけない。
+        fs::set_permissions(&occupied, fs::Permissions::from_mode(0o755))?;
+        fs::write(occupied.join("outside-data"), b"keep")
+    })();
+    drop(child.child_mut().stdin.take());
+    let status = child.wait()?;
+    occupied_result?;
+    assert!(status.success(), "{status}");
+    assert_eq!(ready.trim(), "ready");
+    assert!(present_while_running);
+    assert!(existing.is_dir());
+    assert_eq!(fs::read_dir(&existing)?.count(), 0);
+    assert!(!created.exists());
+    assert_eq!(fs::read(occupied.join("outside-data"))?, b"keep");
+
+    let hidden_cwd = f.root.join("hidden-cwd");
+    fs::create_dir(&hidden_cwd)?;
+    let mut config = f.config();
+    config.denied_read.push(hidden_cwd.clone());
+    let output = SandboxCommand {
+        policy: SandboxPolicy::new(config)?,
+        program: f.probe.clone(),
+        args: vec!["socketpair".into()],
+        cwd: hidden_cwd,
+        env: BTreeMap::new(),
+        stdin: SandboxStdin::Null,
+    }
+    .prepare(&f.helper, &f.root)?
+    .output()?;
+    assert!(!output.status.success());
+    assert!(String::from_utf8_lossy(&output.stderr).starts_with("bwrap:"));
+    assert!(existing.is_dir());
+    assert!(!created.exists());
+    Ok(())
+}
+
+// 作成時の関門: 起動の失敗で覆いが残る退行を、本物の spawn の ENOENT で捕まえる。
+#[test]
+fn failed_spawn_removes_the_exclusive_file_cover() -> TestResult {
+    let f = Fixture::new()?;
+    let secret = f.root.join("secret-file");
+    fs::write(&secret, b"secret")?;
+    let mut config = f.config();
+    config.denied_read.push(secret.clone());
+    let before = fs::read_dir(&f.root)?.count();
+    let sandbox = f.command(config, &[OsStr::new("socketpair")])?;
+    assert_eq!(fs::read_dir(&f.root)?.count(), before.saturating_add(1));
+    let result = sandbox.spawn_wrapped(Command::new(f.root.join("missing-wrapper")));
+    assert!(
+        matches!(result, Err(SandboxError::Io(error)) if error.kind() == std::io::ErrorKind::NotFound)
+    );
+    assert_eq!(fs::read_dir(&f.root)?.count(), before);
+    assert_eq!(fs::read(secret)?, b"secret");
+    Ok(())
+}
+
+// 作成時の関門: 変更可能なリンクと補助の上書きを、子を起動する前に拒む契約。
+#[test]
+fn writable_symlinks_and_writable_helper_fail_before_spawn() -> TestResult {
+    let f = Fixture::new()?;
+    for name in [".git", "a/.git"] {
+        let link = f.writable.join(name);
+        fs::create_dir_all(link.parent().ok_or("Missing parent")?)?;
+        symlink(&f.root, &link)?;
+        assert!(f.command(f.config(), &[OsStr::new("socketpair")]).is_err());
+        fs::remove_file(link)?;
+    }
+    let link = f.writable.join("link");
+    symlink(&f.root, &link)?;
+    fs::write(f.writable.join(".git"), b"gitdir: link\n")?;
+    assert!(f.command(f.config(), &[OsStr::new("socketpair")]).is_err());
+    fs::remove_file(f.writable.join(".git"))?;
+    let mut config = f.config();
+    config.denied_read.push(link);
+    assert!(matches!(
+        SandboxPolicy::new(config),
+        Err(SandboxError::InvalidPolicy(_))
+    ));
+    let writable_helper = f.writable.join("helper");
+    fs::copy(&f.helper, &writable_helper)?;
+    let command = SandboxCommand {
+        policy: SandboxPolicy::new(f.config())?,
+        program: f.probe.clone(),
+        args: vec!["socketpair".into()],
+        cwd: f.root.clone(),
+        env: BTreeMap::new(),
+        stdin: SandboxStdin::Null,
+    };
+    assert!(matches!(
+        command.prepare(&writable_helper, &f.root),
+        Err(SandboxError::InvalidPolicy(_))
+    ));
+    let mut config = f.config();
+    config.denied_read.push(f.root.clone());
+    assert!(matches!(
+        SandboxPolicy::new(config),
+        Err(SandboxError::InvalidPolicy(_))
+    ));
     Ok(())
 }
 
@@ -529,10 +807,11 @@ fn setup_failures_do_not_execute_the_program_and_cloexec_descriptors_do_not_leak
         &[OsStr::new("fd-open"), OsStr::new(&number)],
         13,
     )?;
-    let sandbox = f.command(f.config(), &[OsStr::new("write"), marker.as_os_str()])?;
-    let args: Vec<OsString> = sandbox.get_args().map(OsStr::to_os_string).collect();
     for inherited in [marker.as_path(), Path::new("/proc/self/fd")] {
-        let output = Command::new(&f.probe)
+        let sandbox = f.command(f.config(), &[OsStr::new("write"), marker.as_os_str()])?;
+        let args: Vec<OsString> = sandbox.get_args().map(OsStr::to_os_string).collect();
+        let mut wrapper = Command::new(&f.probe);
+        wrapper
             .arg("spawn-with-fd")
             .arg(inherited)
             .arg("--")
@@ -540,8 +819,8 @@ fn setup_failures_do_not_execute_the_program_and_cloexec_descriptors_do_not_leak
             .args(&args)
             .env_clear()
             .current_dir(&f.root)
-            .process_group(0)
-            .output()?;
+            .process_group(0);
+        let output = sandbox.output_wrapped(wrapper)?;
         check(
             &output,
             125,

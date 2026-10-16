@@ -1,10 +1,16 @@
 //! Linux の補助の入口と、Landlock・seccomp の順序を管理する（設計書 03-02「サンドボックスの掛け方」）。
 
+mod availability;
 mod filesystem;
 mod filter;
+mod mounts;
+mod process;
+
+pub use availability::{CapabilityStatus, LinuxAvailability, probe_linux};
+pub use process::{PreparedSandbox, SandboxChild};
 
 use std::ffi::{OsStr, OsString};
-use std::fs::File;
+use std::fs::{self, File};
 use std::io::{self, Write};
 use std::mem::MaybeUninit;
 use std::os::fd::AsRawFd;
@@ -14,7 +20,7 @@ use std::process::{Command, ExitCode};
 
 use rustix::fs::RawDir;
 
-use super::{SandboxError, SandboxPolicy, policy, text};
+use super::{PolicyConfig, SandboxError, SandboxPolicy, policy, text};
 
 /// 補助の準備に失敗したときの終了状態。目的のプログラムも同じ値を返せる。
 pub const SETUP_FAILURE: u8 = 125;
@@ -68,8 +74,27 @@ fn prepare_and_exec(
             .filter(|abi| *abi >= 3)
             .ok_or_else(|| failure(text::POLICY, text::INVALID_ABI))?,
     };
-    let policy: SandboxPolicy =
+    let mut config: PolicyConfig =
         serde_json::from_value(value).map_err(|e| failure(text::POLICY, e))?;
+    // 覆いの下の子孫は、もう存在しないか、権限 000 の祖先を辿れない。
+    // 外側だけで同じ拒否になるため、冗長な子孫を落としてから実のパスを検証する
+    // （設計書 03-02「Linux のファイルシステムの見え方」、実装プラン P0-07）。
+    config.denied_read.sort();
+    let mut outer = Vec::new();
+    for path in config.denied_read {
+        policy::canonical_syntax(&path).map_err(|e| failure(text::POLICY, e))?;
+        if outer.iter().any(|parent| path.starts_with(parent)) {
+            continue;
+        }
+        match fs::symlink_metadata(&path) {
+            Ok(_) => outer.push(path),
+            // 引数を作る時点で消えていた秘密には覆いを作らない。
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+            Err(error) => return Err(failure(text::POLICY, error)),
+        }
+    }
+    config.denied_read = outer;
+    let policy = SandboxPolicy::new(config).map_err(|e| failure(text::POLICY, e))?;
     policy::canonical_path(Path::new(&program)).map_err(|e| failure(text::POLICY, e))?;
     check_descriptors().map_err(|e| failure(text::DESCRIPTORS, e))?;
     rustix::thread::set_no_new_privs(true).map_err(|e| failure(text::NO_NEW_PRIVS, e))?;
