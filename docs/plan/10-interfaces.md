@@ -22,11 +22,11 @@ crates/sandbox-probe/         サンドボックスのテストが起動する�
 assets/benitoite/v0.0.6/      取り込んだ Skill（手で直さない）
 ```
 
-`crates/sandbox-probe` は配らない（`publish = false`）。テストの対象の外の操作（ファイルを読む、書く、ソケットにつなぐ、プログラムを起動する）を、引数で指示したとおりに一つ行い、結果を決まった終了状態で返す。
+`crates/sandbox-probe` は配らない（`publish = false`）。設計書 06-01 の「ワークスペースとクレート」は試作のクレートを一つとするが、これはテストの道具であり、試作の実行ファイルには入らない。`cargo test` はほかのパッケージの実行ファイルを作らないので、`scripts/check.sh` がテストの前に `cargo build -p sandbox-probe` を、ホストと Linux の二つの対象で走らせる。テストの対象の外の操作（ファイルを読む、書く、ソケットにつなぐ、プログラムを起動する）を、引数で指示したとおりに一つ行い、結果を決まった終了状態で返す。
 
 ## モジュールの持ち主
 
-[クレートの構成](../design/06-impl/06-01-crate-structure.md)の「モジュール」の表に、次の二つを加える。
+[クレートの構成](../design/06-impl/06-01-crate-structure.md)の「モジュール」の表のうち、次の二つは、実装プランで加えたものである。
 
 | モジュール | 役割 | 作る作業 |
 |---|---|---|
@@ -58,8 +58,11 @@ P0 で作るモジュールは `cli`（`--version`・`--help`・`__sandbox` の�
 | `similar` | `=3.2.0` | P1 | |
 | `landlock` | `=0.4.7` | P0-05 | Linux だけ（`[target.'cfg(target_os = "linux")'.dependencies]`） |
 | `seccompiler` | `=0.5.0` | P0-05 | Linux だけ |
+| `libc` | `=0.2.190` | P0-05 | Linux だけ。seccomp の規則の呼び出しの番号と `AF_*`・`SOCK_*` の定数を得るためだけに使い、`unsafe` の関数を呼ばない。Benitoite の `v0.0.6` の `Cargo.lock` と同じ版 |
+| `crossterm` | `=0.29.0` | P0-06（`[dev-dependencies]`）、P4 | |
+| `unicode-width` | `=0.2.2` | P0-06（`[dev-dependencies]`）、P4 | |
 
-`rustls-platform-verifier` などを直接使う必要が生じたときは、`ureq` が依存する版（`Cargo.lock` の版）に揃える。これは表にないクレートとして止まらなくてよい。`crossterm`・`unicode-width` は P4 で加える。
+`rustls-platform-verifier` などを直接使う必要が生じたときは、`ureq` が依存する版（`Cargo.lock` の版）に揃える。これは表にないクレートとして止まらなくてよい。`crossterm`・`unicode-width` は、P0-06 では大きさの測定のためだけに `[dev-dependencies]` に置き、P4 で `[dependencies]` に移す。
 
 ## 作業をまたいで使う型
 
@@ -68,6 +71,7 @@ P0 の作業が名前と責任を決め、シグネチャの細部を完了の�
 ### `safe_fs`（P0-02）
 
 - `ScopeRoot`: 範囲の根のディレクトリを開いて保持した記述子と、その実のパス。範囲の中の操作はすべてこの型の関数で行う。
+- 開いた記述子から実のパスを得る関数（macOS は `rustix::fs::getpath`、Linux は `/proc/self/fd/<n>` の読み取り）。範囲の中のシンボリックリンクを辿って開いたときに、拡張子と守る場所の判定を、開いたものの実のパスで行うため。
 - `ScopeRelPath`: 根からの相対のパス。空の要素、`.`、`..`、絶対のパスを持たないことを、作るときに確かめた値。
 - 操作: 読むために開く、メタデータ（リンクを辿らない）、ディレクトリの一覧、同じディレクトリの一時ファイルに書いてから名前を付け替える書き込み、新しいディレクトリの作成、ファイルとシンボリックリンクの削除、シンボリックリンクの作成と読み取り。
 - 誤り: `SafeFsError`。範囲の外へ出るパス、途中の要素のシンボリックリンク（macOS で辿れないとき）、OS の誤りを分ける。
@@ -82,5 +86,6 @@ P0 の作業が名前と責任を決め、シグネチャの細部を完了の�
 ### `sandbox`（P0-04、P0-05）
 
 - `SandboxPolicy`: 方針の要素（[OS のサンドボックス](../design/03-safety/03-02-sandbox.md)の「方針の要素」）を持つ値。読める範囲、読ませない場所、書ける場所、書ける場所の中の守る名前、IP の通信の可否、起動できるプログラム（制限しない／列挙した実のパスだけ）、書ける場所のファイルの実行の拒否。JSON にでき、`__sandbox` の引数として渡せる。パスはすべて実の絶対のパスとする。
-- `SandboxCommand`: 方針、プログラム、引数、作業ディレクトリ、環境変数、標準入力の扱い。OS ごとの起動の形（macOS の `sandbox-exec`、Linux の `__sandbox`）に変えて `std::process::Command` を作る。
+- `SandboxCommand`: 方針、プログラム、引数、作業ディレクトリ、環境変数、標準入力の扱い。OS ごとの起動の形（macOS の `sandbox-exec`、Linux の `__sandbox`）に変えて `std::process::Command` を作る。`std::process::Command` を作る関数は、Linux の補助のプロセス（`benitoiteh` の実行ファイル）のパスを引数に取る（例: `to_command(&self, helper: &Path)`。macOS では使わない）。P0-04 の時点の Linux では、掛けられないという誤りを返す。
+- `SandboxPolicy` の中のパスは正規の形（`std::fs::canonicalize` の結果。macOS の `/var` は `/private/var`）とし、作るときに確かめる。理由: Seatbelt は正規の形のパスで照合するので、`/var/folders` の形では規則が当たらない。
 - `SandboxError`: 方針の誤り、掛けられない、補助のプロセスの段階ごとの失敗。
