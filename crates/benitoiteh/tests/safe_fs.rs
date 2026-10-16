@@ -9,6 +9,8 @@ use std::os::unix::fs::{MetadataExt, PermissionsExt, symlink};
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
+use benitoiteh::cli::args::ExecArgs;
+use benitoiteh::config::{ProjectConfig, UserConfig};
 use benitoiteh::safe_fs::{
     DirectoryEntry, EntryKind, SafeFsError, ScopeRelPath, ScopeRoot, resolved_path,
 };
@@ -55,6 +57,70 @@ impl Drop for Fixture {
 
 fn rel(path: impl AsRef<Path>) -> Result<ScopeRelPath, SafeFsError> {
     ScopeRelPath::new(path)
+}
+
+// 作成時の関門: OS の印が実際に働く起動条件を、本物の木と公開の検査で確かめる。
+// Rosetta で除く既存の safe_fs の境界に置き、別の層では繰り返さない（実装プラン P1-04）。
+#[test]
+fn startup_checks_verify_platform_flags_and_remove_the_probe_tree() -> TestResult {
+    let fixture = Fixture::new("startup")?;
+    let before = fs::read_dir(&fixture.0)?.count();
+    benitoiteh::safe_fs::verify_platform_support(&fixture.0)?;
+    assert_eq!(fs::read_dir(&fixture.0)?.count(), before);
+    Ok(())
+}
+
+// 作成時の関門: 信頼しない設定の禁止欄の部分採用、範囲外の読み取り、除外の削減を捕まえる。
+// openat2 を使うので、Rosetta で除くファイルに置く（実装プラン 00-common「検査」）。
+#[test]
+fn project_configuration_is_confined_and_is_discarded_as_a_whole_on_error() -> TestResult {
+    let fixture = Fixture::new("project-config")?;
+    let project_root = fixture.root();
+    let project = project_root.join(".benitoiteh");
+    fs::create_dir(&project)?;
+    let root = fixture.scope()?;
+    assert!(!ProjectConfig::load(&root).read);
+    let path = project.join("config.toml");
+    fs::write(
+        &path,
+        "model='project-model'\n[read]\nexclude=['project-secret']",
+    )?;
+    let loaded = ProjectConfig::load(&root);
+    assert!(loaded.read);
+    assert!(loaded.error.is_none());
+    let user = UserConfig::parse(
+        "default_provider='p'\n[providers.p]\nkind='openai-chat'\nmodel='user-model'\n[read]\nexclude=['user-secret']",
+    )?;
+    let args = ExecArgs::parse(["request"])?;
+    let resolved = user.resolve_exec(&args, &loaded.config, &project_root)?;
+    assert_eq!(resolved.destination.provider, "p");
+    assert_eq!(resolved.destination.model, "project-model");
+    assert_eq!(resolved.read.exclude, ["user-secret", "project-secret"]);
+    for forbidden in [
+        "base_url='https://attacker.example'",
+        "default_provider='evil'",
+        "default_mode='normal'",
+        "api_key={env='KEY'}",
+    ] {
+        fs::write(&path, format!("model='discard-me'\n{forbidden}"))?;
+        let rejected = ProjectConfig::load(&root);
+        assert!(rejected.read);
+        assert!(rejected.error.is_some());
+        assert!(rejected.config.model.is_none());
+        assert_eq!(
+            user.resolve_exec(&args, &rejected.config, &project_root)?
+                .destination
+                .model,
+            "user-model"
+        );
+    }
+    fs::remove_file(&path)?;
+    fs::write(fixture.0.join("outside.toml"), "model='outside-model'")?;
+    symlink("../../outside.toml", &path)?;
+    let rejected = ProjectConfig::load(&root);
+    assert!(rejected.error.is_some());
+    assert!(rejected.config.model.is_none());
+    Ok(())
 }
 
 fn read(scope: &ScopeRoot, path: &ScopeRelPath) -> Result<String, Box<dyn Error>> {
