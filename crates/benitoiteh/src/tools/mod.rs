@@ -1,12 +1,15 @@
 //! 道具の検証と実行をまとめ、範囲と結果の上限を守る（設計書 01-03「道具の定義の共通の規則」）。
 
 mod definitions;
+mod edit;
 pub mod exclude;
 mod paths;
 mod read;
 mod search;
 mod text;
 pub mod truncate;
+mod write;
+mod write_path;
 
 use std::collections::BTreeMap;
 use std::fmt;
@@ -32,9 +35,9 @@ pub enum ToolId {
     Glob,
     /// 正規表現による行の検索。
     Grep,
-    /// ファイルの作成と置き換え。実行は P1-07 で加える。
+    /// ファイルの作成と置き換え。
     Write,
-    /// 文字列の置き換え。実行は P1-07 で加える。
+    /// 文字列の置き換え。
     Edit,
 }
 
@@ -157,19 +160,20 @@ impl ToolSet {
         &self,
         context: &ToolContext,
         call: &ValidatedCall,
-        _approval: ApprovalStatus,
+        approval: ApprovalStatus,
     ) -> ToolOutput {
         if self.mode != context.mode {
             return ToolOutput::error(text::MODE_MISMATCH);
         }
         let result = match call.id {
-            ToolId::Read => read::execute(context, &call.arguments),
-            ToolId::Glob => search::glob(context, &call.arguments),
-            ToolId::Grep => search::grep(context, &call.arguments),
-            ToolId::Write | ToolId::Edit => Err(ToolError::Unavailable(call.id)),
+            ToolId::Read => read::execute(context, &call.arguments).map(ToolOutput::success),
+            ToolId::Glob => search::glob(context, &call.arguments).map(ToolOutput::success),
+            ToolId::Grep => search::grep(context, &call.arguments).map(ToolOutput::success),
+            ToolId::Write => write::execute(context, &call.arguments, approval),
+            ToolId::Edit => edit::execute(context, &call.arguments, approval),
         };
         match result {
-            Ok(output) => ToolOutput::success(output),
+            Ok(output) => output,
             Err(error) => ToolOutput::error(error.to_string()),
         }
     }
@@ -313,7 +317,10 @@ pub enum ToolError {
     Pattern(String),
     State,
     Changed,
-    Unavailable(ToolId),
+    NotRead,
+    StaleRead,
+    RestrictedExtension,
+    ProtectedWrite,
 }
 
 impl fmt::Display for ToolError {
@@ -328,7 +335,10 @@ impl fmt::Display for ToolError {
             Self::Offset { offset, total } => f.write_str(&text::offset(*offset, *total)),
             Self::State => f.write_str(text::STATE),
             Self::Changed => f.write_str(text::CHANGED),
-            Self::Unavailable(id) => f.write_str(&text::unavailable(id.name())),
+            Self::NotRead => f.write_str(text::NOT_READ),
+            Self::StaleRead => f.write_str(text::STALE_READ),
+            Self::RestrictedExtension => f.write_str(text::RESTRICTED_EXTENSION),
+            Self::ProtectedWrite => f.write_str(text::PROTECTED_WRITE),
         }
     }
 }

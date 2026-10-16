@@ -16,6 +16,7 @@ path = "src/main.rs"
 workspace = true
 
 [dependencies]
+similar = { version = "=3.2.0", default-features = false, features = ["text"] }
 ignore = { version = "=0.4.33", default-features = false }
 globset = { version = "=0.4.20", default-features = false }
 regex = { version = "=1.13.1", default-features = false, features = ["std", "perf", "unicode"] }

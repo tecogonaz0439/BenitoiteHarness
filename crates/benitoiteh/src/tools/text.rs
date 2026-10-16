@@ -17,6 +17,13 @@ pub const OUTSIDE_SCOPE: &str = "Path is outside the allowed scope. Use a projec
 pub const NOT_TEXT: &str = "Cannot read a binary or image file. Choose a text file.";
 pub const STATE: &str = "Read-version state is unavailable. Restart the session before retrying.";
 pub const CHANGED: &str = "File changed while it was being read. Read it again, then retry.";
+pub const NOT_READ: &str = "File has not been read in this session. Read it with read, then retry.";
+pub const STALE_READ: &str = "File changed since it was last read. Read it again, then retry.";
+pub const RESTRICTED_EXTENSION: &str =
+    "Restricted mode can write only .bnt files. Choose a .bnt path.";
+pub const PROTECTED_WRITE: &str =
+    "Restricted mode cannot write inside .git or .benitoiteh. Choose an unprotected path.";
+pub const EMPTY_OLD: &str = "old_string must not be empty. Use write to create a file.";
 pub const REGULAR_FILE: &str = "Expected a regular file. Use glob to list directories.";
 pub const NO_FILES: &str = "No matching files.";
 pub const NO_MATCHES: &str = "No matches.";
@@ -78,10 +85,32 @@ pub fn positive(name: &str, zero_allowed: bool) -> String {
     };
     format!("Argument {name:?} must be {range}.")
 }
-pub fn unavailable(name: &str) -> String {
+pub fn write_approval(path: &std::path::Path, protected: bool) -> String {
+    let reason = if protected {
+        "inside a protected location (.git or .benitoiteh)"
+    } else {
+        "outside the writable roots"
+    };
     format!(
-        "Tool {name} is not implemented yet. Use a reading tool until writing tools are available."
+        "Writing {} is {reason} and requires approval. Ask the user to approve this write in an interactive session or choose an unprotected path within the project or session temporary directory.",
+        path.display()
     )
+}
+pub fn wrote(path: &str, lines: usize) -> String {
+    format!("Wrote {path} ({lines} lines).")
+}
+pub fn edit_not_found(path: &str) -> String {
+    format!(
+        "Could not find old_string in {path}. It must match the file exactly, including whitespace and line breaks. Read the file again if it may have changed."
+    )
+}
+pub fn edit_multiple(path: &str, count: usize) -> String {
+    format!(
+        "Found {count} occurrences of old_string in {path}. Add surrounding lines to make it unique, or set replace_all to true."
+    )
+}
+pub fn edit_unchanged(path: &str) -> String {
+    format!("old_string and new_string are identical. No change was made to {path}.")
 }
 pub fn pattern(error: &dyn std::fmt::Display) -> String {
     format!("Invalid pattern: {error}. Correct the pattern and retry.")
