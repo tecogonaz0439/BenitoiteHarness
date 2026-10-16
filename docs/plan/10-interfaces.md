@@ -82,6 +82,9 @@ P0-02 で作った主な公開の関数は次のとおりである（誤りは�
 
 ### `http`（P0-03）
 
+P0-03 で作った主な公開の関数は次のとおりである（`Uri`・`HeaderMap`・`HeaderValue` は `http` から再公開）。`HttpClient::new(HttpTimeouts)`、`get(uri, headers, limit) -> HttpResponse`、`get_resolved(uri, headers, addresses, limit)`、`post_json(uri, headers, json) -> HttpStream`。`HttpStream` は `poll(wait) -> StreamEvent`（`Headers`・`Data`・`Finished`・`Pending`）、`cancellation()`、`last_received()`、`check_timeouts()`、`join()` を持つ。データが届かない時間の見張りは、呼び出す側が `poll` か `check_timeouts` で行う。HTTP の状態の誤りは、状態、`Retry-After`、応答のヘッダ、本文の先頭 64 KiB を保つ。
+
+
 - `HttpClient`: 接続を使い回す HTTP のクライアント。TLS の設定（`rustls` と `rustls-graviola`、OS の証明書の検証）を持つ。
 - ストリーミングの要求は、応答の本文を別のスレッドで読み、受け取ったバイト列を長さに上限のあるチャネルで渡す。打ち切りの印（取り消し）と、最後にデータを受け取った時刻を、呼び出した側が見られるようにする。
 - 時間の上限: 接続 10 秒、ヘッダまで 120 秒、データが届かない時間 300 秒、全体 30 分。値は呼び出す側が変えられる（テストで短くするため）。
