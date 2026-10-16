@@ -42,7 +42,7 @@
 ### 文脈と記録
 
 - 基本の指示は約 21 KB である（`codex-rs/protocol/src/prompts/base_instructions/default.md`）。
-- `AGENTS.md` は、リポジトリの根から作業ディレクトリまでを辿って読み、合計 32 KiB までとする。
+- `AGENTS.md` は、リポジトリの根から作業ディレクトリまでを辿って読み、合計 32 KiB までとする。各ディレクトリでは、`AGENTS.override.md`、`AGENTS.md`、設定の `project_doc_fallback_filenames` で加えた名前の順に見て、最初に見つかった一つだけを読む（`codex-rs/core/src/agents_md.rs`）。
 - 文脈が上限の 90% に達したら圧縮する。トークンの量は、最後の API の報告に、その後に加えた分のバイト数を 4 で割った値を足して見積もる。
 - セッションは JSON Lines のファイル（`~/.codex/sessions/YYYY/MM/DD/rollout-<時刻>-<ID>.jsonl`）に記録する。
 - プロジェクトの設定は信頼したディレクトリでだけ読み、提供者の URL などを設定させない。
