@@ -71,6 +71,9 @@ P0 の作業が名前と責任を決め、シグネチャの細部を完了の�
 
 ### `safe_fs`（P0-02）
 
+P0-02 で作った主な公開の関数は次のとおりである（誤りはすべて `SafeFsError`）。`ScopeRelPath::new`、`ScopeRoot::open`・`real_path`・`open_dir`・`resolve_path(project, requested)`・`open_read`・`metadata`（`std::fs::Metadata`。リンクを辿らない）・`read_dir`（`DirectoryEntry { name, kind }`）・`write(path, contents, create_parents)`・`write_from`・`create_dir`・`remove_file`・`remove_dir`・`symlink`・`read_link`、開いたファイルの実のパスを得る `resolved_path(&File)`。
+
+
 - `ScopeRoot`: 範囲の根のディレクトリを開いて保持した記述子と、その実のパス。範囲の中の操作はすべてこの型の関数で行う。
 - 開いた記述子から実のパスを得る関数（macOS は `rustix::fs::getpath`、Linux は `/proc/self/fd/<n>` の読み取り）。範囲の中のシンボリックリンクを辿って開いたときに、拡張子と守る場所の判定を、開いたものの実のパスで行うため。
 - `ScopeRelPath`: 根からの相対のパス。空の要素、`.`、`..`、絶対のパスを持たないことを、作るときに確かめた値。
