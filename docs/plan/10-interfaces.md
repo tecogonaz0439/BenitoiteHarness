@@ -91,13 +91,19 @@ P0-03 で作った主な公開の関数は次のとおりである（`Uri`・`He
 - 時間の上限: 接続 10 秒、ヘッダまで 120 秒、データが届かない時間 300 秒、全体 30 分。値は呼び出す側が変えられる（テストで短くするため）。
 - 名前の解決の差し替え: 判定済みのアドレスだけに接続する形（`web_fetch` のため）。
 
-### `sandbox`（P0-04、P0-05）
+### `sandbox`（P0-04、P0-05、P0-07）
 
 P0-04 で作った型: 方針の入力 `PolicyConfig`（`readable: ReadAccess`（`All`・`Roots`）、`denied_read`、`writable`、`protected_names`、`allow_ip`、`programs: ProgramAccess`（`Unrestricted`・`Only`）、`deny_exec_in_writable`（既定は真））と、検証済みの `SandboxPolicy::new(config)`。`SandboxPolicy::seatbelt_profile()`、`SandboxCommand::to_command(&self, helper: &Path) -> Result<Command, SandboxError>`。
 
 
 - `SandboxPolicy`: 方針の要素（[OS のサンドボックス](../design/03-safety/03-02-sandbox.md)の「方針の要素」）を持つ値。読める範囲、読ませない場所、書ける場所、書ける場所の中の守る名前、IP の通信の可否、起動できるプログラム（制限しない／列挙した実のパスだけ）、書ける場所のファイルの実行の拒否。JSON にでき、`__sandbox` の引数として渡せる。パスはすべて実の絶対のパスとする。
 - `SandboxCommand`: 方針、プログラム、引数、作業ディレクトリ、環境変数、標準入力の扱い。OS ごとの起動の形（macOS の `sandbox-exec`、Linux の `__sandbox`）に変えて `std::process::Command` を作る。`std::process::Command` を作る関数は、Linux の補助のプロセス（`benitoiteh` の実行ファイル）のパスを引数に取る（例: `to_command(&self, helper: &Path)`。macOS では使わない）。P0-04 の時点の Linux では、掛けられないという誤りを返す。
+- P0-07 で、Linux の起動の形を次のとおりにした（Linux だけに公開する。macOS の `to_command` は変えていない。Linux の `to_command` は除いた）。
+  - `SandboxCommand::prepare(&self, helper: &Path, scratch: &Path) -> Result<PreparedSandbox, SandboxError>`。`/usr/bin/bwrap` の引数を作る。`scratch` は、読ませない場所のファイルを覆う権限 000 の空のファイルを置く、書ける場所の外のディレクトリである。補助のプロセスの実行ファイルが書ける場所の中にあれば `InvalidPolicy` を返す。
+  - `PreparedSandbox`: `get_program`・`get_args`（別のプログラムで包むため）、`spawn`・`spawn_wrapped(wrapper: Command)`・`output`・`output_wrapped`。
+  - `SandboxChild`: `child_mut`、`wait`、`wait_with_output`。塞ぐために作らせた空のディレクトリと覆いのファイルは、子の終了を確かめた後にだけ片付ける。`Drop` では片付けない。
+  - `probe_linux(helper: &Path, scratch: &Path) -> Result<LinuxAvailability, SandboxError>`。`LinuxAvailability` は `bubblewrap`・`user_namespaces`・`landlock_v3`・`seccomp` の欄を持ち、値は `CapabilityStatus`（`Available`・`Unavailable(String)`・`NotChecked`）である。
+  - 方針の検査は、`protected_names` に綴りどおりの `.git` と `.benitoiteh` を含むことを求める。
 - `SandboxPolicy` の中のパスは正規の形（`std::fs::canonicalize` の結果。macOS の `/var` は `/private/var`）とし、作るときに確かめる。理由: Seatbelt は正規の形のパスで照合するので、`/var/folders` の形では規則が当たらない。
 - `SandboxError`: 方針の誤り、掛けられない、補助のプロセスの段階ごとの失敗。
 
