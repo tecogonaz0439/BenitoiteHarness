@@ -1,5 +1,7 @@
 //! 試作のハーネスのモジュールを公開する（設計書 06-01「モジュール」）。
 
+pub mod agent;
+pub mod approval;
 pub mod cli;
 pub mod config;
 pub mod context;
