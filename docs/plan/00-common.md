@@ -59,7 +59,7 @@ OS のサンドボックスを要するテストは、統合テストのファ�
 
 - aarch64 の対象は、Apple の `container` の中ですべてのテストを走らせる。`container` の既定のカーネル（6.18.15）は Landlock を持たない（`CONFIG_SECURITY_LANDLOCK` が無効）ので、Landlock を要するテストは aarch64 では通らない。
 - x86_64 の対象は、環境変数 `BENITOITEH_X86_64_HOST`（ssh の宛先）があれば、`scripts/remote-linux-run.sh` が、その機械の podman の中で、手元と同じパスに見せてすべてのテストを走らせる。イメージは、`alpine:3.22` に bubblewrap を入れたもの（`localhost/benitoiteh-test:alpine-3.22-bwrap`。なければ `--sync` が作る）とし、root でない利用者（`--userns=keep-id`）で、bubblewrap が `/proc` をマウントできる指定（`--security-opt unmask=ALL`）を付けて走らせる。送り先の機械には、リポジトリ（`target/` と `.git/` を除く）とテストの実行ファイルを、`BENITOITEH_X86_64_DIR`（既定は送り先の `~/benitoiteh-test`）の下に送る。環境変数がなければ、テストのビルドとリンクまでを確かめる。x86_64 を `container` の Rosetta で走らせないのは、Rosetta が `openat2`（`safe_fs` が使う）と、TLS の暗号の実装（`graviola`）が要する CPU の ADX の命令を持たないからである。
-- 2026-10-18 から、オーケストレータは、設計者の常設の機械（x86_64、Omarchy、Linux 7.2.9、Landlock の ABI の版 10、rootless の podman 6.1.1）を `BENITOITEH_X86_64_HOST` に指定して走らせる。Landlock を要するテストは、この機械の x86_64 で確かめる。
+- 2026-10-17 から、オーケストレータは、設計者の常設の機械（x86_64、Omarchy、Linux 7.2.9、Landlock の ABI の版 10、rootless の podman 6.1.1）を `BENITOITEH_X86_64_HOST` に指定して走らせる。Landlock を要するテストは、この機械の x86_64 で確かめる。
 
 ## 完了の報告
 
