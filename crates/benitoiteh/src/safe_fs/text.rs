@@ -11,5 +11,9 @@ pub const NOT_REGULAR_FILE: &str = "Cannot replace this entry. Choose a regular 
 pub const ALREADY_EXISTS: &str = "Entry already exists.";
 pub const NOT_FOUND: &str = "Entry does not exist.";
 pub const IO_ERROR: &str = "Filesystem operation failed.";
+pub const BENEATH_UNSUPPORTED: &str =
+    "The OS did not enforce confined path resolution; cannot start safely.";
+#[cfg(target_os = "macos")]
+pub const UNIQUE_UNSUPPORTED: &str = "The OS did not enforce O_UNIQUE; cannot start safely.";
 pub const TEMPORARY_COLLISIONS: &str =
     "Could not create an exclusive temporary file after repeated name collisions.";

@@ -6,7 +6,10 @@ mod os;
 #[cfg(target_os = "macos")]
 #[path = "macos.rs"]
 mod os;
+mod self_check;
 mod text;
+
+pub use self_check::verify_platform_support;
 
 use std::error::Error;
 use std::ffi::{OsStr, OsString};
