@@ -34,7 +34,7 @@
 ### サンドボックスと承認
 
 - macOS では `/usr/bin/sandbox-exec` を固定のパスで起動し、`(deny default)` から始める方針を使う。書ける場所は `-D WRITABLE_ROOT_i=<path>` の引数で渡し、方針の文に埋め込まない。書ける場所の中でも `.git`・`.codex`・`.agents`・`.aws` を守る。方針は `process-exec` を広く許す（`codex-rs/sandboxing/src/seatbelt.rs`）。
-- Linux では bubblewrap で名前空間とファイルシステムの見え方を作り、その中で自分を起動し直して `no_new_privs` と seccomp を掛ける。seccomp は、ネットワークを使えないときに Unix ドメイン以外のソケットの作成と接続・待ち受けの呼び出しを拒否し、`ptrace` と `io_uring` を常に拒否する（`codex-rs/linux-sandbox/src/seccomp.rs`）。Landlock は古い経路として残り、自分のアプリのサーバの Unix ソケットを隔てられないことを理由に bubblewrap に移った。
+- Linux では bubblewrap で名前空間とファイルシステムの見え方を作り、その中で自分を起動し直して `no_new_privs` と seccomp を掛ける。seccomp は、ネットワークを使えないときに Unix ドメイン以外のソケットの作成と接続・待ち受けの呼び出しを拒否し、`ptrace` と `io_uring` を常に拒否する（`codex-rs/linux-sandbox/src/seccomp.rs`）。Landlock は古い経路として残り、自分のアプリのサーバの Unix ソケットを隔てられないことを理由に bubblewrap に移った。書ける場所の中の守る場所の作り（まだない `.git` を塞ぐ形など）は、2026-10-18 に新しいコミットで調べ直した（[Linux のサンドボックスの検討の記録](08-04-linux-sandbox.md)）。
 - 承認の方針は `untrusted`・`on-request`（既定）・`granular`・`never` である。モデルは道具の引数（`sandbox_permissions` と `justification`）でサンドボックスの外での実行を求め、利用者が承認する。
 - サンドボックスに拒否されたかは、終了状態と出力の言葉（`operation not permitted` など）と、Linux の `SIGSYS` で判定する（`codex-rs/sandboxing/src/denial.rs`）。
 - コマンドの規則（Starlark）で、利用者が許した前方一致の規則を保存できるが、解釈系と起動の道具（`bash`、`sh -c`、`node -e`、`env` など）の規則は保存させない（`codex-rs/core/src/exec_policy.rs` の `BANNED_PREFIX_SUGGESTIONS`）。
@@ -117,6 +117,7 @@
 | JSON Lines のセッションの記録と再開 | 三つすべて | 01-05 |
 | Seatbelt の方針を `-D` の引数で作る、`sandbox-exec` のパスの固定、`.git` を守る | Codex CLI | 03-02 |
 | 自分を補助として起動し直してサンドボックスを掛ける、seccomp のネットワークの規則 | Codex CLI | 03-02 |
+| Linux で bubblewrap のマウントで守る場所と読ませない場所を表す。書ける場所の根の直下のまだない守る名前を、読み取りだけの空のディレクトリで塞ぐ | Codex CLI（08-04） | 03-02 |
 | 承認の方針の名前、道具の引数による範囲の外の実行の要求、拒否の判定 | Codex CLI | 03-02、03-03 |
 | 解釈系と起動の道具の一覧 | Codex CLI | 03-02 |
 | `exec` の標準出力と標準エラー出力の分け方、JSON Lines のイベント | Codex CLI | 05-01 |
@@ -131,7 +132,7 @@
 | `apply_patch` の形式 | Codex CLI | 置き換えの形（`edit`）に揃え、道具の形を一つにする。どちらが性能の上でよいかは評価で確かめうる |
 | 保ったシェル | DeepSeek Harness | 呼び出しごとに新しいシェルにする方が、状態が単純である（BH-005） |
 | サンドボックスなし | Pi | 制限モードの保証に要る（03-01） |
-| bubblewrap | Codex CLI、DeepSeek Harness | 外部のプログラムに依存しない Landlock で、実行できるファイルを直接限れる（03-02） |
+| bubblewrap の同梱 | Codex CLI | 試作の間は配布物を作らず、利用者が導入したものを使う（03-02、08-04） |
 | 番の数の上限を持たないこと | 三つすべて | 利用料を上限なく増やさない（01-01） |
 | セッションの記録を提供者へ送ること | DeepSeek Harness | 利用者に知らせずに送る内容を増やさない |
 | 下位のエージェント、MCP、拡張の仕組み | Codex CLI、DeepSeek Harness、Pi の後の版 | 範囲の外（00-01） |

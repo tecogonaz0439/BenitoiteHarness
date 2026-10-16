@@ -35,13 +35,13 @@
 | プロジェクトのディレクトリ | project directory | セッションが対象とするディレクトリ。既定は作業ディレクトリ | 01-02、05-01 |
 | 一時ディレクトリ | session temp directory | セッションごとに作り、終わりに消すディレクトリ。一時的なスクリプトと子プロセスの一時ファイルを置く | 01-05 |
 | 一時的なスクリプト | scratch script | `benitoite_scratch` で一時ディレクトリに書いて実行する Benitoite のスクリプト | 01-03 |
-| OS のサンドボックス | OS sandbox | カーネルが範囲の外の操作を拒否する仕組み。試作では macOS の Seatbelt と、Linux の Landlock と seccomp | 03-02 |
+| OS のサンドボックス | OS sandbox | カーネルが範囲の外の操作を拒否する仕組み。試作では macOS の Seatbelt と、Linux の bubblewrap と Landlock と seccomp | 03-02 |
 | サンドボックスの方針 | sandbox policy | 子プロセスに許す、読める範囲・書ける場所・ネットワーク・起動できるプログラムの組 | 03-02 |
 | 書ける場所 | writable roots | サンドボックスの方針で、子プロセスが書き込めるディレクトリ | 03-02 |
 | 守る場所 | protected paths | 書ける場所の中で、子プロセスにも道具にも書かせない場所（`.git` と `.benitoiteh`） | 03-02 |
 | 書ける場所の検査 | writable-root check | 起動のときと `create_project` のときに、書ける場所がホームディレクトリや `benitoiteh` の設定・データのディレクトリと重ならないかを確かめること | 03-02 |
 | 外部の Unix IPC | external Unix IPC | サンドボックスの外のプロセスとの、Unix ドメインのソケットによる通信 | 03-02 |
-| 補助のプロセス | sandbox helper | Linux で、`benitoiteh` が自分を `__sandbox` で起動し直し、サンドボックスを自分に掛けてから目的のプログラムを `exec` するプロセス | 03-02 |
+| 補助のプロセス | sandbox helper | Linux で、`benitoiteh` が bubblewrap の中で自分を `__sandbox` で起動し直し、サンドボックスを自分に掛けてから目的のプログラムを `exec` するプロセス | 03-02 |
 | 実行の前の確認 | pre-run confirmation | 制限モードで、スクリプトを実行する前に、`main` のエフェクトを利用者に示して承認を受けること | 03-03 |
 | 確認なしの範囲 | auto-run effects | 一時的なスクリプトを確認なしで実行してよいエフェクトの集合 | 03-03 |
 | 承認の方針 | approval policy | 通常モードで、どの操作に利用者の承認を求めるかの規則 | 03-03 |

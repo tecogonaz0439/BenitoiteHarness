@@ -98,6 +98,7 @@ Benitoite の設計書と事前検討へのリンクは、設計の前提にし�
 | [先行事例](08-appendix/08-01-prior-art.md) | Codex CLI、Pi Coding Agent、DeepSeek Harness の調査と、採ったもの・採らなかったもの |
 | [事前検討との対応](08-appendix/08-02-pre-study-mapping.md) | Benitoite の ADR 0194・0340〜0348 と TODO-124〜140 の扱い |
 | [外部のレビューの記録](08-appendix/08-03-external-review.md) | 外部のレビューの指摘と、指摘ごとの扱い |
+| [Linux のサンドボックスの検討の記録](08-appendix/08-04-linux-sandbox.md) | Linux で守る場所と読ませない場所を実現する形の検討（BH-049）と、ほかのハーネスの作り |
 | [外部のレビューの資料](08-appendix/reviews/2026-10-16-chatgpt-pro/README.md) | 2026-10-16 の ChatGPT Pro のレビューの依頼の文面と結果の写し（参考資料） |
 
 ### 未決事項
