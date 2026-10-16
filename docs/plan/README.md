@@ -20,9 +20,9 @@
 | [P0-06](tasks/P0-06-size-probe.md) | 要る機能を一通り持つ構成の大きさの測定（BH-062） | P0-03、P0-05 | 未着手 |
 | [P1-01](tasks/P1-01-provider-common.md) | 提供者の共通の形と SSE の読み取り | P0-03 | 完了 |
 | [P1-02](tasks/P1-02-anthropic.md) | 模擬の提供者と `anthropic-messages` のアダプタ | P1-01 | 完了 |
-| [P1-03](tasks/P1-03-openai-chat.md) | `openai-chat` のアダプタ | P1-02 | 未着手 |
-| [P1-04](tasks/P1-04-config.md) | 設定ファイル、引数、データの置き場所、書ける場所の検査 | P0-02 | 未着手 |
-| [P1-05](tasks/P1-05-session.md) | セッションの記録と一時ディレクトリ | P1-01、P1-04 | 未着手 |
+| [P1-03](tasks/P1-03-openai-chat.md) | `openai-chat` のアダプタ | P1-02 | 完了 |
+| [P1-04](tasks/P1-04-config.md) | 設定ファイル、引数、データの置き場所、書ける場所の検査 | P0-02 | 完了 |
+| [P1-05](tasks/P1-05-session.md) | セッションの記録と一時ディレクトリ | P1-01、P1-04 | 完了 |
 | [P1-06](tasks/P1-06-tools-read.md) | 道具の枠組みと、読む道具（read・glob・grep） | P1-04、P1-05 | 未着手 |
 | [P1-07](tasks/P1-07-tools-write.md) | 書く道具（write・edit） | P1-06 | 未着手 |
 | [P1-08](tasks/P1-08-context.md) | システムプロンプト、道具の定義、環境の情報 | P1-07 | 未着手 |
