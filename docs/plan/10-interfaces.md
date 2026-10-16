@@ -11,6 +11,7 @@ Cargo.lock
 deny.toml                     ライセンスの許可の一覧
 scripts/check.sh              完了の前に通す検査
 scripts/container-run.sh      Linux 向けのテストの実行ファイルを container の中で走らせる
+scripts/remote-linux-run.sh   x86_64 の Linux 向けのテストの実行ファイルを、ssh で届く機械の podman で走らせる
 crates/benitoiteh/            試作のクレート（ライブラリと実行ファイル）
   src/main.rs                 cli::main を呼ぶだけ
   src/lib.rs                  モジュールの宣言

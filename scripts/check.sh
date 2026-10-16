@@ -14,7 +14,7 @@ repo_root=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)
 cd "$repo_root"
 linux_targets=(aarch64-unknown-linux-musl x86_64-unknown-linux-musl)
 skipped_tests=(crates/*/tests/sandbox_*.rs)
-rosetta_skipped=()
+x86_64_skipped=()
 stage=setup
 
 finish() {
@@ -31,9 +31,9 @@ finish() {
         fi
         printf '  linux: container tests for %s\n' "${linux_targets[@]}"
     fi
-    if ((${#rosetta_skipped[@]} != 0)); then
-        printf '\nNot run on x86_64-unknown-linux-musl under Rosetta:\n'
-        printf '  %s\n' "${rosetta_skipped[@]}"
+    if ((${#x86_64_skipped[@]} != 0)); then
+        printf '\nNot run on x86_64-unknown-linux-musl:\n'
+        printf '  %s\n' "${x86_64_skipped[@]}"
     fi
     exit "$status"
 }
@@ -86,11 +86,23 @@ fi
 begin_stage linux
 if ! "$inside_codex"; then
     cargo test --workspace --target aarch64-unknown-linux-musl
-    # x86_64 は container の Rosetta で動く。Rosetta は openat2 を持たず（safe_fs を使うテストが動かない）、
-    # TLS の暗号の実装（graviola）が要する ADX の命令も持たない。このため x86_64 はテストのビルドと
-    # リンクまでを確かめ、実行は本物の x86_64 の Linux に回す（実装プラン 00-common「検査」）。
+    # x86_64 は、container の Rosetta では走らせない。Rosetta は openat2 を持たず（safe_fs を使うテストが
+    # 動かない）、TLS の暗号の実装（graviola）が要する ADX の命令も持たない。BENITOITEH_X86_64_HOST が
+    # あれば、本物の x86_64 の Linux の podman で走らせ、なければビルドとリンクまでを確かめる
+    # （実装プラン 00-common「検査」）。
     cargo test --workspace --target x86_64-unknown-linux-musl --no-run
-    rosetta_skipped+=("all test execution (built and linked only; Rosetta lacks openat2 and ADX)")
+    if [[ -n "${BENITOITEH_X86_64_HOST:-}" ]]; then
+        if [[ -z "${BENITOITEH_X86_64_DIR:-}" ]]; then
+            remote_home=$(ssh -o BatchMode=yes -o LogLevel=ERROR "$BENITOITEH_X86_64_HOST" 'printf %s "$HOME"')
+            export BENITOITEH_X86_64_DIR="$remote_home/benitoiteh-test"
+        fi
+        printf 'Running x86_64 tests on %s (%s)\n' "$BENITOITEH_X86_64_HOST" "$BENITOITEH_X86_64_DIR"
+        scripts/remote-linux-run.sh --sync
+        CARGO_TARGET_X86_64_UNKNOWN_LINUX_MUSL_RUNNER="$repo_root/scripts/remote-linux-run.sh" \
+            cargo test --workspace --target x86_64-unknown-linux-musl
+    else
+        x86_64_skipped+=("all test execution (built and linked only; set BENITOITEH_X86_64_HOST to run them)")
+    fi
 fi
 
 begin_stage deny

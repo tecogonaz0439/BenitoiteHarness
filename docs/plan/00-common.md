@@ -55,7 +55,11 @@
 - Codex は `scripts/check.sh --inside-codex` を使う。Codex は macOS のサンドボックスの中で動くので、その中では `sandbox-exec` を重ねて掛けられず、Apple の `container` も使えない。`--inside-codex` は、OS のサンドボックスと Linux のコンテナを要するテスト（後述）を走らせず、走らせなかったことを最後に示す。
 - オーケストレータは、取り込む前に、サンドボックスの外で `scripts/check.sh`（すべて）を走らせる。失敗すれば、記録を添えて直しを依頼する。
 
-OS のサンドボックスを要するテストは、統合テストのファイルの名前を `tests/sandbox_*.rs` とし、ほかのテストと混ぜない。`linux` の段は、aarch64 の対象ではすべてのテストを走らせ、x86_64 の対象ではテストのビルドとリンクまでを確かめる。x86_64 は Apple の `container` の Rosetta で動き、Rosetta は `openat2`（`safe_fs` が使う）と、TLS の暗号の実装（`graviola`）が要する CPU の ADX の命令を持たないからである。x86_64 の Linux でのテストの実行は、本物の x86_64 の環境で後に行う。Linux のコンテナで走らせるテストは、`scripts/check.sh` の `linux` の段（P0-01 で作る）が、Linux 向けにビルドしたテストの実行ファイルを `container` の中で走らせる。
+OS のサンドボックスを要するテストは、統合テストのファイルの名前を `tests/sandbox_*.rs` とし、ほかのテストと混ぜない。`scripts/check.sh` の `linux` の段（P0-01 で作る）は、Linux 向けにビルドしたテストの実行ファイルを、次のとおり走らせる。
+
+- aarch64 の対象は、Apple の `container` の中ですべてのテストを走らせる。`container` の既定のカーネル（6.18.15）は Landlock を持たない（`CONFIG_SECURITY_LANDLOCK` が無効）ので、Landlock を要するテストは aarch64 では通らない。
+- x86_64 の対象は、環境変数 `BENITOITEH_X86_64_HOST`（ssh の宛先）があれば、`scripts/remote-linux-run.sh` が、その機械の podman（`alpine:3.22`）の中で、手元と同じパスに見せてすべてのテストを走らせる。送り先の機械には、リポジトリ（`target/` と `.git/` を除く）とテストの実行ファイルを、`BENITOITEH_X86_64_DIR`（既定は送り先の `~/benitoiteh-test`）の下に送る。環境変数がなければ、テストのビルドとリンクまでを確かめる。x86_64 を `container` の Rosetta で走らせないのは、Rosetta が `openat2`（`safe_fs` が使う）と、TLS の暗号の実装（`graviola`）が要する CPU の ADX の命令を持たないからである。
+- 2026-10-18 から、オーケストレータは、設計者の常設の機械（x86_64、Omarchy、Linux 7.2.9、Landlock の ABI の版 10、rootless の podman 6.1.1）を `BENITOITEH_X86_64_HOST` に指定して走らせる。Landlock を要するテストは、この機械の x86_64 で確かめる。
 
 ## 完了の報告
 
