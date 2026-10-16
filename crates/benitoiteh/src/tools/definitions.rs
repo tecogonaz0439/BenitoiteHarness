@@ -55,6 +55,7 @@ pub(super) fn definitions() -> Vec<ToolDefinition> {
         definition(
             ToolId::Read,
             text::READ,
+            &[text::READ.1],
             vec![
                 arg("path", String, true),
                 arg("offset", Integer, false),
@@ -65,12 +66,14 @@ pub(super) fn definitions() -> Vec<ToolDefinition> {
         definition(
             ToolId::Glob,
             text::GLOB,
+            &[text::GLOB.1],
             vec![arg("pattern", String, true), arg("path", String, false)],
             true,
         ),
         definition(
             ToolId::Grep,
             text::GREP,
+            &[text::GREP.1],
             vec![
                 arg("pattern", String, true),
                 arg("path", String, false),
@@ -84,12 +87,14 @@ pub(super) fn definitions() -> Vec<ToolDefinition> {
         definition(
             ToolId::Write,
             text::WRITE,
+            &[text::WRITE.1],
             vec![arg("path", String, true), arg("content", String, true)],
             false,
         ),
         definition(
             ToolId::Edit,
             text::EDIT,
+            &[text::EDIT.1],
             vec![
                 arg("path", String, true),
                 arg("old_string", String, true),
@@ -103,10 +108,12 @@ pub(super) fn definitions() -> Vec<ToolDefinition> {
 
 fn definition(
     id: ToolId,
-    summary: &'static str,
+    prompt: (&'static str, &'static str),
+    rules: &'static [&'static str],
     arguments: Vec<ArgumentSpec>,
     parallel: bool,
 ) -> ToolDefinition {
+    let (summary, _) = prompt;
     ToolDefinition {
         id,
         spec: ToolSpec {
@@ -116,7 +123,7 @@ fn definition(
         },
         prompt_key: id.name(),
         summary,
-        rules: &[],
+        rules,
         parallel,
         approval: if parallel {
             ApprovalRequirement::Never

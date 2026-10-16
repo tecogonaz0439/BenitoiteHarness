@@ -1,0 +1,133 @@
+[
+  {
+    "description": "Read a text file with line numbers.",
+    "input_schema": {
+      "properties": {
+        "limit": {
+          "description": "Maximum number of lines to read (up to 2000).",
+          "type": "integer"
+        },
+        "offset": {
+          "description": "First line to read (1-based).",
+          "type": "integer"
+        },
+        "path": {
+          "description": "Project-relative or absolute path.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "path"
+      ],
+      "type": "object"
+    },
+    "name": "read"
+  },
+  {
+    "description": "Find files by glob pattern, newest first.",
+    "input_schema": {
+      "properties": {
+        "path": {
+          "description": "Project-relative or absolute path.",
+          "type": "string"
+        },
+        "pattern": {
+          "description": "Pattern to match.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "pattern"
+      ],
+      "type": "object"
+    },
+    "name": "glob"
+  },
+  {
+    "description": "Search file lines using a regular expression.",
+    "input_schema": {
+      "properties": {
+        "context": {
+          "description": "Number of surrounding lines to show.",
+          "type": "integer"
+        },
+        "files_only": {
+          "description": "Return only paths of matching files.",
+          "type": "boolean"
+        },
+        "glob": {
+          "description": "Only search paths matching this glob.",
+          "type": "string"
+        },
+        "ignore_case": {
+          "description": "Match without case sensitivity.",
+          "type": "boolean"
+        },
+        "path": {
+          "description": "Project-relative or absolute path.",
+          "type": "string"
+        },
+        "pattern": {
+          "description": "Pattern to match.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "pattern"
+      ],
+      "type": "object"
+    },
+    "name": "grep"
+  },
+  {
+    "description": "Create or replace a file.",
+    "input_schema": {
+      "properties": {
+        "content": {
+          "description": "Complete file contents.",
+          "type": "string"
+        },
+        "path": {
+          "description": "Project-relative or absolute path.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "path",
+        "content"
+      ],
+      "type": "object"
+    },
+    "name": "write"
+  },
+  {
+    "description": "Replace matching text in a file.",
+    "input_schema": {
+      "properties": {
+        "new_string": {
+          "description": "Replacement text.",
+          "type": "string"
+        },
+        "old_string": {
+          "description": "Text to replace.",
+          "type": "string"
+        },
+        "path": {
+          "description": "Project-relative or absolute path.",
+          "type": "string"
+        },
+        "replace_all": {
+          "description": "Replace every occurrence.",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "path",
+        "old_string",
+        "new_string"
+      ],
+      "type": "object"
+    },
+    "name": "edit"
+  }
+]

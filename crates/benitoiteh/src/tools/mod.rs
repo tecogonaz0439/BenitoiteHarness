@@ -120,6 +120,11 @@ impl ToolSet {
         }
     }
 
+    /// セッションの開始時に固定したモード。
+    pub fn mode(&self) -> Mode {
+        self.mode
+    }
+
     /// プロンプトとスケジューラが共有する定義。
     pub fn definitions(&self) -> &[ToolDefinition] {
         &self.definitions
