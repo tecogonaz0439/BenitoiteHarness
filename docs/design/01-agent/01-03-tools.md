@@ -1,0 +1,275 @@
+# 道具
+
+- 状態: 草稿
+- 未決事項: BH-003, BH-004, BH-005, BH-006, BH-007, BH-008, BH-009, BH-092
+
+## 目的と範囲
+
+本章は、`benitoiteh` が LLM に与える道具（tool）を定める。対象は、道具の定義の共通の規則、モードごとの道具の一覧、各道具の引数と結果と誤り、出力の切り詰め、読まないファイルである。道具の呼び出しを実行する順序と並べ方は[エージェントのループ](01-01-agent-loop.md)で、確認が要る道具の確認の手順は[利用者の確認](../03-safety/03-03-approval.md)で定める。
+
+## 前提
+
+- モードの定義と、モードごとの書き込みの範囲は[モード](01-02-modes.md)で定める。
+- Benitoite の事前検討は、エージェントハーネスの道具を `create_project`・`write_script`・`run_scratch`・`check`・`explain`・`read_reference`・`list_files`・`read_file`・`run`・`web_fetch`・`test`・`ask_user` と git の道具と定めた（[ADR 0344](https://github.com/tecogonaz0439/Benitoite/blob/v0.0.5/docs/archive/2026-10-09-design-first-release/decisions/0344-agent-harness-operation-scope-and-tools.md) の決定 4、[ADR 0348](https://github.com/tecogonaz0439/Benitoite/blob/v0.0.5/docs/archive/2026-10-09-design-first-release/decisions/0348-agent-harness-rewind-and-git.md)）。本章は、この一覧を制限モードの道具の元にし、名前と形を後述の「道具の形の選び方」で改める。
+- 参考にしたハーネスの道具の形と制限の値は、[先行事例](../08-appendix/08-01-prior-art.md)にまとめた。
+
+## 仕様
+
+### 道具の形の選び方
+
+【方針】道具の名前、引数の名前、結果の書き方は、主な LLM が学習で見慣れている形に揃える。ファイルの読み取りは `read`（`path`・`offset`・`limit`）、置き換えによる編集は `edit`（`old_string`・`new_string`）、シェルは `bash`（`command`）とする。理由: DeepSeek Harness は、モデルの学習に使った道具の形（Claude の SWE の形）に合わせた最小の構成で評価の結果を出しており、設計の記録でもその形を「学習の時の約束」と呼んでいる（[先行事例](../08-appendix/08-01-prior-art.md)）。見慣れない形の道具は、引数の誤りと呼び方の迷いを増やす。
+
+Benitoite に固有の道具だけは新しい形になる。名前に `benitoite_` を付け、同梱の Agent Skill が使う `benitoite` のコマンドと一対一に対応させる（`benitoite check` に対して `benitoite_check`）。理由: Skill の文書は `benitoite` のコマンドを打つ前提で書いてあり、名前が対応していれば、システムプロンプトに置く対応の説明が短くて済む（[文脈の管理](01-04-context.md)の「システムプロンプトの構成」）。
+
+Benitoite の事前検討は、LLM に見せる道具の形を、サーバモードの MCP の道具と揃えると定めた（[ADR 0346](https://github.com/tecogonaz0439/Benitoite/blob/v0.0.5/docs/archive/2026-10-09-design-first-release/decisions/0346-agent-harness-connects-to-daemon-directly.md)）。サーバモードの MCP の道具はまだ定まっていないので、試作では揃える相手がない。マージを決めるときに見直す（BH-009）。
+
+### 道具の定義の共通の規則
+
+【方針】
+
+- 道具の引数は JSON Schema で定義する。提供者が厳密な形の生成（Anthropic の strict、OpenAI の strict など）を持つときは使う。
+- 各道具は、システムプロンプトの道具の一覧に載せる一行の説明と、使い方の規則（0〜3 行）を持つ。システムプロンプトは、そのモードで有効な道具の行と規則だけを集めて作る。理由: Pi は道具ごとに説明と規則を持たせて集めており、無効な道具（制限モードのシェル）についての助言がプロンプトに残らない（[先行事例](../08-appendix/08-01-prior-art.md)）。
+- 引数の修復を行う。配列やオブジェクトの欄に JSON の文字列が来たときは、文字列を JSON として読んで使う。理由: 一部のモデルは配列の引数を JSON の文字列にして送ることが、Pi のソースのコメントに記録されている。
+- 道具の失敗は、セッションを止めず、誤りの印を付けた結果として LLM に返す。誤りの文は、次に何をすればよいかを含める（「ファイルを読んでいないので、`read` で読んでから再び呼ぶ」など）。
+- パスは、プロジェクトのディレクトリからの相対のパスか、絶対のパスで受け取る。シンボリックリンクを解いた実のパスで、モードの読み書きの範囲に入るかを判定する。まだないファイルは、親のディレクトリの実のパスで判定する。範囲の外なら誤りを返す。理由: `..` やシンボリックリンクで範囲の外を指すパスを、字面の判定で通さないためである。
+- 書く道具（`write`・`edit`）は、後述の「書く道具のパスの規則」にも従う。
+- 各道具は、並べて実行してよいか（並行の可否）の印を持つ。印の使い方は[エージェントのループ](01-01-agent-loop.md)の「道具の実行」で定める。
+
+### モードごとの道具の一覧
+
+| 道具 | 内容 | 制限モード | 通常モード | 並行の可否 | 確認 |
+|---|---|---|---|---|---|
+| `read` | ファイルを読む | ○（プロジェクトの下、一時ディレクトリ、`spill/`） | ○ | 可 | 要らない |
+| `glob` | パターンに合うファイルの一覧 | ○（プロジェクトの下） | ○ | 可 | 要らない |
+| `grep` | ファイルの中を正規表現で探す | ○（プロジェクトの下） | ○ | 可 | 要らない |
+| `write` | ファイルを作る・置き換える | ○（`.bnt` だけ） | ○ | 不可 | 要らない（差分を示す） |
+| `edit` | 文字列を置き換えて直す | ○（`.bnt` だけ） | ○ | 不可 | 要らない（差分を示す） |
+| `bash` | シェルのコマンドを実行する | × | ○ | 不可 | 承認の方針に従う |
+| `benitoite_check` | スクリプトを検査する | ○ | ○ | 可 | 要らない |
+| `benitoite_run` | スクリプトを実行する | ○ | × | 不可 | 実行の前の確認 |
+| `benitoite_test` | テストを実行する | ○ | × | 不可 | 実行の前の確認 |
+| `benitoite_scratch` | 一時的なスクリプトを書いて検査し実行する | ○ | × | 不可 | 範囲を超えるときに確認 |
+| `benitoite_explain` | 診断のコードの説明を返す | ○ | ○ | 可 | 要らない |
+| `benitoite_reference` | 同梱の Skill の参照の文書を返す | ○ | ○ | 可 | 要らない |
+| `create_project` | 新しいプロジェクトのディレクトリを作る | ○ | × | 不可 | 要る |
+| `web_fetch` | URL の内容を取得して本文を返す | ○ | ○ | 可 | 一覧にないドメインは要る |
+
+通常モードで `benitoite_run` と `benitoite_test` を持たないのは、`bash` で `benitoite run` を打てば足り、二つの経路を持たせると LLM がどちらを使うかで迷うからである。通常モードの処理系の実行は、ほかのコマンドと同じく承認の方針に従う。
+
+【方針】次のものは道具にしない。
+
+- `ask_user`（事前検討の ADR 0344 の決定 4 にある）。LLM は質問を応答の文に書いて番を終えれば、利用者に尋ねられる。理由: 道具を一つ減らせる。非対話では尋ねる相手がいないので、道具があっても誤りを返すことになる。
+- git の道具（ADR 0348 の決定 3〜6）。試作では、巻き戻し（[セッション](01-05-sessions.md)の「巻き戻し」）だけを作り、git の道具は後で加えるかを決める（BH-007）。通常モードでは `bash` で git を使える。
+- 計画を書く道具（Codex CLI の `update_plan`、DeepSeek Harness の `todo_write` に当たるもの）。加えるかは評価で決める（BH-008）。
+
+### read
+
+```json
+{ "path": "string", "offset": "integer (1-based line, optional)", "limit": "integer (lines, optional)" }
+```
+
+- テキストのファイルを、各行の先頭に行の番号と区切りのタブを付けて返す（`cat -n` の形）。理由: Benitoite の診断は行の番号で位置を示すので、読んだ内容と診断を突き合わせやすい。行の番号を付けるかは評価で確かめる（BH-003）。
+- 一度に返すのは 2,000 行か 50 KiB の先に達した方までとする。続きがあれば、末尾に `[Showing lines A-B of N. Use offset=K to continue.]` を付ける。一行が 2,000 文字を超えるときは、その行を切り詰めて印を付ける。
+- `offset` がファイルの行の数を超えたら、誤り `Offset X is beyond end of file (N lines total).` を返す。
+- 読んだファイルの版（デバイス、inode、大きさ、更新の時刻）をセッションに記録する（後述の「読んでから直す規則」）。
+- 画像のファイルは試作では読まない（誤りを返す）。
+- 読まないファイル（後述）は誤りを返し、理由として除外の規則に当たることを示す。
+
+### glob
+
+```json
+{ "pattern": "string (glob)", "path": "string (optional)" }
+```
+
+- `path`（既定はプロジェクトのディレクトリ）の下で、パターンに合うファイルを返す。`.gitignore` の規則と、読まないファイルの規則に当たるものは返さない。
+- 更新の時刻の新しい順に、最大 500 件を返す。超えたら件数を示す。
+
+### grep
+
+```json
+{ "pattern": "string (regex)", "path": "string (optional)", "glob": "string (optional)",
+  "ignore_case": "boolean (optional)", "context": "integer (optional)", "files_only": "boolean (optional)" }
+```
+
+- `path` の下のファイルの各行を正規表現で探し、`パス:行:内容` の形で返す。`.gitignore` と読まないファイルの規則に従い、バイナリのファイル（先頭の 8 KiB に NUL を含む）を飛ばす。
+- 最大 100 件、または 50 KiB までとし、一行は 500 文字で切る。
+- 外部のプログラム（`rg`）を起動せず、`benitoiteh` の中で探す。理由: 制限モードは外部のプログラムを起動しない。Pi は `rg` と `fd` を実行時に GitHub から取ってくるが、試作は依存のクレートで同じことを行う（[クレートの構成](../06-impl/06-01-crate-structure.md)）。
+
+### write
+
+```json
+{ "path": "string", "content": "string" }
+```
+
+- ファイルを作るか、置き換える。親のディレクトリがなければ作る（書ける範囲の中に限る）。
+- 制限モードでは、拡張子が `.bnt` のファイルだけを書ける。それ以外は誤りを返す。
+- すでにあるファイルを置き換えるときは、後述の「読んでから直す規則」に従う。
+- LLM には `Wrote <path> (<N> lines).` だけを返し、差分は利用者の画面に示す。
+
+### edit
+
+```json
+{ "path": "string", "old_string": "string", "new_string": "string", "replace_all": "boolean (optional)" }
+```
+
+- `old_string` をファイルの中で探し、`new_string` に置き換える。`replace_all` が真でなければ、`old_string` はファイルの中で一つだけ現れなければならない。
+- 照合は、まず字面のまま行う。見つからなければ、改行を LF に揃え、行末の空白を除き、引用符とダッシュの異体を ASCII に寄せた形で照合する。寄せた形で一つだけ見つかれば、その範囲を置き換え、置き換えなかった行は元のバイト列のまま残す。理由: Pi は同じ手順を持ち、LLM が空白や引用符の違いで照合に失敗する場面を減らしている（[先行事例](../08-appendix/08-01-prior-art.md)）。
+- ファイルの改行の形（LF か CRLF）と BOM を保つ。
+- 誤りの文は Pi の文に倣い、次に何をすればよいかを含める。
+
+| 場合 | 誤りの文 |
+|---|---|
+| 見つからない | `Could not find old_string in <path>. It must match the file exactly, including whitespace and line breaks. Read the file again if it may have changed.` |
+| 複数ある | `Found N occurrences of old_string in <path>. Add surrounding lines to make it unique, or set replace_all to true.` |
+| 変化がない | `old_string and new_string are identical. No change was made to <path>.` |
+| 空の `old_string` | `old_string must not be empty. Use write to create a file.` |
+
+- 制限モードでは、`.bnt` のファイルだけを直せる。
+- 結果と差分の扱いは `write` と同じとする。
+
+### 書く道具のパスの規則
+
+【方針】`write` と `edit` は、主のプロセス（サンドボックスの外）で書くので、次の規則で書く先を限る。
+
+- 拡張子（制限モードの `.bnt`）と、守る場所の判定は、要求したパスの字面ではなく、実のパスで行う。
+- 書く先の最後の要素がシンボリックリンクであれば、リンクの先がまだなくても拒否する。ファイルを開くときもリンクを辿らない指定（`O_NOFOLLOW`。Linux では親のディレクトリからの相対で開き、範囲の外へ出ない指定）を使う。理由: リポジトリに置かれた `x.bnt -> .git/hooks/pre-commit` のようなリンクに書かせて、範囲の外や守る場所にファイルを作らせる攻撃を防ぐ。
+- すでにあるファイルのハードリンクの数が 2 以上であれば拒否する。理由: サンドボックスの中のコマンドが、プロジェクトの外のファイル（`~/.zshrc` など）へのハードリンクをプロジェクトの中に作り、主のプロセスにそれを書き換えさせる道を塞ぐ。サンドボックスの中でそのようなハードリンクを作れるか（Seatbelt と Landlock がリンクの作成をどう扱うか）は確かめていない（【要検証】BH-092）。
+- 書くときは、同じディレクトリの一時ファイルに書いてから名前を付け替える。
+- 書ける場所の中の守る場所（`.git` と `.benitoiteh`。[OS のサンドボックス](../03-safety/03-02-sandbox.md)の「方針の要素」）の下には、道具でも書かない。制限モードでは拒否し、通常モードでは確認を受ける（`danger-full-access` を除く）。理由: 守る場所をサンドボックスだけで守ると、サンドボックスの外で動く道具が穴になる。
+
+これらの規則が働くことは、安全の性質のテストで確かめる（[テスト](../07-quality/07-01-testing.md)の「安全の性質のテスト」）。
+
+### 読んでから直す規則
+
+【方針】`write` ですでにあるファイルを置き換えるときと、`edit` で直すときは、そのファイルをセッションの中で `read` で読んでいて（一部でもよい）、読んだ後に変わっていないことを要する。変わったかは、`read` で記録した版（デバイス、inode、大きさ、更新の時刻）と今の版を比べて判定する。`write` と `edit` の後は、書いた後の版を記録し直す。
+
+満たさないときは、`File has not been read in this session. Read it with read, then retry.` か `File changed since it was last read. Read it again, then retry.` を返す。理由: LLM が古い内容を前提に書き換えて、利用者やスクリプトが加えた変更を消すことを防ぐ。DeepSeek Harness が同じ規則を持つ（[先行事例](../08-appendix/08-01-prior-art.md)）。
+
+### 書いた後の検査（制限モード）
+
+【方針】制限モードでは、`write` と `edit` で `.bnt` のファイルを書いた後に、`benitoiteh` が検査を行い、その結果を道具の結果に添える。検査する対象は、書いたファイルが `function main` を含めばそのファイル、含まず、プロジェクトの根に `main.bnt` があれば `main.bnt` とする。どちらでもなければ（テストのファイルなど）検査しない。結果は `Check after this change: ok` か、診断（[Benitoite の処理系との連携](../04-benitoite/04-01-benitoite-integration.md)の「終了状態と診断の受け渡し」の形）とする。理由: Benitoite の Skill の手順では、書くたびに LLM が `check` を呼ぶので、書くことと検査することが別の往復になる。書いた後に検査して返せば、往復を一回減らせる。効果は評価で確かめる（BH-004）。
+
+### bash（通常モード）
+
+```json
+{ "command": "string", "timeout": "integer (seconds, optional)",
+  "escalate": "boolean (optional)", "justification": "string (optional)" }
+```
+
+- `bash -c <command>` を、プロジェクトのディレクトリを作業ディレクトリとして、新しいプロセスグループで起動する。`bash` がなければ `sh -c` を使う。呼び出しごとに新しいシェルを起動し、前の呼び出しのシェルの状態（作業ディレクトリ、変数）は引き継がない。シェルを保つ形にするかは BH-005 で扱う。
+- 標準入力は空にし、環境から LLM の提供者のキーの変数を除く（[Benitoite の処理系との連携](../04-benitoite/04-01-benitoite-integration.md)の「処理系の起動」と同じ規則）。
+- 時間の上限は既定 120 秒、`timeout` で 600 秒まで延ばせる。過ぎたら、プロセスグループに `SIGTERM` を送り、10 秒で終わらなければ `SIGKILL` を送る。コマンドが終わった後も、プロセスグループに残ったプロセスは同じ手順で終わらせる。理由: 背景に残したプロセスが、後の道具の判定と実行の間にファイルを差し替えることを防ぐ。新しいセッション（`setsid`）でグループを抜けたプロセスは、この手順では止められない（BH-090）。
+- 標準出力と標準エラー出力をまとめて受け取り、末尾の 2,000 行か 50 KiB を返す。切り詰めたときは、全体をセッションのディレクトリの `spill/` に書き、`[Showing last lines A-B of N. Full output: <path>]` を付ける。`spill/` のファイルは `read` で読める（後述の「出力の切り詰め」）。
+- 終了状態が 0 でなければ、末尾に `[exit code: N]` を付け、誤りの印を付ける。0 のときも `[exit code: 0]` を付ける。理由: DeepSeek Harness の評価の構成は、すべてのコマンドの結果に終了状態を付けており、モデルはこの印を見て失敗を調べる（[先行事例](../08-appendix/08-01-prior-art.md)）。
+- コマンドは OS のサンドボックスの中で動く（[OS のサンドボックス](../03-safety/03-02-sandbox.md)の「通常モードの方針」）。サンドボックスに拒否されたと見られるとき（`Operation not permitted` などの文と、0 でない終了状態）は、`[sandbox: the command may have been blocked by the sandbox. If it must run outside the sandbox, call bash again with escalate=true and a justification; the user will be asked.]` を付ける。
+- `escalate` が真のときは、サンドボックスの外で動かす要求として、利用者の承認を受けてから実行する（[利用者の確認](../03-safety/03-03-approval.md)の「通常モードの承認の方針」）。`justification` は承認の画面に示す。
+
+### benitoite_check
+
+```json
+{ "path": "string" }
+```
+
+- `benitoite check --diagnostics=json <path>` を実行し、誤りも警告もなければ `ok`、あれば診断を返す。ディレクトリを指定したときは、その中の `main.bnt` を検査する（処理系の規則）。
+- 制限モードの検査と修正の回数の数え方は、[エージェントのループ](01-01-agent-loop.md)の「上限」で定める。
+
+### benitoite_run（制限モード）
+
+```json
+{ "path": "string", "args": ["string (optional)"], "stdin": "string (optional)", "timeout": "integer (seconds, optional, max 600)" }
+```
+
+1. `benitoite_check` と同じく検査する。誤りがあれば、実行せずに診断を返す。
+2. `main` のエフェクトを読み取る（[Benitoite の処理系との連携](../04-benitoite/04-01-benitoite-integration.md)の「`main` のエフェクトの読み取り」）。
+3. 実行の前の確認を行う（[利用者の確認](../03-safety/03-03-approval.md)の「制限モードの確認」）。拒否されたら、`The user declined to run <path> with effects: <list>. Ask the user how to proceed, or change the script.` を返す。
+4. OS のサンドボックスの中で `benitoite run` を実行し、終了状態、標準出力、標準エラー出力（診断を除く）、診断を返す。
+- `stdin` は子プロセスの標準入力に書いてから閉じる。省いたときは空とする。
+- 出力は、標準出力と標準エラー出力のそれぞれについて末尾の 1,000 行か 25 KiB を返し、全体は `bash` と同じく `spill/` に書く。
+- 時間の上限は既定 120 秒、`timeout` で 600 秒まで延ばせる。止め方は[Benitoite の処理系との連携](../04-benitoite/04-01-benitoite-integration.md)の「処理系の起動」による。
+
+### benitoite_test（制限モード）
+
+```json
+{ "paths": ["string"] }
+```
+
+- テストの関数のエフェクトを読み取り、確認を受けてから `benitoite test --diagnostics=json <paths>` を実行する。サンドボックスの方針は、`main` のエフェクトの代わりにテストの関数のエフェクトの和から、`benitoite_run` と同じ規則で決める（[OS のサンドボックス](../03-safety/03-02-sandbox.md)の「制限モードの方針」）。
+- 結果は、失敗したテストの名前と理由、成功と失敗の数とする。検査の誤りがあるファイルは、診断を返す。
+
+### benitoite_scratch（制限モード）
+
+```json
+{ "code": "string", "args": ["string (optional)"], "stdin": "string (optional)" }
+```
+
+- `code` を、セッションごとの一時ディレクトリに新しい名前の `.bnt` のファイル（`scratch-<n>.bnt`）として書き、検査し、エフェクトが確認なしの範囲に収まれば確認なしで実行する。範囲を超えれば、`benitoite_run` と同じく確認を受ける。確認なしの範囲と、確認なしで実行するときの読める範囲は、[利用者の確認](../03-safety/03-03-approval.md)の「一時的なスクリプト」で定める。出力の扱いと時間の上限は `benitoite_run` と同じとする。
+- 結果に、書いた一時ファイルのパスを含める。役に立ったスクリプトは、LLM が `read` で読んで `write` でプロジェクトへ写せる。
+- 一時的なスクリプトの根のディレクトリは一時ディレクトリなので、プロジェクトのモジュールは取り込めない。
+
+### benitoite_explain と benitoite_reference
+
+```json
+{ "code": "string" }
+{ "name": "string", "offset": "integer (optional)", "limit": "integer (optional)" }
+```
+
+- 中身は [Benitoite の処理系との連携](../04-benitoite/04-01-benitoite-integration.md)の「参照の文書と診断の説明」で定める。`benitoite_reference` の説明の文に、引ける名前の一覧（`stdlib/` のモジュールの名前を除く）と、`stdlib/index` でモジュールの一覧を得られることを書く。
+- 通常モードでは、`name` に `SKILL` を指定すると同梱の Skill の `SKILL.md` を返す（[文脈の管理](01-04-context.md)の「Benitoite の Skill の置き方」）。
+- `read` と同じく、2,000 行か 50 KiB で区切り、続きの読み方を示す。
+
+### create_project（制限モード）
+
+```json
+{ "path": "string" }
+```
+
+- 利用者の確認を受けてから、まだないディレクトリを作り、雛形の `main.bnt` を置く。確認の画面には絶対パスを示す。すでにあるパスには作らない（ADR 0344 の決定 2）。
+- 親のディレクトリはすでにあることを要し、作らない。最後の要素は、リンクを辿らずに新しく作る（すでにあれば誤り）。
+- 作ったディレクトリは、以後のセッションのプロジェクトのディレクトリになる。前のプロジェクトのディレクトリは、道具の読み書きの範囲とサンドボックスの書ける場所から外す。理由: 読み書きの範囲を一つのディレクトリに保つと、範囲の判定と OS のサンドボックスの指定が単純になる。
+- プロジェクトのディレクトリを変えたことは、セッションの記録にイベントとして書き、環境の情報の変化として LLM に伝える（[文脈の管理](01-04-context.md)の「環境の情報」）。巻き戻しの記録は、新しいディレクトリについて新しく始める。`--continue` は、記録の最後のプロジェクトのディレクトリで照合する。
+- 新しいディレクトリのプロジェクトの設定ファイルは読まない（設定ファイルは起動のときにだけ読む）。
+- 雛形の中身は BH-006 で決める。非対話では、起動のときの `--project-parent` で指定したディレクトリの下にだけ作れる（ADR 0345 の決定 4 の `--dir` に当たる）。
+
+### web_fetch
+
+```json
+{ "url": "string" }
+```
+
+- 事前検討の決定（[ADR 0347](https://github.com/tecogonaz0439/Benitoite/blob/v0.0.5/docs/archive/2026-10-09-design-first-release/decisions/0347-agent-harness-web-fetch.md)）を引き継ぐ。`https` の GET だけを行い、クッキーと認証の情報を送らない。利用者の設定の一覧にあるドメインは確認なしで取得し、それ以外のドメインは、セッションで初めて取得するときに確認を受ける。一覧はプロジェクトの設定では広げられない。非対話では一覧のドメインだけを取得する。
+- リダイレクトは 5 回まで辿り、辿るたびに先のドメインを同じ規則で判定する。リダイレクトの先が `https` でなければ取得しない。
+- 名前を解いて得たアドレスのどれかが、ループバック（`127.0.0.0/8`・`::1`）、プライベート（`10.0.0.0/8`・`172.16.0.0/12`・`192.168.0.0/16`・`fc00::/7`）、リンクローカル（`169.254.0.0/16`・`fe80::/10`）、CGNAT（`100.64.0.0/10`）、未指定（`0.0.0.0`・`::`）、および IPv4 を写した IPv6 でこれらに当たるもの、に入れば、一覧にあっても取得しない。判定したアドレスにそのまま接続し、名前を解き直さない。理由: LLM が組み立てた URL で、手元の計算機、クラウドの仮想機械の情報のサービス（`169.254.169.254`）、内側のネットワークのサービスを読ませないためである。判定と接続の間に名前の答えを変える攻撃（DNS rebinding）も、解き直さないことで防ぐ。
+- 環境変数のプロキシの指定（`HTTPS_PROXY` など）を使わない。
+- 受け取る大きさの上限は 2 MiB とし、HTML は本文の文字に変えて返す。返す量は `read` と同じく 50 KiB で区切る。
+- 確認なしで取得するドメインの一覧の既定は空とする。
+
+### 出力の切り詰め
+
+【方針】道具の結果を LLM に返す量の規則は次のとおりとする。値は Pi の既定（2,000 行か 50 KiB）を元にした（[先行事例](../08-appendix/08-01-prior-art.md)）。
+
+| 道具 | 残す側 | 上限 |
+|---|---|---|
+| `read`・`benitoite_reference` | 先頭 | 2,000 行か 50 KiB |
+| `bash` | 末尾 | 2,000 行か 50 KiB |
+| `benitoite_run`・`benitoite_scratch` | 末尾（標準出力と標準エラー出力それぞれ） | 1,000 行か 25 KiB |
+| `grep` | 先頭 | 100 件か 50 KiB（一行 500 文字） |
+| `glob` | 先頭 | 500 件 |
+| `benitoite_check` ほかの診断 | 先頭（`error` を先に） | 20 件 |
+
+- 切り詰めたときは、切り詰めたことと続きを得る方法を、結果の末尾に一行で書く。
+- `bash` と `benitoite_run` の出力の全体は、セッションのディレクトリの `spill/` に書く。`read` は、どのモードでもこのディレクトリを読める。
+- どの道具の結果も、上の規則の後になお 64 KiB を超えるときは、先頭と末尾を残して中ほどを除き、除いた量を示す。
+
+### 読まないファイル
+
+【方針】`read`・`glob`・`grep` は、次のファイルを既定で読まない（一覧に出さない）。
+
+- `.env` と `.env.*`（`.env.example` と `.env.sample` を除く）
+- 秘密鍵と証明書の形の名前（`*.pem`・`*.key`・`*.p12`・`*.pfx`・`id_rsa*`・`id_ecdsa*`・`id_ed25519*`）
+- `.ssh/`・`.gnupg/`・`.aws/`・`.netrc`・`.git-credentials`
+- `.git/` の中
+- `benitoiteh` の設定のディレクトリと、データのディレクトリ（今のセッションの `spill/` を除く。[CLI と設定ファイル](../05-interface/05-01-cli.md)の「データの置き場所」）
+
+除外の一覧は、利用者の設定で足せる。プロジェクトの設定では減らせない（Benitoite の docs/todo の TODO-138 の見立てを引き継ぐ）。
+
+制限モードでは、この規則が LLM の読める範囲を限る。通常モードでは、`bash` で同じファイルを読めるので、この規則は誤って読むことを減らすためのものであり、保証ではない（[セキュリティモデル](../03-safety/03-01-security-model.md)の「通常モードで保証すること」）。
