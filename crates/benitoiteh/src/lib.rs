@@ -6,3 +6,4 @@ pub mod http;
 pub mod provider;
 pub mod safe_fs;
 pub mod sandbox;
+pub mod session;
