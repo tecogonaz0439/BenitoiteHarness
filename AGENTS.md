@@ -50,6 +50,7 @@ Benitoite のプロジェクトは改造の途中であることが多い。処�
 | `docs/design/` | 設計書本体 | 主な作業対象 |
 | `docs/design/README.md` | 設計書の目次と凡例 | 章を追加・改名したら更新する |
 | `docs/design/open-issues.md` | 未決事項の一覧（`BH-nnn`） | 「設計書の規約」の「未決事項」 |
+| `docs/design/08-appendix/reviews/` | 外部のレビュー（ChatGPT Pro など）の依頼の文面と結果の写し。レビューごとに `<日付>-<レビューした者>/` を作る | 設計者が取り込むと決めたものだけを置く。受け取ったまま置き、手で直さない。設計書の決定としては扱わず、指摘ごとの扱いは `08-appendix/08-03-external-review.md` に書く |
 | `docs/plan/` | 実装プラン（試作の作業の分け方と、各作業の文書）。設計書の完成の後に作る | 設計書と実装プランだけを読めば実装できる粒度で書く |
 | `crates/benitoiteh/` | 試作のクレート（実装プランで作る） | 「実装の規約」に従う |
 | `assets/benitoite/` | Benitoite のリリースから取り込んだ文書（同梱の Agent Skill など）。実装プランで作る | 手で直さない。取り込み直すときは「Benitoite の処理系と事前検討の参照」に従う |
@@ -136,7 +137,7 @@ Benitoite のプロジェクトは改造の途中であることが多い。処�
 
 - 既定のブランチは `main` とする。作業は作業用のブランチで行い、`main` に `git merge --no-ff` で取り込む。
 - コミット時はスキル `git-workflow`（`.claude/skills/git-workflow/SKILL.md`）に従う。
-- push は設計者の指示を得てから行う。リモートは GitHub の公開のリポジトリ（`tecogonaz0439/BenitoiteHarness`）である。秘密の情報（API キー、トークン、個人の設定）と、LLM とのやり取りの生の記録をコミットしない。
+- push は設計者の指示を得てから行う。リモートは GitHub の公開のリポジトリ（`tecogonaz0439/BenitoiteHarness`）である。秘密の情報（API キー、トークン、個人の設定）と、LLM とのやり取りの生の記録をコミットしない。ただし、設計者が取り込むと決めた外部のレビューの依頼と結果は、参考資料として `docs/design/08-appendix/reviews/` に置く（秘密の情報を含まないことを確かめてから）。
 
 ## LLM を呼ぶ作業
 
