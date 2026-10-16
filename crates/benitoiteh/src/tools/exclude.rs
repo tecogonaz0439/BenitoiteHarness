@@ -1,0 +1,114 @@
+//! 実のパスで既定と追加の除外を判定する（設計書 01-03「読まないファイル」）。
+
+use super::{ToolError, text};
+use crate::config::{ReadConfig, paths::DataPaths};
+use globset::{Glob, GlobMatcher};
+use std::path::{Path, PathBuf};
+
+/// 利用者とプロジェクトの設定が、既定の除外を減らせない規則。
+#[derive(Clone, Debug)]
+pub struct ExcludeRules {
+    project: PathBuf,
+    config: PathBuf,
+    data: PathBuf,
+    spill: PathBuf,
+    additional: Vec<(String, GlobMatcher)>,
+}
+
+impl ExcludeRules {
+    /// 存在しない設定ディレクトリも、存在する祖先の実のパスから固定する。
+    pub fn new(
+        project: &Path,
+        paths: &DataPaths,
+        spill: &Path,
+        user: &ReadConfig,
+        project_config: &ReadConfig,
+    ) -> Result<Self, ToolError> {
+        let mut additional = Vec::new();
+        for pattern in user.exclude.iter().chain(&project_config.exclude) {
+            let matcher = Glob::new(pattern)
+                .map_err(|error| ToolError::Pattern(text::pattern(&error)))?
+                .compile_matcher();
+            additional.push((pattern.clone(), matcher));
+        }
+        Ok(Self {
+            project: normalize_existing(project)?,
+            config: normalize_existing(&paths.config_dir)?,
+            data: normalize_existing(&paths.data_dir)?,
+            spill: normalize_existing(spill)?,
+            additional,
+        })
+    }
+
+    /// 開いたものの実のパスについて、除外の理由を返す。
+    pub fn reason(&self, real_path: &Path) -> Option<String> {
+        for component in real_path.components() {
+            let name = component.as_os_str().to_string_lossy();
+            if secret_component(&name) {
+                return Some(format!("{} ({name})", text::DEFAULT_SECRET));
+            }
+        }
+        if !real_path.starts_with(&self.spill) {
+            if real_path.starts_with(&self.config) {
+                return Some(text::CONFIG_DIRECTORY.to_owned());
+            }
+            if real_path.starts_with(&self.data) {
+                return Some(text::DATA_DIRECTORY.to_owned());
+            }
+        }
+        for (pattern, matcher) in &self.additional {
+            for ancestor in real_path.ancestors() {
+                let relative = ancestor.strip_prefix(&self.project).unwrap_or(ancestor);
+                if matcher.is_match(ancestor)
+                    || matcher.is_match(relative)
+                    || ancestor
+                        .file_name()
+                        .is_some_and(|name| matcher.is_match(Path::new(name)))
+                {
+                    return Some(pattern.clone());
+                }
+            }
+        }
+        None
+    }
+
+    pub(super) fn descend(&self, real_path: &Path) -> bool {
+        // data/ 自体の除外で spill/ への走査まで切らない（設計書 01-03「読まないファイル」）。
+        self.reason(real_path).is_none()
+            || (self.spill.starts_with(real_path)
+                && !real_path
+                    .components()
+                    .any(|part| secret_component(&part.as_os_str().to_string_lossy())))
+    }
+}
+
+fn secret_component(name: &str) -> bool {
+    (name == ".env" || name.starts_with(".env.")) && name != ".env.example" && name != ".env.sample"
+        || [
+            ".ssh",
+            ".gnupg",
+            ".aws",
+            ".netrc",
+            ".git-credentials",
+            ".git",
+        ]
+        .contains(&name)
+        || [".pem", ".key", ".p12", ".pfx"]
+            .iter()
+            .any(|ending| name.ends_with(ending))
+        || ["id_rsa", "id_ecdsa", "id_ed25519"]
+            .iter()
+            .any(|prefix| name.starts_with(prefix))
+}
+
+fn normalize_existing(path: &Path) -> Result<PathBuf, ToolError> {
+    match std::fs::canonicalize(path) {
+        Ok(path) => Ok(path),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            let parent = path.parent().ok_or(ToolError::OutsideScope)?;
+            let name = path.file_name().ok_or(ToolError::OutsideScope)?;
+            Ok(normalize_existing(parent)?.join(name))
+        }
+        Err(error) => Err(error.into()),
+    }
+}
