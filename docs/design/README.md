@@ -14,7 +14,7 @@
 - `05-interface/` は、CLI、設定ファイル、対話の画面を定める。
 - `06-impl/` は、クレートの構成と性能の目標を定める。
 - `07-quality/` は、テストと評価を定める。
-- `08-appendix/` は、参考にしたハーネスの調査と、Benitoite の事前検討との対応である。
+- `08-appendix/` は、参考にしたハーネスの調査、Benitoite の事前検討との対応、外部のレビューの記録である。
 - 本文には現在の決定を書き、判断の理由を決定の直後に「理由: 〜。」として短く添える。
 - 未決と要検証の事項は [open-issues.md](open-issues.md) で `BH-nnn` の番号を付けて管理する。
 
@@ -97,6 +97,7 @@ Benitoite の設計書と事前検討へのリンクは、`v0.0.5` のタグを�
 |---|---|
 | [先行事例](08-appendix/08-01-prior-art.md) | Codex CLI、Pi Coding Agent、DeepSeek Harness の調査と、採ったもの・採らなかったもの |
 | [事前検討との対応](08-appendix/08-02-pre-study-mapping.md) | Benitoite の ADR 0194・0340〜0348 と TODO-124〜140 の扱い |
+| [外部のレビューの記録](08-appendix/08-03-external-review.md) | 外部のレビューの指摘と、指摘ごとの扱い |
 
 ### 未決事項
 
