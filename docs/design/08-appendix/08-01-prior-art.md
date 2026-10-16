@@ -34,7 +34,7 @@
 ### サンドボックスと承認
 
 - macOS では `/usr/bin/sandbox-exec` を固定のパスで起動し、`(deny default)` から始める方針を使う。書ける場所は `-D WRITABLE_ROOT_i=<path>` の引数で渡し、方針の文に埋め込まない。書ける場所の中でも `.git`・`.codex`・`.agents`・`.aws` を守る。方針は `process-exec` を広く許す（`codex-rs/sandboxing/src/seatbelt.rs`）。
-- Linux では bubblewrap で名前空間とファイルシステムの見え方を作り、その中で自分を起動し直して `no_new_privs` と seccomp を掛ける。seccomp は、ネットワークを使えないときに Unix ドメイン以外のソケットの作成と接続・待ち受けの呼び出しを拒否し、`ptrace` と `io_uring` を常に拒否する（`codex-rs/linux-sandbox/src/seccomp.rs`）。Landlock は古い経路として残り、自分のアプリのサーバの Unix ソケットを隔てられないことを理由に bubblewrap に移った。書ける場所の中の守る場所の作り（まだない `.git` を塞ぐ形など）は、2026-10-18 に新しいコミットで調べ直した（[Linux のサンドボックスの検討の記録](08-04-linux-sandbox.md)）。
+- Linux では bubblewrap で名前空間とファイルシステムの見え方を作り、その中で自分を起動し直して `no_new_privs` と seccomp を掛ける。seccomp は、ネットワークを使えないときに Unix ドメイン以外のソケットの作成と接続・待ち受けの呼び出しを拒否し、`ptrace` と `io_uring` を常に拒否する（`codex-rs/linux-sandbox/src/seccomp.rs`）。Landlock は古い経路として残り、自分のアプリのサーバの Unix ソケットを隔てられないことを理由に bubblewrap に移った。書ける場所の中の守る場所の作り（まだない `.git` を塞ぐ形など）は、2026-10-17 に新しいコミットで調べ直した（[Linux のサンドボックスの検討の記録](08-04-linux-sandbox.md)）。
 - 承認の方針は `untrusted`・`on-request`（既定）・`granular`・`never` である。モデルは道具の引数（`sandbox_permissions` と `justification`）でサンドボックスの外での実行を求め、利用者が承認する。
 - サンドボックスに拒否されたかは、終了状態と出力の言葉（`operation not permitted` など）と、Linux の `SIGSYS` で判定する（`codex-rs/sandboxing/src/denial.rs`）。
 - コマンドの規則（Starlark）で、利用者が許した前方一致の規則を保存できるが、解釈系と起動の道具（`bash`、`sh -c`、`node -e`、`env` など）の規則は保存させない（`codex-rs/core/src/exec_policy.rs` の `BANNED_PREFIX_SUGGESTIONS`）。
@@ -42,7 +42,7 @@
 ### 文脈と記録
 
 - 基本の指示は約 21 KB である（`codex-rs/protocol/src/prompts/base_instructions/default.md`）。
-- `AGENTS.md` は、リポジトリの根から作業ディレクトリまでを辿って読み、合計 32 KiB までとする。
+- `AGENTS.md` は、リポジトリの根から作業ディレクトリまでを辿って読み、合計 32 KiB までとする。各ディレクトリでは、`AGENTS.override.md`、`AGENTS.md`、設定の `project_doc_fallback_filenames` で加えた名前の順に見て、最初に見つかった一つだけを読む（`codex-rs/core/src/agents_md.rs`）。
 - 文脈が上限の 90% に達したら圧縮する。トークンの量は、最後の API の報告に、その後に加えた分のバイト数を 4 で割った値を足して見積もる。
 - セッションは JSON Lines のファイル（`~/.codex/sessions/YYYY/MM/DD/rollout-<時刻>-<ID>.jsonl`）に記録する。
 - プロジェクトの設定は信頼したディレクトリでだけ読み、提供者の URL などを設定させない。

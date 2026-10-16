@@ -2,7 +2,7 @@
 
 ## 目的
 
-P0-05 で作った Linux の補助のプロセスを、2026-10-18 の設計者の決定（BH-049 を閉じた）に合わせて作り直す。P0-05 の形（Landlock と seccomp だけ）は、書ける場所に新しいファイルを作れない。
+P0-05 で作った Linux の補助のプロセスを、2026-10-17 の設計者の決定（BH-049 を閉じた）に合わせて作り直す。P0-05 の形（Landlock と seccomp だけ）は、書ける場所に新しいファイルを作れない。
 
 新しい形では、bubblewrap が名前空間とファイルシステムの見え方を作る。その中で起動した補助のプロセスが、Landlock と seccomp を掛けてから、目的のプログラムを `exec` する。
 
@@ -131,7 +131,7 @@ Landlock の規則を、次のとおり改める。
 - **書ける場所**: `AccessFs::from_write(ABI::V3)` を与える（作成、削除、名前の付け替えの `Refer`、`Truncate` を含み、`Execute` を含まない）。`AccessFs::from_all` は使わない。P0-05 の「すでにあるファイルの更新だけ」の規則（`grant_existing_files`）は除く。
 - **読み取り**: 読める範囲（`ReadAccess`）の根に、`ReadFile | ReadDir` を与える。読ませない場所は bubblewrap で覆うので、読み取りの規則から部分木に分ける形（`grant_tree` を読み取りに使う部分）は除く。
 - **実行**: 今のとおりとする。読み取りの規則に `Execute` を含めない。`ProgramAccess::Unrestricted` で `deny_exec_in_writable` のときは、書ける場所を除いた部分木に `Execute` を与える。この処理には、今の `grant_tree` を使い続ける。
-- **辿る途中で消えた項目**: `grant_tree` で木を辿る途中に消えた項目（`read_dir` の後の `ENOENT`）は、権利を与えずに飛ばす。理由: 2026-10-18 に、x86_64 の機械で、`/tmp` の下の別のテストの一時ディレクトリが辿る途中で消え、補助のプロセスが `Sandbox setup failed at Landlock: No such file or directory` で失敗した（`reading_excludes_secrets_and_confines_readable_roots`）。権利を与えないので、制限が弱まる方向には働かない。
+- **辿る途中で消えた項目**: `grant_tree` で木を辿る途中に消えた項目（`read_dir` の後の `ENOENT`）は、権利を与えずに飛ばす。理由: 2026-10-17 に、x86_64 の機械で、`/tmp` の下の別のテストの一時ディレクトリが辿る途中で消え、補助のプロセスが `Sandbox setup failed at Landlock: No such file or directory` で失敗した（`reading_excludes_secrets_and_confines_readable_roots`）。権利を与えないので、制限が弱まる方向には働かない。
 
 seccomp のフィルタは、今のまま使う。
 
@@ -221,7 +221,7 @@ P0-05 のテストのうち、新しい形でも成り立つものは残す。
 
 ## テストの環境
 
-Linux のテストは、オーケストレータが、設計者の常設の x86_64 の機械の podman で走らせる（00-common の「検査」）。2026-10-18 に、オーケストレータが次のことを済ませた。Codex は `scripts/` を変えない。
+Linux のテストは、オーケストレータが、設計者の常設の x86_64 の機械の podman で走らせる（00-common の「検査」）。2026-10-17 に、オーケストレータが次のことを済ませた。Codex は `scripts/` を変えない。
 
 - `scripts/remote-linux-run.sh` を、次の形にして `main` に取り込んだ。
   - イメージは、`alpine:3.22` に bubblewrap 0.12.0 を入れた `localhost/benitoiteh-test:alpine-3.22-bwrap`。
