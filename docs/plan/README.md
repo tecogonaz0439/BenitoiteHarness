@@ -26,8 +26,8 @@
 | [P1-06](tasks/P1-06-tools-read.md) | 道具の枠組みと、読む道具（read・glob・grep） | P1-04、P1-05 | 完了 |
 | [P1-07](tasks/P1-07-tools-write.md) | 書く道具（write・edit） | P1-06 | 完了 |
 | [P1-08](tasks/P1-08-context.md) | システムプロンプト、道具の定義、環境の情報 | P1-07 | 完了 |
-| [P1-09](tasks/P1-09-agent-loop.md) | エージェントのループ | P1-03、P1-08 | 未着手 |
-| [P1-10](tasks/P1-10-exec.md) | `exec` の入口と P1 の完了の確かめ | P1-09 | 未着手 |
+| [P1-09](tasks/P1-09-agent-loop.md) | エージェントのループ | P1-03、P1-08 | 完了 |
+| [P1-10](tasks/P1-10-exec.md) | `exec` の入口と P1 の完了の確かめ | P1-09 | 完了 |
 
 P1 の作業は P0-04・P0-05（OS のサンドボックス）の結果に依らないので、P0-04・P0-05 が設計者の判断を待つ間に先に進めてよい。
 
