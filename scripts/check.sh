@@ -54,6 +54,13 @@ for target in "${linux_targets[@]}"; do
 done
 
 begin_stage test
+cargo build -p sandbox-probe
+if [[ $(uname -s) == Darwin ]]; then
+    cargo rustc -p sandbox-probe --lib --crate-type cdylib
+fi
+for target in "${linux_targets[@]}"; do
+    cargo build -p sandbox-probe --target "$target"
+done
 if "$inside_codex"; then
     # 名前のフィルタでは、sandbox のファイルにある別名のテストを除けないため、対象を列挙する。
     # 配置は実装プラン 10-interfaces「ファイルの配置」に従う。
@@ -83,7 +90,7 @@ if ! "$inside_codex"; then
     # カーネルの機能を確かめるテスト（safe_fs と sandbox_*）を除く（実装プラン P0-05「x86_64 の扱い」）。
     # TLS の暗号の実装（graviola）は CPU の ADX の命令を要し、Rosetta はそれを持たない。
     # TLS を使うテストは名前に tls を含める約束とし、ここで除く（実装プラン 00-common「検査」）。
-    cargo test --workspace --target x86_64-unknown-linux-musl --lib --bins -- --skip tls
+    cargo test --workspace --target x86_64-unknown-linux-musl --lib --bins -- --skip tls --test-threads=1
     rosetta_skipped+=("unit tests whose names contain 'tls' (graviola needs ADX)")
     for manifest in crates/*/Cargo.toml; do
         test_args=()
@@ -99,7 +106,7 @@ if ! "$inside_codex"; then
             test_args+=(--test "${test_name%.rs}")
         done
         if ((${#test_args[@]} != 0)); then
-            cargo test --manifest-path "$manifest" --target x86_64-unknown-linux-musl "${test_args[@]}" -- --skip tls
+            cargo test --manifest-path "$manifest" --target x86_64-unknown-linux-musl "${test_args[@]}" -- --skip tls --test-threads=1
         fi
     done
 fi

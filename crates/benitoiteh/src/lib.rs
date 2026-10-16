@@ -3,3 +3,4 @@
 pub mod cli;
 pub mod http;
 pub mod safe_fs;
+pub mod sandbox;
