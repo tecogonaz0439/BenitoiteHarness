@@ -17,7 +17,7 @@
 | [P0-03](tasks/P0-03-http.md) | HTTP と TLS の層、ストリームの打ち切りと名前の解決の差し替え（BH-010） | P0-01 | 完了 |
 | [P0-04](tasks/P0-04-sandbox-macos.md) | サンドボックスの方針の型と macOS の Seatbelt の試作 | P0-02 | 完了 |
 | [P0-05](tasks/P0-05-sandbox-linux.md) | Linux の補助のプロセスの試作（BH-043、BH-049） | P0-04 | 完了（P0-07 で作り直す） |
-| [P0-07](tasks/P0-07-sandbox-linux-bwrap.md) | Linux の補助のプロセスを bubblewrap の形に作り直す（BH-049 の決定） | P0-05 | 未着手 |
+| [P0-07](tasks/P0-07-sandbox-linux-bwrap.md) | Linux の補助のプロセスを bubblewrap の形に作り直す（BH-049 の決定） | P0-05 | 完了 |
 | [P0-06](tasks/P0-06-size-probe.md) | 要る機能を一通り持つ構成の大きさの測定（BH-062） | P1-10（P0-05 を除いて行う） | 完了 |
 | [P1-01](tasks/P1-01-provider-common.md) | 提供者の共通の形と SSE の読み取り | P0-03 | 完了 |
 | [P1-02](tasks/P1-02-anthropic.md) | 模擬の提供者と `anthropic-messages` のアダプタ | P1-01 | 完了 |
@@ -33,7 +33,7 @@
 
 P1 の作業は P0-04・P0-05（OS のサンドボックス）の結果に依らないので、P0-04・P0-05 が設計者の判断を待つ間に先に進めてよい。
 
-P0-05 は、Apple の `container` の既定のカーネル（6.18.15）が Landlock を持たない（`CONFIG_SECURITY_LANDLOCK` が無効）ので、いったん止まった（2026-10-17）。2026-10-18 に、x86_64 の Linux のテストを設計者の常設の機械の podman で走らせる形にし（00-common の「検査」）、その機械で `sandbox_linux` を通して取り込んだ。Landlock で表せる範囲に狭めた形は、書ける場所に新しいファイルを作れない。2026-10-18 に、設計者が、守る場所の条件を Codex CLI の水準に改め、利用者が導入した bubblewrap でマウントを作る形に決めた（BH-049 を閉じた。設計書 08-04）。P0-07 で、この形に作り直す。
+P0-05 は、Apple の `container` の既定のカーネル（6.18.15）が Landlock を持たない（`CONFIG_SECURITY_LANDLOCK` が無効）ので、いったん止まった（2026-10-17）。2026-10-18 に、x86_64 の Linux のテストを設計者の常設の機械の podman で走らせる形にし（00-common の「検査」）、その機械で `sandbox_linux` を通して取り込んだ。Landlock で表せる範囲に狭めた形は、書ける場所に新しいファイルを作れない。2026-10-18 に、設計者が、守る場所の条件を Codex CLI の水準に改め、利用者が導入した bubblewrap でマウントを作る形に決めた（BH-049 を閉じた。設計書 08-04）。P0-07 で、この形に作り直した（2026-10-18。x86_64 の機械で `sandbox_linux` の 15 件が通った）。
 
 P0 の各作業の確かめの結果（BH-010、BH-043、BH-049、BH-062、BH-093）は、オーケストレータが設計書と [未決事項](../design/open-issues.md) に反映する。Skill の取り込み（P0 の内容の一つ）は、オーケストレータが `assets/benitoite/v0.0.6/` に済ませた（`SOURCE.md`）。
 
