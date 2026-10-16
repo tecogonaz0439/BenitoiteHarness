@@ -67,6 +67,24 @@ fn help_lists_command_forms() -> Result<(), Box<dyn Error>> {
     ] {
         assert!(help.lines().any(|line| line.trim() == command), "{help}");
     }
+    for option in [
+        "--mode restricted|normal",
+        "--project <dir>",
+        "--provider <name>",
+        "--model <name>",
+        "--effort <value>",
+        "--max-turns <n>",
+        "--max-check-fix <n>",
+        "--max-run-tokens <n>",
+        "--json",
+        "--output-last-message <file>",
+    ] {
+        assert!(help.lines().any(|line| line.trim() == option), "{help}");
+    }
+    let exec_help = run("exec-help", &["exec", "--help"])?;
+    assert_eq!(exec_help.status.code(), Some(0));
+    assert_eq!(exec_help.stdout, help.as_bytes());
+    assert!(exec_help.stderr.is_empty());
     Ok(())
 }
 
