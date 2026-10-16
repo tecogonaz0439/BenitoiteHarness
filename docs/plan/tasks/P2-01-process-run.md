@@ -84,7 +84,7 @@ pub struct RunOutcome { pub status: ExitStatus, pub end: RunEnd, pub leftovers: 
 - bubblewrap の引数の全体の指定に `--as-pid-1` を加える（`--unshare-pid` は今のまま）。`mounts.rs` のユニットテストの期待の並びも直す。
 - 制御の通り道は、補助のプロセスの標準入力にした Unix ドメインのソケットの対とする（設計書 03-02）。`--control-fd` のような引数は設けない。理由: 受け継いだ番号から記述子を扱うには `unsafe`（`BorrowedFd::borrow_raw` など）が要り、起動のときに `FD_CLOEXEC` を外すと、同時に起動したほかの子プロセスにも受け継がれうる。標準入力なら `rustix::stdio` で `unsafe` なしに扱える。
 - `PreparedSandbox` は、`prepare` のときにソケットの対（`std::os::unix::net::UnixStream::pair()`。`O_CLOEXEC` 付き）を作る。一方を bubblewrap の標準入力にし（`Stdio::from(OwnedFd)`）、もう一方を親が持つ。`spawn_wrapped` の包むプログラムも、標準入力をそのまま bubblewrap に渡すこと（今の包むプログラムのテストは、標準入力を子に受け継がせる形にする）。
-- 目的のプログラムの標準入力（`SandboxStdin` の `Null` なら `/dev/null`、`Piped` ならパイプの読み口、`Inherit` なら親の標準入力）は、親が制御のソケットで記述子として送る（起動の前に送ってソケットに溜めておいてよい）（`rustix::net::sendmsg` と `SendAncillaryMessage::ScmRights`）。`Piped` のパイプの書き口は、今と同じく `SandboxChild` の `child_mut().stdin` から呼び出す側が使えるようにする。bubblewrap の標準入力は制御のソケットなので、実行の部分（1）と呼び出す側は、`PreparedSandbox` の標準入力を変えない。
+- 目的のプログラムの標準入力（`SandboxStdin` の `Null` なら `/dev/null`、`Piped` ならパイプの読み口、`Inherit` なら親の標準入力）は、親が制御のソケットで記述子として送る（起動の前に送ってソケットに溜めておいてよい）（`rustix::net::sendmsg` と `SendAncillaryMessage::ScmRights`）。`Piped` のパイプは `std::io::pipe` で作り、書き口は `SandboxChild` の新しい関数（例: `take_stdin() -> Option<PipeWriter>`）で呼び出す側に渡す。bubblewrap の標準入力は制御のソケットなので、`child_mut().stdin` は使えない。bubblewrap の標準入力は制御のソケットなので、実行の部分（1）と呼び出す側は、`PreparedSandbox` の標準入力を変えない。
 - `SandboxChild` に、止める合図を伝える関数（`StopSignal` を受ける）と、直ちに終わる指示を伝える関数を加える。親の側のソケットを閉じることも、直ちに終わる指示として働く。
 - 補助のプロセス（`run_helper`）は次の順で動く。
   1. 標準入力（記述子 0）が Unix ドメインのソケットであることを `rustix::fs::fstat(rustix::stdio::stdin())` で確かめる。違えば準備の失敗（終了状態 125）とする。
