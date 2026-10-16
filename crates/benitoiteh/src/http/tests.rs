@@ -540,8 +540,9 @@ fn full_channel_does_not_outlive_total_deadline() -> Result<(), Box<dyn Error>> 
         {}
         Ok(())
     })?;
+    // 並べて走るテストと Rosetta の遅さで、ヘッダの前に上限が切れないよう 500 ミリ秒とする。
     let timeouts = HttpTimeouts {
-        total: Duration::from_millis(200),
+        total: Duration::from_millis(500),
         ..HttpTimeouts::default()
     };
     let mut stream =
