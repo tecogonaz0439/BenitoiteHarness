@@ -45,12 +45,14 @@
 
 ### Benitoite の Skill の置き方
 
-【方針】制限モードでは、埋め込んだ Skill の `SKILL.md` の本文（先頭の属性の部分を除く）を `<benitoite>` の節にそのまま入れる。その前に、次の対応を書く。
+【方針】制限モードでは、埋め込んだ Skill の `SKILL.md` の本文（先頭の属性の部分と、本文の先頭の HTML の注釈を除く）を `<benitoite>` の節にそのまま入れる。その前に、次の対応を書く。
 
 - Skill の `benitoite check` は `benitoite_check`、`benitoite run` は `benitoite_run`、`benitoite test` は `benitoite_test` の道具で行う。
 - `references/<name>.md` は `benitoite_reference` の道具で `name` を指定して読む。
 - Skill の「Check the version first」の手順は `benitoiteh` が起動のときに済ませているので行わない。
 - Skill の「Before running」の確認は `benitoiteh` が画面で行うので、LLM は利用者に確認を求めなくてよい。ただし、エフェクトの意味を応答の文で説明するのはよい。
+
+【決定】本文の先頭の HTML の注釈（`<!--` から最初の `-->` まで）は、LLM に見せるときにいつも除く。通常モードで `benitoite_reference` に `SKILL` を指定して読ませるときも同じである。2026-10-18 に設計者が決めた。理由: この注釈は、処理系の側のテストが文書の中の例をどう確かめるかの説明であり、LLM の作業に要らない。`v0.0.6` の時点で 878 バイトある。
 
 `SKILL.md` は `v0.0.6` の時点で約 21 KB（英語の文で約 5,400 トークンの見込み）である。制限モードの作業はすべて Benitoite のスクリプトを書くことなので、毎回読ませる価値がある。キャッシュが効けば、2 回目以降の要求の費用は小さい。
 
