@@ -35,10 +35,12 @@
 | `sandbox` | 方針、macOS の Seatbelt、Linux の Landlock と seccomp、拒否の検出 | 03-02 |
 | `approval` | 確認の規則と記録 | 03-03 |
 | `session` | 記録、再開、巻き戻しの記録、一時ディレクトリ | 01-05 |
+| `safe_fs` | 範囲の根のディレクトリの記述子から相対に、範囲の外へ出ない形で開く、ファイルの操作 | 01-03 |
+| `http` | HTTP と TLS の設定、ストリーミングの応答の読み取りと打ち切り、名前の解決の差し替え | 02-01、01-03 |
 | `ui` | 対話の画面と、`exec` の出力 | 05-01、05-02 |
 | `prompts/`（ファイル） | システムプロンプトと道具の説明の英文。`include_str!` で埋め込む | 01-04 |
 
-依存の向きは、`cli` → `ui`・`agent` → `context`・`provider`・`tools`・`approval`・`session` → `benitoite`・`sandbox` → `config` とし、逆向きに依存しない。`agent` は `ui` を知らず、イベントを送るだけとする。
+依存の向きは、`cli` → `ui`・`agent` → `context`・`provider`・`tools`・`approval`・`session` → `benitoite`・`sandbox` → `config`・`safe_fs`・`http` とし、逆向きに依存しない。`safe_fs` と `http` は、主のプロセスの範囲を限ったファイルの操作と HTTP の通信を、それぞれ一か所にまとめるために分けた（理由: 道具、巻き戻し、`web_fetch` が同じ規則を別々に書くと、規則が食い違いうる）。`agent` は `ui` を知らず、イベントを送るだけとする。
 
 ### スレッドと非同期
 
