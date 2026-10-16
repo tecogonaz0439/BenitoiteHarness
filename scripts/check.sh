@@ -15,6 +15,7 @@ cd "$repo_root"
 linux_targets=(aarch64-unknown-linux-musl x86_64-unknown-linux-musl)
 skipped_tests=(crates/*/tests/sandbox_*.rs)
 x86_64_skipped=()
+aarch64_skipped=()
 stage=setup
 
 finish() {
@@ -30,6 +31,10 @@ finish() {
             printf '  %s\n' "${skipped_tests[@]}"
         fi
         printf '  linux: container tests for %s\n' "${linux_targets[@]}"
+    fi
+    if ((${#aarch64_skipped[@]} != 0)); then
+        printf '\nNot run on aarch64-unknown-linux-musl:\n'
+        printf '  %s\n' "${aarch64_skipped[@]}"
     fi
     if ((${#x86_64_skipped[@]} != 0)); then
         printf '\nNot run on x86_64-unknown-linux-musl:\n'
@@ -85,7 +90,24 @@ fi
 
 begin_stage linux
 if ! "$inside_codex"; then
-    cargo test --workspace --target aarch64-unknown-linux-musl
+    # aarch64 は container の中で走らせる。container の既定のカーネルは Landlock を持たないので、
+    # Landlock を要する sandbox_linux を除き、x86_64 の機械で確かめる（実装プラン 00-common「検査」）。
+    cargo test --workspace --target aarch64-unknown-linux-musl --lib --bins
+    for manifest in crates/*/Cargo.toml; do
+        test_args=()
+        for test_file in "${manifest%/Cargo.toml}"/tests/*.rs; do
+            test_name=${test_file##*/}
+            if [[ "$test_name" == sandbox_linux.rs ]]; then
+                aarch64_skipped+=("${test_file}: the container kernel lacks Landlock")
+                continue
+            fi
+            test_args+=(--test "${test_name%.rs}")
+        done
+        if ((${#test_args[@]} != 0)); then
+            cargo test --manifest-path "$manifest" --target aarch64-unknown-linux-musl "${test_args[@]}"
+        fi
+    done
+    cargo test --workspace --target aarch64-unknown-linux-musl --doc
     # x86_64 は、container の Rosetta では走らせない。Rosetta は openat2 を持たず（safe_fs を使うテストが
     # 動かない）、TLS の暗号の実装（graviola）が要する ADX の命令も持たない。BENITOITEH_X86_64_HOST が
     # あれば、本物の x86_64 の Linux の podman で走らせ、なければビルドとリンクまでを確かめる
