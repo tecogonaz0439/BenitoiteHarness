@@ -14,6 +14,7 @@ repo_root=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)
 cd "$repo_root"
 linux_targets=(aarch64-unknown-linux-musl x86_64-unknown-linux-musl)
 skipped_tests=(crates/*/tests/sandbox_*.rs)
+rosetta_skipped=()
 stage=setup
 
 finish() {
@@ -29,6 +30,10 @@ finish() {
             printf '  %s\n' "${skipped_tests[@]}"
         fi
         printf '  linux: container tests for %s\n' "${linux_targets[@]}"
+    fi
+    if ((${#rosetta_skipped[@]} != 0)); then
+        printf '\nNot run on x86_64-unknown-linux-musl (Rosetta lacks the kernel interfaces):\n'
+        printf '  %s\n' "${rosetta_skipped[@]}"
     fi
     exit "$status"
 }
@@ -73,8 +78,26 @@ fi
 
 begin_stage linux
 if ! "$inside_codex"; then
-    for target in "${linux_targets[@]}"; do
-        cargo test --workspace --target "$target"
+    cargo test --workspace --target aarch64-unknown-linux-musl
+    # x86_64 は container の Rosetta で動く。Rosetta は openat2 を持たず、記述子も開いているので、
+    # カーネルの機能を確かめるテスト（safe_fs と sandbox_*）を除く（実装プラン P0-05「x86_64 の扱い」）。
+    cargo test --workspace --target x86_64-unknown-linux-musl --lib --bins
+    for manifest in crates/*/Cargo.toml; do
+        test_args=()
+        for test_file in "${manifest%/Cargo.toml}"/tests/*.rs; do
+            [[ -e "$test_file" ]] || continue
+            test_name=${test_file##*/}
+            case "$test_name" in
+                sandbox_*.rs | safe_fs.rs)
+                    rosetta_skipped+=("$test_file")
+                    continue
+                    ;;
+            esac
+            test_args+=(--test "${test_name%.rs}")
+        done
+        if ((${#test_args[@]} != 0)); then
+            cargo test --manifest-path "$manifest" --target x86_64-unknown-linux-musl "${test_args[@]}"
+        fi
     done
 fi
 
