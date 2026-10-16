@@ -1,6 +1,6 @@
 //! 文脈の誤りと、利用者に送信先を知らせる文（設計書 01-04「送る内容の表示」）。
 
-pub const INVALID_SKILL: &str = "Embedded Benitoite Skill metadata is invalid.";
+pub const INVALID_SKILL: &str = "Embedded Benitoite Skill format is invalid.";
 pub const INVALID_PATH: &str = "Environment paths must be absolute UTF-8 paths.";
 pub const INVALID_DATE: &str = "Environment date must be between 1970-01-01 and 9999-12-31 UTC.";
 pub const JSON_ERROR: &str = "Cannot serialize tool definitions";
