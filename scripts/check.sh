@@ -14,7 +14,8 @@ repo_root=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)
 cd "$repo_root"
 linux_targets=(aarch64-unknown-linux-musl x86_64-unknown-linux-musl)
 skipped_tests=(crates/*/tests/sandbox_*.rs)
-rosetta_skipped=()
+x86_64_skipped=()
+aarch64_skipped=()
 stage=setup
 
 finish() {
@@ -31,9 +32,13 @@ finish() {
         fi
         printf '  linux: container tests for %s\n' "${linux_targets[@]}"
     fi
-    if ((${#rosetta_skipped[@]} != 0)); then
-        printf '\nNot run on x86_64-unknown-linux-musl under Rosetta:\n'
-        printf '  %s\n' "${rosetta_skipped[@]}"
+    if ((${#aarch64_skipped[@]} != 0)); then
+        printf '\nNot run on aarch64-unknown-linux-musl:\n'
+        printf '  %s\n' "${aarch64_skipped[@]}"
+    fi
+    if ((${#x86_64_skipped[@]} != 0)); then
+        printf '\nNot run on x86_64-unknown-linux-musl:\n'
+        printf '  %s\n' "${x86_64_skipped[@]}"
     fi
     exit "$status"
 }
@@ -85,31 +90,41 @@ fi
 
 begin_stage linux
 if ! "$inside_codex"; then
-    cargo test --workspace --target aarch64-unknown-linux-musl -- --show-output
-    # x86_64 は container の Rosetta で動く。Rosetta は openat2 を持たず、記述子も開いているので、
-    # カーネルの機能を確かめるテスト（safe_fs と sandbox_*）を除く（実装プラン P0-05「x86_64 の扱い」）。
-    # TLS の暗号の実装（graviola）は CPU の ADX の命令を要し、Rosetta はそれを持たない。
-    # TLS を使うテストは名前に tls を含める約束とし、ここで除く（実装プラン 00-common「検査」）。
-    cargo test --workspace --target x86_64-unknown-linux-musl --lib --bins -- --skip tls --test-threads=1
-    rosetta_skipped+=("unit tests whose names contain 'tls' (graviola needs ADX)")
-    rosetta_skipped+=("sandbox_*: Rosetta opens extra descriptors and translates syscall architectures; native x86_64 sandbox validation is still required" "safe_fs: Rosetta does not implement openat2")
+    # aarch64 は container の中で走らせる。container の既定のカーネルは Landlock を持たないので、
+    # Landlock を要する sandbox_linux を除き、x86_64 の機械で確かめる（実装プラン 00-common「検査」）。
+    cargo test --workspace --target aarch64-unknown-linux-musl --lib --bins
     for manifest in crates/*/Cargo.toml; do
         test_args=()
         for test_file in "${manifest%/Cargo.toml}"/tests/*.rs; do
-            [[ -e "$test_file" ]] || continue
             test_name=${test_file##*/}
-            case "$test_name" in
-                sandbox_*.rs | safe_fs.rs)
-                    rosetta_skipped+=("$test_file")
-                    continue
-                    ;;
-            esac
+            if [[ "$test_name" == sandbox_linux.rs ]]; then
+                aarch64_skipped+=("${test_file}: the container kernel lacks Landlock")
+                continue
+            fi
             test_args+=(--test "${test_name%.rs}")
         done
         if ((${#test_args[@]} != 0)); then
-            cargo test --manifest-path "$manifest" --target x86_64-unknown-linux-musl "${test_args[@]}" -- --skip tls --test-threads=1
+            cargo test --manifest-path "$manifest" --target aarch64-unknown-linux-musl "${test_args[@]}"
         fi
     done
+    cargo test --workspace --target aarch64-unknown-linux-musl --doc
+    # x86_64 は、container の Rosetta では走らせない。Rosetta は openat2 を持たず（safe_fs を使うテストが
+    # 動かない）、TLS の暗号の実装（graviola）が要する ADX の命令も持たない。BENITOITEH_X86_64_HOST が
+    # あれば、本物の x86_64 の Linux の podman で走らせ、なければビルドとリンクまでを確かめる
+    # （実装プラン 00-common「検査」）。
+    cargo test --workspace --target x86_64-unknown-linux-musl --no-run
+    if [[ -n "${BENITOITEH_X86_64_HOST:-}" ]]; then
+        if [[ -z "${BENITOITEH_X86_64_DIR:-}" ]]; then
+            remote_home=$(ssh -o BatchMode=yes -o LogLevel=ERROR "$BENITOITEH_X86_64_HOST" 'printf %s "$HOME"')
+            export BENITOITEH_X86_64_DIR="$remote_home/benitoiteh-test"
+        fi
+        printf 'Running x86_64 tests on %s (%s)\n' "$BENITOITEH_X86_64_HOST" "$BENITOITEH_X86_64_DIR"
+        scripts/remote-linux-run.sh --sync
+        CARGO_TARGET_X86_64_UNKNOWN_LINUX_MUSL_RUNNER="$repo_root/scripts/remote-linux-run.sh" \
+            cargo test --workspace --target x86_64-unknown-linux-musl
+    else
+        x86_64_skipped+=("all test execution (built and linked only; set BENITOITEH_X86_64_HOST to run them)")
+    fi
 fi
 
 begin_stage deny

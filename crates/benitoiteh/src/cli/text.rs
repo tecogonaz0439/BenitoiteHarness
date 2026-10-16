@@ -7,10 +7,39 @@ pub const HELP: &str = "Usage:
     benitoiteh doctor
     benitoiteh sessions
     benitoiteh --help | --version | --licenses
+
+Exec options:
+    --mode restricted|normal
+    --project <dir>
+    --provider <name>
+    --model <name>
+    --effort <value>
+    --max-turns <n>
+    --max-check-fix <n>
+    --max-run-tokens <n>
+    --json
+    --output-last-message <file>
+    --help
+
+Use - as the request to read standard input.
+Interactive mode, doctor, sessions, and --licenses are not available yet.
+The following options are not available yet:
+    --resume, --continue, --sandbox, --approval, --allow,
+    --project-parent, --no-sandbox
 ";
 
 /// 使い方の誤りに共通の案内。
 pub const INVALID_ARGUMENTS: &str = "benitoiteh: invalid arguments; use --help for usage";
+
+/// 重複した指定を示す。
+pub fn duplicate_option(option: &str) -> String {
+    format!("benitoiteh: duplicate option {option}; use --help for usage")
+}
+
+/// 後の段階で使える指定を示す。
+pub fn unavailable_option(option: &str) -> String {
+    format!("benitoiteh: option {option} is not available yet")
+}
 
 /// ビルドしたパッケージの版を一行に整える。
 pub fn version() -> String {
@@ -20,4 +49,41 @@ pub fn version() -> String {
 /// 出力に失敗した理由を案内に添える。
 pub fn output_error(error: &std::io::Error) -> String {
     format!("benitoiteh: could not write output: {error}")
+}
+
+/// panic の内容を含めない診断。
+pub const INTERNAL_ERROR: &str = "benitoiteh: internal error (panic)";
+/// panic hook の中でシリアライズや共有ロックを要しない一行。
+pub const PANIC_RECORD: &[u8] =
+    b"{\"type\":\"error\",\"kind\":\"panic\",\"message\":\"benitoiteh: internal error (panic)\"}\n";
+
+/// 起動の診断に実行ファイルの名前を添える。
+pub fn startup_error(error: &impl std::fmt::Display) -> String {
+    format!("benitoiteh: {error}")
+}
+
+/// ループの診断に実行ファイルの名前を添える。
+pub fn agent_error(error: &crate::agent::AgentError) -> String {
+    format!("benitoiteh: {error}")
+}
+
+/// 読んだプロジェクト設定の場所を示す。
+pub fn project_loaded(root: &std::path::Path) -> String {
+    format!(
+        "Loaded project configuration: {}",
+        root.join(".benitoiteh/config.toml").display()
+    )
+}
+
+/// 設定全体を採用しなかった理由を示す。
+pub fn project_ignored(error: &crate::config::ConfigError) -> String {
+    format!("Ignoring project configuration: {error}")
+}
+
+/// 通信前に、選択された提供者とモデルを示す。
+pub fn destination(destination: &crate::provider::Destination) -> String {
+    format!(
+        "Provider: {}; model: {}",
+        destination.provider, destination.model
+    )
 }

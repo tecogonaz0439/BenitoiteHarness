@@ -11,7 +11,7 @@ struct TestDirectory(PathBuf);
 
 impl TestDirectory {
     fn new(name: &str) -> Result<Self, Box<dyn Error>> {
-        let parent = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../target/cli-tests");
+        let parent = std::env::temp_dir().join("benitoiteh-cli-tests");
         fs::create_dir_all(&parent)?;
         let nonce = SystemTime::now().duration_since(UNIX_EPOCH)?.as_nanos();
         let path = parent.join(format!("{name}-{}-{nonce}", std::process::id()));
@@ -67,6 +67,24 @@ fn help_lists_command_forms() -> Result<(), Box<dyn Error>> {
     ] {
         assert!(help.lines().any(|line| line.trim() == command), "{help}");
     }
+    for option in [
+        "--mode restricted|normal",
+        "--project <dir>",
+        "--provider <name>",
+        "--model <name>",
+        "--effort <value>",
+        "--max-turns <n>",
+        "--max-check-fix <n>",
+        "--max-run-tokens <n>",
+        "--json",
+        "--output-last-message <file>",
+    ] {
+        assert!(help.lines().any(|line| line.trim() == option), "{help}");
+    }
+    let exec_help = run("exec-help", &["exec", "--help"])?;
+    assert_eq!(exec_help.status.code(), Some(0));
+    assert_eq!(exec_help.stdout, help.as_bytes());
+    assert!(exec_help.stderr.is_empty());
     Ok(())
 }
 
@@ -81,6 +99,7 @@ fn other_arguments_are_usage_errors() -> Result<(), Box<dyn Error>> {
         &["--licenses"],
         &["--help", "--unknown"],
         &["--version", "--help"],
+        &["exec", "--no-sandbox", "request"],
     ];
     for args in cases {
         let output = run("usage", args)?;
@@ -90,6 +109,12 @@ fn other_arguments_are_usage_errors() -> Result<(), Box<dyn Error>> {
         assert_eq!(error.lines().count(), 1, "{args:?}: {error}");
         assert!(error.starts_with("benitoiteh: "), "{error}");
         assert!(error.ends_with('\n'), "{error}");
+        if args.contains(&"--no-sandbox") {
+            assert!(
+                error.contains("--no-sandbox is not available yet"),
+                "{error}"
+            );
+        }
     }
     Ok(())
 }

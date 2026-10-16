@@ -31,7 +31,10 @@ pub(super) fn restrict(policy: &SandboxPolicy, required: u64) -> Result<()> {
             &mut rules,
             &root,
             &config.denied_read,
-            AccessFs::from_read(ABI::V3),
+            // from_read(V3) は Execute も含む。実行は programs の規則だけで許す。
+            // 同じ層の許可は足し合わされるため、読み取りに混ぜると一覧を迂回できる
+            // （設計書 03-02「方針の要素」「制限モードで実行を許すプログラム」）。
+            AccessFs::ReadFile | AccessFs::ReadDir,
         )?;
     }
     match &config.programs {

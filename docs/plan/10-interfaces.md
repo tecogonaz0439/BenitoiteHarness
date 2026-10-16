@@ -11,6 +11,7 @@ Cargo.lock
 deny.toml                     ライセンスの許可の一覧
 scripts/check.sh              完了の前に通す検査
 scripts/container-run.sh      Linux 向けのテストの実行ファイルを container の中で走らせる
+scripts/remote-linux-run.sh   x86_64 の Linux 向けのテストの実行ファイルを、ssh で届く機械の podman で走らせる
 crates/benitoiteh/            試作のクレート（ライブラリと実行ファイル）
   src/main.rs                 cli::main を呼ぶだけ
   src/lib.rs                  モジュールの宣言
@@ -92,7 +93,15 @@ P0-03 で作った主な公開の関数は次のとおりである（`Uri`・`He
 
 ### `sandbox`（P0-04、P0-05）
 
+P0-04 で作った型: 方針の入力 `PolicyConfig`（`readable: ReadAccess`（`All`・`Roots`）、`denied_read`、`writable`、`protected_names`、`allow_ip`、`programs: ProgramAccess`（`Unrestricted`・`Only`）、`deny_exec_in_writable`（既定は真））と、検証済みの `SandboxPolicy::new(config)`。`SandboxPolicy::seatbelt_profile()`、`SandboxCommand::to_command(&self, helper: &Path) -> Result<Command, SandboxError>`。
+
+
 - `SandboxPolicy`: 方針の要素（[OS のサンドボックス](../design/03-safety/03-02-sandbox.md)の「方針の要素」）を持つ値。読める範囲、読ませない場所、書ける場所、書ける場所の中の守る名前、IP の通信の可否、起動できるプログラム（制限しない／列挙した実のパスだけ）、書ける場所のファイルの実行の拒否。JSON にでき、`__sandbox` の引数として渡せる。パスはすべて実の絶対のパスとする。
 - `SandboxCommand`: 方針、プログラム、引数、作業ディレクトリ、環境変数、標準入力の扱い。OS ごとの起動の形（macOS の `sandbox-exec`、Linux の `__sandbox`）に変えて `std::process::Command` を作る。`std::process::Command` を作る関数は、Linux の補助のプロセス（`benitoiteh` の実行ファイル）のパスを引数に取る（例: `to_command(&self, helper: &Path)`。macOS では使わない）。P0-04 の時点の Linux では、掛けられないという誤りを返す。
 - `SandboxPolicy` の中のパスは正規の形（`std::fs::canonicalize` の結果。macOS の `/var` は `/private/var`）とし、作るときに確かめる。理由: Seatbelt は正規の形のパスで照合するので、`/var/folders` の形では規則が当たらない。
 - `SandboxError`: 方針の誤り、掛けられない、補助のプロセスの段階ごとの失敗。
+
+### `provider`（P1-01、P1-02）
+
+- 共通の形（`provider::types`、`provider` から再公開）: `Destination { provider, base_url, model }`、`AdapterKind`、`Conversation { items }`、`Item::{UserMessage, AssistantTurn, ToolResult}`、`UserMessage { parts: Vec<UserPart> }`（`UserPartKind::{Environment, Request, Steering}`）、`AssistantTurn { parts, raw_items, finish_reason, usage }`、`AssistantPart::{Text, Reasoning, ToolCall}`、`RawItems { destination, adapter, items }`、`ToolCall { id, provider_id, provider_item_id, name, arguments, raw_arguments }`、`ToolResult { id, provider_id, text, is_error }`、`Usage`（各項目 `Option<u64>` と `raw`）、`FinishReason::{Completed, ToolCalls, OutputLimit, Refusal(String), Error, Cancelled, Disconnected}`、`StreamEvent`、`ProviderError`、`Capabilities`。
+- `anthropic-messages`（P1-02）: `AnthropicAdapter::new(destination, capabilities, api_key)`、`build_request(conversation, system, tools, RequestOptions { effort, previous_last_item, disable_tools })`、`stream(&HttpClient, &request) -> AnthropicStream`。`AnthropicStream` は `cancellation()`・`poll(wait) -> Vec<StreamEvent>`・`finish() -> AssistantTurn` を持つ。誤りは `AnthropicError` で、`classification() -> ProviderError` でループの扱いを決める。SSE のイベントを読む部分は `AnthropicAssembler`（`read_event`・`is_finished`・`finish`）。P1-03 のアダプタは同じ形に揃える。

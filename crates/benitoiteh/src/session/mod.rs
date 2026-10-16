@@ -1,0 +1,363 @@
+//! セッションの記録、ロック、一時領域、保持期間の掃除（設計書 01-05、05-01「データの置き場所」）。
+
+mod id;
+mod record;
+mod replay;
+mod storage;
+mod text;
+
+pub use id::SessionId;
+pub use record::*;
+pub use replay::{read_records, replay};
+pub use storage::{SessionWriter, SpillWriter};
+
+use std::fmt;
+use std::fs::{self, DirBuilder, File};
+use std::io;
+use std::os::unix::fs::{DirBuilderExt, MetadataExt};
+use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex};
+use std::time::{Duration, SystemTime};
+
+use rustix::fs::{FlockOperation, Mode, OFlags, flock, open, openat};
+
+use crate::config::paths::DataPaths;
+use crate::safe_fs::{SafeFsError, ScopeRelPath, ScopeRoot};
+
+/// 記録の一行と、一つの出力の保存量の上限（末尾の印を除く）。
+pub const MAX_BYTES: usize = 16 * 1024 * 1024;
+/// 設定で変えない場合の保持期間。
+pub const DEFAULT_RETENTION_DAYS: u64 = 30;
+
+/// セッションの所有・形式・入出力の誤り。
+#[derive(Debug)]
+pub enum SessionError {
+    /// OS の入出力の失敗。
+    Io(io::Error),
+    /// データの範囲を越える読み取りなど。
+    SafeFs(SafeFsError),
+    /// 記録の JSON の誤り。
+    Json(serde_json::Error),
+    /// OS の乱数の取得の失敗。
+    Random(getrandom::Error),
+    /// 構文・権限・形式の制約。
+    Invalid(&'static str),
+    /// ほかのセッションがロックを保持している。
+    Locked,
+}
+
+impl fmt::Display for SessionError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Io(error) => write!(f, "{} {error}", text::IO_ERROR),
+            Self::SafeFs(error) => error.fmt(f),
+            Self::Json(error) => write!(f, "{} {error}", text::JSON_ERROR),
+            Self::Random(error) => write!(f, "{} {error}", text::RANDOM_ERROR),
+            Self::Invalid(message) => f.write_str(message),
+            Self::Locked => f.write_str(text::LOCKED),
+        }
+    }
+}
+
+impl std::error::Error for SessionError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::Io(error) => Some(error),
+            Self::SafeFs(error) => Some(error),
+            Self::Json(error) => Some(error),
+            Self::Random(_) | Self::Invalid(_) | Self::Locked => None,
+        }
+    }
+}
+
+impl From<io::Error> for SessionError {
+    fn from(error: io::Error) -> Self {
+        Self::Io(error)
+    }
+}
+impl From<SafeFsError> for SessionError {
+    fn from(error: SafeFsError) -> Self {
+        Self::SafeFs(error)
+    }
+}
+impl From<serde_json::Error> for SessionError {
+    fn from(error: serde_json::Error) -> Self {
+        Self::Json(error)
+    }
+}
+impl From<rustix::io::Errno> for SessionError {
+    fn from(error: rustix::io::Errno) -> Self {
+        Self::Io(error.into())
+    }
+}
+
+/// ロックと一時領域の寿命を共有するハンドル。最後の書き手が終わるまでロックを保つ。
+#[derive(Clone, Debug)]
+pub struct Session {
+    inner: Arc<SessionState>,
+}
+
+#[derive(Debug)]
+struct SessionState {
+    id: SessionId,
+    path: PathBuf,
+    spill: File,
+    log: Mutex<storage::LogState>,
+    _lock: File,
+    temporary: PathBuf,
+    temporary_identity: (u64, u64),
+}
+
+impl Session {
+    /// 排他に作ったデータ領域をロックしてから、共有の一時領域を作る。
+    pub fn create(paths: &DataPaths, id: SessionId) -> Result<Self, SessionError> {
+        let sessions = sessions_root(&paths.sessions_dir)?;
+        rustix::fs::mkdirat(&sessions, id.as_str(), Mode::RWXU)?;
+        let directory = open_directory_at(&sessions, id.as_str())?;
+        let path = crate::safe_fs::resolved_path(&directory)?;
+        let result = (|| {
+            let lock = create_file(&directory, "lock", OFlags::RDWR)?;
+            try_lock(&lock)?;
+            rustix::fs::mkdirat(&directory, "spill", Mode::RWXU)?;
+            let spill = open_directory_at(&directory, "spill")?;
+            let record = create_file(&directory, "session.jsonl", OFlags::WRONLY | OFlags::APPEND)?;
+            let temporary = paths.temporary_root.join(format!("benitoiteh-{id}"));
+            DirBuilder::new().mode(0o700).create(&temporary)?;
+            let metadata = fs::symlink_metadata(&temporary)?;
+            if !private_metadata(&metadata, true) {
+                return Err(SessionError::Invalid(text::UNSAFE_PATH));
+            }
+            Ok(Self {
+                inner: Arc::new(SessionState {
+                    id,
+                    path: path.clone(),
+                    spill,
+                    log: Mutex::new(storage::LogState::new(record)),
+                    _lock: lock,
+                    temporary,
+                    temporary_identity: (metadata.dev(), metadata.ino()),
+                }),
+            })
+        })();
+        if result.is_err() {
+            // 一時領域の作成に競合した場合、その既存の領域には触れない。
+            // セッションのデータだけは自分が排他に作った（設計書 01-05「一時ディレクトリ」）。
+            let _cleanup = fs::remove_dir_all(path);
+        }
+        result
+    }
+
+    /// このセッションの ID。
+    pub fn id(&self) -> &SessionId {
+        &self.inner.id
+    }
+
+    /// セッションの実のディレクトリ。
+    pub fn directory(&self) -> &Path {
+        &self.inner.path
+    }
+
+    /// 子プロセスの TMPDIR に渡すディレクトリ。
+    pub fn temporary_dir(&self) -> &Path {
+        &self.inner.temporary
+    }
+
+    /// 追記専用の書き手を開く。書き手もロックと一時領域の寿命を保持する。
+    pub fn writer(&self) -> Result<SessionWriter, SessionError> {
+        Ok(SessionWriter::open(self.clone()))
+    }
+
+    /// 内部の呼び出し ID から出力用の保存先を作る。
+    pub fn spill_writer(&self, tool_id: &str) -> Result<SpillWriter, SessionError> {
+        SpillWriter::open(self.clone(), tool_id)
+    }
+}
+
+impl Drop for SessionState {
+    fn drop(&mut self) {
+        if fs::symlink_metadata(&self.temporary)
+            .is_ok_and(|metadata| (metadata.dev(), metadata.ino()) == self.temporary_identity)
+        {
+            // 一時領域の中のリンクの先は消さない。ロックはこの後に解放される。
+            // （設計書 01-05「一時ディレクトリ」）。失敗時は次の起動の掃除で再試行する。
+            let _cleanup = fs::remove_dir_all(&self.temporary);
+        }
+    }
+}
+
+/// 起動時の掃除で削除した数。
+#[derive(Debug, Default, Eq, PartialEq)]
+pub struct CleanupReport {
+    pub temporary_removed: u64,
+    pub sessions_removed: u64,
+}
+
+/// 動いていないセッションの一時領域と、保持期間を過ぎた記録を掃除する。
+///
+/// 不正な名前・所有者・権限・リンク、およびロックがないセッションは保守的に残す。
+pub fn cleanup(
+    paths: &DataPaths,
+    retention_days: u64,
+    now: SystemTime,
+) -> Result<CleanupReport, SessionError> {
+    let sessions = sessions_root(&paths.sessions_dir)?;
+    let mut report = CleanupReport::default();
+    for entry in fs::read_dir(&paths.temporary_root)? {
+        let entry = entry?;
+        let name = entry.file_name();
+        let Some(id) = name
+            .to_str()
+            .and_then(|name| name.strip_prefix("benitoiteh-"))
+            .and_then(|name| name.parse::<SessionId>().ok())
+        else {
+            continue;
+        };
+        let metadata = fs::symlink_metadata(entry.path())?;
+        if !private_metadata(&metadata, true) {
+            continue;
+        }
+        let lock = inactive_lock(&sessions, &id)?;
+        if matches!(lock, Inactive::Busy) {
+            continue;
+        }
+        fs::remove_dir_all(entry.path())?;
+        report.temporary_removed = report.temporary_removed.saturating_add(1);
+        // lock は削除の間保持する。
+        drop(lock);
+    }
+    let retention = Duration::from_secs(retention_days.saturating_mul(86400));
+    for entry in fs::read_dir(&paths.sessions_dir)? {
+        let entry = entry?;
+        let Some(id) = entry
+            .file_name()
+            .to_str()
+            .and_then(|name| name.parse::<SessionId>().ok())
+        else {
+            continue;
+        };
+        if !now
+            .duration_since(id.started_at())
+            .is_ok_and(|age| age > retention)
+        {
+            continue;
+        }
+        let metadata = fs::symlink_metadata(entry.path())?;
+        if !private_metadata(&metadata, true) {
+            continue;
+        }
+        let lock = inactive_lock(&sessions, &id)?;
+        if let Inactive::Locked(_guard) = lock {
+            fs::remove_dir_all(entry.path())?;
+            report.sessions_removed = report.sessions_removed.saturating_add(1);
+        }
+    }
+    Ok(report)
+}
+
+enum Inactive {
+    Missing,
+    Busy,
+    Locked(File),
+}
+
+fn inactive_lock(sessions: &File, id: &SessionId) -> Result<Inactive, SessionError> {
+    let directory = match open_directory_at(sessions, id.as_str()) {
+        Ok(directory) => directory,
+        Err(SessionError::Io(error)) if error.kind() == io::ErrorKind::NotFound => {
+            return Ok(Inactive::Missing);
+        }
+        Err(SessionError::Invalid(_)) => return Ok(Inactive::Busy),
+        Err(error) => return Err(error),
+    };
+    let lock = match openat(
+        &directory,
+        "lock",
+        OFlags::RDWR | OFlags::NOFOLLOW | OFlags::NONBLOCK | OFlags::CLOEXEC,
+        Mode::empty(),
+    ) {
+        Ok(lock) => File::from(lock),
+        // 掃除は未完成のセッションや差し替わった要素を信用しない。
+        Err(_) => return Ok(Inactive::Busy),
+    };
+    if !private_metadata(&lock.metadata()?, false) {
+        return Ok(Inactive::Busy);
+    }
+    match try_lock(&lock) {
+        Ok(()) => Ok(Inactive::Locked(lock)),
+        Err(SessionError::Locked) => Ok(Inactive::Busy),
+        Err(error) => Err(error),
+    }
+}
+
+fn try_lock(file: &File) -> Result<(), SessionError> {
+    match flock(file, FlockOperation::NonBlockingLockExclusive) {
+        Ok(()) => Ok(()),
+        Err(error) if error == rustix::io::Errno::WOULDBLOCK => Err(SessionError::Locked),
+        Err(error) => Err(error.into()),
+    }
+}
+
+fn sessions_root(path: &Path) -> Result<File, SessionError> {
+    DirBuilder::new().recursive(true).mode(0o700).create(path)?;
+    let directory = File::from(open(
+        path,
+        OFlags::RDONLY | OFlags::DIRECTORY | OFlags::NOFOLLOW | OFlags::CLOEXEC,
+        Mode::empty(),
+    )?);
+    if !private_metadata(&directory.metadata()?, true) {
+        return Err(SessionError::Invalid(text::UNSAFE_PATH));
+    }
+    Ok(directory)
+}
+
+fn open_directory_at(parent: &File, name: &str) -> Result<File, SessionError> {
+    let directory = File::from(openat(
+        parent,
+        name,
+        OFlags::RDONLY | OFlags::DIRECTORY | OFlags::NOFOLLOW | OFlags::CLOEXEC,
+        Mode::empty(),
+    )?);
+    if !private_metadata(&directory.metadata()?, true) {
+        return Err(SessionError::Invalid(text::UNSAFE_PATH));
+    }
+    Ok(directory)
+}
+
+fn create_file(parent: &File, name: &str, flags: OFlags) -> Result<File, SessionError> {
+    let file = File::from(openat(
+        parent,
+        name,
+        flags | OFlags::CREATE | OFlags::EXCL | OFlags::NOFOLLOW | OFlags::CLOEXEC,
+        Mode::RUSR | Mode::WUSR,
+    )?);
+    if !private_metadata(&file.metadata()?, false) {
+        return Err(SessionError::Invalid(text::UNSAFE_PATH));
+    }
+    Ok(file)
+}
+
+fn private_metadata(metadata: &fs::Metadata, directory: bool) -> bool {
+    let (kind, mode) = if directory {
+        (metadata.is_dir(), 0o700)
+    } else {
+        (metadata.is_file() && metadata.nlink() == 1, 0o600)
+    };
+    kind && metadata.uid() == rustix::process::geteuid().as_raw()
+        && metadata.mode() & 0o7777 == mode
+}
+
+fn spill_path(path: &Path) -> Result<ScopeRelPath, SessionError> {
+    let relative = ScopeRelPath::new(path)?;
+    if path.components().count() != 2 || !path.starts_with("spill") {
+        return Err(SessionError::Invalid(text::INVALID_SPILL));
+    }
+    Ok(relative)
+}
+
+fn read_spill(root: &ScopeRoot, path: &Path) -> Result<File, SessionError> {
+    let file = root.open_read(&spill_path(path)?)?;
+    if !private_metadata(&file.metadata()?, false) {
+        return Err(SessionError::Invalid(text::UNSAFE_PATH));
+    }
+    Ok(file)
+}

@@ -90,7 +90,26 @@ impl Fixture {
     }
 
     fn run(&self, config: PolicyConfig, args: &[&OsStr], expected: i32) -> TestResult {
-        check(&self.command(config, args)?.output()?, expected);
+        self.run_case("probe", config, args, expected)
+    }
+
+    fn run_case(
+        &self,
+        phase: &str,
+        config: PolicyConfig,
+        args: &[&OsStr],
+        expected: i32,
+    ) -> TestResult {
+        let context = format!(
+            "phase={phase} program={} cwd={} args={args:?} policy={config:?}",
+            self.probe.display(),
+            self.root.display()
+        );
+        let output = self
+            .command(config, args)?
+            .output()
+            .map_err(|error| format!("{context}: {error}"))?;
+        check(&output, expected, &context);
         Ok(())
     }
 }
@@ -103,12 +122,14 @@ impl Drop for Fixture {
     }
 }
 
-fn check(output: &Output, expected: i32) {
+#[track_caller]
+fn check(output: &Output, expected: i32, context: &str) {
     assert_eq!(
         output.status.code(),
         Some(expected),
-        "status={}\n{}",
+        "{context}\nexpected={expected} status={}\nstdout:\n{}\nstderr:\n{}",
         output.status,
+        String::from_utf8_lossy(&output.stdout),
         String::from_utf8_lossy(&output.stderr)
     );
 }
@@ -150,12 +171,12 @@ fn kernel_landlock_and_seccomp_are_available() -> TestResult {
         String::from_utf8_lossy(&info.stdout),
         String::from_utf8_lossy(&info.stderr)
     );
-    check(&info, 0);
+    check(&info, 0, "environment/Landlock");
     let output = f
         .command(f.config(), &[OsStr::new("socketpair")])?
         .output()?;
     println!("{}", String::from_utf8_lossy(&output.stderr));
-    check(&output, 0);
+    check(&output, 0, "environment/seccomp");
     println!("seccomp=enabled (sandbox-probe socketpair succeeded after helper setup)");
     Ok(())
 }
@@ -273,8 +294,32 @@ fn executable_allowlist_is_inherited_and_writable_programs_are_denied() -> TestR
     let f = Fixture::new()?;
     let writable = f.writable.join("probe");
     fs::copy(&f.probe, &writable)?;
+    let unlisted = f.root.join("unlisted-probe");
+    fs::copy(&f.probe, &unlisted)?;
     let mut config = f.config();
     config.programs = ProgramAccess::Only(vec![f.probe.clone(), writable.clone()]);
+    // 読める静的な実行ファイルにも、読み取りの規則から実行権が漏れないことを試す。
+    // 動的ローダの拒否だけで通る否定のテストにしない（実装プラン P0-05「テスト」）。
+    for readable in [ReadAccess::All, ReadAccess::Roots(vec![f.root.clone()])] {
+        config.readable = readable;
+        f.run_case(
+            "execution/unlisted-readable",
+            config.clone(),
+            &[OsStr::new("read"), unlisted.as_os_str()],
+            0,
+        )?;
+        f.run_case(
+            "execution/unlisted-static",
+            config.clone(),
+            &[
+                OsStr::new("exec"),
+                unlisted.as_os_str(),
+                OsStr::new("socketpair"),
+            ],
+            10,
+        )?;
+    }
+    config.readable = ReadAccess::All;
     f.run(
         config.clone(),
         &[
@@ -353,14 +398,32 @@ fn dynamic_loader_must_be_denied_to_confine_execution() -> TestResult {
         })
         .ok_or("The Alpine musl loader was not found")?;
     let loader = fs::canonicalize(loader.path())?;
+    // 正規化した実のパスは許可一覧に使い、起動には /bin/sh の別名を保つ。
+    // busybox を argv[0]=busybox で起動すると、次の -c を applet 名と解釈するためである。
+    // サンドボックスなしの対照で、ローダへの引数の誤りを拒否と取り違えない。
+    let output = Command::new(&loader)
+        .args(["/bin/sh", "-c", "exit 0"])
+        .env_clear()
+        .current_dir(&f.root)
+        .output()?;
+    check(
+        &output,
+        0,
+        &format!(
+            "dynamic/unsandboxed-loader loader={} shell={}",
+            loader.display(),
+            shell.display()
+        ),
+    );
     let mut config = f.config();
     config.programs = ProgramAccess::Only(vec![f.probe.clone()]);
-    f.run(
+    f.run_case(
+        "dynamic/loader-denied",
         config.clone(),
         &[
             OsStr::new("exec"),
             loader.as_os_str(),
-            shell.as_os_str(),
+            OsStr::new("/bin/sh"),
             OsStr::new("-c"),
             OsStr::new("exit 0"),
         ],
@@ -368,11 +431,12 @@ fn dynamic_loader_must_be_denied_to_confine_execution() -> TestResult {
     )?;
     // shell 自身の実行を許しても、ELF の interpreter の実行権がなければ拒まれる。
     config.programs = ProgramAccess::Only(vec![f.probe.clone(), shell.clone()]);
-    f.run(
+    f.run_case(
+        "dynamic/interpreter-denied",
         config.clone(),
         &[
             OsStr::new("exec"),
-            shell.as_os_str(),
+            OsStr::new("/bin/sh"),
             OsStr::new("-c"),
             OsStr::new("exit 0"),
         ],
@@ -380,22 +444,24 @@ fn dynamic_loader_must_be_denied_to_confine_execution() -> TestResult {
     )?;
     // ローダにだけ実行権を与えると、shell は実行権なしでも読み取って写せてしまう。
     config.programs = ProgramAccess::Only(vec![f.probe.clone(), loader.clone()]);
-    f.run(
+    f.run_case(
+        "dynamic/program-denied",
         config.clone(),
         &[
             OsStr::new("exec"),
-            shell.as_os_str(),
+            OsStr::new("/bin/sh"),
             OsStr::new("-c"),
             OsStr::new("exit 0"),
         ],
         10,
     )?;
-    f.run(
+    f.run_case(
+        "dynamic/loader-reads-unlisted-program",
         config,
         &[
             OsStr::new("exec"),
             loader.as_os_str(),
-            shell.as_os_str(),
+            OsStr::new("/bin/sh"),
             OsStr::new("-c"),
             OsStr::new("exit 0"),
         ],
@@ -476,7 +542,11 @@ fn setup_failures_do_not_execute_the_program_and_cloexec_descriptors_do_not_leak
             .current_dir(&f.root)
             .process_group(0)
             .output()?;
-        check(&output, 125);
+        check(
+            &output,
+            125,
+            &format!("setup/descriptors inherited={}", inherited.display()),
+        );
         let stderr = String::from_utf8_lossy(&output.stderr);
         assert!(stderr.contains("descriptors"), "{stderr}");
         assert_eq!(fs::read(&marker)?, b"unchanged");
@@ -493,7 +563,7 @@ fn setup_failures_do_not_execute_the_program_and_cloexec_descriptors_do_not_leak
     ] {
         let output = Command::new(&f.helper)
             .arg("__sandbox")
-            .arg(json)
+            .arg(&json)
             .arg("--")
             .arg(&f.probe)
             .arg("write")
@@ -501,7 +571,7 @@ fn setup_failures_do_not_execute_the_program_and_cloexec_descriptors_do_not_leak
             .env_clear()
             .current_dir(&f.root)
             .output()?;
-        check(&output, 125);
+        check(&output, 125, &format!("setup/{stage} policy={json}"));
         let stderr = String::from_utf8_lossy(&output.stderr);
         assert_eq!(stderr.lines().count(), 1, "{stderr}");
         assert!(stderr.contains(stage), "{stderr}");
@@ -512,7 +582,7 @@ fn setup_failures_do_not_execute_the_program_and_cloexec_descriptors_do_not_leak
     let output = f
         .command(config, &[OsStr::new("write"), marker.as_os_str()])?
         .output()?;
-    check(&output, 125);
+    check(&output, 125, "setup/exec: empty executable allowlist");
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert_eq!(stderr.lines().count(), 1, "{stderr}");
     assert!(stderr.contains("exec"), "{stderr}");

@@ -1,0 +1,284 @@
+//! Chat Completions の差分を index ごとに結び、元の発言を保つ（設計書 02-01「共通の形」「OpenAI の Chat Completions API」）。
+
+use std::collections::BTreeMap;
+
+use serde_json::{Value, json};
+
+use crate::provider::ids::remap_tool_call_id;
+use crate::provider::sse::SseEvent;
+use crate::provider::{
+    AdapterKind, AssistantPart, AssistantTurn, Destination, FinishReason, ProviderError, RawItems,
+    Reasoning, StreamEvent, ToolCall, Usage,
+};
+
+use super::{OpenAiChatError, api_error, provider_error};
+
+/// 一回の要求に対応する組み立て器。Debug で受け取った本文を表示しない。
+pub struct OpenAiChatAssembler {
+    destination: Destination,
+    content: Option<String>,
+    reasoning: Option<String>,
+    parts: Vec<AssistantPart>,
+    calls: BTreeMap<usize, Call>,
+    usage: Value,
+    reason: Option<FinishReason>,
+    finished: bool,
+    failed: bool,
+}
+
+#[derive(Default)]
+struct Call {
+    id: String,
+    name: String,
+    arguments: String,
+    deltas: Vec<String>,
+}
+
+impl std::fmt::Debug for OpenAiChatAssembler {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("OpenAiChatAssembler")
+            .field("finished", &self.finished)
+            .finish_non_exhaustive()
+    }
+}
+
+impl OpenAiChatAssembler {
+    /// 送り先を RawItems に記録する組み立て器を作る。
+    pub fn new(destination: Destination) -> Self {
+        Self {
+            destination,
+            content: None,
+            reasoning: None,
+            parts: Vec::new(),
+            calls: BTreeMap::new(),
+            usage: Value::Null,
+            reason: None,
+            finished: false,
+            failed: false,
+        }
+    }
+
+    /// 一つの SSE イベントを読み、共通のイベントを返す。不正な応答の後は再開しない。
+    pub fn read_event(&mut self, event: &SseEvent) -> Result<Vec<StreamEvent>, OpenAiChatError> {
+        if self.failed || self.finished {
+            return Err(OpenAiChatError::InvalidResponse);
+        }
+        let result = self.read_inner(event);
+        if result.is_err() {
+            self.failed = true;
+        }
+        result
+    }
+
+    /// [DONE] まで確認したかを返す。finish_reason だけでは完了としない。
+    pub fn is_finished(&self) -> bool {
+        self.finished
+    }
+
+    /// 正常に受け取り終えた発言と共通の応答を取り出す。途中の内容は返さない。
+    pub fn finish(self) -> Result<AssistantTurn, OpenAiChatError> {
+        if self.failed || !self.finished {
+            return Err(provider_error(ProviderError::StreamDisconnected));
+        }
+        let mut parts = self.parts;
+        let mut raw_calls = Vec::new();
+        for call in self.calls.into_values() {
+            raw_calls.push(json!({
+                "id": call.id, "type": "function",
+                "function": {"name": call.name, "arguments": call.arguments}
+            }));
+            parts.push(AssistantPart::ToolCall(ToolCall {
+                id: format!("openai-chat-{}", remap_tool_call_id(&call.id)),
+                provider_id: Some(call.id),
+                provider_item_id: None,
+                name: call.name,
+                arguments: serde_json::from_str(&call.arguments).unwrap_or(Value::Null),
+                raw_arguments: call.arguments,
+            }));
+        }
+        if parts.is_empty() && !matches!(self.reason, Some(FinishReason::Refusal(_))) {
+            return Err(provider_error(ProviderError::EmptyResponse));
+        }
+        let mut raw = serde_json::Map::new();
+        raw.insert("role".into(), json!("assistant"));
+        raw.insert("content".into(), json!(self.content));
+        if let Some(reasoning) = self.reasoning {
+            raw.insert("reasoning_content".into(), json!(reasoning));
+        }
+        if !raw_calls.is_empty() {
+            raw.insert("tool_calls".into(), json!(raw_calls));
+        }
+        Ok(AssistantTurn {
+            parts,
+            raw_items: RawItems {
+                destination: self.destination,
+                adapter: AdapterKind::OpenAiChat,
+                items: vec![Value::Object(raw)],
+            },
+            finish_reason: self.reason.ok_or(OpenAiChatError::InvalidResponse)?,
+            usage: normalize_usage(&self.usage),
+        })
+    }
+
+    fn read_inner(&mut self, event: &SseEvent) -> Result<Vec<StreamEvent>, OpenAiChatError> {
+        if !matches!(event.event.as_str(), "message" | "error") {
+            return Ok(Vec::new());
+        }
+        if event.data == "[DONE]" {
+            let reason = self
+                .reason
+                .clone()
+                .ok_or(OpenAiChatError::InvalidResponse)?;
+            self.finished = true;
+            return Ok(vec![StreamEvent::Finished { reason }]);
+        }
+        let data: Value =
+            serde_json::from_str(&event.data).map_err(|_| OpenAiChatError::InvalidResponse)?;
+        if data.get("error").is_some() {
+            return Err(api_error(&data, None, None));
+        }
+        let choices = data
+            .get("choices")
+            .and_then(Value::as_array)
+            .ok_or(OpenAiChatError::InvalidResponse)?;
+        let mut events = Vec::new();
+        if let Some(choice) = choices.first() {
+            if self.reason.is_some() {
+                return Err(OpenAiChatError::InvalidResponse);
+            }
+            let delta = choice
+                .get("delta")
+                .filter(|d| d.is_object())
+                .ok_or(OpenAiChatError::InvalidResponse)?;
+            if let Some(text) = optional_string(delta, "content")? {
+                self.content.get_or_insert_default().push_str(text);
+                if !text.is_empty() {
+                    match self.parts.last_mut() {
+                        Some(AssistantPart::Text(value)) => value.push_str(text),
+                        _ => self.parts.push(AssistantPart::Text(text.into())),
+                    }
+                    events.push(StreamEvent::TextDelta {
+                        index: 0,
+                        text: text.into(),
+                    });
+                }
+            }
+            for field in ["reasoning_content", "reasoning"] {
+                if let Some(text) = optional_string(delta, field)? {
+                    self.reasoning.get_or_insert_default().push_str(text);
+                    if !text.is_empty() {
+                        match self.parts.last_mut() {
+                            Some(AssistantPart::Reasoning(value)) => value.text.push_str(text),
+                            _ => self.parts.push(AssistantPart::Reasoning(Reasoning {
+                                text: text.into(),
+                                opaque: Value::Null,
+                            })),
+                        }
+                        events.push(StreamEvent::ReasoningDelta {
+                            index: 0,
+                            text: text.into(),
+                        });
+                    }
+                }
+            }
+            if let Some(calls) = delta.get("tool_calls").filter(|v| !v.is_null()) {
+                for delta in calls.as_array().ok_or(OpenAiChatError::InvalidResponse)? {
+                    let index = delta
+                        .get("index")
+                        .and_then(Value::as_u64)
+                        .and_then(|i| usize::try_from(i).ok())
+                        .ok_or(OpenAiChatError::InvalidResponse)?;
+                    let call = self.calls.entry(index).or_default();
+                    if let Some(id) = optional_string(delta, "id")? {
+                        call.id.push_str(id);
+                    }
+                    if let Some(function) = delta.get("function").filter(|v| !v.is_null()) {
+                        if !function.is_object() {
+                            return Err(OpenAiChatError::InvalidResponse);
+                        }
+                        if let Some(name) = optional_string(function, "name")? {
+                            call.name.push_str(name);
+                        }
+                        if let Some(arguments) = optional_string(function, "arguments")? {
+                            call.arguments.push_str(arguments);
+                            call.deltas.push(arguments.into());
+                        }
+                    }
+                }
+            }
+            if let Some(reason) = optional_string(choice, "finish_reason")? {
+                self.reason = Some(match reason {
+                    "stop" => FinishReason::Completed,
+                    "tool_calls" => FinishReason::ToolCalls,
+                    "length" => FinishReason::OutputLimit,
+                    "content_filter" => FinishReason::Refusal("content_filter".into()),
+                    _ => FinishReason::Error,
+                });
+                self.end_calls(&mut events)?;
+            }
+        }
+        if let Some(usage) = data.get("usage").filter(|v| !v.is_null()) {
+            let usage = usage.as_object().ok_or(OpenAiChatError::InvalidResponse)?;
+            if self.usage.is_null() {
+                self.usage = json!({});
+            }
+            self.usage
+                .as_object_mut()
+                .ok_or(OpenAiChatError::InvalidResponse)?
+                .extend(usage.clone());
+            events.push(StreamEvent::Usage {
+                usage: normalize_usage(&self.usage),
+            });
+        }
+        Ok(events)
+    }
+
+    fn end_calls(&self, events: &mut Vec<StreamEvent>) -> Result<(), OpenAiChatError> {
+        for (&index, call) in &self.calls {
+            if call.id.is_empty() || call.name.is_empty() {
+                return Err(OpenAiChatError::InvalidResponse);
+            }
+            // id と名前も断片なので、finish_reason まで確定しない。未確定の名前で
+            // Start を出さず、引数の差分も Start の後に渡す（実装プラン P1-03）。
+            events.push(StreamEvent::ToolCallStart {
+                index,
+                provider_id: Some(call.id.clone()),
+                provider_item_id: None,
+                name: call.name.clone(),
+            });
+            events.extend(
+                call.deltas
+                    .iter()
+                    .map(|delta| StreamEvent::ToolArgumentsDelta {
+                        index,
+                        delta: delta.clone(),
+                    }),
+            );
+            events.push(StreamEvent::ToolCallEnd { index });
+        }
+        Ok(())
+    }
+}
+
+fn optional_string<'a>(value: &'a Value, name: &str) -> Result<Option<&'a str>, OpenAiChatError> {
+    value
+        .get(name)
+        .filter(|v| !v.is_null())
+        .map(|v| v.as_str().ok_or(OpenAiChatError::InvalidResponse))
+        .transpose()
+}
+
+fn normalize_usage(raw: &Value) -> Usage {
+    Usage {
+        input_tokens: raw.get("prompt_tokens").and_then(Value::as_u64),
+        cache_read_tokens: raw
+            .pointer("/prompt_tokens_details/cached_tokens")
+            .and_then(Value::as_u64),
+        cache_write_tokens: None,
+        output_tokens: raw.get("completion_tokens").and_then(Value::as_u64),
+        reasoning_tokens: raw
+            .pointer("/completion_tokens_details/reasoning_tokens")
+            .and_then(Value::as_u64),
+        raw: raw.clone(),
+    }
+}

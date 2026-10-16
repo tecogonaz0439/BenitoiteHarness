@@ -12,13 +12,25 @@ path = "src/lib.rs"
 name = "benitoiteh"
 path = "src/main.rs"
 
+[[example]]
+name = "size_probe"
+path = "examples/size_probe.rs"
+
 [lints]
 workspace = true
 
 [dependencies]
+signal-hook = { version = "=0.4.5", default-features = false }
+similar = { version = "=3.2.0", default-features = false, features = ["text"] }
+ignore = { version = "=0.4.33", default-features = false }
+globset = { version = "=0.4.20", default-features = false }
+regex = { version = "=1.13.1", default-features = false, features = ["std", "perf", "unicode"] }
+getrandom = { version = "=0.4.3", default-features = false }
+toml = { version = "=1.1.8", default-features = false, features = ["std", "parse", "serde"] }
 serde = { version = "=1.0.229", default-features = false, features = ["std", "derive"] }
 serde_json = { version = "=1.0.151", default-features = false, features = ["std"] }
-rustix = { version = "=1.1.5", default-features = false, features = ["std", "fs"] }
+sha2 = { version = "=0.11.0", default-features = false }
+rustix = { version = "=1.1.5", default-features = false, features = ["std", "fs", "process"] }
 ureq = { version = "=3.4.2", default-features = false, features = ["rustls-no-provider", "platform-verifier"] }
 rustls = { version = "=0.23.45", default-features = false, features = ["std", "tls12"] }
 rustls-graviola = { version = "=0.4.0", default-features = false }
@@ -28,3 +40,7 @@ landlock = { version = "=0.4.7", default-features = false }
 seccompiler = { version = "=0.5.0", default-features = false }
 libc = { version = "=0.2.190", default-features = false }
 rustix = { version = "=1.1.5", default-features = false, features = ["thread", "system"] }
+
+[dev-dependencies]
+crossterm = { version = "=0.29.0", default-features = false, features = ["events", "bracketed-paste"] }
+unicode-width = { version = "=0.2.2", default-features = false }
