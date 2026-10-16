@@ -33,7 +33,7 @@ assets/benitoite/v0.0.6/      取り込んだ Skill（手で直さない）
 | `safe_fs` | 範囲の根のディレクトリの記述子から相対に、範囲の外へ出ない形でファイルを開き、読み、書き、名前を付け替え、消す（[道具](../design/01-agent/01-03-tools.md)の「道具の定義の共通の規則」） | P0-02 |
 | `http` | HTTP と TLS の設定、ストリーミングの応答の読み取り、打ち切り、データが届かない時間の見張り、名前の解決の差し替え（[提供者の層](../design/02-providers/02-01-provider-layer.md)の「HTTP の通信」） | P0-03 |
 
-`safe_fs` と `http` は、依存の向きで `config` と同じ最下層に置き、ほかのモジュールに依存しない。`provider`（P1）と `tools` の `web_fetch`（P4）が `http` を使い、`tools`・`session`・`sandbox`（書ける場所の検査）が `safe_fs` を使う。
+`safe_fs` と `http` は、依存の向きで `config` と同じ最下層に置き、ほかのモジュールに依存しない。`provider`（P1）と `tools` の `web_fetch`（P4）が `http` を使い、`tools`・`session`・`config`（書ける場所の検査、P1-04）が `safe_fs` を使う。
 
 P0 で作るモジュールは `cli`（`--version`・`--help`・`__sandbox` の入口だけ）、`safe_fs`、`http`、`sandbox` である。ほかのモジュールは P1 で作る。
 
@@ -53,9 +53,10 @@ P0 で作るモジュールは `cli`（`--version`・`--help`・`__sandbox` の�
 | `sha2` | `=0.11.0` | P1 | Benitoite と同じ |
 | `regex` | `=1.13.1` | P1 | Benitoite と同じ |
 | `signal-hook` | `=0.4.5` | P1 | Benitoite と同じ |
-| `toml` | `=1.1.8` | P1 | 既定の機能を切る |
-| `ignore` | `=0.4.33` | P1 | `globset` を含む |
-| `similar` | `=3.2.0` | P1 | |
+| `toml` | `=1.1.8` | P1 | 既定の機能を切り、`std`・`parse`・`serde` を有効にする |
+| `ignore` | `=0.4.33` | P1 | |
+| `globset` | `=0.4.20` | P1 | `ignore` が依存する版。`ignore` は `globset` を再公開しないので直接加える |
+| `similar` | `=3.2.0` | P1 | 機能 `text` |
 | `landlock` | `=0.4.7` | P0-05 | Linux だけ（`[target.'cfg(target_os = "linux")'.dependencies]`） |
 | `seccompiler` | `=0.5.0` | P0-05 | Linux だけ |
 | `libc` | `=0.2.190` | P0-05 | Linux だけ。seccomp の規則の呼び出しの番号と `AF_*`・`SOCK_*` の定数を得るためだけに使い、`unsafe` の関数を呼ばない。Benitoite の `v0.0.6` の `Cargo.lock` と同じ版 |

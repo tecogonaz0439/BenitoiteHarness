@@ -21,11 +21,11 @@
    - Anthropic、OpenAI の Chat Completions、Responses のどの形の台本も書けるように、形に依らない作りにする。
    - 台本の SSE は、Anthropic の文書の形に従って手で書く（`message_start`、`content_block_start`、`content_block_delta` の `text_delta`・`thinking_delta`・`signature_delta`・`input_json_delta`、`content_block_stop`、`message_delta`（`stop_reason` と `usage`）、`message_stop`、`ping`、`error`）。台本を作る補助の関数を置いてよい。
 2. `crates/benitoiteh/src/provider/anthropic.rs`。
-   - 要求: `POST {base_url}/v1/messages`、ヘッダ `x-api-key`、`anthropic-version: 2023-06-01`、`content-type: application/json`。本文は `model`、`max_tokens`、`system`、`tools`、`messages`、`stream: true`、`thinking: {type: "adaptive"}`、`output_config: {effort: <値>}`。`max_tokens` は、`Capabilities` の `max_output_tokens` があればその値、なければ 32,000 とする。
+   - 要求: `POST {base_url}/v1/messages`、ヘッダ `x-api-key`、`anthropic-version: 2023-06-01`、`content-type: application/json`。本文は `model`、`max_tokens`、`system`、`tools`、`messages`、`stream: true`、`thinking: {type: "adaptive"}`、`output_config: {effort: <値>}`。`thinking` と `output_config.effort` は機能の表に依らず常に付ける。effort の値は設定の値、なければ `high` とする（02-01）。`max_tokens` は、`Capabilities` の `max_output_tokens` があればその値、なければ 32,000 とする。
    - 道具の定義: `ToolSpec` を Anthropic の形に変え、`strict_tools` があれば `strict: true`、`eager_input_streaming` があれば `eager_input_streaming: true` を付ける。`tool_choice` は、圧縮のための `none` のほかは付けない（02-01）。
    - `cache_control`（機能の表で有効なとき）: システムプロンプトの最後、前の要求の会話の最後の項目、今の要求の会話の最後の項目の三か所に `{"type": "ephemeral"}` を付ける（02-01）。前の要求の最後の項目がどれかは、呼び出す側が与える（会話の中の位置）。
    - 会話の変換: 同じ送り先の応答は `RawItems` の content block をそのまま送る（02-01 の「共通の形」）。違う送り先の応答は、共通の形から作り、推論の内容は送らず、道具の呼び出しの ID を P1-01 の対応の関数で作る。`reasoning_replay` が `None` のときも推論を送らない。道具の結果は、利用者の発言の中の `tool_result` の block（`tool_use_id`、`content`、`is_error`）にする。同じ応答の道具の結果は一つの利用者の発言にまとめる。
-   - ストリームの変換: SSE のイベントを `StreamEvent` に変え、受け取り終えたら、content block を受け取った順に並べた `RawItems` と `AssistantTurn` を作る。content block の元の形（`thinking` の `signature`、`redacted_thinking`、`tool_use` の `id`・`name`・`input`）を、受け取った値から組み立てて保つ。`tool_use` の `input` は、`input_json_delta` の断片をつないで JSON として読む（読めなければ、その呼び出しを引数の誤りとして `AssistantTurn` に残し、P1-09 が結果を誤りにする）。
+   - ストリームの変換: SSE のイベントを `StreamEvent` に変え、受け取り終えたら、content block を受け取った順に並べた `RawItems` と `AssistantTurn` を作る。content block の元の形（`thinking` の `signature`、`redacted_thinking`、`tool_use` の `id`・`name`・`input`）を、受け取った値から組み立てて保つ。`tool_use` の `input` は、`input_json_delta` の断片をつないで JSON として読む（読めなければ、その呼び出しを引数の誤りとして `AssistantTurn` に残し、P1-09 が結果を誤りにする）。読めなかった `tool_use` の `input` は、`RawItems` の中で `{}` に置き換え、受け取った文字列は `ToolCall` の受け取った引数の文字列に残す。理由: 読めない値をそのまま送り返すと 400 の誤りになる。thinking の block の署名は thinking の内容に結び付くので、`tool_use` の `input` を置き換えても、thinking の block は送り返してよい。
    - 終わりの理由: `stop_reason` の `end_turn`・`stop_sequence` は終わった、`tool_use` は道具の呼び出し、`max_tokens` は出力の上限、`refusal` は拒否（`stop_details.category` を持つ）、`pause_turn` は終わった（P1 では続きを求めない。報告に書く）。`message_stop` を受け取る前にストリームが切れたら切断とする。
    - 使ったトークンの量: `message_start` と `message_delta` の `usage` から、入力の全体を `input_tokens + cache_read_input_tokens + cache_creation_input_tokens` とし（02-01）、報告のない項目は `None` とする。
    - 誤り: HTTP の 429・500〜599・529 と、ストリームの中の `error` のイベントの `overloaded_error` はやり直せる。401・403 は認証、400 は要求の形（本文の `error.type` と `message` を保つ）、文脈の超過（400 で、文書の示す超過の誤り。分からなければ文言 `prompt is too long` を含むもの）を分ける。`Retry-After` を保つ。
@@ -42,7 +42,7 @@
 
 - 文と道具の呼び出しと thinking が交互に並ぶ応答から、順序と ID と署名を変えない `RawItems` と、同じ順の `AssistantTurn` ができる。
 - 同じ送り先へ次の要求を作ると、前の応答の content block が順序と ID と署名を変えずに送られる（模擬の提供者が記録した本文で確かめる）。違う送り先では、推論が送られず、ID が Anthropic の形になる。
-- 要求の本文の `cache_control` の位置（三か所）、`thinking`・`output_config.effort`・`strict`・`eager_input_streaming` の有無（機能の表で切ったときに付かない）。
+- 要求の本文の `cache_control` の位置（三か所）と、`cache_control`・`strict`・`eager_input_streaming` の有無（機能の表で切ったときに付かない）。`thinking` と `output_config.effort`（既定 `high`）がいつも付く。
 - `max_tokens` で終わった応答、`refusal`、`message_stop` の前の切断、`error` のイベント、429（`Retry-After`）、529、401、400 の分類。
 - `usage` の入力の全体の足し方と、報告のない項目が `None` になること。
 
