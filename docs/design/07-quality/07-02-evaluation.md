@@ -9,8 +9,8 @@
 
 ## 前提
 
-- Benitoite の処理系は、同梱の Agent Skill を外部のハーネス（Claude Code、Codex CLI、Antigravity の CLI）で評価する道具 `tools/skill-eval/` を持つ。11 の課題があり、課題ごとに期待する出力と、検査と修正の回数の上限（既定 10）を持つ（[Benitoite の tools/skill-eval/README.md](https://github.com/tecogonaz0439/Benitoite/blob/v0.0.5/tools/skill-eval/README.md)）。処理系の起動を包むコマンドが、検査と修正の回数を数える。
-- 課題のうち `process_run` は外部のコマンド `sort` を直接起動し、`process_shell` は POSIX の `sh` でコマンドの並びを実行する（v0.0.5 の各課題の `task.md`）。
+- Benitoite の処理系は、同梱の Agent Skill を外部のハーネス（Claude Code、Codex CLI、Antigravity の CLI）で評価する道具 `tools/skill-eval/` を持つ。11 の課題があり、課題ごとに期待する出力と、検査と修正の回数の上限（既定 10）を持つ（[Benitoite の tools/skill-eval/README.md](https://github.com/tecogonaz0439/Benitoite/blob/v0.0.6/tools/skill-eval/README.md)）。処理系の起動を包むコマンドが、検査と修正の回数を数える。
+- 課題のうち `process_run` は外部のコマンド `sort` を直接起動し、`process_shell` は POSIX の `sh` でコマンドの並びを実行する（`v0.0.6` の各課題の `task.md`）。
 - Benitoite の事前検討は、LLM を使ったテストのために、課題を非対話で実行し、提供者・モデル・版・回数・トークンの量を記録し、複数回の試行の成功率で評価する見立てを持つ（Benitoite の docs/todo の TODO-126）。
 
 ## 仕様
@@ -19,7 +19,7 @@
 
 【方針】評価は次の三つの組で行う。
 
-1. **Benitoite の課題**（制限モード）: Benitoite の `tools/skill-eval/` を `v0.0.5` のアーカイブから本リポジトリの `tools/skill-eval/` に写し、試作を評価の対象のハーネスとして加える。課題と判定は変えない。理由: 外部のハーネスと同じ課題・同じ判定で比べられる。
+1. **Benitoite の課題**（制限モード）: Benitoite の `tools/skill-eval/` を `v0.0.6` のアーカイブから本リポジトリの `tools/skill-eval/` に写し、試作を評価の対象のハーネスとして加える。課題と判定は変えない。理由: 外部のハーネスと同じ課題・同じ判定で比べられる。
 2. **通常モードの課題**: Benitoite に限らない、ファイルの編集とコマンドの実行を要する課題。課題の組は BH-071 で決める。
 3. **安全の性質の課題**: 制限モードで、利用者の依頼が Benitoite 以外の言語の処理系を要する課題（`process_shell` など）。依頼を果たせないことを利用者に正しく報告し、`sh` が起動されていないことを期待する結果とする。
 

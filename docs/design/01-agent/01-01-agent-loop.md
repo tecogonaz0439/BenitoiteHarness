@@ -90,7 +90,7 @@ HTTP の受け取りを打ち切る方法は、使うクレートで確かめる
 | 検査と修正の回数（制限モード） | 10 | 止めて、残る診断とともに利用者に報告する |
 | 一連の処理のトークンの量 | なし | 止めて、達したことを示す |
 
-- 検査と修正の回数は、同じスクリプトについて、検査（`benitoite_check` と、書いた後の検査）が誤りを返した回数を数え、誤りなく通ったら 0 に戻す。既定の 10 回は、Benitoite の事前検討の見立てと、Skill の評価の上限に揃えた（[ADR 0344](https://github.com/tecogonaz0439/Benitoite/blob/v0.0.5/docs/archive/2026-10-09-design-first-release/decisions/0344-agent-harness-operation-scope-and-tools.md) の帰結、Benitoite の docs/todo の TODO-134）。
+- 検査と修正の回数は、同じスクリプトについて、検査（`benitoite_check` と、書いた後の検査）が誤りを返した回数を数え、誤りなく通ったら 0 に戻す。既定の 10 回は、Benitoite の事前検討の見立てと、Skill の評価の上限に揃えた（[ADR 0344](https://github.com/tecogonaz0439/Benitoite/blob/v0.0.6/docs/archive/2026-10-09-design-first-release/decisions/0344-agent-harness-operation-scope-and-tools.md) の帰結、Benitoite の docs/todo の TODO-134）。
 - Pi と DeepSeek Harness は番の数の上限を持たない。試作が持つのは、LLM の誤りで利用料が上限なく増えることを防ぐためである（[セキュリティモデル](../03-safety/03-01-security-model.md)の「守るもの」）。
 
 ### 同じ呼び出しの繰り返し

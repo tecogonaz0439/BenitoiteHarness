@@ -9,9 +9,9 @@
 
 ## 前提
 
-- Benitoite は、利用者が言語を学ばずに、LLM によるスクリプトの作成と修正を通じて作業を自動化できることを目指す、静的型付きの関数型スクリプト言語である。利用者は作業と許可する操作を決め、処理系は型とエフェクトの規則への適合を検査し、LLM はコードの作成・修正と診断の説明を担う（[Benitoite の設計書 00-01「目的と設計原則」](https://github.com/tecogonaz0439/Benitoite/blob/v0.0.5/docs/design/00-overview/00-01-goals.md)）。
-- Benitoite の事前検討は、処理系が自前のエージェントハーネスを持つことを、初回リリース版の後の機能として検討した。目的は、操作の範囲を型とエフェクトで限り、実行の前の確認を処理系が強制できる入口を作ることと、LLM を使ったテスト（構文の測定と Skill の評価）を処理系と一体で制御することである（[06-08「エージェントハーネス」](https://github.com/tecogonaz0439/Benitoite/blob/v0.0.5/docs/archive/2026-10-09-design-first-release/06-tooling/06-08-agent-harness.md)、Benitoite の docs/todo の TODO-124）。
-- 事前検討は、エージェントハーネスをサーバモード（実行時の権限制御と OS のサンドボックスを持つデーモン）の後に作り、サーバモードのない版で動かす経路を作らないと定めた（[ADR 0342](https://github.com/tecogonaz0439/Benitoite/blob/v0.0.5/docs/archive/2026-10-09-design-first-release/decisions/0342-agent-harness-after-server-mode.md) の決定 3）。サーバモードは、最新のリリース `v0.0.5` の時点で実装されていない。
+- Benitoite は、利用者が言語を学ばずに、LLM によるスクリプトの作成と修正を通じて作業を自動化できることを目指す、静的型付きの関数型スクリプト言語である。利用者は作業と許可する操作を決め、処理系は型とエフェクトの規則への適合を検査し、LLM はコードの作成・修正と診断の説明を担う（[Benitoite の設計書 00-01「目的と設計原則」](https://github.com/tecogonaz0439/Benitoite/blob/v0.0.6/docs/design/00-overview/00-01-goals.md)）。
+- Benitoite の事前検討は、処理系が自前のエージェントハーネスを持つことを、初回リリース版の後の機能として検討した。目的は、操作の範囲を型とエフェクトで限り、実行の前の確認を処理系が強制できる入口を作ることと、LLM を使ったテスト（構文の測定と Skill の評価）を処理系と一体で制御することである（[06-08「エージェントハーネス」](https://github.com/tecogonaz0439/Benitoite/blob/v0.0.6/docs/archive/2026-10-09-design-first-release/06-tooling/06-08-agent-harness.md)、Benitoite の docs/todo の TODO-124）。
+- 事前検討は、エージェントハーネスをサーバモード（実行時の権限制御と OS のサンドボックスを持つデーモン）の後に作り、サーバモードのない版で動かす経路を作らないと定めた（[ADR 0342](https://github.com/tecogonaz0439/Benitoite/blob/v0.0.6/docs/archive/2026-10-09-design-first-release/decisions/0342-agent-harness-after-server-mode.md) の決定 3）。サーバモードは、最新のリリース `v0.0.6` の時点で実装されていない。
 
 ## 仕様
 

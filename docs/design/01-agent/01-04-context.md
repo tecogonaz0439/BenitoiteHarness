@@ -9,7 +9,7 @@
 
 ## 前提
 
-- Benitoite の事前検討は、初めの指示に `SKILL.md` に当たる内容を入れ、参照の文書は必要なときに読ませる形を見立てとし、圧縮と会話の保存・再開は初めは設けないとした（Benitoite の docs/todo の TODO-134。[検討メモ](https://github.com/tecogonaz0439/Benitoite/blob/v0.0.5/docs/archive/2026-10-09-design-first-release/sources/post-first-release/post-first-release-agent-harness.md)の「文脈の管理」）。
+- Benitoite の事前検討は、初めの指示に `SKILL.md` に当たる内容を入れ、参照の文書は必要なときに読ませる形を見立てとし、圧縮と会話の保存・再開は初めは設けないとした（Benitoite の docs/todo の TODO-134。[検討メモ](https://github.com/tecogonaz0439/Benitoite/blob/v0.0.6/docs/archive/2026-10-09-design-first-release/sources/post-first-release/post-first-release-agent-harness.md)の「文脈の管理」）。
 - Pi のシステムプロンプトは、核の部分が約 400 トークンであり、日付と OS を含まない（作業ディレクトリと `AGENTS.md` の中身は含む）。DeepSeek Harness は、システムプロンプトを変えずに保ち、変わる情報を利用者の側の発言として後から加える（[先行事例](../08-appendix/08-01-prior-art.md)）。
 
 ## 仕様
@@ -52,7 +52,7 @@
 - Skill の「Check the version first」の手順は `benitoiteh` が起動のときに済ませているので行わない。
 - Skill の「Before running」の確認は `benitoiteh` が画面で行うので、LLM は利用者に確認を求めなくてよい。ただし、エフェクトの意味を応答の文で説明するのはよい。
 
-`SKILL.md` は `v0.0.5` の時点で約 18 KB（英語の文で約 4,500 トークンの見込み）である。制限モードの作業はすべて Benitoite のスクリプトを書くことなので、毎回読ませる価値がある。キャッシュが効けば、2 回目以降の要求の費用は小さい。
+`SKILL.md` は `v0.0.6` の時点で約 21 KB（英語の文で約 5,400 トークンの見込み）である。制限モードの作業はすべて Benitoite のスクリプトを書くことなので、毎回読ませる価値がある。キャッシュが効けば、2 回目以降の要求の費用は小さい。
 
 【方針】通常モードでは、`<benitoite>` の節に、Skill の名前と説明（`SKILL.md` の先頭の `description`）と、`benitoite_reference` に `SKILL` を指定すれば全文を読めることだけを書く。理由: 通常モードの作業は Benitoite に限らないので、Agent Skills の段階的な読み込みと同じく、要るときに読ませる。
 
