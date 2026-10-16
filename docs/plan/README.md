@@ -16,7 +16,7 @@
 | [P0-02](tasks/P0-02-safe-fs.md) | 範囲の根から相対に開くファイルの操作（BH-093） | P0-01 | 完了 |
 | [P0-03](tasks/P0-03-http.md) | HTTP と TLS の層、ストリームの打ち切りと名前の解決の差し替え（BH-010） | P0-01 | 完了 |
 | [P0-04](tasks/P0-04-sandbox-macos.md) | サンドボックスの方針の型と macOS の Seatbelt の試作 | P0-02 | 完了 |
-| [P0-05](tasks/P0-05-sandbox-linux.md) | Linux の補助のプロセスの試作（BH-043、BH-049） | P0-04 | 完了（P0-07 で作り直す） |
+| [P0-05](tasks/P0-05-sandbox-linux.md) | Linux の補助のプロセスの試作（BH-043、BH-049） | P0-04 | 完了（P0-07 で作り直した） |
 | [P0-07](tasks/P0-07-sandbox-linux-bwrap.md) | Linux の補助のプロセスを bubblewrap の形に作り直す（BH-049 の決定） | P0-05 | 完了 |
 | [P0-06](tasks/P0-06-size-probe.md) | 要る機能を一通り持つ構成の大きさの測定（BH-062） | P1-10（P0-05 を除いて行う） | 完了 |
 | [P1-01](tasks/P1-01-provider-common.md) | 提供者の共通の形と SSE の読み取り | P0-03 | 完了 |
