@@ -18,7 +18,7 @@
 1. 会話の共通の形（`types.rs`）。
    - `Destination`: 提供者の設定の名前、ベースの URL、モデル。
    - `AdapterKind`: `AnthropicMessages`・`OpenAiChat`・`OpenAiResponses`（`OpenAiResponses` は P3 で作るが、型には置く）。
-   - `Conversation`（会話の項目の並び）と、会話の項目 `Item`: 利用者の発言（文）、応答 `AssistantTurn`、道具の結果 `ToolResult`。
+   - `Conversation`（会話の項目の並び）と、会話の項目 `Item`: 利用者の発言 `UserMessage`、応答 `AssistantTurn`、道具の結果 `ToolResult`。`UserMessage` は、一つの発言の中に複数の文の部分を持てる形にし、部分ごとに種類（環境の情報、依頼、操縦）を持つ。理由: 環境の情報は、最初の依頼と同じ発言の先頭に置く（01-04 の「文脈の構成」）。アダプタは部分を順に、提供者の形の文の部分（Anthropic の `text` の block など）に変える。
    - `AssistantTurn`: 共通の形の内容の並び（文、推論、道具の呼び出しを、応答の中の順に持つ `Vec<AssistantPart>`）、提供者の元の項目 `RawItems`、終わりの理由、使ったトークンの量。
    - `RawItems`: 作った `Destination` と `AdapterKind` と、提供者が返した項目の並び（`Vec<serde_json::Value>`）。順序、識別子、署名、暗号化した内容を変えずに持つ。
    - `Reasoning`: 表示用の文（なければ空）と、提供者が送り返しを求める不透明なデータ（`serde_json::Value`）。
@@ -29,7 +29,7 @@
    - どの型も `serde` で JSON にでき、読み戻せる（セッションの記録に書くため）。
 2. ストリーミングのイベント `StreamEvent`: 文の差分、推論の文の差分、道具の呼び出しの始まり（応答の中の番号、提供者の ID、名前）、引数の差分、終わり、使ったトークンの量、終わり（終わりの理由）。アダプタは、提供者のイベントをこの列に変え、受け取り終えたら `AssistantTurn` を組み立てる。
 3. 誤りの分類 `ProviderError`: やり直せる（`Retry-After` の秒を持てる）、文脈の超過、やり直せない（認証、残高と利用の上限、要求の形、拒否された thinking の検査）、ストリームの途中の切断、応答が空。01-01 の「やり直し」の表に揃える。
-4. 提供者ごとの機能の表 `Capabilities`（02-01 の「提供者ごとの機能の表」の欄）と、アダプタごとの既定の値（使わない側）。`reasoning_replay` は `None`・`SameDestination`・`AllTurns`。
+4. 提供者ごとの機能の表 `Capabilities`（02-01 の「提供者ごとの機能の表」の欄）と、アダプタごとの既定の値（使わない側）。本家の口（P1-04）のときに有効にする値も、アダプタごとに定める: `anthropic-messages` は `cache_control`・`strict_tools`・`eager_input_streaming`・`tool_choice_none`・`parallel_tool_calls` を有効、`reasoning_replay` を `SameDestination` とする。`openai-chat` の本家の口は `strict_tools`・`tool_choice_none`・`parallel_tool_calls` を有効、`reasoning_replay` を `None` とする。`reasoning_replay` は `None`・`SameDestination`・`AllTurns`。
 5. 道具の定義の内部の型 `ToolSpec`（`tool_schema.rs`）: 名前、説明、引数の並び（名前、型、必須か、説明）。引数の型は、文字列、整数、真偽、文字列の配列を持てば足りる。JSON Schema への変換を三つの形で持つ。
    - 普通の形（`required` に必須の引数だけ）。
    - Anthropic の strict の形（Anthropic の文書の要求する形。分からない点は、普通の形に `additionalProperties: false` を足す形にして、報告に書く）。
