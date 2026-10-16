@@ -7,3 +7,4 @@ pub mod provider;
 pub mod safe_fs;
 pub mod sandbox;
 pub mod session;
+pub mod tools;
