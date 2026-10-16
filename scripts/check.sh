@@ -32,7 +32,7 @@ finish() {
         printf '  linux: container tests for %s\n' "${linux_targets[@]}"
     fi
     if ((${#rosetta_skipped[@]} != 0)); then
-        printf '\nNot run on x86_64-unknown-linux-musl (Rosetta lacks the kernel interfaces):\n'
+        printf '\nNot run on x86_64-unknown-linux-musl under Rosetta:\n'
         printf '  %s\n' "${rosetta_skipped[@]}"
     fi
     exit "$status"
@@ -81,7 +81,10 @@ if ! "$inside_codex"; then
     cargo test --workspace --target aarch64-unknown-linux-musl
     # x86_64 は container の Rosetta で動く。Rosetta は openat2 を持たず、記述子も開いているので、
     # カーネルの機能を確かめるテスト（safe_fs と sandbox_*）を除く（実装プラン P0-05「x86_64 の扱い」）。
-    cargo test --workspace --target x86_64-unknown-linux-musl --lib --bins
+    # TLS の暗号の実装（graviola）は CPU の ADX の命令を要し、Rosetta はそれを持たない。
+    # TLS を使うテストは名前に tls を含める約束とし、ここで除く（実装プラン 00-common「検査」）。
+    cargo test --workspace --target x86_64-unknown-linux-musl --lib --bins -- --skip tls
+    rosetta_skipped+=("unit tests whose names contain 'tls' (graviola needs ADX)")
     for manifest in crates/*/Cargo.toml; do
         test_args=()
         for test_file in "${manifest%/Cargo.toml}"/tests/*.rs; do
@@ -96,7 +99,7 @@ if ! "$inside_codex"; then
             test_args+=(--test "${test_name%.rs}")
         done
         if ((${#test_args[@]} != 0)); then
-            cargo test --manifest-path "$manifest" --target x86_64-unknown-linux-musl "${test_args[@]}"
+            cargo test --manifest-path "$manifest" --target x86_64-unknown-linux-musl "${test_args[@]}" -- --skip tls
         fi
     done
 fi
