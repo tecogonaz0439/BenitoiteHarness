@@ -85,13 +85,14 @@ fi
 
 begin_stage linux
 if ! "$inside_codex"; then
-    cargo test --workspace --target aarch64-unknown-linux-musl
+    cargo test --workspace --target aarch64-unknown-linux-musl -- --show-output
     # x86_64 は container の Rosetta で動く。Rosetta は openat2 を持たず、記述子も開いているので、
     # カーネルの機能を確かめるテスト（safe_fs と sandbox_*）を除く（実装プラン P0-05「x86_64 の扱い」）。
     # TLS の暗号の実装（graviola）は CPU の ADX の命令を要し、Rosetta はそれを持たない。
     # TLS を使うテストは名前に tls を含める約束とし、ここで除く（実装プラン 00-common「検査」）。
     cargo test --workspace --target x86_64-unknown-linux-musl --lib --bins -- --skip tls --test-threads=1
     rosetta_skipped+=("unit tests whose names contain 'tls' (graviola needs ADX)")
+    rosetta_skipped+=("sandbox_*: Rosetta opens extra descriptors and translates syscall architectures; native x86_64 sandbox validation is still required" "safe_fs: Rosetta does not implement openat2")
     for manifest in crates/*/Cargo.toml; do
         test_args=()
         for test_file in "${manifest%/Cargo.toml}"/tests/*.rs; do

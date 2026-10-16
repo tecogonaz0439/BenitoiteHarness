@@ -1,5 +1,7 @@
 //! 子プロセスに OS のサンドボックスを掛ける起動の形を作る（設計書 03-02）。
 
+#[cfg(target_os = "linux")]
+mod linux;
 mod macos;
 mod policy;
 mod text;
@@ -14,9 +16,10 @@ use std::fmt;
 use std::io;
 use std::path::{Path, PathBuf};
 use std::process::Command;
-#[cfg(target_os = "macos")]
 use std::{os::unix::process::CommandExt, process::Stdio};
 
+#[cfg(target_os = "linux")]
+pub use linux::run_helper;
 pub use macos::SeatbeltProfile;
 pub use policy::{PolicyConfig, ProgramAccess, ReadAccess, SandboxPolicy};
 
@@ -29,6 +32,8 @@ pub enum SandboxError {
     Unavailable,
     /// 準備中の OS の誤り。
     Io(io::Error),
+    /// Linux の補助のプロセスの段階ごとの失敗。
+    Setup { stage: &'static str, detail: String },
 }
 
 impl fmt::Display for SandboxError {
@@ -37,6 +42,7 @@ impl fmt::Display for SandboxError {
             Self::InvalidPolicy(reason) => f.write_str(reason),
             Self::Unavailable => f.write_str(text::UNAVAILABLE),
             Self::Io(error) => write!(f, "{} {error}", text::IO),
+            Self::Setup { stage, detail } => write!(f, "{} {stage}: {detail}", text::SETUP),
         }
     }
 }
@@ -45,7 +51,7 @@ impl Error for SandboxError {
     fn source(&self) -> Option<&(dyn Error + 'static)> {
         match self {
             Self::Io(error) => Some(error),
-            Self::InvalidPolicy(_) | Self::Unavailable => None,
+            Self::InvalidPolicy(_) | Self::Unavailable | Self::Setup { .. } => None,
         }
     }
 }
@@ -99,18 +105,38 @@ impl SandboxCommand {
                 command.arg(argument);
             }
             command.arg("--").arg(&self.program).args(&self.args);
-            command.current_dir(&self.cwd).env_clear().envs(&self.env);
-            command.process_group(0).stdin(match self.stdin {
-                SandboxStdin::Null => Stdio::null(),
-                SandboxStdin::Inherit => Stdio::inherit(),
-                SandboxStdin::Piped => Stdio::piped(),
-            });
-            Ok(command)
+            self.configure(command)
         }
-        #[cfg(not(target_os = "macos"))]
+        #[cfg(target_os = "linux")]
         {
-            // Linux の補助のプロセスは P0-05 で実装する。制限を掛けずに起動しない。
+            policy::canonical_path(_helper)?;
+            let json =
+                serde_json::to_string(&self.policy).map_err(|error| SandboxError::Setup {
+                    stage: text::POLICY,
+                    detail: error.to_string(),
+                })?;
+            let mut command = Command::new(_helper);
+            command
+                .arg("__sandbox")
+                .arg(json)
+                .arg("--")
+                .arg(&self.program)
+                .args(&self.args);
+            self.configure(command)
+        }
+        #[cfg(not(any(target_os = "macos", target_os = "linux")))]
+        {
             Err(SandboxError::Unavailable)
         }
+    }
+
+    fn configure(&self, mut command: Command) -> Result<Command, SandboxError> {
+        command.current_dir(&self.cwd).env_clear().envs(&self.env);
+        command.process_group(0).stdin(match self.stdin {
+            SandboxStdin::Null => Stdio::null(),
+            SandboxStdin::Inherit => Stdio::inherit(),
+            SandboxStdin::Piped => Stdio::piped(),
+        });
+        Ok(command)
     }
 }

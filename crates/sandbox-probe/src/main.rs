@@ -48,6 +48,7 @@ fn run(operation: &OsStr, args: &[OsString]) -> io::Result<Option<u8>> {
     };
     match (operation, args) {
         ("read", [path]) => fs::read(path).map(|_| ()),
+        ("read-dir", [path]) => fs::read_dir(path).map(|_| ()),
         ("write", [path]) => fs::write(path, b"sandbox-probe\n"),
         ("mkdir", [path]) => fs::create_dir(path),
         ("rename", [from, to]) => fs::rename(from, to),
