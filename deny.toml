@@ -1,0 +1,6 @@
+# Benitoite v0.0.6 (f31dacd3bddadfb692abd0b2ea31002128f64c4f) と同じ一覧。
+[licenses]
+allow = ["MIT", "Apache-2.0", "ISC", "BSD-3-Clause", "Apache-2.0 WITH LLVM-exception", "Zlib", "Unicode-3.0"]
+
+[graph]
+targets = ["aarch64-apple-darwin", "x86_64-unknown-linux-musl", "aarch64-unknown-linux-musl"]
