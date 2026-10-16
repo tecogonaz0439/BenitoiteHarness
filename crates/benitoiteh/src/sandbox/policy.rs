@@ -1,7 +1,7 @@
 //! 検証した方針だけを生成し、JSON の読み戻しにも同じ検査を掛ける（設計書 03-02「方針の要素」）。
 
 use std::fs;
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 
 use serde::{Deserialize, Deserializer, Serialize};
 
@@ -100,12 +100,10 @@ impl SandboxPolicy {
                 return Err(SandboxError::InvalidPolicy(text::INVALID_PROTECTED));
             }
         }
-        if ![".git", ".benitoiteh"].iter().all(|required| {
-            config
-                .protected_names
-                .iter()
-                .any(|name| name.eq_ignore_ascii_case(required))
-        }) {
+        if ![".git", ".benitoiteh"]
+            .iter()
+            .all(|required| config.protected_names.iter().any(|name| name == required))
+        {
             return Err(SandboxError::InvalidPolicy(text::INVALID_PROTECTED));
         }
         for path in &config.writable {
@@ -120,6 +118,9 @@ impl SandboxPolicy {
         }
         for path in &config.denied_read {
             canonical_path(path)?;
+            if config.writable.iter().any(|root| root.starts_with(path)) {
+                return Err(SandboxError::InvalidPolicy(text::DENIED_WRITABLE));
+            }
         }
         if let ProgramAccess::Only(paths) = &config.programs {
             for path in paths {
@@ -139,11 +140,23 @@ impl<'de> Deserialize<'de> for SandboxPolicy {
 pub(super) fn canonical_path(path: &Path) -> Result<(), SandboxError> {
     // Path の比較は途中の「.」などを無視するので、元の OS 文字列を比較する。
     // Seatbelt の照合先と入力が食い違う別名を許さない（設計書 03-02「サンドボックスの掛け方」）。
-    if !path.is_absolute() || path.to_str().is_none() {
-        return Err(SandboxError::InvalidPolicy(text::INVALID_PATH));
-    }
+    canonical_syntax(path)?;
     let real = fs::canonicalize(path).map_err(SandboxError::Io)?;
     if real.as_os_str() != path.as_os_str() {
+        return Err(SandboxError::InvalidPolicy(text::INVALID_PATH));
+    }
+    Ok(())
+}
+
+pub(super) fn canonical_syntax(path: &Path) -> Result<(), SandboxError> {
+    let normalized: PathBuf = path.components().collect();
+    if !path.is_absolute()
+        || path.to_str().is_none()
+        || normalized.as_os_str() != path.as_os_str()
+        || path
+            .components()
+            .any(|component| matches!(component, Component::ParentDir | Component::CurDir))
+    {
         return Err(SandboxError::InvalidPolicy(text::INVALID_PATH));
     }
     Ok(())

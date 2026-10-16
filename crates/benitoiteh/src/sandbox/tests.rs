@@ -34,8 +34,12 @@ impl Drop for Fixture {
 #[test]
 fn json_round_trip_preserves_rules_and_rejects_invalid_policy() -> TestResult {
     let fixture = Fixture::new()?;
-    let mut config = PolicyConfig::new(vec![fixture.0.clone()]);
-    config.denied_read.push(fixture.0.clone());
+    let writable = fixture.0.join("write");
+    let secret = fixture.0.join("secret");
+    fs::create_dir(&writable)?;
+    fs::create_dir(&secret)?;
+    let mut config = PolicyConfig::new(vec![writable]);
+    config.denied_read.push(secret);
     config.readable = ReadAccess::Roots(vec![fixture.0.clone()]);
     config.programs = ProgramAccess::Only(vec![fs::canonicalize(std::env::current_exe()?)?]);
     config.allow_ip = true;
@@ -75,6 +79,12 @@ fn json_round_trip_preserves_rules_and_rejects_invalid_policy() -> TestResult {
     let mut unprotected = config.clone();
     unprotected.protected_names.clear();
     invalid_configs.push(unprotected);
+    let mut uppercase_only = config.clone();
+    uppercase_only.protected_names = vec![".GIT".into(), ".BENITOITEH".into()];
+    invalid_configs.push(uppercase_only);
+    let mut denied_writable = config.clone();
+    denied_writable.denied_read = vec![fixture.0.clone()];
+    invalid_configs.push(denied_writable);
     for name in [
         "../other",
         "space name",
@@ -101,13 +111,15 @@ fn json_round_trip_preserves_rules_and_rejects_invalid_policy() -> TestResult {
 #[test]
 fn seatbelt_source_does_not_depend_on_path_contents() -> TestResult {
     let fixture = Fixture::new()?;
+    let secret = fixture.0.join("secret");
+    fs::create_dir(&secret)?;
     let mut profiles = Vec::new();
     for name in ["ordinary", "quote\") (allow default) ; 日本語 [.*]"] {
         let path = fixture.0.join(name);
         fs::create_dir(&path)?;
         let mut config = PolicyConfig::new(vec![path.clone()]);
         config.readable = ReadAccess::Roots(vec![path.clone()]);
-        config.denied_read.push(path.clone());
+        config.denied_read.push(secret.clone());
         config.programs = ProgramAccess::Only(vec![path.clone()]);
         let profile = SandboxPolicy::new(config)?.seatbelt_profile();
         assert!(!profile.source.contains(name));
@@ -116,7 +128,11 @@ fn seatbelt_source_does_not_depend_on_path_contents() -> TestResult {
             if parameter.starts_with("PROTECTED_") {
                 continue;
             }
-            assert_eq!(value, path.as_os_str());
+            if parameter.starts_with("DENIED_") {
+                assert_eq!(value, secret.as_os_str());
+            } else {
+                assert_eq!(value, path.as_os_str());
+            }
         }
         profiles.push(profile.source);
     }

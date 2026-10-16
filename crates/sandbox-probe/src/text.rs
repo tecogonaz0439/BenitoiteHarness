@@ -4,3 +4,4 @@ pub const USAGE: &str = "Invalid sandbox-probe operation or arguments.";
 pub const OK: &str = "ok";
 pub const CHILD_FAILED: &str = "child failed";
 pub const FD_CLOSED: &str = "descriptor closed";
+pub const READY: &str = "ready";
