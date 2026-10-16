@@ -3,11 +3,28 @@
 use crate::provider::ArgumentType;
 use serde_json::Value;
 
-pub const READ: &str = "Read a text file with line numbers.";
-pub const GLOB: &str = "Find files by glob pattern, newest first.";
-pub const GREP: &str = "Search file lines using a regular expression.";
-pub const WRITE: &str = "Create or replace a file.";
-pub const EDIT: &str = "Replace matching text in a file.";
+pub const READ: (&str, &str) = prompt_parts(include_str!("../../prompts/tools/read.md"));
+pub const GLOB: (&str, &str) = prompt_parts(include_str!("../../prompts/tools/glob.md"));
+pub const GREP: (&str, &str) = prompt_parts(include_str!("../../prompts/tools/grep.md"));
+pub const WRITE: (&str, &str) = prompt_parts(include_str!("../../prompts/tools/write.md"));
+pub const EDIT: (&str, &str) = prompt_parts(include_str!("../../prompts/tools/edit.md"));
+
+// 最初の一行を説明、残りを規則として同じファイルから取り出す。
+// 定数の参照を保ち、ToolDefinition の共有の型を変えない（設計書 01-03「道具の定義の共通の規則」）。
+const fn prompt_parts(prompt: &str) -> (&str, &str) {
+    let mut position = 0_usize;
+    let mut bytes = prompt.as_bytes();
+    while let Some((byte, rest)) = bytes.split_first() {
+        if *byte == b'\n' {
+            let (summary, rest) = prompt.split_at(position);
+            let (_, rules) = rest.split_at(1);
+            return (summary, rules.trim_ascii());
+        }
+        bytes = rest;
+        position = position.saturating_add(1);
+    }
+    (prompt, "")
+}
 pub const OBJECT_REQUIRED: &str = "Arguments must be a JSON object.";
 pub const MODE_MISMATCH: &str =
     "Tool set and execution context modes differ. Use the session's tool set.";
