@@ -29,18 +29,6 @@ Read `references/<name>.md` with benitoite_reference by specifying `name`.
 Skip "Check the version first": benitoiteh has already checked the version at startup.
 benitoiteh handles the "Before running" confirmation in its UI; you do not need to ask the user for confirmation yourself. You may explain what the effects mean in your response.
 
-<!--
-How the code examples in this file are checked (tests/skill_examples.rs):
-- A `benitoite` block is run, and its standard output is compared with the `output` block after it.
-  A last line `exit N` in the `output` block is the expected exit code (0 when absent).
-  A `stderr` block after the `output` block is the expected standard error (empty when absent).
-- A `benitoite check` block is only checked; it must have no errors and no warnings.
-- A `benitoite test` block is run with `benitoite test`; all its tests must pass.
-- A `benitoite error` block must fail `benitoite check`, and every line of the `diagnostic` block after it must appear in the report.
-- A `files` block before an example creates a file next to the script: the first line is `name: <file name>`, the rest is the content.
-- Blocks with other info strings (such as `text` and `sh`) are not checked.
--->
-
 # Benitoite
 
 Benitoite is a statically typed functional scripting language. Scripts end in `.bnt` and are run with the `benitoite` command. The checker reports type errors and undeclared effects before anything runs; use it on every change.

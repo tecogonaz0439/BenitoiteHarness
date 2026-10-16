@@ -30,6 +30,14 @@ fn llm_context_matches_reviewed_files_in_both_modes() -> Result<(), Box<dyn Erro
     ];
     for (mode, expected_system, expected_tools) in cases {
         let context = SystemContext::new(&ToolSet::new(mode))?;
+        if mode == Mode::Restricted {
+            assert!(!context.system_prompt.contains("<!--"));
+            assert!(
+                !context
+                    .system_prompt
+                    .contains("How the code examples in this file are checked")
+            );
+        }
         assert_eq!(context.system_prompt, expected_system, "{mode:?}");
         assert_eq!(
             format!(

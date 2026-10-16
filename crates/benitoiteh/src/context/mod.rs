@@ -3,6 +3,9 @@
 mod environment;
 mod text;
 
+#[cfg(test)]
+mod tests;
+
 use std::fmt;
 
 use serde_json::{Value, json};
@@ -22,7 +25,7 @@ const SKILL: &str = include_str!("../../../../assets/benitoite/v0.0.6/skill/SKIL
 /// 文脈の組み立てで起きた誤り。
 #[derive(Debug)]
 pub enum ContextError {
-    /// 埋め込んだ Skill の属性が欠けている。
+    /// 埋め込んだ Skill の属性が欠けているか、先頭の注釈が閉じていない。
     InvalidSkill,
     /// 環境のパスが UTF-8 の絶対パスでない。
     InvalidPath,
@@ -95,15 +98,14 @@ impl SystemContext {
         append_section(&mut system, "tools", &summaries);
         append_section(&mut system, "rules", &rules.join("\n"));
         append_section(&mut system, "mode", mode.trim_end());
-        let (attributes, body) = skill_parts()?;
         let benitoite = match tools.mode() {
             Mode::Restricted => format!(
                 "{}\n\n{}",
                 include_str!("../../prompts/benitoite-mapping.md").trim_end(),
-                body.trim()
-                    .replace("{{benitoite-version}}", BENITOITE_DOCUMENT_VERSION)
+                skill_body()?
             ),
             Mode::Normal => {
+                let (attributes, _) = skill_parts(SKILL)?;
                 let attribute = |key: &str| {
                     attributes
                         .lines()
@@ -131,11 +133,42 @@ impl SystemContext {
     }
 }
 
-fn skill_parts() -> Result<(&'static str, &'static str), ContextError> {
-    SKILL
+/// 埋め込んだ Skill の本文から属性、先頭の注釈、前後の空白を除き、版を置き換える。
+///
+/// 制限モードと通常モードの benitoite_reference で同じ本文を使うための入口である
+/// （設計書 01-04「Benitoite の Skill の置き方」）。
+pub fn skill_body() -> Result<String, ContextError> {
+    let (_, body) = skill_parts(SKILL)?;
+    Ok(body
+        .trim()
+        .replace("{{benitoite-version}}", BENITOITE_DOCUMENT_VERSION))
+}
+
+fn skill_parts(skill: &str) -> Result<(&str, &str), ContextError> {
+    let (attributes, body) = skill
         .strip_prefix("---\n")
         .and_then(|skill| skill.split_once("\n---\n"))
-        .ok_or(ContextError::InvalidSkill)
+        .ok_or(ContextError::InvalidSkill)?;
+    let mut start = body;
+    while let Some((line, rest)) = start.split_once('\n') {
+        if !line.trim().is_empty() {
+            break;
+        }
+        start = rest;
+    }
+    // 処理系のテスト用の説明だけを除き、本文の途中の注釈は変えない
+    // （設計書 01-04「Benitoite の Skill の置き方」）。
+    let Some(comment) = start.strip_prefix("<!--") else {
+        return Ok((attributes, body));
+    };
+    let (_, rest) = comment
+        .split_once("-->")
+        .ok_or(ContextError::InvalidSkill)?;
+    let body = rest
+        .strip_prefix("\r\n")
+        .or_else(|| rest.strip_prefix('\n'))
+        .unwrap_or(rest);
+    Ok((attributes, body))
 }
 
 fn append_section(output: &mut String, tag: &str, contents: &str) {
