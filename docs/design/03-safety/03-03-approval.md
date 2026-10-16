@@ -9,7 +9,7 @@
 
 ## 前提
 
-- Benitoite の事前検討は、エージェントハーネスが、同梱の Agent Skill の実行の前の確認と同じ内容を自らの画面で受け、LLM の道具に承認の操作を含めないと定めた（[ADR 0345](https://github.com/tecogonaz0439/Benitoite/blob/v0.0.5/docs/archive/2026-10-09-design-first-release/decisions/0345-agent-harness-confirmation-and-server-approval.md) の決定 1）。同じ ADR の決定 2（サーバモードの承認の画面との関係）は、試作にサーバモードがないので当てはまらない。
+- Benitoite の事前検討は、エージェントハーネスが、同梱の Agent Skill の実行の前の確認と同じ内容を自らの画面で受け、LLM の道具に承認の操作を含めないと定めた（[ADR 0345](https://github.com/tecogonaz0439/Benitoite/blob/v0.0.6/docs/archive/2026-10-09-design-first-release/decisions/0345-agent-harness-confirmation-and-server-approval.md) の決定 1）。同じ ADR の決定 2（サーバモードの承認の画面との関係）は、試作にサーバモードがないので当てはまらない。
 - 同梱の Agent Skill は、エフェクトごとに利用者に示す言葉の表を持つ（Skill の「Before running」）。
 - Codex CLI の承認の方針は `untrusted`・`on-request`（既定）・`granular`・`never` である（[先行事例](../08-appendix/08-01-prior-art.md)）。
 
@@ -47,10 +47,11 @@
 
 ### 一時的なスクリプト
 
-【方針】`benitoite_scratch` は、エフェクトが確認なしの範囲に収まれば、確認なしで実行する。範囲の既定は、エフェクトなし、`Console.Write`、`State` とする。範囲を超えれば、`benitoite_run` と同じく確認を受ける。
+【方針】`benitoite_scratch` は、エフェクトが確認なしの範囲に収まれば、確認なしで実行する。範囲の既定は、エフェクトなし、`Console.Write`、`State`、`Process.Exit` とする。範囲を超えれば、`benitoite_run` と同じく確認を受ける。
 
 - ADR 0345 の決定 3 の既定（エフェクトなしと `Console.Write`）に `State` を加えた。理由: `State` は可変のセルとタスクの操作を表し、プログラムの外に作用しない（Benitoite の設計書 01-07「組み込みのエフェクト」）。下調べの計算でよく使い、確認を求める理由がない。
-- 利用者の設定で、範囲に `File.Read`・`Clock.Time`・`Random.Generate`・`Process.Environment` を加えられる。`File.Write`・`Process.Run`・`Process.Exit`・`Console.Read`・`Http.Connect`・`Http.Listen` は加えられない。プロジェクトの設定では範囲を変えられない（ADR 0345 の決定 3）。理由: 加えられないものは、プロジェクトの外の状態を変えるか、制限モードの起動の規則に関わるか、外部と通信する操作である。
+- 【方針】`Process.Exit` も既定に加えた（2026-10-17）。理由: `Process.Exit` は、スクリプトの実行を、選んだ終了状態で終えるだけであり、プログラムの外に作用しない。`benitoiteh` は、子プロセスの終了状態を道具の結果として示すだけで、確認とサンドボックスの判定に使わない（[OS のサンドボックス](03-02-sandbox.md)の「サンドボックスの掛け方」）。終了状態を偽られても、確認とサンドボックスは変わらない。`v0.0.6` の Skill は、入口の関数で失敗したら終える `try e or die` を勧め、`or die` は `Process.Exit` を加える。既定に加えなければ、Skill のとおりに書いた一時的なスクリプトが、毎回確認を受ける。同じ Skill の「Before running」も、確認を求めるエフェクトに `Process.Exit` を挙げていない。
+- 利用者の設定で、範囲に `File.Read`・`Clock.Time`・`Random.Generate`・`Process.Environment` を加えられる。`File.Write`・`Process.Run`・`Console.Read`・`Http.Connect`・`Http.Listen` は加えられない。プロジェクトの設定では範囲を変えられない（ADR 0345 の決定 3）。理由: 加えられないものは、プロジェクトの外の状態を変えるか、制限モードの起動の規則に関わるか、外部と通信する操作である。
 - 確認なしで実行するときは、OS のサンドボックスで読める範囲を、プロジェクトのディレクトリ、一時ディレクトリ、処理系の実行ファイル、処理系の動作に要る OS の場所（システムのライブラリなど）に限る。書ける場所は一時ディレクトリだけとする。理由: ADR 0345 の決定 3 は、`File.Read` を範囲に加えるときは読める場所を限ることを勧めている。確認なしで動くスクリプトに、ファイルシステムのほぼ全体を読ませないためである。Linux でこの範囲を Landlock の読み取りの権利で表せるかは BH-049 とあわせて確かめる。
 
 ### 通常モードの承認の方針

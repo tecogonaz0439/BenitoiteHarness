@@ -9,10 +9,11 @@
 
 ## 前提
 
-- 対象とする処理系は、Benitoite の最新のリリース `v0.0.5`（コミット `5ef09b51`）である。`v0.0.5` はソースコードだけのリリースであり、実行ファイルは配っていない（[Benitoite の README](https://github.com/tecogonaz0439/Benitoite/blob/v0.0.5/README.md)）。利用者は処理系をソースからビルドして用意する。
-- 処理系の CLI は `check`・`run`・`test`・`fmt`・`skill`・`package` のサブコマンドを持ち、`--diagnostics=json` で診断を一行一件の JSON で標準エラー出力に書く（[CLI](https://github.com/tecogonaz0439/Benitoite/blob/v0.0.5/docs/design/06-tooling/06-01-cli.md)、[診断エンジン](https://github.com/tecogonaz0439/Benitoite/blob/v0.0.5/docs/design/02-impl/02-10-diagnostics.md)の「JSON の形式」）。
-- 処理系は、実行の前に `main` の権限（エフェクト）を表示する機能を持たない（[Agent Skills 対応](https://github.com/tecogonaz0439/Benitoite/blob/v0.0.5/docs/design/06-tooling/06-06-agent-skills.md)の「実行の前の確認」）。
-- 処理系は実行時の権限制御と OS のサンドボックスを持たず、隔離を起動する側に委ねる（[Benitoite の SECURITY.md](https://github.com/tecogonaz0439/Benitoite/blob/v0.0.5/SECURITY.md)）。
+- 対象とする処理系は、Benitoite の最新のリリース `v0.0.6`（コミット `f31dacd3`）である。`v0.0.6` はソースコードだけのリリースであり、実行ファイルは配っていない（[Benitoite の README](https://github.com/tecogonaz0439/Benitoite/blob/v0.0.6/README.md)）。利用者は処理系をソースからビルドして用意する。
+- 処理系の CLI は `check`・`run`・`test`・`fmt`・`skill`・`package` のサブコマンドを持ち、`--diagnostics=json` で診断を一行一件の JSON で標準エラー出力に書く（[CLI](https://github.com/tecogonaz0439/Benitoite/blob/v0.0.6/docs/design/06-tooling/06-01-cli.md)、[診断エンジン](https://github.com/tecogonaz0439/Benitoite/blob/v0.0.6/docs/design/02-impl/02-10-diagnostics.md)の「JSON の形式」）。`test` は、`--diagnostics=json` のとき、テストごとの結果と集計を一行一件の JSON で標準出力に書く（[Benitoite のリファレンス](https://github.com/tecogonaz0439/Benitoite/blob/v0.0.6/docs/reference/benitoite.md)の「16. Tests」）。
+- `v0.0.6` は、`v0.0.5` に、失敗したら実行を終える `try e or die` を加えた。`or die` は `Process.Exit` のエフェクトを加え、失敗すると終了状態 1 で終わり、`kind` が `"die"` で `code` が `null` の報告を書く。`test` の JSON では、`exit` の失敗に `die` の欄としてこの報告が加わる。ほかに、`die` をキーワードにし、`return` の直後の改行で文を終える（[Benitoite の CHANGELOG](https://github.com/tecogonaz0439/Benitoite/blob/v0.0.6/CHANGELOG.md) の 0.0.6）。CLI のサブコマンドとオプション、`check` の出力、`--version` の形（版の数を除く）は変わっていない。
+- 処理系は、実行の前に `main` の権限（エフェクト）を表示する機能を持たない（[Agent Skills 対応](https://github.com/tecogonaz0439/Benitoite/blob/v0.0.6/docs/design/06-tooling/06-06-agent-skills.md)の「実行の前の確認」）。
+- 処理系は実行時の権限制御と OS のサンドボックスを持たず、隔離を起動する側に委ねる（[Benitoite の SECURITY.md](https://github.com/tecogonaz0439/Benitoite/blob/v0.0.6/SECURITY.md)）。
 - 処理系の実行ファイルは Wasmtime と Cranelift を含み、aarch64 の macOS のリリースのビルドで約 30 MB である（2026-10-16 に手元の `target/release/benitoite` で確かめた。リリースの版とは別のコミットのビルドである）。
 
 ## 仕様
@@ -40,11 +41,12 @@
 
 ### 取り込む文書と版
 
-【方針】処理系の同梱の Agent Skill（`crates/benitoite/skill/` の `SKILL.md` と `references/`）を、Benitoite の git のアーカイブの `v0.0.5` から写し、`assets/benitoite/v0.0.5/skill/` に置く。同じディレクトリの `SOURCE.md` に、元のタグ、コミット、写した日、写したパスを書く。`benitoiteh` はこのディレクトリを実行ファイルに埋め込む。
+【方針】処理系の同梱の Agent Skill（`crates/benitoite/skill/` の `SKILL.md` と `references/`）を、Benitoite の git のアーカイブの `v0.0.6` から写し、`assets/benitoite/v0.0.6/skill/` に置く。同じディレクトリの `SOURCE.md` に、元のタグ、コミット、写した日、写したパスを書く。`benitoiteh` はこのディレクトリを実行ファイルに埋め込む。
 
-- `SKILL.md` の `{{benitoite-version}}` は、処理系が Skill を書き出すときに版に置き換える型板の欄である。`benitoiteh` は埋め込むときに、写した元の版（`0.0.5`）に置き換える。
+- 写す版は、設計の前提にした版（`v0.0.6`）とする。`v0.0.6` は失敗の扱いの書き方（入口では `or die`、再利用する関数では `or return`）と `language` の宣言の版を変え、Skill の文書もそれに合わせて変わった。`v0.0.5` の写しのまま `v0.0.6` の処理系と使うと、LLM は古い書き方で書き、`language "0.0.5"` の宣言は検査で `E0908` になる。
+- `SKILL.md` の `{{benitoite-version}}` は、処理系が Skill を書き出すときに版に置き換える型板の欄である。`benitoiteh` は埋め込むときに、写した元の版（`0.0.6`）に置き換える。
 - 写した文書を手で直さない。`SKILL.md` の手順は `benitoite` のコマンドを打つ前提で書いてあるので、`benitoiteh` の道具との対応は、システムプロンプトの側に書く（[文脈の管理](../01-agent/01-04-context.md)の「システムプロンプトの構成」）。
-- 写した文書の大きさは、`v0.0.5` の時点で合わせて約 416 KB である。うち `references/diagnostics.md` が約 92 KB、`references/stdlib/` が約 224 KB を占める。圧縮して埋め込むかは、実行ファイルの大きさを測ってから決める（BH-021）。
+- 写す文書は、`v0.0.6` の時点で 59 のファイル、合わせて約 303 KB（ファイルの中身のバイト数）である。うち `references/diagnostics.md` が約 94 KB、`references/stdlib/` が約 104 KB を占める。圧縮して埋め込むかは、実行ファイルの大きさを測ってから決める（BH-021）。
 
 ### 処理系の起動
 
@@ -62,12 +64,12 @@
 - 環境変数は、`benitoiteh` の環境から LLM の提供者のキーの変数（`OPENAI_API_KEY`・`ANTHROPIC_API_KEY`・`GEMINI_API_KEY`・`DEEPSEEK_API_KEY` と、設定ファイルで提供者のキーとして参照した変数）を除いて渡す。理由: LLM が書いたスクリプトが `Process.Environment` でキーを読み、出力に含めて LLM の提供者へ送ることを防ぐ。Benitoite の事前検討でも同じ対策が挙がっている（Benitoite の docs/todo の TODO-132）。
 - 標準入力は、利用者の端末につながない。道具の引数（`stdin`）で文字列が渡されたときは、それを書いてから閉じ、渡されないときは空（`/dev/null`）にする。理由: 子プロセスが利用者の端末の入力を奪うと、取り消しの操作ができなくなる（[道具](../01-agent/01-03-tools.md)の「benitoite_run（制限モード）」）。
 - 標準出力と標準エラー出力は、子プロセスが終わるまで読み続ける（上限を超えても読むのをやめない）。受け取った出力の扱い（LLM に返す末尾、`spill/` に残す量、捨てた量の表示）は、[道具](../01-agent/01-03-tools.md)の「出力の切り詰め」で定める。理由: 読むのをやめると、子プロセスがパイプの書き込みで止まる。末尾を返す道具では、途中で受け取りをやめると、本当の末尾（失敗の理由や集計）が失われる。
-- 時間の上限（`run` と `test` の既定 120 秒、`check` の既定 30 秒）を過ぎたら、`SIGINT` を送る。処理系は `SIGINT` を受けるとリソースを解放して終了状態 130 で終わる（[CLI](https://github.com/tecogonaz0439/Benitoite/blob/v0.0.5/docs/design/06-tooling/06-01-cli.md)の「終了状態」）。送ってから 10 秒で終わらなければ `SIGKILL` を送る。利用者の取り消しも同じ手順で止める（[エージェントのループ](../01-agent/01-01-agent-loop.md)の「取り消し」）。
+- 時間の上限（`run` と `test` の既定 120 秒、`check` の既定 30 秒）を過ぎたら、`SIGINT` を送る。処理系は `SIGINT` を受けるとリソースを解放して終了状態 130 で終わる（[CLI](https://github.com/tecogonaz0439/Benitoite/blob/v0.0.6/docs/design/06-tooling/06-01-cli.md)の「終了状態」）。送ってから 10 秒で終わらなければ `SIGKILL` を送る。利用者の取り消しも同じ手順で止める（[エージェントのループ](../01-agent/01-01-agent-loop.md)の「取り消し」）。
 - 子プロセスは新しいプロセスグループで起動し、止めるときはグループに送る。理由: 通常モードでスクリプトが起動した外部コマンドも、あわせて止めるためである。
 
 ### 終了状態と診断の受け渡し
 
-【方針】`check` と `run` の終了状態は、処理系の定め（0 成功、1 スクリプトの実行の失敗、2 検査の誤りと使い方の誤り、3 処理系の不具合、130 中断）のとおりに解釈する。`run` は `Process.exit(code)` で任意の値で終わりうるので、標準エラー出力に処理系の形式の JSON の報告があるかで、処理系の失敗とスクリプトの終了を区別する（処理系の定めた方法である）。
+【方針】`check` と `run` の終了状態は、処理系の定め（0 成功、1 スクリプトの実行の失敗、2 検査の誤りと使い方の誤り、3 処理系の不具合、130 中断）のとおりに解釈する。`run` は `Process.exit(code)` で任意の値で終わりうるので、標準エラー出力に処理系の形式の JSON の報告があるかで、処理系の失敗とスクリプトの終了を区別する（処理系の定めた方法である）。`try e or die` の失敗は、終了状態 1 と `kind` が `"die"` の報告で示されるので、スクリプトの実行の失敗として扱う（[CLI](https://github.com/tecogonaz0439/Benitoite/blob/v0.0.6/docs/design/06-tooling/06-01-cli.md)の「終了状態」）。
 
 【方針】標準エラー出力の各行のうち、JSON のオブジェクトとして読めて `kind` を持つ行を診断とし、ほかの行をスクリプトの出力とする。診断は、LLM に返すときに次の文章の形に変える。
 
@@ -80,10 +82,13 @@ error[E0405] src/report.bnt:12:5: <message>
     replace 12:20-12:25 with "xs"
 ```
 
+- `code` が `null` の報告（`kind` が `"die"` の失敗終了）は、角括弧のコードを省き、`error src/main.bnt:8:3: explicit failure exit` の形で始める。注記（`message: ...`・`cause: ...`）は、ほかの診断と同じく `note:` の行で示す。
 - 位置の行のソースは、`benitoiteh` がファイルから読んで添える。理由: JSON は位置だけを持ち、ソースの行を含まない。LLM はソースの行が添えてあると、直す箇所を `read` で読み直さずに済む。
 - 添える行を読むときは、そのモードの `read` の道具と同じ規則（読める範囲、読まないファイル、パスの解き方。[道具](../01-agent/01-03-tools.md)の「道具の定義の共通の規則」）を当て、通常のファイルの一行（2,000 文字まで）だけを読む。規則に当たるか、位置がファイルの中にないときは、行を添えずにパスと位置だけを示す。理由: 診断の JSON は、子プロセスの標準エラー出力から読むので、スクリプトが偽れる（`Console.Write` だけで、診断の形の行を書ける）。偽の診断の位置を親が無条件に読むと、子プロセスにも LLM の道具にも許していないファイルを、親が代わりに読んで LLM に送ることになる。`read` と同じ規則を当てれば、添える行は LLM が `read` で読めるものに限られ、新しく読めるものは増えない。
 - 修正案（`helps` の `edits`）は、置き換えの範囲と文字列のまま示す。`benitoiteh` は置き換えを当てない。理由: Benitoite の処理系も置き換えを当てず、当てるのは利用者か LLM であると定めている（Benitoite の設計書 02-10「修正案」）。
 - 誤りが多いときは、`error` を先に、出た順に最大 20 件を示し、残りの件数を一行で示す。
+
+【方針】`test` の結果は、標準出力の各行のうち、JSON のオブジェクトとして読めて `kind` が `"test"` か `"testSummary"` の行から作る。失敗したテストは、名前と `failure` の `reason`・`message` を示す。`reason` が `"exit"` で `die` の欄があるときは、その報告を上の診断と同じ形に変えて示す。失敗したテストが書いた出力（`stdout`・`stderr` の欄）は、末尾を添える（量は[道具](../01-agent/01-03-tools.md)の「出力の切り詰め」）。JSON として読めない行は、出力としてそのまま示す。集計の行（`testSummary`）がないときは、テストが通ったとは示さず、集計がないことを示す。理由: 集計の行がないのは、処理系が途中で終わったことを示しうる。この結果は、LLM と利用者に示すためだけに使い、確認とサンドボックスの判定には使わない（[セキュリティモデル](../03-safety/03-01-security-model.md)の「信頼の境界」）。
 
 ### `main` のエフェクトの読み取り
 
@@ -96,15 +101,22 @@ error[E0405] src/report.bnt:12:5: <message>
 3. 引数の括弧の対応を飛ばし、`->` の後の型（角括弧の対応を飛ばす）の後に `uses` があれば、コンマで区切った修飾付きの名前（`Console.Write` など）を読む。
 4. 読んだ名前を、組み込みのエフェクトの集合に写す。`IO.All` は、`Console.Write`・`Console.Read`・`File.Read`・`File.Write`・`Process.Run`・`Process.Exit`・`Process.Environment`・`Clock.Time`・`Random.Generate`・`State` に開く。
 
-検査を通った `main` の `uses` には、組み込みのエフェクトしか書けない（利用者が定義するエフェクトは `main` の中で処理しなければならない）。また、組み込みのエフェクトを宣言するモジュールは `as` で別の名前を付けて取り込めない（[エフェクト](https://github.com/tecogonaz0439/Benitoite/blob/v0.0.5/docs/design/01-spec/01-07-effects.md)の「プログラムの入口」「組み込みのエフェクト」）。このため、検査を通ったファイルでは、`uses` の名前の綴りから組み込みのエフェクトが一意に決まる。
+検査を通った `main` の `uses` には、組み込みのエフェクトしか書けない（利用者が定義するエフェクトは `main` の中で処理しなければならない）。また、組み込みのエフェクトを宣言するモジュールは `as` で別の名前を付けて取り込めない（[エフェクト](https://github.com/tecogonaz0439/Benitoite/blob/v0.0.6/docs/design/01-spec/01-07-effects.md)の「プログラムの入口」「組み込みのエフェクト」）。このため、検査を通ったファイルでは、`uses` の名前の綴りから組み込みのエフェクトが一意に決まる。
 
 【方針】上の手順のどこかで読み取れなかったとき（`main` が見つからない、字句が想定と違う、知らない名前がある）は、エフェクトを最大の集合（`IO.All` に開いたものと `Http.Listen`・`Http.Connect`）とみなして確認を求める。理由: 読み取りを誤ったときに、確認が要るスクリプトを確認なしで実行する方向に誤らないためである。
 
-【方針】この読み取りは、構文を確かめた処理系の版の一覧（初めは `0.0.5` だけ）を `benitoiteh` に持ち、起動のときに読んだ処理系の版が一覧にないときは使わず、いつも最大の集合とみなす。処理系の新しいリリースが出たら、変更の記録（CHANGELOG）でエフェクトの書き方の変更を確かめてから、一覧に加える。理由: 処理系の構文が変わると、読み取りが例外なく失敗するとは限らず、誤って少ない集合を読むことがある。失敗した読み取りは最大の集合に倒せるが、誤って成功した読み取りは見分けられない。
+【方針】この読み取りは、構文を確かめた処理系の版の一覧（`0.0.5` と `0.0.6`）を `benitoiteh` に持ち、起動のときに読んだ処理系の版が一覧にないときは使わず、いつも最大の集合とみなす。処理系の新しいリリースが出たら、変更の記録（CHANGELOG）でエフェクトの書き方の変更を確かめてから、一覧に加える。理由: 処理系の構文が変わると、読み取りが例外なく失敗するとは限らず、誤って少ない集合を読むことがある。失敗した読み取りは最大の集合に倒せるが、誤って成功した読み取りは見分けられない。
+
+`0.0.6` は、2026-10-17 に、CHANGELOG と、字句・構文・エフェクトの設計書、字句解析器と構文解析器のソースの差分で確かめてから加えた。手順の 1〜4 に当たる点は次のとおり変わっていない。
+
+- 1: コメントと文字列のリテラルの規則は変わっていない。字句の変更は、`die` をキーワードに加えたことと、`return` の直後の改行を文の区切りにしたことである。どちらも、コメントと文字列を飛ばして字句に分ける手順には関わらない。
+- 2: ブロックを始めるキーワードと `end <キーワード>` の組は変わっていない。`try e or die(message)` の説明の式は、ほかの式と同じく、ラムダなどのブロックを含みうるだけである。
+- 3: 関数の宣言の頭（引数、`->` の後の型、`uses`）の書き方は変わっていない。`return` の直後の改行の規則は、関数の本体の中の文にだけ働く。
+- 4: 組み込みのエフェクトの名前と `IO.All` の中身は変わっていない。`or die` が加える `Process.Exit` も、`main` の `uses` に書かなければ検査を通らない（[エフェクト](https://github.com/tecogonaz0439/Benitoite/blob/v0.0.6/docs/design/01-spec/01-07-effects.md)の「組み込みのエフェクト」）。
 
 【方針】テストでは、`benitoite_test` に渡したファイルの中のすべての `uses` を、同じ手順の 1・3・4 で読み、和を取る。`@test` を付けた関数だけを選ばない。理由: テストのファイルは `main` を持たないので `check` で検査できず（`check` は `main` のないファイルを誤りとする）、読み取りは検査を通っていないソースが対象になる。テストの関数を見分ける読み取りが一つでも漏れると、確認していないエフェクトのテストが動く。ファイルの中のすべての `uses` の和は、テストの関数の `uses` の和を必ず含む。このため、テストでは別名の規則に頼れず、読み取った名前のどれかが組み込みのエフェクトの綴りに当たらなければ、最大の集合とみなす。
 
-【方針】`benitoite_test` の対象は、`.bnt` のファイルのパスだけとし、ディレクトリを受け付けない。理由: 処理系はディレクトリを渡されると、下のディレクトリを辿り、`package.bnt` のある下位のパッケージを除くなどの規則で対象を選ぶ（[CLI](https://github.com/tecogonaz0439/Benitoite/blob/v0.0.5/docs/design/06-tooling/06-01-cli.md)）。`benitoiteh` が同じ規則を作り直すと、エフェクトを読んだファイルの組と、処理系が実行するファイルの組がずれうる。
+【方針】`benitoite_test` の対象は、`.bnt` のファイルのパスだけとし、ディレクトリを受け付けない。理由: 処理系はディレクトリを渡されると、下のディレクトリを辿り、`package.bnt` のある下位のパッケージを除くなどの規則で対象を選ぶ（[CLI](https://github.com/tecogonaz0439/Benitoite/blob/v0.0.6/docs/design/06-tooling/06-01-cli.md)）。`benitoiteh` が同じ規則を作り直すと、エフェクトを読んだファイルの組と、処理系が実行するファイルの組がずれうる。
 
 検査の誤りがあるファイルは `test` がテストを実行しないので、誤りを直してエフェクトが増えたときは、次の `test` の前に確認し直す。テストのファイルを実行せずに検査する手段を処理系に求めるかは BH-023 で扱う。
 
@@ -114,13 +126,13 @@ error[E0405] src/report.bnt:12:5: <message>
 
 【方針】`benitoite_reference` の道具（[道具](../01-agent/01-03-tools.md)の「benitoite_explain と benitoite_reference」）は、埋め込んだ Skill の `references/` の文書を名前で返す。名前は `idioms`・`grammar`・`common-mistakes`・`language-comparison`・`diagnostics`・`stdlib/<モジュール>`（例: `stdlib/IO.File`）とする。`stdlib/index` はモジュールの一覧である。
 
-【方針】`benitoite_explain` の道具は、`benitoiteh` の中で（処理系を起動せずに）、診断のコード（`E0405` など）を受け取り、`references/diagnostics.md` の、そのコードの見出し（`## E0405`）から次の見出しの前までを返す。理由: `diagnostics.md` は約 92 KB あり、全体を文脈に入れるとトークンを浪費する。コードごとの節だけを返せば足りる。
+【方針】`benitoite_explain` の道具は、`benitoiteh` の中で（処理系を起動せずに）、診断のコード（`E0405` など）を受け取り、`references/diagnostics.md` の、そのコードの見出し（`## E0405`）から次の見出しの前までを返す。理由: `diagnostics.md` は約 94 KB あり、全体を文脈に入れるとトークンを浪費する。コードごとの節だけを返せば足りる。
 
 ### 処理系への要望
 
 試作で見つけた、処理系に欲しい機能は、Benitoite の作業ツリーを変えずに、本節と未決事項に書く。Benitoite の docs/todo に項目を足すかは、設計者が決める。
 
-【決定】2026-10-16 に、次の機能を、Benitoite の `v0.0.7` で処理系に加える候補として設計者に示した。同日の外部のレビューを受けて、優先の順と内容を改め、6 を加え、設計者が承認した。番号は優先の順である。実装の順は処理系の側で決める（4 を先に入れ、その版の情報を 1・2 の出力に含める順も考えられる）。
+【決定】2026-10-16 に、次の機能を、Benitoite の `v0.0.7` で処理系に加える候補として設計者に示した。同日の外部のレビューを受けて、優先の順と内容を改め、6 を加え、設計者が承認した。番号は優先の順である。実装の順は処理系の側で決める（4 を先に入れ、その版の情報を 1・2 の出力に含める順も考えられる）。2026-10-17 にリリースされた `v0.0.6` は、1〜6 のどれも含まない。同日、`v0.0.6` の変更を踏まえて依頼の文面を改め、設計者が処理系の側に依頼した。
 
 | 番号 | 機能 | 試作で使う場面 | 未決事項 |
 |---|---|---|---|
@@ -136,7 +148,7 @@ error[E0405] src/report.bnt:12:5: <message>
 - 出力の形式の版。
 - 結果の分類（成功、検査の誤り、使い方の誤り、処理系の不具合）と、結果が完全か（対象をすべて調べ終えたか）。完全でない結果を、エフェクトのない結果と区別できること。
 - 検査の対象（入口のファイル、`main`、テストの関数）と、検査で読み込んだソースのファイルの一覧と内容のハッシュ。
-- 診断（既存の `--diagnostics=json` の形）。
+- 診断（既存の `--diagnostics=json` の形。`code` が `null` の報告を含む）。
 
 各機能の補足は次のとおりである。
 
@@ -144,4 +156,6 @@ error[E0405] src/report.bnt:12:5: <message>
 - 3 は、実行時の権限制御ではない。処理系が実行の前に行う静的な検査の結果と、渡された集合を比べるだけである。3 があっても、OS のサンドボックスは外さない。
 - 1 の `Process.shell` の参照の有無は、確認の画面の説明に使う補助の情報であり、許したプログラムが別の言語の処理系を持たないことの証明にはならない。制限モードの保証は、OS のサンドボックスの実行の制限に置く。
 - 5 は、外部コマンドに渡す環境変数の扱いを検討する項目（Benitoite の docs/todo の TODO-058）と関係する。TODO-058 は環境変数を引き継がない手段を扱い、5 は危険な変数を渡させない手段を扱う。5 は、OS のサンドボックスの実行の制限の代わりにはならない。
-- 次のものは、`v0.0.5` の処理系がすでに満たしているので、要望に含めない。Linux 向けのリリースの実行ファイルが静的にリンクされていること（[導入の手順](https://github.com/tecogonaz0439/Benitoite/blob/v0.0.5/docs/reference/install.md)）、`--diagnostics=json`、`SIGINT` で資源を解放して終わること。
+- 4 の形式の版が要ることは、`v0.0.6` でも確かめられる。`v0.0.6` は、版の印を持たないまま、診断に `code` が `null` の報告を、`test` の JSON の `exit` の失敗に `die` の欄を加えた。
+- 6 が要ることも、`v0.0.6` で確かめられる。`v0.0.6` で Skill の文書が変わったので、埋め込む写しの版を `v0.0.5` から `v0.0.6` に改めた（前述の「取り込む文書と版」）。
+- 次のものは、`v0.0.6` の処理系がすでに満たしているので、要望に含めない。Linux 向けのリリースの実行ファイルが静的にリンクされていること（[導入の手順](https://github.com/tecogonaz0439/Benitoite/blob/v0.0.6/docs/reference/install.md)）、`--diagnostics=json`、`SIGINT` で資源を解放して終わること。

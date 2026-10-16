@@ -27,7 +27,7 @@ Benitoite のプロジェクトは改造の途中であることが多い。処�
 
 エージェントハーネスの事前検討は、Benitoite の初回リリース版の設計書の写し（`docs/archive/2026-10-09-design-first-release/` の 06-08「エージェントハーネス」、ADR 0340〜0348 など）と、Benitoite の docs/todo の項目（TODO-121〜140）にある。設計書から事前検討を引くときは次のようにする。
 
-- 公開している文書（Benitoite のリポジトリで git が追跡する文書）は、リリースのタグを指す GitHub の URL でリンクする（例: `https://github.com/tecogonaz0439/Benitoite/blob/v0.0.5/docs/archive/...`）。
+- 公開している文書（Benitoite のリポジトリで git が追跡する文書）は、リリースのタグを指す GitHub の URL でリンクする（例: `https://github.com/tecogonaz0439/Benitoite/blob/v0.0.6/docs/archive/...`）。
 - Benitoite の docs/todo は非公開のリポジトリである。リンクせず、「Benitoite の docs/todo の TODO-124」と文字で書く。項目の中身を設計書へまとめて写さない。設計の根拠に要る点だけを、要点として書く。
 
 ## コンセプト（判断の拠り所）

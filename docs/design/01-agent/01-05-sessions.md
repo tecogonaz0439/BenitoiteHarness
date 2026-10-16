@@ -9,7 +9,7 @@
 
 ## 前提
 
-- Benitoite の事前検討は、巻き戻しをプロジェクトのディレクトリの状態をまるごと記録して戻す形（型 2）と定め、会話の保存と再開は初めは設けないとした（[ADR 0348](https://github.com/tecogonaz0439/Benitoite/blob/v0.0.5/docs/archive/2026-10-09-design-first-release/decisions/0348-agent-harness-rewind-and-git.md)、Benitoite の docs/todo の TODO-134・TODO-140）。
+- Benitoite の事前検討は、巻き戻しをプロジェクトのディレクトリの状態をまるごと記録して戻す形（型 2）と定め、会話の保存と再開は初めは設けないとした（[ADR 0348](https://github.com/tecogonaz0439/Benitoite/blob/v0.0.6/docs/archive/2026-10-09-design-first-release/decisions/0348-agent-harness-rewind-and-git.md)、Benitoite の docs/todo の TODO-134・TODO-140）。
 - LLM を使ったテストの用途では、提供者・モデル・処理系の版、検査と修正の回数、LLM とのやり取りの全体、トークンの量を記録する見立てがある（Benitoite の docs/todo の TODO-126）。
 - Codex CLI、Pi、DeepSeek Harness は、どれもセッションを追記だけの JSON Lines のファイルに記録し、再開できる（[先行事例](../08-appendix/08-01-prior-art.md)）。
 

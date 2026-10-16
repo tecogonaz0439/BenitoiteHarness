@@ -10,7 +10,7 @@
 ## 前提
 
 - モードの定義と、モードごとの書き込みの範囲は[モード](01-02-modes.md)で定める。
-- Benitoite の事前検討は、エージェントハーネスの道具を `create_project`・`write_script`・`run_scratch`・`check`・`explain`・`read_reference`・`list_files`・`read_file`・`run`・`web_fetch`・`test`・`ask_user` と git の道具と定めた（[ADR 0344](https://github.com/tecogonaz0439/Benitoite/blob/v0.0.5/docs/archive/2026-10-09-design-first-release/decisions/0344-agent-harness-operation-scope-and-tools.md) の決定 4、[ADR 0348](https://github.com/tecogonaz0439/Benitoite/blob/v0.0.5/docs/archive/2026-10-09-design-first-release/decisions/0348-agent-harness-rewind-and-git.md)）。本章は、この一覧を制限モードの道具の元にし、名前と形を後述の「道具の形の選び方」で改める。
+- Benitoite の事前検討は、エージェントハーネスの道具を `create_project`・`write_script`・`run_scratch`・`check`・`explain`・`read_reference`・`list_files`・`read_file`・`run`・`web_fetch`・`test`・`ask_user` と git の道具と定めた（[ADR 0344](https://github.com/tecogonaz0439/Benitoite/blob/v0.0.6/docs/archive/2026-10-09-design-first-release/decisions/0344-agent-harness-operation-scope-and-tools.md) の決定 4、[ADR 0348](https://github.com/tecogonaz0439/Benitoite/blob/v0.0.6/docs/archive/2026-10-09-design-first-release/decisions/0348-agent-harness-rewind-and-git.md)）。本章は、この一覧を制限モードの道具の元にし、名前と形を後述の「道具の形の選び方」で改める。
 - 参考にしたハーネスの道具の形と制限の値は、[先行事例](../08-appendix/08-01-prior-art.md)にまとめた。
 
 ## 仕様
@@ -21,7 +21,7 @@
 
 Benitoite に固有の道具だけは新しい形になる。名前に `benitoite_` を付け、同梱の Agent Skill が使う `benitoite` のコマンドと一対一に対応させる（`benitoite check` に対して `benitoite_check`）。理由: Skill の文書は `benitoite` のコマンドを打つ前提で書いてあり、名前が対応していれば、システムプロンプトに置く対応の説明が短くて済む（[文脈の管理](01-04-context.md)の「システムプロンプトの構成」）。
 
-Benitoite の事前検討は、LLM に見せる道具の形を、サーバモードの MCP の道具と揃えると定めた（[ADR 0346](https://github.com/tecogonaz0439/Benitoite/blob/v0.0.5/docs/archive/2026-10-09-design-first-release/decisions/0346-agent-harness-connects-to-daemon-directly.md)）。サーバモードの MCP の道具はまだ定まっていないので、試作では揃える相手がない。マージを決めるときに見直す（BH-009）。
+Benitoite の事前検討は、LLM に見せる道具の形を、サーバモードの MCP の道具と揃えると定めた（[ADR 0346](https://github.com/tecogonaz0439/Benitoite/blob/v0.0.6/docs/archive/2026-10-09-design-first-release/decisions/0346-agent-harness-connects-to-daemon-directly.md)）。サーバモードの MCP の道具はまだ定まっていないので、試作では揃える相手がない。マージを決めるときに見直す（BH-009）。
 
 ### 道具の定義の共通の規則
 
@@ -199,7 +199,7 @@ Benitoite の事前検討は、LLM に見せる道具の形を、サーバモー
 
 - `paths` は `.bnt` のファイルのパスに限り、ディレクトリを受け付けない（誤りを返す）。同じファイルを重ねて指定したときは一つにまとめる。理由は[Benitoite の処理系との連携](../04-benitoite/04-01-benitoite-integration.md)の「`main` のエフェクトの読み取り」に書いた。
 - 対象のファイルのエフェクト（ファイルの中のすべての `uses` の和）を読み取り、確認を受けてから `benitoite test --diagnostics=json <paths>` を実行する。サンドボックスの方針は、`main` のエフェクトの代わりにこの和から、`benitoite_run` と同じ規則で決める（[OS のサンドボックス](../03-safety/03-02-sandbox.md)の「制限モードの方針」）。
-- 結果は、失敗したテストの名前と理由、成功と失敗の数とする。検査の誤りがあるファイルは、診断を返す。
+- 結果は、失敗したテストの名前と理由、成功と失敗の数とする。検査の誤りがあるファイルは、診断を返す。結果の作り方は、[Benitoite の処理系との連携](../04-benitoite/04-01-benitoite-integration.md)の「終了状態と診断の受け渡し」で定める。
 
 ### benitoite_scratch（制限モード）
 
@@ -241,7 +241,7 @@ Benitoite の事前検討は、LLM に見せる道具の形を、サーバモー
 { "url": "string" }
 ```
 
-- 事前検討の決定（[ADR 0347](https://github.com/tecogonaz0439/Benitoite/blob/v0.0.5/docs/archive/2026-10-09-design-first-release/decisions/0347-agent-harness-web-fetch.md)）を引き継ぐ。`https` の GET だけを行い、クッキーと認証の情報を送らない。利用者の設定の一覧にあるドメインは確認なしで取得し、それ以外のドメインは、セッションで初めて取得するときに確認を受ける。一覧はプロジェクトの設定では広げられない。非対話では一覧のドメインだけを取得する。
+- 事前検討の決定（[ADR 0347](https://github.com/tecogonaz0439/Benitoite/blob/v0.0.6/docs/archive/2026-10-09-design-first-release/decisions/0347-agent-harness-web-fetch.md)）を引き継ぐ。`https` の GET だけを行い、クッキーと認証の情報を送らない。利用者の設定の一覧にあるドメインは確認なしで取得し、それ以外のドメインは、セッションで初めて取得するときに確認を受ける。一覧はプロジェクトの設定では広げられない。非対話では一覧のドメインだけを取得する。
 - リダイレクトは 5 回まで辿り、辿るたびに先のドメインを同じ規則で判定する。リダイレクトの先が `https` でなければ取得しない。
 - 名前を解いて得たアドレスのどれかが、ループバック（`127.0.0.0/8`・`::1`）、プライベート（`10.0.0.0/8`・`172.16.0.0/12`・`192.168.0.0/16`・`fc00::/7`）、リンクローカル（`169.254.0.0/16`・`fe80::/10`）、CGNAT（`100.64.0.0/10`）、未指定（`0.0.0.0`・`::`）、および IPv4 を写した IPv6 でこれらに当たるもの、に入れば、一覧にあっても取得しない。判定したアドレスにそのまま接続し、名前を解き直さない。理由: LLM が組み立てた URL で、手元の計算機、クラウドの仮想機械の情報のサービス（`169.254.169.254`）、内側のネットワークのサービスを読ませないためである。判定と接続の間に名前の答えを変える攻撃（DNS rebinding）も、解き直さないことで防ぐ。
 - 環境変数のプロキシの指定（`HTTPS_PROXY` など）を使わない。
@@ -258,13 +258,15 @@ Benitoite の事前検討は、LLM に見せる道具の形を、サーバモー
 | `read`・`benitoite_reference` | 先頭 | 2,000 行か 50 KiB |
 | `bash` | 末尾 | 2,000 行か 50 KiB |
 | `benitoite_run`・`benitoite_scratch` | 末尾（標準出力と標準エラー出力それぞれ） | 1,000 行か 25 KiB |
+| `benitoite_test` | 失敗したテストの出力の末尾（`stdout`・`stderr` の欄それぞれ） | テストごとに 100 行か 4 KiB |
 | `grep` | 先頭 | 100 件か 50 KiB（一行 500 文字） |
 | `glob` | 先頭 | 500 件 |
 | `benitoite_check` ほかの診断 | 先頭（`error` を先に） | 20 件 |
 
 - 切り詰めたときは、切り詰めたことと続きを得る方法を、結果の末尾に一行で書く。
+- `benitoite_test` の上限をテストごとに小さくするのは、失敗したテストが多いと出力が重なるからである。失敗の理由と位置は、この上限と別に示す。
 - 子プロセスを起動する道具は、子プロセスが終わるまで出力を読み続け、メモリに保つ量、`spill/` への保存、LLM に返す量を別々に限る。LLM に返す末尾は、受け取りながら末尾だけを保つ形で、本当の出力の末尾にする。`spill/` には一つの出力について 16 MiB まで書き、超えた分は書かずに、書いた量と捨てた量をファイルの末尾と結果の印に示す。印の `Full output` は、すべてを書けたときだけ使い、書けなかったときは `Partial output (first X of Y bytes)` とする。理由: 受け取りの上限で読むのをやめると、本当の末尾（失敗の理由や集計）が失われ、子プロセスがパイプの書き込みで止まる。
-- `bash` と `benitoite_run` の出力は、セッションのディレクトリの `spill/` に書く。`read` は、どのモードでもこのディレクトリを読める。子プロセスにはこのディレクトリへの書き込みを許さない。
+- `bash`・`benitoite_run`・`benitoite_test` の出力は、セッションのディレクトリの `spill/` に書く。`read` は、どのモードでもこのディレクトリを読める。子プロセスにはこのディレクトリへの書き込みを許さない。
 - どの道具の結果も、上の規則の後になお 64 KiB を超えるときは、先頭と末尾を残して中ほどを除き、除いた量を示す。
 - 一つのセッションの `spill/` と巻き戻しの記録の合計の大きさの上限は BH-063 で決める。上限に達したら、黙って古い記録を消さず、それ以上を書かないことと、そのことを結果と画面に示す。
 
