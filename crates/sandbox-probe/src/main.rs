@@ -38,6 +38,12 @@ fn main() -> ExitCode {
                     || code == rustix::io::Errno::ACCESS.raw_os_error()
             }) {
                 10
+            } else if operation == "hardlink"
+                && error.raw_os_error() == Some(rustix::io::Errno::XDEV.raw_os_error())
+            {
+                // ハードリンクの EXDEV だけを区別し、ほかの操作の終了状態を保つ。
+                // （実装プラン P2-02「作るもの」）
+                14
             } else {
                 11
             }
@@ -64,6 +70,7 @@ fn run(operation: &OsStr, args: &[OsString]) -> io::Result<Option<u8>> {
         ("remove-file", [path]) => fs::remove_file(path),
         ("remove-dir", [path]) => fs::remove_dir(path),
         ("rename", [from, to]) => fs::rename(from, to),
+        ("hardlink", [from, to]) => fs::hard_link(from, to),
         #[cfg(target_os = "linux")]
         ("umount", [path]) => {
             rustix::mount::unmount(path, rustix::mount::UnmountFlags::empty()).map_err(Into::into)

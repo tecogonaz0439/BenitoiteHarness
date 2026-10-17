@@ -92,16 +92,22 @@ pub(super) fn restrict(policy: &SandboxPolicy, required: u64) -> Result<()> {
         return Err(error(text::ABI_REQUIRED));
     }
     // 必須 V3 は別の規則として適用済み。追加の権利がないカーネルでも V3 を維持する。
-    Ruleset::default()
+    // REFER は、扱うと指定しない層でも既定で拒否されるため、この層でも書ける場所に与える。
+    // V2 からある権利なので、必須 V3 を満たす環境では BestEffort でも省略されない。
+    // https://docs.kernel.org/userspace-api/landlock.html の LANDLOCK_ACCESS_FS_REFER と、
+    // 設計書 03-02「Linux のファイルシステムの見え方」の「書ける場所」に従う。
+    let mut extra_rules = Ruleset::default()
         .set_compatibility(CompatLevel::BestEffort)
-        .handle_access(AccessFs::IoctlDev | AccessFs::ResolveUnix)
+        .handle_access(AccessFs::Refer | AccessFs::IoctlDev | AccessFs::ResolveUnix)
         .map_err(error)?
         .scope(Scope::AbstractUnixSocket)
         .map_err(error)?
         .create()
-        .map_err(error)?
-        .restrict_self()
         .map_err(error)?;
+    for root in &config.writable {
+        grant(&mut extra_rules, root, AccessFs::Refer.into())?;
+    }
+    extra_rules.restrict_self().map_err(error)?;
     Ok(())
 }
 

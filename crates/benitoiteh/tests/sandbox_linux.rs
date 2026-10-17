@@ -6,10 +6,10 @@ use std::collections::BTreeMap;
 use std::error::Error;
 use std::ffi::{OsStr, OsString};
 use std::fs::{self, File};
-use std::io::{BufRead, BufReader};
+use std::io::{self, BufRead, BufReader};
 use std::net::TcpListener;
 use std::os::fd::AsRawFd;
-use std::os::unix::fs::{PermissionsExt, symlink};
+use std::os::unix::fs::{MetadataExt, PermissionsExt, symlink};
 use std::os::unix::net::{UnixDatagram, UnixListener};
 use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
@@ -248,7 +248,80 @@ fn reading_excludes_secrets_and_confines_readable_roots() -> TestResult {
     Ok(())
 }
 
+// 作成時の関門: 書ける場所の外・秘密・守る場所からのリンクの拒否漏れを、
+// 本物の子の終了状態と外から見たリンク数で捕まえる。既存の書き込み検査はリンクを作らない。
+// （設計書 01-03「書く道具のパスの規則」、03-01「保証しないこと」、BH-092）
+#[test]
+fn hardlinks_stay_within_unprotected_writable_paths() -> TestResult {
+    let f = Fixture::new()?;
+    let secret = f.root.join("secret");
+    let secret_key = secret.join("key");
+    let secret_file = f.root.join("secret-file");
+    let outside = f.root.join("outside");
+    let protected = f.writable.join(".git/config");
+    let source = f.writable.join("a/f");
+    let destination = f.writable.join("b/g");
+    fs::create_dir(&secret)?;
+    for directory in [".git", "a", "b"] {
+        fs::create_dir(f.writable.join(directory))?;
+    }
+    for path in [&secret_key, &secret_file, &outside, &protected, &source] {
+        fs::write(path, b"hardlink fixture")?;
+    }
+    let mut config = f.config();
+    config.denied_read.extend([secret, secret_file.clone()]);
+
+    // 同じディレクトリ内のリンクは REFER を要さないため、別のディレクトリを先にする。
+    f.run_case(
+        "hardlink positive control",
+        config.clone(),
+        &[
+            OsStr::new("hardlink"),
+            source.as_os_str(),
+            destination.as_os_str(),
+        ],
+        0,
+    )?;
+    let source_metadata = fs::metadata(&source)?;
+    let destination_metadata = fs::metadata(&destination)?;
+    assert_eq!(source_metadata.nlink(), 2);
+    assert_eq!(destination_metadata.nlink(), 2);
+    assert_eq!(source_metadata.dev(), destination_metadata.dev());
+    assert_eq!(source_metadata.ino(), destination_metadata.ino());
+
+    // outside は --ro-bind / /、先は --bind の別マウントなので EXDEV を見込む。
+    // secret/key は権限 000 の tmpfs を辿れず、secret-file は覆いのファイルの
+    // マウント、.git は --ro-bind の別マウントになる（設計書 03-02「Linux のファイルシステムの見え方」）。
+    // Landlock の REFER の拒否も EXDEV を返しうるので、終了状態から拒否の仕組みは断定しない。
+    for (name, source, expected) in [
+        ("outside", outside, 14),
+        ("secret-key", secret_key, 10),
+        ("secret-file", secret_file, 14),
+        ("protected", protected, 14),
+    ] {
+        let destination = f.writable.join(format!("link-{name}"));
+        f.run_case(
+            name,
+            config.clone(),
+            &[
+                OsStr::new("hardlink"),
+                source.as_os_str(),
+                destination.as_os_str(),
+            ],
+            expected,
+        )?;
+        let metadata = fs::symlink_metadata(&destination);
+        assert!(
+            matches!(&metadata, Err(error) if error.kind() == io::ErrorKind::NotFound),
+            "{name}: destination must be absent: {metadata:?}"
+        );
+        assert_eq!(fs::metadata(&source)?.nlink(), 1, "{name}");
+    }
+    Ok(())
+}
+
 // 作成時の関門: 書き込み権の不足と、守るマウントの欠落を、外の FS の状態でも検出する。
+// 同じディレクトリ内の rename だけでは捕まらない、追加の Landlock 層の REFER の許可漏れも試す。
 #[test]
 fn writing_creates_removes_and_atomically_replaces_files_only_in_writable_roots() -> TestResult {
     let f = Fixture::new()?;
@@ -285,6 +358,28 @@ fn writing_creates_removes_and_atomically_replaces_files_only_in_writable_roots(
         )?;
         assert!(!directory.exists());
     }
+    let source = f.writable.join("a/f");
+    let destination = f.writable.join("b/f");
+    for directory in ["a", "b"] {
+        fs::create_dir(f.writable.join(directory))?;
+    }
+    fs::write(&source, b"moved between directories")?;
+    f.run_case(
+        "rename across writable directories",
+        f.config(),
+        &[
+            OsStr::new("rename"),
+            source.as_os_str(),
+            destination.as_os_str(),
+        ],
+        0,
+    )?;
+    let metadata = fs::symlink_metadata(&source);
+    assert!(
+        matches!(&metadata, Err(error) if error.kind() == io::ErrorKind::NotFound),
+        "rename source must be absent: {metadata:?}"
+    );
+    assert_eq!(fs::read(&destination)?, b"moved between directories");
     let outside = f.root.join("outside");
     fs::write(&outside, b"unchanged")?;
     f.run(f.config(), &[OsStr::new("write"), outside.as_os_str()], 11)?;
