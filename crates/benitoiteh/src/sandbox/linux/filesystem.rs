@@ -69,6 +69,13 @@ pub(super) fn restrict(policy: &SandboxPolicy, required: u64) -> Result<()> {
     for root in &config.writable {
         grant(&mut rules, root, AccessFs::from_write(ABI::V3))?;
     }
+    // Stdio::null() とシェルの出力の破棄を、書ける場所の指定によらず許す。
+    // bubblewrap が作った /dev/null を補助のプロセスで開き、その対象にだけ
+    // 書き込みを許す（設計書 03-02「方針の要素」）。
+    let null = open_path(Path::new("/dev/null")).map_err(error)?;
+    (&mut rules)
+        .add_rule(PathBeneath::new(&null, AccessFs::WriteFile))
+        .map_err(error)?;
     let status = rules.restrict_self().map_err(error)?;
     if status.ruleset != RulesetStatus::FullyEnforced || !status.no_new_privs {
         return Err(error(text::NOT_ENFORCED));

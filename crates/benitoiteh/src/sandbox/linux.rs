@@ -1,6 +1,7 @@
 //! Linux の補助の入口と、Landlock・seccomp の順序を管理する（設計書 03-02「サンドボックスの掛け方」）。
 
 mod availability;
+mod control;
 mod filesystem;
 mod filter;
 mod mounts;
@@ -32,9 +33,9 @@ fn failure(stage: &'static str, error: impl std::fmt::Display) -> SandboxError {
     }
 }
 
-/// `__sandbox` の残りの引数を処理する。成功時は目的のプログラムで自身を置き換える。
+/// `__sandbox` の残りの引数を処理する。成功時は名前空間の子を回収して終わる。
 pub fn run_helper(args: impl Iterator<Item = OsString>) -> ExitCode {
-    let error = match prepare_and_exec(args) {
+    let error = match prepare_and_run(args) {
         Ok(never) => match never {},
         Err(error) => error,
     };
@@ -44,7 +45,7 @@ pub fn run_helper(args: impl Iterator<Item = OsString>) -> ExitCode {
     ExitCode::from(SETUP_FAILURE)
 }
 
-fn prepare_and_exec(
+fn prepare_and_run(
     mut args: impl Iterator<Item = OsString>,
 ) -> Result<std::convert::Infallible, SandboxError> {
     let json = args
@@ -96,16 +97,24 @@ fn prepare_and_exec(
     config.denied_read = outer;
     let policy = SandboxPolicy::new(config).map_err(|e| failure(text::POLICY, e))?;
     policy::canonical_path(Path::new(&program)).map_err(|e| failure(text::POLICY, e))?;
-    check_descriptors().map_err(|e| failure(text::DESCRIPTORS, e))?;
+    let control = control::receive_stdin().map_err(|e| failure(text::DESCRIPTORS, e))?;
+    check_descriptors(control.as_raw_fd()).map_err(|e| failure(text::DESCRIPTORS, e))?;
     rustix::thread::set_no_new_privs(true).map_err(|e| failure(text::NO_NEW_PRIVS, e))?;
     filesystem::restrict(&policy, required)?;
     let filter =
         filter::compile(policy.config().allow_ip).map_err(|e| failure(text::SECCOMP, e))?;
     seccompiler::apply_filter(&filter).map_err(|e| failure(text::SECCOMP, e))?;
-    Err(failure(text::EXEC, Command::new(program).args(args).exec()))
+    rustix::process::set_dumpable_behavior(rustix::process::DumpableBehavior::NotDumpable)
+        .map_err(|e| failure(text::DUMPABLE, e))?;
+    let child = Command::new(program)
+        .args(args)
+        .process_group(0)
+        .spawn()
+        .map_err(|e| failure(text::EXEC, e))?;
+    control::supervise(control, child)
 }
 
-fn check_descriptors() -> io::Result<()> {
+fn check_descriptors(control: i32) -> io::Result<()> {
     // ReadDir は自分の番号を公開しないので、番号を保持できる File と RawDir を使う。
     // 同じ /proc/self/fd を指す、親から来た別の記述子まで除外しない。
     let directory = File::open("/proc/self/fd")?;
@@ -121,7 +130,7 @@ fn check_descriptors() -> io::Result<()> {
         let number = std::str::from_utf8(name)
             .ok()
             .and_then(|name| name.parse::<i32>().ok());
-        if !matches!(number, Some(0..=2)) && number != Some(own_fd) {
+        if !matches!(number, Some(0..=2)) && number != Some(own_fd) && number != Some(control) {
             return Err(io::Error::other(text::EXTRA_FD));
         }
     }

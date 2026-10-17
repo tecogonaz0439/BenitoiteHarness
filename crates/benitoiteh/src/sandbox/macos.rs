@@ -56,6 +56,11 @@ impl SandboxPolicy {
             ),
             parameters: Vec::new(),
         };
+        // 出力の破棄はどの方針でも許すが、通常のファイルへの書き込みは広げない
+        // （設計書 03-02「方針の要素」）。
+        profile.source.push_str(
+            "(allow file-write-data (require-all (path \"/dev/null\") (vnode-type CHARACTER-DEVICE)))\n",
+        );
         let config = self.config();
         match &config.readable {
             ReadAccess::All => profile

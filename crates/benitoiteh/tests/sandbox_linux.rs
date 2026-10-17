@@ -75,14 +75,15 @@ impl Fixture {
         config: PolicyConfig,
         args: &[&OsStr],
     ) -> Result<PreparedSandbox, Box<dyn Error>> {
-        self.command_for(config, &self.probe, args)
+        self.command_with_stdin(config, &self.probe, args, SandboxStdin::Null)
     }
 
-    fn command_for(
+    fn command_with_stdin(
         &self,
         config: PolicyConfig,
         program: &Path,
         args: &[&OsStr],
+        stdin: SandboxStdin,
     ) -> Result<PreparedSandbox, Box<dyn Error>> {
         Ok(SandboxCommand {
             policy: SandboxPolicy::new(config)?,
@@ -90,7 +91,7 @@ impl Fixture {
             args: args.iter().map(|arg| arg.to_os_string()).collect(),
             cwd: self.root.clone(),
             env: BTreeMap::new(),
-            stdin: SandboxStdin::Null,
+            stdin,
         }
         .prepare(&self.helper, &self.root)?)
     }
@@ -291,6 +292,28 @@ fn writing_creates_removes_and_atomically_replaces_files_only_in_writable_roots(
     Ok(())
 }
 
+// 作成時の関門: /dev/null の書き込み権の欠落と、例外を全体へ広げる退行を
+// 本物の子で区別する。プロジェクトに書ける場合も、一時の場所だけの場合も同じ契約。
+#[test]
+fn dev_null_accepts_writes_without_allowing_other_outside_files() -> TestResult {
+    let f = Fixture::new()?;
+    let temporary = f.root.join("temporary-only");
+    fs::create_dir(&temporary)?;
+    let outside = f.root.join("outside");
+    fs::write(&outside, b"unchanged")?;
+    for writable in [&f.writable, &temporary] {
+        let config = PolicyConfig::new(vec![writable.clone()]);
+        f.run(
+            config.clone(),
+            &[OsStr::new("write"), OsStr::new("/dev/null")],
+            0,
+        )?;
+        f.run(config, &[OsStr::new("write"), outside.as_os_str()], 11)?;
+        assert_eq!(fs::read(&outside)?, b"unchanged");
+    }
+    Ok(())
+}
+
 // 作成時の関門: すでにあるマウントと、まだない名前の塞ぎの両方を本物の OS で確かめる。
 #[test]
 fn root_protection_blocks_creation_writing_removal_and_replacement() -> TestResult {
@@ -449,14 +472,19 @@ fn cleanup_waits_for_exit_and_preserves_preexisting_empty_directories() -> TestR
     fs::create_dir(&existing)?;
     let mut config = f.config();
     config.protected_names.push(".keep".into());
-    let sandbox = f.command(config, &[OsStr::new("wait-stdin")])?;
+    let sandbox = f.command_with_stdin(
+        config,
+        &f.probe,
+        &[OsStr::new("wait-stdin")],
+        SandboxStdin::Piped,
+    )?;
     let mut command = Command::new(sandbox.get_program());
     command
         .args(sandbox.get_args())
         .env_clear()
         .current_dir(&f.root)
         .process_group(0)
-        .stdin(Stdio::piped())
+        .stdin(Stdio::inherit())
         .stdout(Stdio::piped());
     let mut child = sandbox.spawn_wrapped(command)?;
     let stdout = child.child_mut().stdout.take().ok_or("Missing stdout")?;
@@ -469,7 +497,7 @@ fn cleanup_waits_for_exit_and_preserves_preexisting_empty_directories() -> TestR
         fs::set_permissions(&occupied, fs::Permissions::from_mode(0o755))?;
         fs::write(occupied.join("outside-data"), b"keep")
     })();
-    drop(child.child_mut().stdin.take());
+    drop(child.take_stdin());
     let status = child.wait()?;
     occupied_result?;
     assert!(status.success(), "{status}");
@@ -840,7 +868,8 @@ fn setup_failures_do_not_execute_the_program_and_cloexec_descriptors_do_not_leak
         ("{\nbroken".to_owned(), "policy"),
         (serde_json::to_string(&raised_abi)?, "Landlock"),
     ] {
-        let output = Command::new(&f.helper)
+        let mut command = Command::new(&f.helper);
+        command
             .arg("__sandbox")
             .arg(&json)
             .arg("--")
@@ -848,8 +877,9 @@ fn setup_failures_do_not_execute_the_program_and_cloexec_descriptors_do_not_leak
             .arg("write")
             .arg(&marker)
             .env_clear()
-            .current_dir(&f.root)
-            .output()?;
+            .current_dir(&f.root);
+        let _control = attach_control(&mut command, 1)?;
+        let output = command.output()?;
         check(&output, 125, &format!("setup/{stage} policy={json}"));
         let stderr = String::from_utf8_lossy(&output.stderr);
         assert_eq!(stderr.lines().count(), 1, "{stderr}");
@@ -866,5 +896,343 @@ fn setup_failures_do_not_execute_the_program_and_cloexec_descriptors_do_not_leak
     assert_eq!(stderr.lines().count(), 1, "{stderr}");
     assert!(stderr.contains("exec"), "{stderr}");
     assert_eq!(fs::read(&marker)?, b"unchanged");
+    Ok(())
+}
+
+fn attach_control(
+    command: &mut Command,
+    count: usize,
+) -> Result<std::os::unix::net::UnixStream, Box<dyn Error>> {
+    use rustix::net::{SendAncillaryBuffer, SendAncillaryMessage, SendFlags, sendmsg};
+    use std::io::IoSlice;
+    use std::mem::MaybeUninit;
+    use std::os::fd::{AsFd, OwnedFd};
+    let (parent, inherited) = std::os::unix::net::UnixStream::pair()?;
+    command.stdin(Stdio::from(OwnedFd::from(inherited)));
+    let file = File::open("/dev/null")?;
+    let descriptors = vec![file.as_fd(); count];
+    let mut space = [MaybeUninit::uninit(); rustix::cmsg_space!(ScmRights(2))];
+    let mut ancillary = SendAncillaryBuffer::new(&mut space);
+    if count > 0 {
+        assert!(ancillary.push(SendAncillaryMessage::ScmRights(&descriptors)));
+    }
+    sendmsg(
+        &parent,
+        &[IoSlice::new(b"S")],
+        &mut ancillary,
+        SendFlags::NOSIGNAL,
+    )?;
+    Ok(parent)
+}
+
+fn run_limits() -> benitoiteh::sandbox::run::RunLimits {
+    use benitoiteh::sandbox::run::RunLimits;
+    RunLimits {
+        timeout: std::time::Duration::from_secs(5),
+        grace: std::time::Duration::from_millis(100),
+        pipe_close_wait: std::time::Duration::from_secs(1),
+        ..RunLimits::default()
+    }
+}
+
+// 番号は名前空間の内外で違うので、目印の引数だけで外側のプロセスを照合する。
+fn marked_processes(marker: &Path) -> Result<Vec<rustix::process::Pid>, Box<dyn Error>> {
+    let mut result = Vec::new();
+    for entry in fs::read_dir("/proc")? {
+        let entry = entry?;
+        let Some(pid) = entry
+            .file_name()
+            .to_str()
+            .and_then(|name| name.parse::<i32>().ok())
+            .and_then(rustix::process::Pid::from_raw)
+        else {
+            continue;
+        };
+        let cmdline = match fs::read(entry.path().join("cmdline")) {
+            Ok(bytes) => bytes,
+            Err(error)
+                if error.kind() == std::io::ErrorKind::NotFound
+                    || error.raw_os_error() == Some(rustix::io::Errno::SRCH.raw_os_error()) =>
+            {
+                continue;
+            }
+            Err(error) => return Err(error.into()),
+        };
+        if cmdline
+            .split(|byte| *byte == 0)
+            .any(|arg| arg == marker.as_os_str().as_encoded_bytes())
+        {
+            result.push(pid);
+        }
+    }
+    Ok(result)
+}
+struct MarkedCleanup(PathBuf);
+impl Drop for MarkedCleanup {
+    fn drop(&mut self) {
+        if let Ok(pids) = marked_processes(&self.0) {
+            for pid in pids {
+                // 送る直前にもう一度照合し、番号の使い回しで別のプロセスを止めない。
+                if marked_processes(&self.0).is_ok_and(|current| current.contains(&pid)) {
+                    let _sent = rustix::process::kill_process(pid, rustix::process::Signal::KILL);
+                }
+            }
+        }
+    }
+}
+
+// 作成時の関門: BH-090 の「返った直後」を、一度の /proc の走査で確かめる。
+// パイプを閉じた setsid の子は、出力の EOF だけでは見つけられない。
+#[test]
+fn namespace_exit_leaves_no_descendants_even_after_setsid() -> TestResult {
+    use benitoiteh::sandbox::run::{Leftovers, RunEnd, run};
+    use std::sync::atomic::AtomicBool;
+    use std::sync::{Arc, Mutex};
+    let f = Fixture::new()?;
+    for (session, pipes) in [
+        ("session", "open"),
+        ("session", "closed"),
+        ("group", "open"),
+    ] {
+        let marker = f.writable.join(format!("descendant-{session}-{pipes}"));
+        let _cleanup = MarkedCleanup(marker.clone());
+        let stdout = Arc::new(Mutex::new(Vec::new()));
+        let stderr = Arc::new(Mutex::new(Vec::new()));
+        let sandbox = f.command(
+            f.config(),
+            &[
+                OsStr::new("descendant"),
+                OsStr::new(session),
+                OsStr::new(pipes),
+                marker.as_os_str(),
+            ],
+        )?;
+        let result = run(
+            sandbox,
+            vec![],
+            stdout,
+            Arc::clone(&stderr),
+            run_limits(),
+            &AtomicBool::new(false),
+        )?;
+        let remaining = marked_processes(&marker)?;
+        assert!(
+            remaining.is_empty(),
+            "Processes remaining immediately after run: {remaining:?}"
+        );
+        assert_eq!(result.end, RunEnd::Exited);
+        assert!(
+            result.status.success(),
+            "{:?}: {:?}",
+            result.status,
+            stderr.lock()
+        );
+        assert_eq!(result.leftovers, Leftovers::None);
+        assert!(marker.is_file(), "The descendant must have started");
+        assert!(!f.writable.join(".git").exists());
+        assert!(!f.writable.join(".benitoiteh").exists());
+    }
+    Ok(())
+}
+
+// 作成時の関門: 外側の bubblewrap だけを止め、目的のプログラムへ合図が届かない退行を捕まえる。
+#[test]
+fn namespace_stop_signals_and_exit_statuses_reach_the_caller() -> TestResult {
+    use benitoiteh::sandbox::run::{Leftovers, RunEnd, StopSignal, run};
+    use std::sync::atomic::AtomicBool;
+    use std::sync::{Arc, Mutex};
+    use std::time::Duration;
+    let f = Fixture::new()?;
+    for (signal, expected) in [
+        (StopSignal::Interrupt, "SIGINT"),
+        (StopSignal::Terminate, "SIGTERM"),
+    ] {
+        for mode in ["handle", "ignore"] {
+            let marker = f.writable.join(format!("signal-{signal:?}-{mode}"));
+            let _cleanup = MarkedCleanup(marker.clone());
+            let sandbox = f.command(
+                f.config(),
+                &[OsStr::new("signal"), OsStr::new(mode), marker.as_os_str()],
+            )?;
+            let mut limits = run_limits();
+            limits.timeout = Duration::from_secs(2);
+            limits.stop_signal = signal;
+            let start = std::time::Instant::now();
+            let result = run(
+                sandbox,
+                vec![],
+                Arc::new(Mutex::new(Vec::new())),
+                Arc::new(Mutex::new(Vec::new())),
+                limits,
+                &AtomicBool::new(false),
+            )?;
+            assert!(marked_processes(&marker)?.is_empty());
+            assert_eq!(result.end, RunEnd::TimedOut);
+            assert_eq!(result.leftovers, Leftovers::None);
+            if mode == "handle" {
+                assert_eq!(fs::read_to_string(marker)?, expected);
+                assert_eq!(result.status.code(), Some(0));
+            } else {
+                assert_eq!(fs::read_to_string(marker)?, "ready");
+                assert_eq!(result.status.code(), Some(137));
+                assert!(start.elapsed() >= limits.timeout.saturating_add(limits.grace));
+            }
+            assert!(!f.writable.join(".git").exists());
+            assert!(!f.writable.join(".benitoiteh").exists());
+        }
+    }
+    // 通常の終了値と、合図による終了値（128+番号）を bubblewrap の外で受け取る。
+    for code in ["0", "23"] {
+        let result = run(
+            f.command(f.config(), &[OsStr::new("exit"), OsStr::new(code)])?,
+            vec![],
+            Arc::new(Mutex::new(Vec::new())),
+            Arc::new(Mutex::new(Vec::new())),
+            run_limits(),
+            &AtomicBool::new(false),
+        )?;
+        assert_eq!(result.status.code(), Some(code.parse()?));
+    }
+    let mut limits = run_limits();
+    limits.timeout = Duration::from_millis(500);
+    limits.stop_signal = StopSignal::Terminate;
+    let result = run(
+        f.command(f.config(), &[OsStr::new("sleep"), OsStr::new("60000")])?,
+        vec![],
+        Arc::new(Mutex::new(Vec::new())),
+        Arc::new(Mutex::new(Vec::new())),
+        limits,
+        &AtomicBool::new(false),
+    )?;
+    assert_eq!(result.status.code(), Some(143));
+    Ok(())
+}
+
+// 作成時の関門: 制御の fd の漏れと /proc/1/fd 経由の取得を、目的のプログラムから試す。
+#[test]
+fn target_cannot_inherit_or_open_control_descriptors_and_stdin_modes_work() -> TestResult {
+    use std::io::Write;
+    let f = Fixture::new()?;
+    f.run(f.config(), &[OsStr::new("check-control-fds")], 0)?;
+    for stdin in [SandboxStdin::Null, SandboxStdin::Piped] {
+        let sandbox =
+            f.command_with_stdin(f.config(), &f.probe, &[OsStr::new("echo-stdin")], stdin)?;
+        let output = if stdin == SandboxStdin::Piped {
+            let mut wrapper = Command::new(sandbox.get_program());
+            wrapper
+                .args(sandbox.get_args())
+                .stdout(Stdio::piped())
+                .stderr(Stdio::piped());
+            let mut child = sandbox.spawn_wrapped(wrapper)?;
+            let mut writer = child.take_stdin().ok_or("Missing stdin writer")?;
+            writer.write_all(b"piped bytes")?;
+            drop(writer);
+            child.wait_with_output()?
+        } else {
+            sandbox.output()?
+        };
+        assert!(output.status.success(), "{output:?}");
+        assert_eq!(
+            output.stdout,
+            if stdin == SandboxStdin::Piped {
+                b"piped bytes".as_slice()
+            } else {
+                b""
+            }
+        );
+    }
+
+    // 実行の公開の入口も、bubblewrap の stdin を差し替えずに書き口を使う。
+    let stdout = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+    let output = benitoiteh::sandbox::run::run(
+        f.command_with_stdin(
+            f.config(),
+            &f.probe,
+            &[OsStr::new("echo-stdin")],
+            SandboxStdin::Piped,
+        )?,
+        vec![b'x'; 1024 * 1024],
+        std::sync::Arc::clone(&stdout),
+        std::sync::Arc::new(std::sync::Mutex::new(Vec::new())),
+        run_limits(),
+        &std::sync::atomic::AtomicBool::new(false),
+    )?;
+    assert!(output.status.success());
+    assert_eq!(
+        *stdout
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner),
+        vec![b'x'; 1024 * 1024]
+    );
+    Ok(())
+}
+
+// 作成時の関門: 準備が失敗しているのに目的のプログラムを動かす退行を、内容の不変で確かめる。
+#[test]
+fn malformed_control_input_fails_before_target_execution() -> TestResult {
+    let f = Fixture::new()?;
+    let marker = f.writable.join("not-executed");
+    fs::write(&marker, b"unchanged")?;
+    let json = serde_json::to_string(&SandboxPolicy::new(f.config())?)?;
+    for count in [None, Some(0), Some(2)] {
+        let mut command = Command::new(&f.helper);
+        command.args([
+            OsStr::new("__sandbox"),
+            OsStr::new(&json),
+            OsStr::new("--"),
+            f.probe.as_os_str(),
+            OsStr::new("write"),
+            marker.as_os_str(),
+        ]);
+        let _control = match count {
+            Some(count) => Some(attach_control(&mut command, count)?),
+            None => {
+                command.stdin(Stdio::null());
+                None
+            }
+        };
+        let output = command.output()?;
+        check(&output, 125, "malformed control socket");
+        assert!(String::from_utf8_lossy(&output.stderr).contains("descriptors"));
+        assert_eq!(fs::read(&marker)?, b"unchanged");
+    }
+    Ok(())
+}
+
+// 作成時の関門: 親の stdin の複製を、並列テストの stdin を変更せずに本物の子で試す。
+#[test]
+fn inherited_stdin_is_forwarded_from_parent_process() -> TestResult {
+    use std::io::Write;
+    let f = Fixture::new()?;
+    if std::env::var_os("BH_TEST_INHERIT_STDIN").is_some() {
+        let output = f
+            .command_with_stdin(
+                f.config(),
+                &f.probe,
+                &[OsStr::new("echo-stdin")],
+                SandboxStdin::Inherit,
+            )?
+            .output()?;
+        check(&output, 0, "inherited stdin");
+        assert_eq!(output.stdout, b"inherited bytes");
+    } else {
+        let mut child = Command::new(std::env::current_exe()?)
+            .args([
+                "--exact",
+                "inherited_stdin_is_forwarded_from_parent_process",
+                "--nocapture",
+            ])
+            .env("BH_TEST_INHERIT_STDIN", "1")
+            .current_dir(&f.root)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()?;
+        let mut writer = child.stdin.take().ok_or("Missing stdin")?;
+        writer.write_all(b"inherited bytes")?;
+        drop(writer);
+        let output = child.wait_with_output()?;
+        check(&output, 0, "isolated parent with inherited stdin");
+    }
     Ok(())
 }

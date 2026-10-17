@@ -70,6 +70,7 @@ fn mount_order_keeps_masks_after_writable_roots() -> TestResult {
         let mut expected: Vec<OsString> = [
             "--unshare-user",
             "--unshare-pid",
+            "--as-pid-1",
             "--unshare-ipc",
             "--disable-userns",
             "--new-session",
@@ -162,6 +163,7 @@ fn gitdir_and_custom_protection_use_the_same_mount_precedence() -> TestResult {
     let mut expected: Vec<OsString> = [
         "--unshare-user",
         "--unshare-pid",
+        "--as-pid-1",
         "--unshare-ipc",
         "--disable-userns",
         "--new-session",

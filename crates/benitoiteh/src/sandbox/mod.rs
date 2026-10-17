@@ -4,6 +4,7 @@
 mod linux;
 mod macos;
 mod policy;
+pub mod run;
 mod text;
 
 #[cfg(test)]
