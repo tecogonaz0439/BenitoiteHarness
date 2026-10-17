@@ -5,7 +5,7 @@ use std::path::PathBuf;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use crate::approval::{ApprovalKind, ApprovalOutcome};
+use crate::approval::{ApprovalFacts, ApprovalKind, ApprovalOutcome};
 use crate::provider::{FinishReason, ProviderError, Usage};
 use crate::session::{ApprovalPhase, Record, RecordedMode, SkippedInstruction};
 
@@ -67,15 +67,20 @@ pub enum AgentEvent {
     ApprovalRequest {
         call_id: String,
         kind: ApprovalKind,
+        facts: ApprovalFacts,
+        justification: Option<String>,
         summary: String,
-        decision: Option<ApprovalOutcome>,
+        user_message: Option<String>,
     },
     /// 確認の答え。
     ApprovalResult {
         call_id: String,
         kind: ApprovalKind,
+        facts: ApprovalFacts,
+        justification: Option<String>,
         summary: String,
         decision: ApprovalOutcome,
+        user_message: Option<String>,
     },
     /// 画面用の一行の結果。記録には LLM に返す結果全体を残す。
     ToolResult {
@@ -140,25 +145,41 @@ impl AgentEvent {
                 usage: usage.clone(),
             },
             Self::ApprovalRequest {
-                call_id, summary, ..
+                call_id,
+                kind,
+                facts,
+                justification,
+                summary,
+                user_message,
             } => Record::Approval {
                 phase: ApprovalPhase::Request,
                 id: call_id.clone(),
                 tool_id: call_id.clone(),
                 request: Some(summary.clone()),
                 outcome: None,
+                kind: Some(*kind),
+                facts: facts.clone(),
+                justification: justification.clone(),
+                user_message: user_message.clone(),
             },
             Self::ApprovalResult {
                 call_id,
                 summary,
                 decision,
-                ..
+                kind,
+                facts,
+                justification,
+                user_message,
             } => Record::Approval {
                 phase: ApprovalPhase::Result,
                 id: call_id.clone(),
                 tool_id: call_id.clone(),
                 request: Some(summary.clone()),
                 outcome: Some(*decision),
+                kind: Some(*kind),
+                facts: facts.clone(),
+                justification: justification.clone(),
+                user_message: user_message.clone(),
             },
             Self::Retry {
                 attempt,
@@ -183,5 +204,64 @@ impl AgentEvent {
             | Self::ToolResult { .. }
             | Self::Compaction => return None,
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    // bash の実装前でも、イベントと記録の公開の形が事実と説明を混ぜないことを固定する。
+    #[test]
+    fn approval_events_record_facts_justification_and_user_message_separately()
+    -> Result<(), serde_json::Error> {
+        let facts = ApprovalFacts {
+            command: Some("cargo test".into()),
+            cwd: Some("/project".into()),
+            path: None,
+            sandbox_policy: Some("workspace-write".into()),
+        };
+        for event in [
+            AgentEvent::ApprovalRequest {
+                call_id: "call".into(),
+                kind: ApprovalKind::Escalate,
+                facts: facts.clone(),
+                justification: Some("Needs network".into()),
+                summary: "Run cargo test".into(),
+                user_message: None,
+            },
+            AgentEvent::ApprovalResult {
+                call_id: "call".into(),
+                kind: ApprovalKind::Escalate,
+                facts,
+                justification: Some("Needs network".into()),
+                summary: "Run cargo test".into(),
+                decision: ApprovalOutcome::DeniedWithMessage,
+                user_message: Some("Stay offline".into()),
+            },
+        ] {
+            let value = serde_json::to_value(&event)?;
+            let record = serde_json::to_value(event.record())?;
+            for output in [value, record] {
+                assert_eq!(output.get("kind"), Some(&json!("escalate")));
+                assert_eq!(
+                    output.get("facts"),
+                    Some(
+                        &json!({"command":"cargo test","cwd":"/project","path":null,"sandbox_policy":"workspace-write"})
+                    )
+                );
+                assert_eq!(output.get("justification"), Some(&json!("Needs network")));
+                assert_eq!(
+                    output.get("user_message"),
+                    Some(&if matches!(event, AgentEvent::ApprovalResult { .. }) {
+                        json!("Stay offline")
+                    } else {
+                        json!(null)
+                    })
+                );
+            }
+        }
+        Ok(())
     }
 }

@@ -5,6 +5,7 @@ use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
 
+use crate::approval::{ApprovalFacts, ApprovalKind};
 use crate::config::Mode;
 use crate::provider::{
     AdapterKind, AssistantTurn, Conversation, FinishReason, ProviderError, ToolCall, ToolResult,
@@ -85,7 +86,9 @@ pub enum ApprovalPhase {
 #[serde(rename_all = "snake_case")]
 pub enum ApprovalOutcome {
     Approved,
+    ApprovedForSession,
     Denied,
+    DeniedWithMessage,
     Cancelled,
 }
 
@@ -108,6 +111,8 @@ pub struct ApprovalCounts {
     pub approved: u64,
     pub denied: u64,
     pub cancelled: u64,
+    #[serde(default)]
+    pub policy_denied: u64,
 }
 
 /// ループが応答ごとに足す、報告済みトークンの合計。
@@ -150,8 +155,12 @@ impl Summary {
     /// 確認の結果を数える。
     pub fn add_approval(&mut self, outcome: ApprovalOutcome) {
         let count = match outcome {
-            ApprovalOutcome::Approved => &mut self.approvals.approved,
-            ApprovalOutcome::Denied => &mut self.approvals.denied,
+            ApprovalOutcome::Approved | ApprovalOutcome::ApprovedForSession => {
+                &mut self.approvals.approved
+            }
+            ApprovalOutcome::Denied | ApprovalOutcome::DeniedWithMessage => {
+                &mut self.approvals.denied
+            }
             ApprovalOutcome::Cancelled => &mut self.approvals.cancelled,
         };
         *count = count.saturating_add(1);
@@ -222,13 +231,21 @@ pub enum Record {
         result: ToolResult,
         spill: Option<SpillInfo>,
     },
-    /// 確認の要求または結果。P1 では書かない。
+    /// 確認の要求または結果。追加の欄がない形式の版 1 の記録も読む。
     Approval {
         phase: ApprovalPhase,
         id: String,
         tool_id: String,
         request: Option<String>,
         outcome: Option<ApprovalOutcome>,
+        #[serde(default)]
+        kind: Option<ApprovalKind>,
+        #[serde(default)]
+        facts: ApprovalFacts,
+        #[serde(default)]
+        justification: Option<String>,
+        #[serde(default)]
+        user_message: Option<String>,
     },
     /// やり直しの分類と待ち時間。
     Retry {

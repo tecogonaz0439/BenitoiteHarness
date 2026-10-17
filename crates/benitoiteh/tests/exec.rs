@@ -742,7 +742,8 @@ fn invalid_project_configuration_is_reported_and_noninteractive_confirmation_is_
         "--mode",
         "normal",
         "--sandbox",
-        "danger-full-access",
+        "workspace-write",
+        "--no-sandbox",
     ]))?
     .finish()?;
     assert_eq!(output.status.code(), Some(0));
@@ -750,10 +751,15 @@ fn invalid_project_configuration_is_reported_and_noninteractive_confirmation_is_
     let stderr = std::str::from_utf8(&output.stderr)?;
     assert!(stderr.contains("Ignoring project configuration:"));
     assert!(stderr.contains("Provider: mock; model: mock-model"));
-    assert!(stderr.contains("Approval denied:"), "{stderr}");
+    assert!(
+        stderr.contains("denied by the never approval policy"),
+        "{stderr}"
+    );
     let (_, records) = f.records()?;
     assert_eq!(
-        records.last().and_then(|v| v.pointer("/approvals/denied")),
+        records
+            .last()
+            .and_then(|v| v.pointer("/approvals/policy_denied")),
         Some(&json!(1))
     );
     no_secret(&output, &records);

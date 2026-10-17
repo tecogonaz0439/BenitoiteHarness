@@ -4,7 +4,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::SyncSender;
 use std::thread;
 
-use crate::approval::{self, ApprovalKind, ApprovalOutcome, ApprovalRecord, Approver};
+use crate::approval::{self, ApprovalAnswer, ApprovalOutcome, ApprovalRecord, Decision};
 use crate::provider::{FinishReason, Item, ToolCall, ToolResult};
 use crate::session::{Record, Summary};
 use crate::tools::{ApprovalStatus, ToolOutput, ValidatedCall};
@@ -86,6 +86,8 @@ impl Agent {
                 remaining = remaining.get(1..).ok_or(AgentError::Worker)?;
                 continue;
             }
+            // 確認しうる write/edit と将来の bash は定義で並行不可にする。
+            // 並行の経路は確認を扱わない（設計書 03-03「確認の共通の規則」）。
             if first.parallel {
                 let count = remaining
                     .iter()
@@ -140,7 +142,7 @@ impl Agent {
             } else {
                 let output = match &first.validated {
                     Ok(validated) => {
-                        // P1 の並行不可は write/edit。呼び出しの実行前に flush する。
+                        // 書く道具は呼び出しの実行前に flush する。
                         // （設計書 01-05「セッションの記録」）。
                         self.writer.append(&Record::ToolStart {
                             call: first.call.clone(),
@@ -173,52 +175,85 @@ impl Agent {
         let Some(request) = output.approval else {
             return Ok(output);
         };
-        let mut record = ApprovalRecord {
+        match approval::decide(
+            &self.approval_policy,
+            request.kind,
+            &request.facts,
+            &self.allowed_commands,
+        ) {
+            Decision::Allow => return Ok(self.execute_approved(validated, cancelled)),
+            Decision::Deny => {
+                summary.approvals.policy_denied = summary.approvals.policy_denied.saturating_add(1);
+                return Ok(ToolOutput::error(approval::policy_denial_message(
+                    request.kind,
+                )));
+            }
+            Decision::Ask => {}
+        }
+        let record = ApprovalRecord {
             call_id: call.id.clone(),
-            kind: ApprovalKind::WriteScope,
+            kind: request.kind,
+            facts: request.facts,
+            justification: request.justification,
             summary: request.summary,
             decision: None,
+            user_message: None,
         };
         self.emit(
             events,
             AgentEvent::ApprovalRequest {
                 call_id: record.call_id.clone(),
                 kind: record.kind,
+                facts: record.facts.clone(),
+                justification: record.justification.clone(),
                 summary: record.summary.clone(),
-                decision: None,
+                user_message: None,
             },
         )?;
-        let decision = if cancelled.load(Ordering::Acquire) {
-            ApprovalOutcome::Cancelled
+        let answer = if cancelled.load(Ordering::Acquire) {
+            ApprovalAnswer {
+                outcome: ApprovalOutcome::Cancelled,
+                message: None,
+            }
         } else {
             self.approver.approve(&record)
         };
-        record.decision = Some(decision);
-        summary.add_approval(decision);
+        answer.remember_command(&record, &mut self.allowed_commands);
+        summary.add_approval(answer.outcome);
         self.emit(
             events,
             AgentEvent::ApprovalResult {
                 call_id: record.call_id,
                 kind: record.kind,
+                facts: record.facts,
+                justification: record.justification,
                 summary: record.summary,
-                decision,
+                decision: answer.outcome,
+                user_message: answer.message.clone(),
             },
         )?;
-        Ok(match decision {
-            ApprovalOutcome::Approved => {
-                if cancelled.load(Ordering::Acquire) {
-                    ToolOutput::error(text::CANCELLED)
-                } else {
-                    self.tools.execute_validated(
-                        &self.tool_context,
-                        validated,
-                        ApprovalStatus::Approved,
-                    )
-                }
+        Ok(match answer.outcome {
+            ApprovalOutcome::Approved | ApprovalOutcome::ApprovedForSession => {
+                self.execute_approved(validated, cancelled)
             }
-            ApprovalOutcome::Denied => ToolOutput::error(approval::denial_message()),
+            ApprovalOutcome::Denied => {
+                ToolOutput::error(approval::user_denial_message(record.kind, None))
+            }
+            ApprovalOutcome::DeniedWithMessage => ToolOutput::error(approval::user_denial_message(
+                record.kind,
+                answer.message.as_deref(),
+            )),
             ApprovalOutcome::Cancelled => ToolOutput::error(text::CANCELLED),
         })
+    }
+
+    fn execute_approved(&self, validated: &ValidatedCall, cancelled: &AtomicBool) -> ToolOutput {
+        if cancelled.load(Ordering::Acquire) {
+            ToolOutput::error(text::CANCELLED)
+        } else {
+            self.tools
+                .execute_validated(&self.tool_context, validated, ApprovalStatus::Approved)
+        }
     }
 
     fn result(

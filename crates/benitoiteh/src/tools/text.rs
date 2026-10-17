@@ -109,7 +109,7 @@ pub fn write_approval(path: &std::path::Path, protected: bool) -> String {
         "outside the writable roots"
     };
     format!(
-        "Writing {} is {reason} and requires approval. Ask the user to approve this write in an interactive session or choose an unprotected path within the project or session temporary directory.",
+        "Writing {} is {reason} and requires approval. Ask the user to approve this write in an interactive session or choose an unprotected path within the selected writable roots.",
         path.display()
     )
 }

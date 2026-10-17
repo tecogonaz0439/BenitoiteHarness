@@ -8,6 +8,7 @@ mod transport;
 
 pub use events::{AgentEvent, Outcome};
 
+use std::collections::BTreeSet;
 use std::fmt;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -15,8 +16,8 @@ use std::sync::mpsc::{SyncSender, TrySendError};
 use std::thread;
 use std::time::{Duration, Instant};
 
-use crate::approval::NonInteractiveApprover;
-use crate::config::{Limits, Mode, ResolvedExec};
+use crate::approval::{ApprovalPolicy, Approver, NonInteractiveApprover};
+use crate::config::{Approval, Limits, Mode, ResolvedExec, Sandbox};
 use crate::context::{self, ContextError, Environment, SystemContext};
 use crate::http::{HttpClient, HttpTimeouts, Uri};
 use crate::provider::{
@@ -168,7 +169,9 @@ pub struct Agent {
     conversation: Conversation,
     previous_last_item: Option<usize>,
     detached: Vec<Stream>,
-    approver: NonInteractiveApprover,
+    approver: Box<dyn Approver>,
+    approval_policy: ApprovalPolicy,
+    allowed_commands: BTreeSet<String>,
     started: bool,
     turn: u64,
     repeated: Option<(String, serde_json::Value, u64)>,
@@ -210,6 +213,14 @@ impl Agent {
             system_prompt_sha256: context::system_prompt_hash(&system.system_prompt),
             tools_sha256: context::tool_definitions_hash(&system.tools)?,
         }))?;
+        let approval_policy = ApprovalPolicy {
+            approval: Approval::Never,
+            sandbox: match config.mode {
+                Mode::Normal => Sandbox::WorkspaceWrite,
+                Mode::Restricted => Sandbox::ReadOnly,
+            },
+            sandboxed: true,
+        };
         Ok(Self {
             config,
             adapter,
@@ -223,11 +234,20 @@ impl Agent {
             conversation: Conversation::default(),
             previous_last_item: None,
             detached: Vec::new(),
-            approver: NonInteractiveApprover,
+            approver: Box::new(NonInteractiveApprover),
+            approval_policy,
+            allowed_commands: BTreeSet::new(),
             started: false,
             turn: 0,
             repeated: None,
         })
+    }
+
+    /// 起動側の承認の方針と、LLM から独立した確認の受け手を設定する。
+    pub fn with_approvals(mut self, approver: Box<dyn Approver>, policy: ApprovalPolicy) -> Self {
+        self.approver = approver;
+        self.approval_policy = policy;
+        self
     }
 
     /// 画面や後続の処理が読む会話。途中で切れた応答は含まない。

@@ -1,6 +1,6 @@
 //! 道具の順序と引数の契約を固定する（設計書 01-03「道具の定義の共通の規則」）。
 
-use super::{ApprovalRequirement, ToolDefinition, ToolError, ToolId, text};
+use super::{ToolDefinition, ToolError, ToolId, text};
 use crate::provider::{ArgumentSpec, ArgumentType, SchemaKind, ToolSpec};
 use serde_json::Value;
 
@@ -125,11 +125,6 @@ fn definition(
         summary,
         rules,
         parallel,
-        approval: if parallel {
-            ApprovalRequirement::Never
-        } else {
-            ApprovalRequirement::WriteScope
-        },
     }
 }
 

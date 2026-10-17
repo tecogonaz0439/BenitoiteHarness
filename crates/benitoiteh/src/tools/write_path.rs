@@ -4,8 +4,10 @@ use std::fs::Metadata;
 use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
 
+use super::ApprovalRequest;
 use super::{ApprovalStatus, FileVersion, ToolContext, ToolError, ToolOutput, text};
-use crate::config::Mode;
+use crate::approval::{ApprovalFacts, ApprovalKind};
+use crate::config::{Mode, Sandbox};
 use crate::safe_fs::{SafeFsError, ScopeRelPath, ScopeRoot, resolved_path};
 
 pub(super) struct WriteTarget {
@@ -99,17 +101,29 @@ impl WriteTarget {
         context: &ToolContext,
         approval: ApprovalStatus,
     ) -> Result<Option<ToolOutput>, ToolError> {
-        let within = [&context.project, &context.temporary]
-            .into_iter()
-            .find_map(|root| self.real_path.strip_prefix(root.real_path()).ok());
-        let protected = within.is_some_and(|path| {
-            path.components().any(|part| {
-                let name = part.as_os_str().as_encoded_bytes();
-                name.eq_ignore_ascii_case(b".git") || name.eq_ignore_ascii_case(b".benitoiteh")
-            })
+        let within = if context.mode == Mode::Normal {
+            match &context.shell {
+                Some(shell) => shell
+                    .writable_roots
+                    .iter()
+                    .any(|root| self.real_path.starts_with(root)),
+                None => {
+                    self.real_path.starts_with(context.project.real_path())
+                        || self.real_path.starts_with(context.temporary.real_path())
+                }
+            }
+        } else {
+            self.real_path.starts_with(context.project.real_path())
+                || self.real_path.starts_with(context.temporary.real_path())
+        };
+        // 根自体が守る名前を含む場合も、実のパスの全要素で検査する。
+        // （設計書 01-03「書く道具のパスの規則」）。
+        let protected = self.real_path.components().any(|part| {
+            let name = part.as_os_str().as_encoded_bytes();
+            name.eq_ignore_ascii_case(b".git") || name.eq_ignore_ascii_case(b".benitoiteh")
         });
         if context.mode == Mode::Restricted {
-            if within.is_none() {
+            if !within {
                 return Err(ToolError::OutsideScope);
             }
             if protected {
@@ -118,11 +132,25 @@ impl WriteTarget {
             if self.real_path.extension().is_none_or(|ext| ext != "bnt") {
                 return Err(ToolError::RestrictedExtension);
             }
-        } else if (within.is_none() || protected) && approval == ApprovalStatus::Unapproved {
-            return Ok(Some(ToolOutput::needs_approval(text::write_approval(
-                &self.real_path,
-                protected,
-            ))));
+        } else if (!within || protected) && approval == ApprovalStatus::Unapproved {
+            return Ok(Some(ToolOutput::needs_approval(ApprovalRequest {
+                kind: ApprovalKind::WriteScope,
+                facts: ApprovalFacts {
+                    path: Some(self.real_path.clone()),
+                    cwd: Some(context.project.real_path().to_owned()),
+                    sandbox_policy: Some(
+                        context
+                            .shell
+                            .as_ref()
+                            .map_or(Sandbox::WorkspaceWrite, |shell| shell.sandbox)
+                            .name()
+                            .to_owned(),
+                    ),
+                    ..ApprovalFacts::default()
+                },
+                justification: None,
+                summary: text::write_approval(&self.real_path, protected),
+            })));
         }
         Ok(None)
     }
