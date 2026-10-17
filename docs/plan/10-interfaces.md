@@ -147,6 +147,14 @@ P0-04 で作った型: 方針の入力 `PolicyConfig`（`readable: ReadAccess`�
 - `session::FileHistory { read, modified }`（`add_call`、`from_records`）。
 - 推論を除く処理は `agent/compaction/conversation.rs` にある（P4-02 で共有の関数に切り出す）。
 
+### 再開とセッションの一覧（P4-02）
+
+- `Session::open(paths, id)`（錠を取り、失敗してもディレクトリに触れない）。切れた最後の行は最初の追記の直前に切り詰める。`session::ResumeState`（会話、補う結果、番の番号の最大、最後のモード・提供者・モデル・プロジェクト、推論の区間、`FileHistory`）。
+- `Agent::resume(...)`。`Record::SessionStart`・`AgentEvent::SessionStart` に `resumed`・`base_url`・ハッシュの欄。
+- 推論を除く共有の関数は `agent/reasoning.rs`。`CompactOptions` に `separate_request`、`CompactionReason::Resume`。
+- 書ける量: `Session::reserve(bytes) -> bool`・`release(bytes)`（`spill/` と `objects/` で共有）。`session::storage_usage`。
+- `benitoiteh sessions [--project <dir>] [--json]`。期間は記録の更新の時刻で判定する。
+
 ### `provider`（P1-01、P1-02）
 
 - 共通の形（`provider::types`、`provider` から再公開）: `Destination { provider, base_url, model }`、`AdapterKind`、`Conversation { items }`、`Item::{UserMessage, AssistantTurn, ToolResult}`、`UserMessage { parts: Vec<UserPart> }`（`UserPartKind::{Environment, Request, Steering}`）、`AssistantTurn { parts, raw_items, finish_reason, usage }`、`AssistantPart::{Text, Reasoning, ToolCall}`、`RawItems { destination, adapter, items }`、`ToolCall { id, provider_id, provider_item_id, name, arguments, raw_arguments }`、`ToolResult { id, provider_id, text, is_error }`、`Usage`（各項目 `Option<u64>` と `raw`）、`FinishReason::{Completed, ToolCalls, OutputLimit, Refusal(String), Error, Cancelled, Disconnected}`、`StreamEvent`、`ProviderError`、`Capabilities`。
