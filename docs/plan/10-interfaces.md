@@ -131,6 +131,14 @@ P0-04 で作った型: 方針の入力 `PolicyConfig`（`readable: ReadAccess`�
 - `ShellContext` に `writable_roots`（選んだ方針の書ける場所の実のパス）、`sandbox`、`sandboxed` を加えた。
 - 方針による拒否は `approval::policy_denial_message(kind)`、利用者による拒否は `approval::user_denial_message(kind, message)`。集計の `approvals.policy_denied`。
 
+### 道具 `bash`（P3-05）
+
+- `tools::Invocation<'a> { call_id: &'a str, cancelled: &'a AtomicBool }`。`ToolSet::execute_validated(&self, context, call, approval, invocation: Invocation<'_>) -> ToolOutput`。`ToolSet::execute` は立たない印と `direct-<n>` の ID を渡す。
+- `ToolContext::with_session(self, Session) -> Self`。道具が `spill/` に書くときに使う。
+- `ToolOutput.spill: Option<SpillInfo>`（`SpillInfo` は `Eq`）。ループが `Record::ToolResult` の `spill` に入れる。`SpillWriter::discard(self)` は書き手を閉じてファイルを消す。
+- `Agent` は、`ShellContext` があれば、判定に使う `sandbox` と `sandboxed`（`ShellContext.policy` が `Some` か）を `ShellContext` から取る。
+- 道具の一覧は `definitions(mode)` で作り、`text::unknown_tool` はその名前を並べる。
+
 ### `provider`（P1-01、P1-02）
 
 - 共通の形（`provider::types`、`provider` から再公開）: `Destination { provider, base_url, model }`、`AdapterKind`、`Conversation { items }`、`Item::{UserMessage, AssistantTurn, ToolResult}`、`UserMessage { parts: Vec<UserPart> }`（`UserPartKind::{Environment, Request, Steering}`）、`AssistantTurn { parts, raw_items, finish_reason, usage }`、`AssistantPart::{Text, Reasoning, ToolCall}`、`RawItems { destination, adapter, items }`、`ToolCall { id, provider_id, provider_item_id, name, arguments, raw_arguments }`、`ToolResult { id, provider_id, text, is_error }`、`Usage`（各項目 `Option<u64>` と `raw`）、`FinishReason::{Completed, ToolCalls, OutputLimit, Refusal(String), Error, Cancelled, Disconnected}`、`StreamEvent`、`ProviderError`、`Capabilities`。
