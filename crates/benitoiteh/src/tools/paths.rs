@@ -112,3 +112,53 @@ impl ToolContext {
         Ok(real_path)
     }
 }
+
+impl crate::benitoite::diagnostics::DiagnosticSources for ToolContext {
+    fn resolve(&self, file: &str) -> crate::benitoite::diagnostics::DiagnosticFile {
+        let requested = self.requested_path(Path::new(file));
+        let exists = !std::fs::symlink_metadata(&requested)
+            .is_err_and(|error| error.kind() == std::io::ErrorKind::NotFound);
+        let relative = requested
+            .strip_prefix(self.project.real_path())
+            .ok()
+            .map(Path::to_path_buf);
+        let hidden_suffix = relative.as_ref().is_some_and(|relative| {
+            (1..relative.components().count()).any(|skip| {
+                let suffix: PathBuf = relative.components().skip(skip).collect();
+                let candidate = self.project.real_path().join(suffix);
+                // 存在しない候補は BH-029 の判定に使わない。存在を調べられない
+                // 場合も開けなければ、内容の推測を返さない側へ倒す。
+                !std::fs::symlink_metadata(&candidate)
+                    .is_err_and(|error| error.kind() == std::io::ErrorKind::NotFound)
+                    && self.open_file(&candidate, false).is_err()
+            })
+        });
+        match self.open_file(&requested, false) {
+            Ok(opened) if !hidden_suffix => {
+                let display = opened
+                    .real_path
+                    .strip_prefix(self.project.real_path())
+                    .unwrap_or(&opened.real_path)
+                    .to_path_buf();
+                crate::benitoite::diagnostics::DiagnosticFile {
+                    path: opened.real_path,
+                    display: Some(display),
+                    exists,
+                    relative,
+                }
+            }
+            Ok(_) | Err(_) => crate::benitoite::diagnostics::DiagnosticFile {
+                path: requested,
+                display: None,
+                exists,
+                relative,
+            },
+        }
+    }
+
+    fn line(&self, file: &Path, line: u64) -> Option<crate::benitoite::diagnostics::SourceLine> {
+        super::read::diagnostic_line(self.open_file(file, false).ok()?, line)
+            .ok()
+            .flatten()
+    }
+}

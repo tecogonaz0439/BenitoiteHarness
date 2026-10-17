@@ -19,7 +19,7 @@ pub use crate::session::CompactionReason;
 pub use compaction::{CompactOptions, CompactOutcome, CompactReport};
 pub use events::{AgentEvent, Outcome};
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -51,7 +51,6 @@ pub struct AgentConfig {
     pub kind: AdapterKind,
     pub capabilities: Capabilities,
     pub effort: String,
-    /// max_check_fix は P2 に渡す。P1 では数えない。
     pub limits: Limits,
     pub http_timeouts: HttpTimeouts,
     /// 既定 1 秒。試験や呼び出す側の待ち時間の方針で短くできる。
@@ -129,6 +128,8 @@ pub enum AgentError {
     Refusal(String),
     /// 番数またはトークンの上限。
     Limit(&'static str),
+    /// 同じ実のパスで検査が続けて失敗した。
+    CheckFixLimit(String),
     /// 設定と実行器の不一致。
     InvalidConfiguration,
     /// イベントの受け手が終了した。
@@ -150,6 +151,7 @@ impl fmt::Display for AgentError {
             Self::Provider(error) => error.fmt(f),
             Self::Refusal(category) => f.write_str(&text::refusal(category)),
             Self::Limit(message) => f.write_str(message),
+            Self::CheckFixLimit(message) => f.write_str(message),
             Self::InvalidConfiguration => f.write_str(text::INVALID_CONFIGURATION),
             Self::ReceiverClosed => f.write_str(text::CHANNEL_CLOSED),
             Self::Worker => f.write_str(text::WORKER_FAILED),
@@ -191,7 +193,7 @@ impl AgentError {
             Self::Provider(ProviderError::ContextOverflow) => "context_overflow",
             Self::Provider(_) => "provider",
             Self::Refusal(_) => "refusal",
-            Self::Limit(_) => "limit",
+            Self::Limit(_) | Self::CheckFixLimit(_) => "limit",
             Self::InvalidConfiguration => "configuration",
             Self::ReceiverClosed => "event_receiver",
             Self::Worker => "worker",
@@ -228,6 +230,8 @@ pub struct Agent {
     started: bool,
     turn: u64,
     repeated: Option<(String, serde_json::Value, u64)>,
+    check_failures: BTreeMap<std::path::PathBuf, u64>,
+    check_limit: BTreeMap<std::path::PathBuf, String>,
     resuming: bool,
     resume_compaction: bool,
     resume_has_reasoning: bool,
@@ -274,7 +278,7 @@ impl Agent {
         session: Session,
         state: Option<session::ResumeState>,
     ) -> Result<Self, AgentError> {
-        if config.mode != tool_context.mode {
+        if config.mode != tool_context.mode || config.limits.max_check_fix == 0 {
             return Err(AgentError::InvalidConfiguration);
         }
         provider_host(&config.destination)?;
@@ -369,6 +373,8 @@ impl Agent {
             started: false,
             turn: 0,
             repeated: None,
+            check_failures: BTreeMap::new(),
+            check_limit: BTreeMap::new(),
             resuming: false,
             resume_compaction: false,
             resume_has_reasoning: false,
@@ -526,6 +532,11 @@ impl Agent {
             Ok(Outcome::Failed) => return Err(AgentError::Worker),
             Err(error) => {
                 let message = error.to_string();
+                let reason = if matches!(error, AgentError::CheckFixLimit(_)) {
+                    message.lines().next().unwrap_or_default().to_owned()
+                } else {
+                    message.clone()
+                };
                 self.emit(
                     &events,
                     AgentEvent::Error {
@@ -533,7 +544,7 @@ impl Agent {
                         message: message.clone(),
                     },
                 )?;
-                (Outcome::Failed, message)
+                (Outcome::Failed, reason)
             }
         };
         if let Some(message) = self.session.take_storage_notice() {
@@ -562,6 +573,7 @@ impl Agent {
         events: &SyncSender<AgentEvent>,
         summary: &mut Summary,
     ) -> Result<Outcome, AgentError> {
+        self.check_limit.clear();
         let cancelled = &*control.cancel_step;
         self.resuming = false;
         if self.resume_compaction {
@@ -755,6 +767,31 @@ impl Agent {
                     usage: response.usage,
                 },
             )?;
+            if let Some((key, diagnostics)) = std::mem::take(&mut self.check_limit)
+                .into_iter()
+                .find(|(key, _)| {
+                    self.check_failures
+                        .get(key)
+                        .is_some_and(|count| *count >= self.config.limits.max_check_fix)
+                })
+            {
+                let count = self.check_failures.get(&key).copied().unwrap_or_default();
+                self.check_failures.insert(key.clone(), 0);
+                let path = key
+                    .strip_prefix(self.tool_context.project.real_path())
+                    .unwrap_or(&key);
+                let path = if path.as_os_str().is_empty() {
+                    std::path::Path::new(".")
+                } else {
+                    path
+                };
+                return Err(AgentError::CheckFixLimit(text::check_fix_limit(
+                    &path.to_string_lossy(),
+                    count,
+                    self.config.limits.max_check_fix,
+                    &diagnostics,
+                )));
+            }
             if was_cancelled
                 || control.cancel_run.load(Ordering::Acquire)
                 || cancelled.load(Ordering::Acquire)

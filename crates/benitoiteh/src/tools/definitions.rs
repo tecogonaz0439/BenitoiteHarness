@@ -119,6 +119,16 @@ pub(super) fn definitions(mode: crate::config::Mode) -> Vec<ToolDefinition> {
         ));
     }
     tools.push(definition(
+        ToolId::BenitoiteCheck,
+        text::BENITOITE_CHECK,
+        &[text::BENITOITE_CHECK.1],
+        vec![
+            arg("path", String, true),
+            arg_described("tests", Boolean, false, text::CHECK_TESTS),
+        ],
+        true,
+    ));
+    tools.push(definition(
         ToolId::BenitoiteExplain,
         text::BENITOITE_EXPLAIN,
         &[text::BENITOITE_EXPLAIN.1],

@@ -793,3 +793,29 @@ fn rewind_confirmation_facts_cannot_forge_answer_rows_and_selection_flattens_new
     assert!(!visible.lines().any(|line| line.starts_with("[y] rewind")));
     Ok(())
 }
+
+// 関門: 上限の残る診断を一行へ潰す退行と、診断中の端末制御をそのまま描く退行。
+#[test]
+fn limit_error_keeps_diagnostic_lines_and_escapes_terminal_controls() {
+    let mut screen = Screen::new((100, 20), status());
+    screen.event(&AgentEvent::Error { kind: "limit".into(), message: "Stopped.\nRemaining diagnostics:\nerror: bad\x1b[2J\n  2 | return missing\n    | ^^^^^^".into() });
+    let lines = screen
+        .history
+        .iter()
+        .map(|line| {
+            line.iter()
+                .map(|(text, _)| text.as_str())
+                .collect::<String>()
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(
+        lines,
+        [
+            "Stopped.",
+            "Remaining diagnostics:",
+            "error: bad\\x1b[2J",
+            "  2 | return missing",
+            "    | ^^^^^^"
+        ]
+    );
+}

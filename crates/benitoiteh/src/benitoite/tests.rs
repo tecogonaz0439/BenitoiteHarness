@@ -205,14 +205,21 @@ fn queries_bound_output_timeout_and_propagate_cancellation() -> Result<(), Box<d
     let limits = QueryLimits {
         timeout: Duration::from_millis(100),
         grace: Duration::from_millis(20),
+        ..QueryLimits::default()
     };
     for (stdout, stderr, delay, expected) in [
         ("16777217", "0", "1000", "overflow"),
         ("0", "0", "1000", "timeout"),
+        ("0", "16777217", "1000", "diagnostics"),
         ("3", "65537", "0", "ok"),
     ] {
         let args = ["query-output", stdout, stderr, delay].map(Into::into);
-        let query_limits = if expected == "overflow" {
+        let query_limits = if expected == "diagnostics" {
+            QueryLimits {
+                stderr: StderrLimit::FailOver(16 * 1024 * 1024),
+                ..QueryLimits::default()
+            }
+        } else if expected == "overflow" {
             QueryLimits::default()
         } else {
             limits
@@ -221,6 +228,7 @@ fn queries_bound_output_timeout_and_propagate_cancellation() -> Result<(), Box<d
         match expected {
             "overflow" => assert!(matches!(result, Err(BenitoiteError::OutputLimit))),
             "timeout" => assert!(matches!(result, Err(BenitoiteError::TimedOut))),
+            "diagnostics" => assert!(matches!(result, Err(BenitoiteError::DiagnosticsLimit))),
             _ => {
                 let output = result?;
                 assert_eq!(output.stdout.len(), 3);

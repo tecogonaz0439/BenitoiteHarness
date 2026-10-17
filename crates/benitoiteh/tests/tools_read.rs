@@ -172,6 +172,7 @@ fn hostile_file_inputs_are_rejected_or_skipped_without_waiting() -> TestResult {
 fn unreadable_directories_are_reported_without_losing_other_results() -> TestResult {
     use std::os::unix::fs::PermissionsExt;
     if rustix::process::geteuid().is_root() {
+        eprintln!("Skipped unreadable-directory search check: root can read mode 000 directories.");
         return Ok(());
     }
     let fixture = Fixture::new()?;
@@ -235,7 +236,9 @@ fn grep_continues_after_unreadable_files_and_long_macos_file_paths() -> TestResu
         );
         #[cfg(target_os = "macos")]
         assert!(result.text.contains("unreadable"), "{}", result.text);
-        if !rustix::process::geteuid().is_root() {
+        if rustix::process::geteuid().is_root() {
+            eprintln!("Skipped unreadable-file search check: root can read mode 000 files.");
+        } else {
             assert!(
                 result.text.contains("b-unreadable.txt (unreadable)"),
                 "{}",
@@ -343,6 +346,7 @@ fn search_paths_cannot_inject_control_characters_into_rows_or_notices() -> TestR
 fn unreadable_ancestors_do_not_prevent_searching_an_accessible_start() -> TestResult {
     use std::os::unix::fs::PermissionsExt;
     if rustix::process::geteuid().is_root() {
+        eprintln!("Skipped unreadable-ancestor search check: root can list mode 111 directories.");
         return Ok(());
     }
     let fixture = Fixture::new()?;

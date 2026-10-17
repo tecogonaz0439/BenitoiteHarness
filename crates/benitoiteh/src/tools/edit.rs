@@ -90,8 +90,15 @@ pub(super) fn execute(
         Some(&target.real_path),
         &invocation,
     )?;
+    let real_path = target.real_path.clone();
     target.write(context, Some(version), after.as_bytes())?;
-    Ok(write::output(path, before, &after))
+    Ok(super::benitoite_check::after_write(
+        context,
+        path,
+        &real_path,
+        write::output(path, before, &after),
+        invocation.cancelled,
+    ))
 }
 
 fn matches(input: &str, needle: &str) -> Vec<Range<usize>> {

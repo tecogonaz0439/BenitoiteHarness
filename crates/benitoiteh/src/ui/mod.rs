@@ -83,6 +83,14 @@ impl ExecOutput {
                 Self::diagnostic(&text::instruction_skipped(&skipped.path, &skipped.reason))?;
             }
         }
+        if let AgentEvent::Error { message, .. } = event {
+            // 診断の行と印を保ち、制御文字は画面の命令にしない（設計書 01-01「上限」）。
+            writeln!(
+                io::stderr().lock(),
+                "{}",
+                terminal_text(&text::error(message), true)
+            )?;
+        }
         if self.json {
             // 差分は画面専用であり、大きい exec の JSON に含めない（実装プラン P4-06）。
             let mut event = event.clone();
@@ -113,7 +121,7 @@ impl ExecOutput {
             } => Some(text::compaction(*reason, *summarized_items, *kept_items)),
             AgentEvent::Checkpoint { checkpoint } => Some(text::checkpoint(checkpoint)),
             AgentEvent::HardLinks { paths } => Some(text::hard_links(paths)),
-            AgentEvent::Error { message, .. } => Some(text::error(message)),
+            AgentEvent::Error { .. } => None,
             AgentEvent::SessionEnd { outcome, reason }
                 if *outcome == crate::agent::Outcome::Cancelled =>
             {

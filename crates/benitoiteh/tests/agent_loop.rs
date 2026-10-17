@@ -1,5 +1,7 @@
 //! 模擬 HTTP 提供者と本物の道具・記録をつなぐループの契約（設計書 07-01「持ち主の境界」）。
 
+#[path = "agent_loop/checks.rs"]
+mod checks;
 #[path = "agent_loop/compaction.rs"]
 mod compaction;
 #[path = "agent_loop/interaction.rs"]
@@ -97,6 +99,15 @@ impl Fixture {
         config: AgentConfig,
         sandbox: Option<(Sandbox, bool)>,
     ) -> Result<(Agent, PathBuf), Box<dyn Error>> {
+        self.agent_with_check(config, sandbox, None)
+    }
+
+    fn agent_with_check(
+        &self,
+        config: AgentConfig,
+        sandbox: Option<(Sandbox, bool)>,
+        check_query: Option<Arc<benitoiteh::benitoite::CheckQuery>>,
+    ) -> Result<(Agent, PathBuf), Box<dyn Error>> {
         let session = Session::create(&self.paths, SessionId::generate(SystemTime::now())?)?;
         let directory = session.directory().to_owned();
         let spill = directory.join("spill");
@@ -114,8 +125,11 @@ impl Fixture {
             )?,
         )
         .with_session(session.clone());
-        if config.mode == Mode::Restricted {
+        if config.mode == Mode::Restricted || check_query.is_some() {
             context = context.with_skill(support::skills()?);
+        }
+        if let Some(query) = check_query {
+            context = context.with_check_query(query);
         }
         if let Some((sandbox, sandboxed)) = sandbox {
             let additional = self.root.join("additional");

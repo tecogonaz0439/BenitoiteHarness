@@ -159,6 +159,26 @@
     "name": "bash"
   },
   {
+    "description": "Check a Benitoite script, or the main.bnt of a directory, without running it.",
+    "input_schema": {
+      "properties": {
+        "path": {
+          "description": "Project-relative or absolute path.",
+          "type": "string"
+        },
+        "tests": {
+          "description": "Check without running tests and without requiring main, like benitoite test --check.",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "path"
+      ],
+      "type": "object"
+    },
+    "name": "benitoite_check"
+  },
+  {
     "description": "Explain a Benitoite diagnostic code, such as E0405, W0501, or R0101.",
     "input_schema": {
       "properties": {

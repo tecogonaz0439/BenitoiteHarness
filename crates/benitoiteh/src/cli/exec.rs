@@ -512,6 +512,12 @@ pub(super) fn prepare(
             allowed_domains: user.web_fetch.allowed_domains.iter().cloned().collect(),
             client: crate::http::HttpClient::default(),
         });
+        if let Some(processor) = &processor {
+            let processor = Arc::clone(processor);
+            context = context.with_check_query(Arc::new(move |args, limits, cancelled| {
+                processor.query(args, limits, cancelled)
+            }));
+        }
         if let Some(skill) = skill {
             context = context.with_skill(skill);
         }

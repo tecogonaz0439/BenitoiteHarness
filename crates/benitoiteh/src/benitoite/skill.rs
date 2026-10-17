@@ -141,7 +141,8 @@ pub(crate) fn query_reason(error: &BenitoiteError) -> String {
         | BenitoiteError::Sandbox(_)
         | BenitoiteError::Run(_)
         | BenitoiteError::TimedOut
-        | BenitoiteError::Cancelled) => error.to_string(),
+        | BenitoiteError::Cancelled
+        | BenitoiteError::DiagnosticsLimit) => error.to_string(),
     }
 }
 
@@ -281,3 +282,19 @@ impl SkillDocuments {
 
 #[cfg(test)]
 mod tests;
+
+/// 検査に固有の超過と取り消しの理由を、一行で返す。
+pub(crate) fn check_reason(error: &BenitoiteError) -> String {
+    let reason = match error {
+        BenitoiteError::DiagnosticsLimit => text::CHECK_DIAGNOSTICS_LIMIT.into(),
+        BenitoiteError::Cancelled => text::CHECK_CANCELLED.into(),
+        BenitoiteError::Exit { code, .. } => text::skill_exit(*code),
+        error @ (BenitoiteError::Io(_)
+        | BenitoiteError::Invalid(_)
+        | BenitoiteError::Sandbox(_)
+        | BenitoiteError::Run(_)
+        | BenitoiteError::TimedOut
+        | BenitoiteError::OutputLimit) => error.to_string(),
+    };
+    super::diagnostics::one_line(&reason)
+}
