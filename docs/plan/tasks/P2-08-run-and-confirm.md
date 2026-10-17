@@ -208,3 +208,52 @@
 
 - `scripts/check.sh --inside-codex` が通る（`BENITOITEH_TEST_BENITOITE` を設定して）。サンドボックスを要するテストは走らないので、オーケストレータが外で確かめる。
 - 完了の報告に、道具の説明の英文、足した英文の全文、`die` と `runtime` の報告が診断として読めたか、加えた公開の関数と型のシグネチャ、画面の例、実行ファイルの大きさの変化を書く。
+
+## P2-07 の実装の後の補足（2026-10-18）
+
+P2-05〜P2-07、P4-07、P4-08 を取り込んだ後に、この文書を実装に突き合わせた。上の記述と食い違うところは、この節を正とする。この作業の項目は、まだ一つも実装されていない（`--allow` は今も `ArgsError::Unavailable`）。
+
+### 既存のものの名前
+
+- `BenitoiteError::Exit { code, stderr }`、`benitoite::skill::check_reason`、`tools::text::check_failure`・`bash_truncated`・`bash_exit`・`screen_exit`、`ToolContext::open_file`（`pub(super)`。`OpenedFile { file, real_path }`）、`impl DiagnosticSources for ToolContext`（BH-029 の後ろの部分の判定を含む）、`PreparedDiagnostics::new(diagnostics, context)`・`render(context, None)`・`RenderedDiagnostics.unread`・`benitoite::text::unread_diagnostics`、`ToolContext` の公開の欄 `benitoite` と `check_query`、`ApprovalAnswer::remember_domain`、`Agent::result`（回数を数える所）、`agent/text.rs` の `rewind_operation`、`ui/tui/text.rs` の `checkpoint_row`、`approval` の非公開の `text::with_user_message`。
+- 判定の実際のシグネチャは `decide(policy, kind, facts, allowed, domains)` と `decide_in_mode(mode, policy, kind, facts, allowed, domains)` である。`Effects` の枝は、`Never` なら `Deny`、`OnRequest | Untrusted` なら `Ask` を返す。対話の制限モードは `prepare` が承認の方針を `OnRequest` に、`exec` は `Never` に固定する。`policy_denial_message` は `&'static str` のまま `Effects` の枝を足す。事実を引数に足すのは `user_denial_message(kind, facts, project, message)` だけとする（呼ぶ所は `execution.rs` の二か所）。`a`・`s` は `confirmation.rs` がすでに `Command`・`WebFetch` に限っているので、テストだけを置く。
+
+### 報告の取得
+
+- 報告の問い合わせは `ToolContext.check_query`（`CheckQuery`）を通す。上限は `QueryLimits { timeout: 30 秒, stderr: StderrLimit::KeepFirst(64 KiB), ..QueryLimits::default() }`。口がないときは、処理系を持たない形の誤りとする。
+- `Processor::query` は終了状態が 0 でないと標準出力を捨てるが、`checkError`・`usageError` の報告は終了状態 2 の標準出力にある。そこで `BenitoiteError::Exit` に `stdout: Vec<u8>`（16 MiB の上限の中）を加える。分解する所（`tools/benitoite_check.rs`）には `..` を足し、作る所（`benitoite/query.rs`・`tests.rs`・`skill/tests.rs`、`cli/exec/tests.rs`、`tests/support/check.rs`・`skill.rs`、`tests/agent_loop/checks.rs`、`tests/tools_check.rs`、`tests/tools_benitoite_reference.rs`）を直す。
+- 16 MiB を超えたときは、`BenitoiteError::OutputLimit` の表示（`benitoite::text::OUTPUT_LIMIT`。04-01 の英文そのもの）をそのまま返す。`<reason>` は報告用の関数を `check_reason` の隣に作り、`Exit` は `skill_exit(code)` の形とする。
+- `Diagnostic` は `deny_unknown_fields` を付けていないので、`runtime` の `trace`・`traceOmitted`・`taskOrigins` は無視されて読める見込みである。実装で確かめて報告に書く。`checkError` の報告の `diagnostics` にも P2-07 の部品（`PreparedDiagnostics`）を使い、D1 と BH-029 の後ろの部分の規則をそのまま当てる。
+
+### 起動に要る値（オーケストレータの決定 A）
+
+- 公開の欄を持つ `benitoite::RunContext { processor, helper, scratch, placeholders, env, locations, denied_candidates, allowed_programs }` を作り、`ToolContext::with_run_context` で渡す。`exec`（と対話の画面）は、制限モードのときだけ、`QueryContext` と同じ値と、確かめた `restricted.allowed_programs`（`SessionSafety` にある）で作る。テストは `CARGO_BIN_EXE_benitoiteh` を補助のプロセスにして作る。理由: 制限モードの `ToolContext` は今これらを持たず、`Processor` の `pub(crate)` の関数では統合テストが作れない。`exec` は P2-12 まですべての実行を断るので、サンドボックスのテスト（`File.Write`・`Http.Connect`・`Process.Run`・DYLD）はこの口で `Agent` を作って行う。
+- 環境は `child_environment(run.env.clone(), &BTreeSet::new(), &run.locations.temporary, Some(("restricted", allow_ip)))` とする。macOS は `SandboxCommand::to_command(helper)` を使う（`__session` を挟む処理はこの関数に入っている）。
+
+### 型と記録
+
+- `effects` の「名前の順」は綴りの文字列の順とする（`Effect` の `derive(Ord)` の宣言の順を使わない）。`ConfirmKey` は `Clone, Debug, Eq, Ord, PartialEq, PartialOrd` を導く。`Invocation` に `confirmed_effects: &'a BTreeMap<ConfirmKey, BTreeSet<Effect>>` を加える。`Invocation` を作る所は四つ（`ToolSet::execute`（空の表）、`execute_calls` の並べる経路と一つずつの経路、`execute_approved`）。
+- `ApprovalFacts` の新しい欄は `#[serde(default, skip_serializing_if = ...)]` とする（`Vec::is_empty`、真偽は `std::ops::Not::not`）。ほかの種類の記録とイベントの形を変えない（`agent/events.rs` と `tests/web_fetch.rs` が facts の JSON の全体を比べている）。`ApprovalSource { display_path: String, content_hash: ContentHash { algorithm: String, value: String } }` とし、`Default, Eq` を導く。`targets` の実のパスが UTF-8 でないときは、実行せず道具の誤りとする。
+- 確認した集合を広げる関数は `ApprovalOutcome::Approved` で働く。事実の `effects` の文字列を `Effect` に戻し、読めない名前は加えない。
+- 集計: `approve` は、`Allow`・`Deny`・`Ask` のどの経路でも、一度目の出力を捨てる前にその `processor_launches` を `summary.checks` に足す。呼び直した出力の分は `Agent::result` で足す。`needs_approval` に `processor_launches: 0` と止める印の `None` を加える。
+- 巻き戻し: `CheckpointReason::BenitoiteRun` を加え、`ui/tui/text.rs` の `checkpoint_row` の網羅の `match` に `"benitoite_run"` を加える。戻せないものの一覧は、`agent/rewind.rs` の `irreversible` の `ToolStart` の名前の条件に `benitoite_run` を加える（`rewind_operation` は変えない）。
+
+### 道具の定義
+
+- `ToolSet::without_benitoite` の `retain` の `matches!` に `ToolId::BenitoiteRun` を加える（上の「`ToolSet::without_benitoite` には加えない」は誤り）。引数は `arg("path", String, true)`、`arg_described("args", StringArray, false, ..)`、`arg_described("stdin", String, false, ..)`、`arg("timeout", Integer, false)` とし、説明の文は `tools/text.rs` の定数に置く。説明は `prompt_parts(include_str!("../../prompts/tools/benitoite_run.md"))` で読む。`prompts/benitoite-mapping.md` はすでに `benitoite_run` に触れているので、`system-restricted.txt` の差分は `<tools>` の行と規則の行だけになる。
+
+### 出力（オーケストレータの決定 B・C）
+
+- `bash.rs` の `Output` の上限をモジュールの定数から値ごとの欄に改めて共有し、`benitoite_run` では標準出力と標準エラー出力に一つずつ作る（1,000 行、25 KiB）。`spill/` の名前は `format!("{call_id}-stdout")` と `-stderr`。起動の前に書き手を開き、切り詰めなかったら `discard` する。
+- 標準エラー出力は行ごとに分ける。診断として読める JSON の行は、合わせて 16 MiB まで別に保つ（超えた分は捨てて件数を示す）。診断でない行だけを末尾の保ち方と `spill/` に通し、`[Showing last lines A-B of N]` の数はその行で数える。理由: 末尾の 25 KiB だけでは、大きな `runtime` の報告や、偽の行を大量に書くスクリプトで、診断を読めない。
+- `ToolOutput` に `stderr_spill: Option<SpillInfo>` を、`Record::ToolResult` に `#[serde(default, skip_serializing_if = "Option::is_none")] stderr_spill` を加える。
+
+### 残ったプロセスでの停止（オーケストレータの決定 D）
+
+- `AgentError::LeftoverProcesses(String)`（表示と `kind()` は `"limit"`）。`Agent::result` が止める印を立て、`execute_calls` は同じ応答の残りの呼び出しを実行せず、取り消しと同じ形の誤りの結果にする（提供者はすべての呼び出しに結果を求めるため）。`run_request` は `TurnEnd` の後、`CheckFixLimit` と同じ所で `Err(LeftoverProcesses)` を返す。結果に添える英文 `[Processes started by the script may still be running.]` は `tools/text.rs` に新しく置く（`BASH_LEFTOVERS` は `command` の文である）。
+
+### 画面とテスト
+
+- 確認の画面の行は既存の `fact(label, value, width, compact)` で作る。`Targets` はパスを `\n` で繋いだ一つの値とする。見出しの英文は `ui/tui/text.rs` の `COMMAND` などの隣に置く。収まりの判定は `fits` がすべての行で行うので手を加えない。
+- 二度目の報告の後にスクリプトを書き換えるテストは、`check_query` を包む口で行う（別の差し替えの口は作らない）。確認を受けるテストは、`Agent::with_approvals(Box<dyn Approver>, ApprovalPolicy { approval: Approval::OnRequest, .. })` に偽の受け手を渡す（`agent/resume_tests.rs` の形）。`exec` の段で確かめるのは、断られることだけである。
+- 触るファイルに加える: `src/benitoite/mod.rs`・`skill.rs`・`skill/tests.rs`・`tests.rs`、`src/tools/benitoite_check.rs`、`src/cli/exec.rs`・`exec/tests.rs`、`src/cli/tui.rs`、`src/agent/mod.rs`・`events.rs`・`rewind.rs`、`src/session/record.rs`、`src/ui/tui/text.rs`・`confirmation.rs`、上に挙げた `tests/` のファイル。
