@@ -135,3 +135,17 @@
 
 - `scripts/check.sh --inside-codex` が通る（`BENITOITEH_TEST_BENITOITE` を設定して）。
 - 完了の報告に、道具の説明と対応の説明の英文の全文、`tools/text.rs` と `context/text.rs` に足した英文の全文、期待のファイルの差分の要約、`skill list` の一覧の欄の名前、実行ファイルの大きさの変化を書く。
+
+## P2-05 の実装の後の補足（2026-10-18）
+
+P2-05 を取り込んだ後に、この文書を実装に突き合わせた。上の記述と食い違うところは、この節を正とする。
+
+- P2-05 で作ったもの: `Processor::query(&self, args: &[OsString], QueryLimits, cancelled: &AtomicBool) -> Result<QueryOutput, BenitoiteError>`、`QueryLimits::default()`（10 秒と猶予 10 秒。標準エラー出力の上限の欄はまだない）、`QueryOutput { stdout, stderr }`、`json_object(bytes, kind)`、`BenitoiteError`、`benitoite::text::DISABLED`、`src/benitoite/tests.rs` の `Fixture`（`QueryLauncher::TestDirect` と `sandbox-probe`）、`cli/exec.rs` の `prepare`（`processor_result` をモードで分ける流れ）、`tests/support/processor.rs` の `benitoite()`。`Processor::inspect` と `QueryContext` は `pub(crate)` である。
+- P2-05 が済ませたので、この作業では作らない・繰り返さない: `RecordedBenitoite.skill_content_hash` の欄（`Option<String>`、`serde(default)`。`Agent::construct` が `None` を書いている。この作業は `SKILL.md` の `contentHash` の `value` を書く）、`--version=json` の `skillList`・`skillDocument` の版の確かめ、終了状態の確かめ（`Processor::query` が `Exit` にする）、一つの完全なオブジェクト・`schemaVersion`・`kind` の確かめ（`json_object(stdout, "skillDocument")`、一覧は `"skillList"`）。`name`・`byteLength`・`contentHash`・`algorithm` の条件は、`SkillDocument::from_json` と一覧の確かめの関数で確かめ、食い違いは `BenitoiteError::Invalid`（英文は `benitoite/text.rs`）とする。
+- Skill の部品は、問い合わせの関数（`Fn(&[OsString], &AtomicBool) -> Result<QueryOutput, BenitoiteError> + Send + Sync`）を受け取る公開の作り方と、`Arc<Processor>` から作る作り方（`Processor::query` に `QueryLimits::default()` を渡す）を持つ。理由: `Processor` は `pub(crate)` の `Processor::inspect` でしか作れない。制限モードの `Agent` を作る統合テスト（`tests/agent_loop.rs` の `web_fetch` の両モードのテストなど）は、本物の処理系（`tests/support/processor.rs` の `benitoite()`）を `std::process::Command` で起動する関数を渡して部品を作る。問い合わせの回数を数えるテストも同じ口を使う。`examples/` は `BENITOITEH_TEST_BENITOITE` で処理系のパスを得る。
+- 問い合わせには `QueryLimits::default()` と、道具の呼び出しの `Invocation.cancelled`（起動のときは `AtomicBool::new(false)`）を渡す。
+- 起動のとき（`prepare`）は、`Processor::inspect` が成功したときだけ、一覧と `SKILL.md` を得る（P2-05 が処理系を使えないとした場合は問い合わせない）。一覧と `SKILL.md` の取得、属性と注釈の解析（失敗は `BenitoiteError::Invalid`）の失敗は、`processor_result` の `Err` と同じ分岐に入れる。制限モードは `StartupError::Benitoite` で止め（終了状態 2）、通常モードは `benitoite::text::DISABLED` の診断を積み、`with_benitoite(None)` とし、Skill の部品も持たせずに続ける（ヘッダの `benitoite` と `/status` の処理系の欄が、道具を外したことと食い違わないように）。版の警告と処理系の変化の通知は、`SKILL.md` を得た後に積む。この分岐は関数に分け、`cli/exec/tests.rs` で失敗の結果を渡して確かめる（本物の処理系は失敗しないため）。成功の流れは、既存の本物の処理系での `prepare` のテストに、道具と `<benitoite>` の節があることの確かめを足す。
+- `context` は、起動のときに解析が通った本文を受け取るので、`ContextError::InvalidSkill` は部品の食い違いのときだけ起きる。
+- 道具の誤りの `<reason>` で、`BenitoiteError::OutputLimit` は Skill の文書向けの文（例: `the Skill document from benitoite exceeded 16 MiB`）、`Exit` は `benitoite exited with status <n>` の形にする（P2-05 の検査の報告向けの文を使わない）。
+- 環境の情報（`context/environment.rs`）の処理系の版（今は `not configured` のまま）を、確かめた処理系の `version` で埋める。処理系がないときは今のまま（01-04「環境の情報」）。
+- テストのファイル: `tests/sandbox_exec_restricted.rs` のヘッダの `/benitoite/skill_content_hash` を `null` と確かめている所を、64 字の十六進の確かめに改める。`tests/agent_loop.rs`（制限モードの `Agent` に Skill の部品を渡す）と `src/cli/exec/tests.rs` も触る。`kind` の取り違えは、`json_object` に正しい `kind` を渡していることだけを確かめ、`schemaVersion` と二つ続く JSON は繰り返さない。差し替えた関数が `BenitoiteError::Exit` を返したときに、本文を保たず道具の誤りになることを確かめる。
