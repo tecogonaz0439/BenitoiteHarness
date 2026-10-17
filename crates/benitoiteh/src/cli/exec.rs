@@ -89,9 +89,34 @@ pub(super) struct ModeChange {
     pub session_id: SessionId,
 }
 
+/// /new で固定する安全の値。設定の既定値より優先する。
+#[derive(Clone, Debug)]
+pub(super) struct SessionOverrides {
+    mode: Mode,
+    project: PathBuf,
+    sandbox: Sandbox,
+    sandbox_disabled: bool,
+    approval: Approval,
+    safety: crate::agent::SessionSafety,
+}
+
+impl From<&crate::agent::AgentStatus> for SessionOverrides {
+    fn from(current: &crate::agent::AgentStatus) -> Self {
+        Self {
+            mode: current.mode,
+            project: current.project.clone(),
+            sandbox: current.sandbox,
+            sandbox_disabled: current.sandbox_disabled,
+            approval: current.approval,
+            safety: current.safety.clone(),
+        }
+    }
+}
+
 /// 依頼を読まず、診断と panic 用の記述子を呼び出す側へ返す。
 pub(super) fn prepare(
     args: &ExecArgs,
+    overrides: Option<&SessionOverrides>,
     paths: &DataPaths,
     check_sandbox: impl FnOnce(&Path, &Path) -> Result<(), SandboxError>,
     confirm_mode_change: &mut dyn FnMut(&ModeChange) -> bool,
@@ -99,7 +124,29 @@ pub(super) fn prepare(
     let mut diagnostics = Vec::new();
     let result = (|| {
         safe_fs::verify_platform_support(&paths.temporary_root).map_err(StartupError::SafeFs)?;
-        let user = UserConfig::load(&paths.config_file).map_err(StartupError::Config)?;
+        let mut user = UserConfig::load(&paths.config_file).map_err(StartupError::Config)?;
+        let mut args = args.clone();
+        if let Some(fixed) = overrides {
+            args.mode = Some(fixed.mode);
+            args.project = Some(fixed.project.clone());
+            user.normal.network = fixed.safety.network;
+            user.normal
+                .writable_roots
+                .clone_from(&fixed.safety.writable_roots);
+            user.restricted
+                .allowed_programs
+                .clone_from(&fixed.safety.allowed_programs);
+            if fixed.mode == Mode::Normal {
+                args.sandbox = Some(fixed.sandbox);
+                args.no_sandbox = fixed.sandbox_disabled;
+                args.approval = Some(fixed.approval);
+            } else {
+                args.sandbox = None;
+                args.approval = None;
+                args.no_sandbox = false;
+            }
+        }
+        let args = &args;
         let cwd = std::env::current_dir().map_err(StartupError::Io)?;
         let opened = if let Some(id) = &args.resume {
             let id = id.parse::<SessionId>().map_err(StartupError::Session)?;
@@ -197,6 +244,27 @@ pub(super) fn prepare(
             &helper,
         )
         .map_err(StartupError::Writable)?;
+        if let Some(fixed) = overrides
+            && (locations.project != fixed.project
+                || locations.additional != fixed.safety.writable_roots)
+        {
+            return Err(StartupError::Invalid(text::SESSION_PATH_CHANGED));
+        }
+        let allowed_programs = if resolved.mode == Mode::Restricted {
+            user.restricted
+                .allowed_programs
+                .iter()
+                .map(std::fs::canonicalize)
+                .collect::<Result<Vec<_>, _>>()
+                .map_err(StartupError::Io)?
+        } else {
+            Vec::new()
+        };
+        if let Some(fixed) = overrides
+            && allowed_programs != fixed.safety.allowed_programs
+        {
+            return Err(StartupError::Invalid(text::SESSION_PATH_CHANGED));
+        }
         let _cleanup = session::cleanup(paths, user.sessions.retention_days, now)
             .map_err(StartupError::Session)?;
         let session = match opened {
@@ -215,13 +283,13 @@ pub(super) fn prepare(
         // macOS の TMPDIR の /var という別名を Seatbelt に渡さない（設計書 03-02）。
         locations.temporary =
             std::fs::canonicalize(session.temporary_dir()).map_err(StartupError::Io)?;
-        let mut sandbox_disabled = false;
+        let mut sandbox_disabled = overrides.is_some_and(|fixed| fixed.sandbox_disabled);
         let shell = if resolved.mode == Mode::Normal {
             let selected = args.sandbox.unwrap_or(user.normal.sandbox);
             let scratch = private_directory(&session.directory().join("sandbox"))?;
             let placeholders = private_directory(&paths.data_dir.join("placeholders"))?;
             let candidates = super::denied_candidates(paths);
-            let policy = if selected == Sandbox::DangerFullAccess {
+            let policy = if selected == Sandbox::DangerFullAccess || sandbox_disabled {
                 None
             } else {
                 match check_sandbox(&helper, &scratch) {
@@ -364,6 +432,7 @@ pub(super) fn prepare(
             context_window: resolved.capabilities.context_window,
             estimate: 0,
         };
+        let normal_network = resolved.mode == Mode::Normal && user.normal.network;
         let mut agent = match resume {
             Some(state) => Agent::resume(
                 resolved.into(),
@@ -382,7 +451,13 @@ pub(super) fn prepare(
             ),
         }
         .map_err(StartupError::Agent)?;
-        agent = agent.with_approvals(Box::new(NonInteractiveApprover), approval_policy);
+        agent = agent
+            .with_approvals(Box::new(NonInteractiveApprover), approval_policy)
+            .with_session_safety(crate::agent::SessionSafety {
+                network: normal_network,
+                writable_roots: locations.additional,
+                allowed_programs,
+            });
         Ok(Prepared {
             agent,
             session,
@@ -425,6 +500,7 @@ pub(super) fn run(args: ExecArgs) -> Result<u8, CliError> {
         ..
     } = prepare(
         &args,
+        None,
         &DataPaths::from_env().map_err(|error| CliError::Startup(StartupError::Config(error)))?,
         sandbox::check_availability,
         &mut |_| false,
@@ -512,3 +588,23 @@ pub(super) fn run(args: ExecArgs) -> Result<u8, CliError> {
 
 #[cfg(test)]
 mod tests;
+
+// 設定の既定値で安全の境界を変えない（設計書 03-01「モードを変える操作」、実装プラン P4-08）。
+pub(super) fn prepare_new(
+    original: &ExecArgs,
+    current: &crate::agent::AgentStatus,
+    paths: &DataPaths,
+    check_sandbox: impl FnOnce(&Path, &Path) -> Result<(), SandboxError>,
+) -> Result<Prepared, PreparationError> {
+    let mut args = original.clone();
+    args.resume = None;
+    args.continue_session = false;
+    args.request = super::args::Request::Text(String::new());
+    prepare(
+        &args,
+        Some(&SessionOverrides::from(current)),
+        paths,
+        check_sandbox,
+        &mut |_| false,
+    )
+}

@@ -272,3 +272,221 @@ fn unsandboxed_session_launch_has_no_controlling_terminal() -> TestResult {
     }
     Ok(())
 }
+
+// 関門: /quit が終了状態を変える退行と、処理中の受信を止めて端末を戻せなくなる退行を本物の端末で守る。
+#[test]
+fn slash_quit_exits_zero_and_restores_terminal_while_idle_and_processing() -> TestResult {
+    for processing in [false, true] {
+        let f = Fixture::new()?;
+        let mut blocked = ResponseScript::sse(Vec::new());
+        blocked.delivery = Delivery::HeadersOnly;
+        let mut server = MockProvider::start(if processing {
+            vec![blocked]
+        } else {
+            Vec::new()
+        })?;
+        fs::create_dir_all(f.paths.config_file.parent().ok_or("config parent")?)?;
+        fs::write(
+            &f.paths.config_file,
+            format!(
+                "default_provider = 'mock'\n[providers.mock]\nkind = 'openai-chat'\nbase_url = '{}'\nmodel = 'mock-model'\n",
+                server.base_url()
+            ),
+        )?;
+        let mut pty = tty::Pty::new()?;
+        let original = rustix::termios::tcgetattr(pty.slave()?)?;
+        let mut input = pty.input()?;
+        let mut command = Command::new(env!("CARGO_BIN_EXE_benitoiteh"));
+        command.args([
+            "--mode",
+            "normal",
+            "--sandbox",
+            "danger-full-access",
+            "--approval",
+            "never",
+        ]);
+        if processing {
+            command.arg("Wait for a response");
+        }
+        command
+            .current_dir(&f.project)
+            .env_clear()
+            .env("HOME", f.root.join("home"))
+            .env("XDG_CONFIG_HOME", f.root.join("config"))
+            .env("XDG_STATE_HOME", f.root.join("state"))
+            .env("TMPDIR", f.root.join("tmp"))
+            .process_group(0)
+            .stdin(pty.slave()?)
+            .stdout(pty.slave()?)
+            .stderr(pty.slave()?);
+        let mut child = command.spawn()?;
+        let mut sent = false;
+        let (output, terminal) =
+            pty.interact(&mut child, Duration::from_secs(10), |_, terminal, _| {
+                let started = String::from_utf8_lossy(terminal).contains("Sandbox:");
+                if !sent && started && (!processing || !server.requests()?.is_empty()) {
+                    sent = true;
+                    input.write_all(b"/quit\r")?;
+                }
+                Ok(())
+            })?;
+        assert!(sent, "{}", String::from_utf8_lossy(&terminal));
+        assert_eq!(
+            output.status.code(),
+            Some(0),
+            "{output:?}: {}",
+            String::from_utf8_lossy(&terminal)
+        );
+        let restored = rustix::termios::tcgetattr(pty.slave()?)?;
+        assert_eq!(restored.local_modes, original.local_modes);
+        assert_eq!(restored.input_modes, original.input_modes);
+        assert_eq!(restored.output_modes, original.output_modes);
+        assert_eq!(restored.control_modes, original.control_modes);
+        let terminal = String::from_utf8_lossy(&terminal);
+        for restored in ["\x1b[?2004l", "\x1b[?25h", "\x1b[?7h"] {
+            assert!(terminal.contains(restored));
+        }
+        assert_eq!(server.requests()?.len(), usize::from(processing));
+        server.shutdown()?;
+    }
+    Ok(())
+}
+
+// 関門: 巻き戻し中の二度目の合図が待ち続ける退行と、復元前の時点の ID を失う退行を守る。
+#[test]
+fn second_signal_prints_checkpoint_after_terminal_restore_only_during_rewind() -> TestResult {
+    for during in [true, false] {
+        let count = if during { 8000 } else { 1 };
+        let f = Fixture::new()?;
+        // 十分な数の実ファイルを戻し、通知を受けてから合図を送る間も巻き戻しを続ける。
+        // 時刻やテスト専用の待ち合わせを本番の書き戻しへ差し込まない。
+        for index in 0..count {
+            fs::write(f.project.join(format!("file-{index:05}")), "saved")?;
+        }
+        let mut server = MockProvider::start(vec![ResponseScript::sse(response(
+            json!({"content":"recorded"}),
+            "stop",
+        ))])?;
+        let (mut worker, directory) = f.worker(&server)?;
+        let mut screen = Screen::new((160, 30), status());
+        worker.submit("Record initial files".into(), RunControl::default())?;
+        finish(&mut worker, &mut screen, &mut Vec::new())?;
+        worker.close()?;
+        for index in 0..count {
+            fs::write(f.project.join(format!("file-{index:05}")), "changed")?;
+        }
+        fs::create_dir_all(f.paths.config_file.parent().ok_or("config parent")?)?;
+        fs::write(
+            &f.paths.config_file,
+            format!(
+                "default_provider = 'mock'\n[providers.mock]\nkind = 'openai-chat'\nbase_url = '{}'\nmodel = 'mock-model'\ncontext_window = 100000\n",
+                server.base_url()
+            ),
+        )?;
+        let mut pty = tty::Pty::new()?;
+        let original = rustix::termios::tcgetattr(pty.slave()?)?;
+        let mut input = pty.input()?;
+        let mut child = Command::new(env!("CARGO_BIN_EXE_benitoiteh"))
+            .args([
+                "--mode",
+                "normal",
+                "--sandbox",
+                "danger-full-access",
+                "--approval",
+                "never",
+                "--resume",
+            ])
+            .arg(directory.file_name().ok_or("session ID")?)
+            .current_dir(&f.project)
+            .env_clear()
+            .env("HOME", f.root.join("home"))
+            .env("XDG_CONFIG_HOME", f.root.join("config"))
+            .env("XDG_STATE_HOME", f.root.join("state"))
+            .env("TMPDIR", f.root.join("tmp"))
+            .process_group(0)
+            .stdin(pty.slave()?)
+            .stdout(pty.slave()?)
+            .stderr(pty.slave()?)
+            .spawn()?;
+        let mut stage = 0;
+        let mut confirmation_at = None;
+        let (output, terminal) = pty.interact(
+            &mut child,
+            Duration::from_secs(20),
+            |child, terminal, elapsed| {
+                let visible = String::from_utf8_lossy(terminal);
+                match stage {
+                    0 if visible.contains("Sandbox:") => {
+                        input.write_all(b"/rewind\r")?;
+                        stage = 1;
+                    }
+                    1 if visible.contains("Select a checkpoint") => {
+                        input.write_all(b"\r")?;
+                        stage = 2;
+                    }
+                    2 if visible.contains("Select rewind scope") => {
+                        input.write_all(b"\r")?;
+                        stage = 3;
+                    }
+                    3 if visible.contains("[y] rewind") => {
+                        let shown = *confirmation_at.get_or_insert(elapsed);
+                        if elapsed.saturating_sub(shown) >= Duration::from_millis(400) {
+                            input.write_all(b"y")?;
+                            stage = 4;
+                        }
+                    }
+                    4 if visible.contains(if during {
+                        "Checkpoint cp-2 recorded."
+                    } else {
+                        "Rewind completed:"
+                    }) =>
+                    {
+                        let pid = rustix::process::Pid::from_child(child);
+                        rustix::process::kill_process(pid, rustix::process::Signal::TERM)?;
+                        rustix::process::kill_process(pid, rustix::process::Signal::HUP)?;
+                        stage = 5;
+                    }
+                    _ => {}
+                }
+                Ok(())
+            },
+        )?;
+        let visible = String::from_utf8_lossy(&terminal);
+        assert_eq!(stage, 5, "{output:?}: {visible}");
+        assert_eq!(output.status.code(), Some(130), "{output:?}: {visible}");
+        let restored = rustix::termios::tcgetattr(pty.slave()?)?;
+        assert_eq!(restored.local_modes, original.local_modes);
+        assert_eq!(restored.input_modes, original.input_modes);
+        assert_eq!(restored.output_modes, original.output_modes);
+        assert_eq!(restored.control_modes, original.control_modes);
+        let restored_at = visible.find("\x1b[?2004l").ok_or("missing restoration")?;
+        if during {
+            let checkpoint_at = visible
+                .find("Checkpoint before rewind: cp-2")
+                .ok_or("missing checkpoint after interruption")?;
+            assert!(restored_at < checkpoint_at);
+        } else {
+            assert!(!visible.contains("Checkpoint before rewind:"));
+        }
+        let records = read_records(&directory)?;
+        assert!(records.iter().any(|record| matches!(record, Record::Checkpoint(point) if point.id == "cp-2" && point.reason == benitoiteh::rewind::CheckpointReason::BeforeRewind)));
+        assert_eq!(
+            records
+                .iter()
+                .any(|record| matches!(record, Record::Rewind { .. })),
+            !during,
+            "rewind completion and signal timing"
+        );
+        if during {
+            assert!(
+                fs::read_dir(&f.project)?
+                    .filter_map(Result::ok)
+                    .any(|entry| fs::read_to_string(entry.path())
+                        .is_ok_and(|content| content == "changed"))
+            );
+        }
+        assert_eq!(server.requests()?.len(), 1);
+        server.shutdown()?;
+    }
+    Ok(())
+}

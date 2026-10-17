@@ -12,7 +12,74 @@ use std::sync::mpsc::SyncSender;
 impl Agent {
     /// セッションの時点を、会話を戻せるかとともに返す。
     pub fn checkpoints(&self) -> Result<Vec<CheckpointInfo>, AgentError> {
-        Ok(self.recorder()?.checkpoints()?)
+        let mut points = self.recorder()?.checkpoints()?;
+        let records = crate::session::read_records(self.session.directory())?;
+        for point in &mut points {
+            point.tool = point.checkpoint.call_id.as_ref().and_then(|id| {
+                records.iter().find_map(|record| {
+                    if let Record::ToolCall { call, .. } | Record::ToolStart { call } = record {
+                        (call.id == *id).then(|| call.clone())
+                    } else {
+                        None
+                    }
+                })
+            });
+            if point.checkpoint.reason == CheckpointReason::Request {
+                point.request = point
+                    .checkpoint
+                    .items
+                    .filter(|_| point.conversation_available)
+                    .and_then(|index| self.conversation.items.get(index))
+                    .and_then(request_text);
+                if point.request.is_none() {
+                    let mut after = false;
+                    for record in &records {
+                        if let Record::Checkpoint(checkpoint) = record {
+                            if after {
+                                break;
+                            }
+                            after = checkpoint.id == point.checkpoint.id;
+                        }
+                        if after
+                            && let Record::User {
+                                kind: crate::session::UserKind::Request,
+                                message,
+                            } = record
+                        {
+                            point.request = message
+                                .parts
+                                .iter()
+                                .find(|part| part.kind == crate::provider::UserPartKind::Request)
+                                .map(|part| {
+                                    part.text.lines().next().unwrap_or_default().to_owned()
+                                });
+                            break;
+                        }
+                    }
+                }
+            }
+        }
+        Ok(points)
+    }
+    /// ファイルも会話も変えず、実行前に戻せない操作を返す。
+    pub fn rewind_preview(
+        &self,
+        checkpoint: &str,
+        scope: RewindScope,
+    ) -> Result<RewindPreview, AgentError> {
+        let selected = self
+            .checkpoints()?
+            .into_iter()
+            .find(|point| point.checkpoint.id == checkpoint)
+            .ok_or(RewindError::Invalid(super::text::UNKNOWN_CHECKPOINT))?;
+        if scope != RewindScope::Files && !selected.conversation_available {
+            return Err(RewindError::Invalid(super::text::CONVERSATION_REWIND_UNAVAILABLE).into());
+        }
+        Ok(RewindPreview {
+            selected,
+            scope,
+            irreversible: self.irreversible(checkpoint)?,
+        })
     }
     /// 記録する作業量の上限を変更する。
     pub fn set_checkpoint_limits(&mut self, limits: CheckpointLimits) -> Result<(), AgentError> {
@@ -50,7 +117,9 @@ impl Agent {
         // 再開の直後は run がまだ時点の番を設定していない（設計書 01-05「再開」）。
         self.recorder()?.set_turn(self.turn)?;
         let restored = if files {
-            self.recorder()?.restore_files(checkpoint, allow_incomplete)
+            let prepared = self.recorder()?.prepare_restore_files(checkpoint)?;
+            self.checkpoint_notices(&events)?;
+            prepared.restore(allow_incomplete)
         } else {
             Ok(RewindReport::default())
         };
@@ -207,5 +276,25 @@ impl Agent {
             }
         }
         Ok(result.into_values().collect())
+    }
+}
+
+/// 実行前の確認に使う、時点と範囲と戻らない操作。
+#[derive(Clone, Debug)]
+pub struct RewindPreview {
+    pub selected: CheckpointInfo,
+    pub scope: RewindScope,
+    pub irreversible: Vec<IrreversibleOperation>,
+}
+
+fn request_text(item: &crate::provider::Item) -> Option<String> {
+    if let crate::provider::Item::UserMessage(message) = item {
+        message
+            .parts
+            .iter()
+            .find(|part| part.kind == crate::provider::UserPartKind::Request)
+            .map(|part| part.text.lines().next().unwrap_or_default().to_owned())
+    } else {
+        None
     }
 }

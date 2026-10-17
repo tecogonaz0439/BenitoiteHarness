@@ -6,7 +6,7 @@ use std::time::{Duration, Instant};
 
 use crossterm::event::Event;
 
-use super::{Action, RunControl, Screen, Worker};
+use super::{Action, Command, NewSession, RunControl, Screen, Worker};
 use crate::agent::AgentError;
 
 /// 置き換える外部依存は端末の入力だけとする（設計書 07-01「テストの原則」）。
@@ -56,6 +56,22 @@ impl std::fmt::Display for TuiError {
 }
 impl std::error::Error for TuiError {}
 
+// End 待ちの途中の即時終了や I/O の失敗でも、新しい記録を終えてから破棄する。
+struct PendingSession(Option<NewSession>);
+impl PendingSession {
+    fn end(&mut self) -> Result<(), AgentError> {
+        if let Some(mut prepared) = self.0.take() {
+            prepared.agent.end(super::text::NEW_SESSION_ABORTED)?;
+        }
+        Ok(())
+    }
+}
+impl Drop for PendingSession {
+    fn drop(&mut self) {
+        let _ended = self.end();
+    }
+}
+
 /// 入力とイベントをまとめて一回描く。終了中も、仕事が戻るまで受信を続ける。
 pub fn run(
     screen: &mut Screen,
@@ -64,7 +80,9 @@ pub fn run(
     output: &mut impl Write,
     terminated: &AtomicBool,
     mut cursor_position: impl FnMut(u16),
+    new_session: &mut dyn FnMut(&crate::agent::AgentStatus) -> Result<NewSession, String>,
 ) -> Result<u8, TuiError> {
+    let mut pending_new: Option<PendingSession> = None;
     let started = Instant::now();
     let mut processing_since = worker.is_running().then(Instant::now);
     let mut next_tick = Instant::now();
@@ -78,7 +96,12 @@ pub fn run(
     loop {
         match input.termination_count() {
             // Worker の Drop は受信先を閉じるだけで join しない。二度目は記録を待たない。
-            Ok(count) if count >= 2 => return Ok(130),
+            Ok(count) if count >= 2 => {
+                if worker.is_rewinding() {
+                    screen.interrupted_rewind = screen.before_rewind.clone();
+                }
+                return Ok(130);
+            }
             Ok(_) => {}
             Err(failure) => {
                 error = Some(TuiError::Io(failure));
@@ -87,6 +110,9 @@ pub fn run(
             }
         }
         if terminated.load(Ordering::Acquire) {
+            if worker.is_rewinding() {
+                screen.operation = Some(super::text::WAIT_REWIND);
+            }
             redraw |= screen.cancellation_notice();
             exiting = true;
             status = 130;
@@ -103,16 +129,51 @@ pub fn run(
                 redraw = true;
             }
         }
+        // End の受信中に届いた合図も、準備した Agent を起動する直前に調べる。
+        if pending_new.is_some() && terminated.load(Ordering::Acquire) {
+            exiting = true;
+            status = 130;
+        }
+        if exiting && let Some(mut pending) = pending_new.take() {
+            pending.end().map_err(TuiError::Agent)?;
+        }
+        if !exiting
+            && worker.ended()
+            && let Some(mut prepared) = pending_new.take().and_then(|mut pending| pending.0.take())
+        {
+            worker.close().map_err(TuiError::Agent)?;
+            if let Some(activate) = prepared.activate.take() {
+                activate();
+            }
+            screen.status = prepared.status;
+            screen.status.estimate = prepared.agent.context_estimate();
+            screen.startup(prepared.diagnostics);
+            screen.before_rewind = None;
+            screen.followups.clear();
+            let (approver, approvals) = crate::approval::InteractiveApprover::channel();
+            worker = Worker::start(
+                prepared.agent.with_approver(Box::new(approver)),
+                prepared.session,
+            )
+            .map_err(TuiError::Io)?
+            .with_approval_requests(approvals);
+            redraw = true;
+        }
         if was_running && !worker.is_running() {
             processing_since = None;
         }
         if exiting {
+            if worker.is_rewinding() {
+                screen.operation = Some(super::text::WAIT_REWIND);
+            }
             redraw |= screen.cancellation_notice();
             screen.cancel_confirmation();
         }
         if !exiting
             && !worker.is_running()
             && !screen.confirming()
+            && screen.selection.is_none()
+            && pending_new.is_none()
             && let Some(request) = screen.next_followup()
         {
             screen.show_request(&request);
@@ -178,6 +239,9 @@ pub fn run(
         };
         // 外からの INT はキーの Ctrl+C と区別し、次の依頼を始める前にも調べる。
         if terminated.load(Ordering::Acquire) {
+            if worker.is_rewinding() {
+                screen.operation = Some(super::text::WAIT_REWIND);
+            }
             redraw |= screen.cancellation_notice();
             exiting = true;
             status = 130;
@@ -197,7 +261,10 @@ pub fn run(
                                 .contains(crossterm::event::KeyModifiers::CONTROL)
                             && matches!(key.code, crossterm::event::KeyCode::Char('c' | 'd')) =>
                     {
-                        return Ok(130);
+                        if !worker.is_rewinding() {
+                            return Ok(130);
+                        }
+                        screen.operation = Some(super::text::WAIT_REWIND);
                     }
                     Event::Key(_)
                     | Event::Paste(_)
@@ -215,7 +282,8 @@ pub fn run(
             ) {
                 Action::None => {}
                 Action::Submit(request) => {
-                    screen.request(&request);
+                    screen.original_submission = None;
+                    screen.show_request(&request);
                     if let Err(failure) = worker.submit(request, RunControl::default()) {
                         error = Some(TuiError::Agent(failure));
                         exiting = true;
@@ -223,26 +291,100 @@ pub fn run(
                     processing_since = Some(Instant::now());
                 }
                 Action::Steer(value) => {
-                    screen.remember_input(&value);
-                    if let Err(value) = worker.steer(value) {
+                    let submitted = screen.submitted(value);
+                    if let Err(value) = worker.steer(submitted.text, submitted.original) {
                         screen.restore_input(value);
                     }
                 }
-                Action::FollowUp(value) => screen.queue_followup(value),
+                Action::FollowUp(value) => {
+                    let submitted = screen.submitted(value);
+                    screen.followups.push_back(submitted);
+                }
+                Action::Command(command) => {
+                    let result = match command {
+                        Command::Help => {
+                            for line in super::text::HELP.lines() {
+                                screen.notice(line);
+                            }
+                            Ok(())
+                        }
+                        Command::Status => worker.status(),
+                        Command::Compact(instructions) => {
+                            screen.operation = Some(super::text::COMPACTING);
+                            worker.compact(instructions)
+                        }
+                        Command::Rewind => worker.checkpoints(),
+                        Command::PreviewRewind(checkpoint, scope) => {
+                            worker.preview(checkpoint, scope)
+                        }
+                        Command::New => {
+                            screen.notice(super::text::STARTING_NEW);
+                            screen.draw(output, None).map_err(TuiError::Io)?;
+                            cursor_position(screen.rows_below_cursor());
+                            match new_session(worker.current_status()) {
+                                Ok(prepared) => {
+                                    pending_new = Some(PendingSession(Some(prepared)));
+                                    worker.end()
+                                }
+                                Err(error) => {
+                                    screen.notice(&error);
+                                    Ok(())
+                                }
+                            }
+                        }
+                    };
+                    if let Err(failure) = result {
+                        return Err(TuiError::Agent(failure));
+                    }
+                    if worker.is_running() {
+                        processing_since = Some(Instant::now());
+                    }
+                }
                 Action::CancelStep => {
+                    if worker.is_rewinding() {
+                        screen.operation = Some(super::text::WAIT_REWIND);
+                    }
                     screen.cancellation_notice();
                     worker.cancel_step();
                 }
                 Action::Cancel => {
+                    if worker.is_rewinding() {
+                        screen.operation = Some(super::text::WAIT_REWIND);
+                    }
                     screen.cancellation_notice();
                     worker.cancel();
                     screen.cancel_confirmation();
                 }
                 Action::Quit => {
+                    if worker.is_rewinding() {
+                        screen.operation = Some(super::text::WAIT_REWIND);
+                    }
                     screen.cancellation_notice();
                     exiting = true;
                     worker.cancel();
                     screen.cancel_confirmation();
+                }
+            }
+            // 確認の答えを受けた同じイベントで仕事を始める。後ろの /quit や
+            // Ctrl+C が、まだ始めていない巻き戻しを捨てない（実装プラン P4-08）。
+            if !worker.is_running()
+                && !exiting
+                && let Some(accepted) = screen.take_confirmation_result()
+            {
+                if accepted && let Some(preview) = &screen.rewind_preview {
+                    screen.before_rewind = None;
+                    worker
+                        .rewind(
+                            preview.selected.checkpoint.id.clone(),
+                            preview.scope,
+                            screen.rewind_retry,
+                        )
+                        .map_err(TuiError::Agent)?;
+                    screen.operation = Some(super::text::REWINDING);
+                    processing_since = Some(Instant::now());
+                } else {
+                    screen.rewind_preview = None;
+                    screen.notice(super::text::REWIND_CANCELLED);
                 }
             }
             redraw = true;
@@ -304,6 +446,7 @@ pub fn confirm(
                     return Ok(false);
                 }
                 Action::None
+                | Action::Command(_)
                 | Action::Submit(_)
                 | Action::Steer(_)
                 | Action::FollowUp(_)

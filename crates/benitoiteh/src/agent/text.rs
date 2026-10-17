@@ -78,3 +78,5 @@ pub fn rewind_operation(name: &str, arguments: &serde_json::Value) -> String {
 }
 
 pub const INVALID_EVENT_PATH: &str = "Invalid hexadecimal path in event.";
+
+pub const SESSION_COMPLETED: &str = "completed";

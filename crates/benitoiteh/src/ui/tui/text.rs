@@ -191,3 +191,213 @@ pub fn decline_keys(kind: Option<crate::approval::ApprovalKind>) -> &'static str
         "[n] decline"
     }
 }
+
+pub const UNKNOWN_COMMAND: &str = "Unknown command. Type /help for available commands.";
+pub const COMMAND_ARGUMENTS: &str = "This command does not accept arguments. Type /help for usage.";
+pub const COMMAND_RUNNING: &str = "This command is unavailable while processing.";
+pub const STARTING_NEW: &str = "Starting a new session...";
+pub const NEW_SESSION_REASON: &str = "New session started.";
+pub const COMPACTING: &str = "Compacting...";
+pub const REWINDING: &str = "Rewinding...";
+pub const WAIT_REWIND: &str = "Waiting for rewind to finish; rewind cannot be cancelled.";
+pub const NO_CHECKPOINTS: &str = "No checkpoints available.";
+pub const REWIND_CANCELLED: &str = "Rewind cancelled.";
+pub const SELECT_CHECKPOINT: &str = "Select a checkpoint (UTC)";
+pub const SELECT_SCOPE: &str = "Select rewind scope";
+pub const SELECT_KEYS: &str = "[up/down] select  [Enter] continue  [ESC] cancel";
+pub const FILES_AND_CONVERSATION: &str = "files and conversation";
+pub const FILES_ONLY: &str = "files only";
+pub const CONVERSATION_ONLY: &str = "conversation only";
+pub const NOT_AVAILABLE: &str = "(not available)";
+pub const REWIND_TITLE: &str = "╭─ Rewind to checkpoint?";
+pub const INCOMPLETE_TITLE: &str = "╭─ Rewind with an incomplete backup?";
+pub const CHECKPOINT: &str = "Checkpoint";
+pub const SCOPE: &str = "Scope";
+pub const BACKUP: &str = "Before rewind";
+pub const BACKUP_NOTICE: &str =
+    "The current files will be recorded as a checkpoint before restoring files.";
+pub const INCOMPLETE_TARGET: &str =
+    "The selected checkpoint is incomplete; added files will not be deleted.";
+pub const INCOMPLETE_BACKUP: &str =
+    "The backup before rewind is incomplete. The current state may not be recoverable.";
+pub const REWIND_KEYS: &str = "[y] rewind  [n] cancel";
+pub const INCOMPLETE_KEYS: &str = "[f] rewind anyway  [n] cancel";
+pub const REWIND_DECLINE: &str = "[n] cancel";
+pub const IRREVERSIBLE: &str = "Operations that cannot be undone (including external effects):";
+pub const INCOMPLETE_REASONS: &str = "Reasons the backup is incomplete:";
+pub const HELP: &str = "/help                  Show commands and input controls.
+/status                Show session status and token usage.
+/compact [instructions] Compact the conversation.
+/rewind                Select a checkpoint and restore files or conversation.
+/new                   Start a new session.
+/quit                  Quit.
+Enter: send a request, or steer while processing.
+Alt+Enter: queue a follow-up while processing.
+Shift+Enter or Ctrl+J: insert a newline.
+ESC: cancel the current step; twice: cancel the run.
+Ctrl+C: clear input; twice on empty input: quit.
+Up/Down: browse input history when input is one line.
+//: send a literal leading slash.";
+
+pub fn scope(scope: crate::rewind::RewindScope) -> &'static str {
+    use crate::rewind::RewindScope;
+    match scope {
+        RewindScope::FilesAndConversation => FILES_AND_CONVERSATION,
+        RewindScope::Files => FILES_ONLY,
+        RewindScope::Conversation => CONVERSATION_ONLY,
+    }
+}
+
+pub fn session_status(
+    status: &crate::agent::AgentStatus,
+    tokens: &crate::session::TokenCounts,
+) -> String {
+    let sandbox = if status.mode == crate::config::Mode::Restricted {
+        "restricted"
+    } else {
+        status.sandbox.name()
+    };
+    let disabled = if status.sandbox_disabled {
+        " (disabled by --no-sandbox)"
+    } else {
+        ""
+    };
+    let approval = match status.approval {
+        crate::config::Approval::Untrusted => "untrusted",
+        crate::config::Approval::OnRequest => "on-request",
+        crate::config::Approval::Never => "never",
+    };
+    let mode = match status.mode {
+        crate::config::Mode::Normal => "normal",
+        crate::config::Mode::Restricted => "restricted",
+    };
+    let limit = status
+        .context_window
+        .map_or_else(|| "unknown".into(), |value| value.to_string());
+    let mut lines = vec![
+        format!("Session: {}", status.session_id),
+        format!("Mode: {mode}"),
+        format!("Provider: {}", status.provider),
+        format!("Model: {}", status.model),
+        format!("Host: {}", status.host),
+        "Interpreter: not checked".into(),
+        format!("Sandbox: {sandbox}{disabled}"),
+        format!("Approval: {approval}"),
+        format!(
+            "Tokens (this process): input {}, cache read {}, cache write {}, output {}",
+            tokens.input, tokens.cache_read, tokens.cache_write, tokens.output
+        ),
+        format!("Context: {} / {limit}", status.estimate),
+        "Loaded project instructions:".into(),
+    ];
+    lines.extend(
+        status
+            .instruction_files
+            .iter()
+            .map(|path| format!("  {}", path.display())),
+    );
+    lines.push("Skipped project instructions:".into());
+    lines.extend(
+        status
+            .skipped_instructions
+            .iter()
+            .map(|entry| format!("  {}: {}", entry.path.display(), entry.reason)),
+    );
+    lines
+        .iter()
+        .map(|line| crate::ui::terminal_text(line, false))
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+pub fn compact_result(report: &crate::agent::CompactReport) -> String {
+    use crate::agent::CompactOutcome;
+    let result = match report.outcome {
+        CompactOutcome::Compacted => "completed",
+        CompactOutcome::NothingToCompact => "nothing to compact",
+        CompactOutcome::Cancelled => "cancelled",
+        CompactOutcome::Failed => "failed",
+    };
+    format!(
+        "Compaction {result}: {} items summarized, {} items kept.",
+        report.summarized_items, report.kept_items
+    )
+}
+
+pub fn checkpoint_row(point: &crate::rewind::CheckpointInfo) -> String {
+    let checkpoint = &point.checkpoint;
+    let reason = match checkpoint.reason {
+        crate::rewind::CheckpointReason::Request => "request",
+        crate::rewind::CheckpointReason::Bash => "bash",
+        crate::rewind::CheckpointReason::Write => "write",
+        crate::rewind::CheckpointReason::Edit => "edit",
+        crate::rewind::CheckpointReason::BeforeRewind => "before rewind",
+    };
+    let detail = point
+        .tool
+        .as_ref()
+        .map(|call| tool_call(&call.name, &call.arguments))
+        .or_else(|| point.request.clone())
+        .unwrap_or_else(|| NOT_AVAILABLE.into());
+    let seconds = checkpoint.created_at.seconds;
+    // UTC は外部のタイムゾーンの設定に依存しない形で日付と時刻にする。
+    let days = seconds.div_euclid(86400);
+    let z = days.saturating_add(719468);
+    let era = z.div_euclid(146097);
+    let doe = z.saturating_sub(era.saturating_mul(146097));
+    let yoe = doe
+        .saturating_sub(doe / 1460)
+        .saturating_add(doe / 36524)
+        .saturating_sub(doe / 146096)
+        / 365;
+    let year = yoe.saturating_add(era.saturating_mul(400));
+    let doy = doe.saturating_sub(
+        365_i64
+            .saturating_mul(yoe)
+            .saturating_add(yoe / 4)
+            .saturating_sub(yoe / 100),
+    );
+    let mp = 5_i64.saturating_mul(doy).saturating_add(2) / 153;
+    let day = doy
+        .saturating_sub(153_i64.saturating_mul(mp).saturating_add(2) / 5)
+        .saturating_add(1);
+    let month = mp.saturating_add(if mp < 10 { 3 } else { -9 });
+    let year = year.saturating_add(i64::from(month <= 2));
+    let time = seconds.rem_euclid(86400);
+    format!(
+        "{} | turn {} | {reason} | {year:04}-{month:02}-{day:02} {:02}:{:02}:{:02} UTC | {detail} | conversation: {} | incomplete: {}",
+        checkpoint.id,
+        checkpoint.turn,
+        time / 3600,
+        time / 60 % 60,
+        time % 60,
+        point.conversation_available,
+        !checkpoint.incomplete.is_empty()
+    )
+}
+
+pub fn more(count: usize) -> String {
+    format!("{count} more")
+}
+pub fn rewind_result(report: &crate::rewind::RewindReport) -> String {
+    format!(
+        "Rewind completed: {} restored, {} removed, {} created.",
+        report.restored, report.removed, report.created
+    )
+}
+pub fn rewind_failure(failure: &crate::rewind::RewindFailure) -> String {
+    format!("{}: {}", failure.path.display(), failure.reason)
+}
+
+pub fn selection_row(selected: bool, value: &str) -> String {
+    format!("{} {value}", if selected { ">" } else { " " })
+}
+
+pub fn details_omitted(lines: usize) -> String {
+    format!("... {lines} more detail lines omitted.")
+}
+pub fn irreversible_count(count: usize) -> String {
+    format!("Cannot be undone: {count} operations")
+}
+
+pub const NEW_SESSION_ABORTED: &str = "Session ended before activation.";

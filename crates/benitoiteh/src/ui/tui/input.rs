@@ -15,6 +15,8 @@ pub enum Action {
     Steer(String),
     /// 処理の後に送る依頼。
     FollowUp(String),
+    /// 入力欄からだけ実行できるコマンド。
+    Command(super::commands::Command),
     /// 道具の段階だけを取り消す。
     CancelStep,
     /// 今の依頼の取り消し。
