@@ -174,6 +174,10 @@ P0-04 で作った型: 方針の入力 `PolicyConfig`（`readable: ReadAccess`�
 - `ToolContext::with_search_limits(SearchLimits { max_entries, max_duration, max_file_bytes })`（既定より広げられない）。`glob`・`grep` に取り消しの印を渡す。
 - `grep`・`read` は 64 MiB を超えるファイルを飛ばすか拒む。
 
+### `doctor`（P4-05）
+
+- `benitoiteh doctor [--project <dir>] [--json]`。`cli::doctor`。`LinuxAvailability.capabilities`、bubblewrap の版を返す公開の関数、`session::quota::TOTAL_LIMIT`、読ませない場所の候補の共有の関数。
+
 ### `provider`（P1-01、P1-02）
 
 - 共通の形（`provider::types`、`provider` から再公開）: `Destination { provider, base_url, model }`、`AdapterKind`、`Conversation { items }`、`Item::{UserMessage, AssistantTurn, ToolResult}`、`UserMessage { parts: Vec<UserPart> }`（`UserPartKind::{Environment, Request, Steering}`）、`AssistantTurn { parts, raw_items, finish_reason, usage }`、`AssistantPart::{Text, Reasoning, ToolCall}`、`RawItems { destination, adapter, items }`、`ToolCall { id, provider_id, provider_item_id, name, arguments, raw_arguments }`、`ToolResult { id, provider_id, text, is_error }`、`Usage`（各項目 `Option<u64>` と `raw`）、`FinishReason::{Completed, ToolCalls, OutputLimit, Refusal(String), Error, Cancelled, Disconnected}`、`StreamEvent`、`ProviderError`、`Capabilities`。

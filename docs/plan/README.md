@@ -43,7 +43,7 @@
 | [P4-02](tasks/P4-02-resume.md) | 再開、セッションの一覧、記録の期間と大きさの上限 | P4-01 | 完了 |
 | [P4-03](tasks/P4-03-rewind.md) | 巻き戻しの記録と戻す処理 | P4-02 | 完了 |
 | [P4-04](tasks/P4-04-web-fetch.md) | 道具 `web_fetch` | P4-01 | 完了 |
-| [P4-05](tasks/P4-05-doctor.md) | `doctor`（処理系の確かめを除く） | P4-02 | 未着手 |
+| [P4-05](tasks/P4-05-doctor.md) | `doctor`（処理系の確かめを除く） | P4-02 | 完了 |
 | [P4-06](tasks/P4-06-tui-output.md) | 対話の画面の土台と出力 | P4-05 | 未着手 |
 | [P4-07](tasks/P4-07-interaction.md) | 対話の操作と確認の画面 | P4-04、P4-06 | 未着手 |
 | [P4-08](tasks/P4-08-slash-commands.md) | `/` で始まるコマンドと、P4 の安全の性質のテストの一覧 | P4-03、P4-04、P4-07、P4-09 | 未着手 |
