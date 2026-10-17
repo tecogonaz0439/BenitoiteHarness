@@ -63,14 +63,21 @@ Gemini の API の専用のアダプタ（ADR 0340 の E）と、Sign in with Ch
 
 ### OpenAI の Responses API
 
-【方針】`openai-responses` は次のように作る。値は Codex CLI の要求の作り方による（[先行事例](../08-appendix/08-01-prior-art.md)）。OpenAI の公式の文書との照合は実装の前に行う（【要検証】BH-030）。
+【方針】`openai-responses` は次のように作る。2026-10-17 に、OpenAI の公式の文書（[推論](https://developers.openai.com/api/docs/guides/reasoning)、[function calling](https://developers.openai.com/api/docs/guides/function-calling)、[会話の状態](https://developers.openai.com/api/docs/guides/conversation-state)、[プロンプトのキャッシュ](https://developers.openai.com/api/docs/guides/prompt-caching)、[誤りの符号](https://developers.openai.com/api/docs/guides/error-codes)）、公式の OpenAPI の定義（`openai/openai-openapi` の `c9fc5f8` の `openapi.yaml`）、公式の Python の SDK（`openai/openai-python` の `c969e32` の `src/openai/types/responses/`）で確かめた（BH-030）。
 
-- `POST {base_url}/responses` に `stream: true` で要求する。`store: false` とし、会話はすべて `benitoiteh` の側で持って毎回送る。
-- 推論の内容は `include: ["reasoning.encrypted_content"]` で暗号化した形を受け取り、同じ送り先で、同じシステムプロンプトと道具の定義の要求で送り返す（[文脈の管理](../01-agent/01-04-context.md)の「推論の内容の扱い」）。
-- `prompt_cache_key` にセッションの ID を入れる。理由: Codex CLI と Pi が同じ指定をしており、同じセッションの要求を同じキャッシュに寄せる。
-- `parallel_tool_calls: true` とする。
-- 応答の `output` の項目は、順序と `id` を変えずに持ち、次の要求の入力に、そのまま並べて送る（前述の「共通の形」の「提供者の元の項目」）。
+- `POST {base_url}/responses` に `stream: true` で要求する。`store: false` を明示する（省くと `true` になる）。会話はすべて `benitoiteh` の側で持って毎回送る。
 - システムプロンプトは `instructions` の欄で送る。Codex CLI は最初の入力の項目に開発者の発言として置くが、試作は文書に記された欄を使う。
+- 道具の定義は、Responses の平らな形（`{type: "function", name, description, parameters, strict}`。Chat Completions の `function` の入れ子と違う）で送り、`strict: true` を明示する。理由: `strict` を省くと、Responses は形を厳密にできるときだけ厳密にし、できなければ黙って厳密でない形に戻す。明示すれば、形が要件に合わないときに誤りになる。
+- `tool_choice: "auto"`、`parallel_tool_calls: true` とする。圧縮で道具を呼ばせないときは `tool_choice: "none"` を使う。
+- 推論は `reasoning: {effort, summary: "auto"}` とし、`effort` は提供者の設定の値とする。`include: ["reasoning.encrypted_content"]` を付ける。理由: 今の API は、`store: false` でも推論の項目の `encrypted_content` を既定で返し、この指定を求めないが、互換のために受け付ける。付けておけば、古いモデルと互換の口でも暗号化した推論を受け取れる。
+- 推論の項目と暗号化した推論は、`response.output_item.done` の項目から取る。`response.output_item.added` の項目の `encrypted_content` は欠けうる（推論の文書）。
+- 応答の `output` の項目は、順序と `id` と欄（助手の発言の `phase` など）を変えずに持ち、次の要求の入力に、そのまま並べて送る（前述の「共通の形」の「提供者の元の項目」）。理由: 推論の文書は、最後の利用者の発言の後の推論、道具の呼び出し、道具の結果の項目を、手を加えずに送り返すことを求める。`phase` を落とすと性能が落ちうる（SDK の型の説明）。`store: false` で、サーバが付けた `id` を送り返してよいかは、公式の文書に書かれていない。Codex CLI は、`store: false` の要求で、接頭辞の付いた `id`（`rs_` など）を残し、接頭辞のないものだけを除いて送る（`codex-rs/core/src/client.rs` の `prepare_response_items_for_request`。`a45b8cc`）。試作もこれに倣い、本物の API で確かめる（【要検証】BH-030）。
+- 道具の結果は `function_call_output` の項目で、`call_id` と、文字列の `output` を送る。
+- `prompt_cache_key` にセッションの ID を入れる。理由: Codex CLI と Pi が同じ指定をしており、同じセッションの要求を同じキャッシュに寄せる。キャッシュの文書は、この値を振り分けの手がかりとし、当たることを保証しないと書く。`gpt-5.6` 以降のモデルでは要らないとも書くが、付けても害はない。キャッシュの区切り（`prompt_cache_options` など、`gpt-5.6` 以降の機能）は試作では使わない。
+- ストリームの各行は `event:` の名前と、同じ名前を `type` に持つ `data:` の JSON から成り、`:` で始まる注釈の行を含みうる。終わりは `response.completed`・`response.incomplete`・`response.failed` のイベントで知り、Chat Completions の `[DONE]` の行はない（OpenAPI の定義の例）。`error` のイベントは誤りとして扱う。
+- 使ったトークンの量は、最後の応答の `usage`（`input_tokens`、`input_tokens_details.cached_tokens`・`cache_write_tokens`、`output_tokens`、`output_tokens_details.reasoning_tokens`）から取る。キャッシュから読んだ量は入力の内数として扱う（前述の「共通の形」）。キャッシュの文書は、当たりの率を、キャッシュから読んだ量を入力の量で割って求めるとしている。
+- 終わりの理由は、`status` と `incomplete_details.reason` から作る。`max_output_tokens` は出力の上限、`content_filter` は拒否とする。応答の文の部分が `refusal` の形のときも拒否とする。
+- HTTP の状態が 500 と 503 のときと、429 のうち回数の上限によるものは、やり直せる誤りとして扱い、`Retry-After` があれば少なくともその時間を待つ。429 のうち、利用の上限や支払いに関わるもの（`credit_balance_exhausted` などの符号）は、やり直さない。誤りの符号の文書は、支払い、使う額、割り当ての誤りをやり直しても使えるようにならないと書いている。
 
 ### OpenAI の Chat Completions API
 
