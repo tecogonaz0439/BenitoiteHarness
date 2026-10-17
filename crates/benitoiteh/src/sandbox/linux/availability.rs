@@ -34,41 +34,50 @@ pub struct LinuxAvailability {
     pub landlock_v3: CapabilityStatus,
     /// seccomp フィルタの適用。
     pub seccomp: CapabilityStatus,
+    /// 補助のプロセスの特権の集合が空である。
+    pub capabilities: CapabilityStatus,
 }
 
 /// 固定の bubblewrap の権限と版を確認し、プロセス内で結果を共有する。
 pub(super) fn check_bubblewrap() -> CapabilityStatus {
-    static STATUS: OnceLock<CapabilityStatus> = OnceLock::new();
-    // 制限モードの prepare も同じ確認を通し、プロセス内の結果を共用する。
-    // （設計書 03-02「サンドボックスの掛け方」）
-    STATUS
+    match bubblewrap_version() {
+        Ok(_) => CapabilityStatus::Available,
+        Err(status) => status,
+    }
+}
+
+/// 固定の bubblewrap の権限と最低の版を検査し、版の表示と起動で結果を共用する。
+pub fn bubblewrap_version() -> Result<String, CapabilityStatus> {
+    static VERSION: OnceLock<Result<String, CapabilityStatus>> = OnceLock::new();
+    VERSION
         .get_or_init(|| {
-            let metadata = match fs::metadata("/usr/bin/bwrap") {
-                Ok(metadata) => metadata,
-                Err(error) => return CapabilityStatus::Unavailable(error.to_string()),
-            };
+            let unavailable = |error: io::Error| CapabilityStatus::Unavailable(error.to_string());
+            let metadata = fs::metadata("/usr/bin/bwrap").map_err(unavailable)?;
             let mode = check_bubblewrap_mode(metadata.permissions().mode());
             if mode != CapabilityStatus::Available {
-                return mode;
+                return Err(mode);
             }
-            let output = match Command::new("/usr/bin/bwrap")
+            let output = Command::new("/usr/bin/bwrap")
                 .arg("--version")
                 .env_clear()
                 .stdin(Stdio::null())
                 .stdout(Stdio::piped())
                 .stderr(Stdio::piped())
                 .output()
-            {
-                Ok(output) => output,
-                Err(error) => return CapabilityStatus::Unavailable(error.to_string()),
-            };
+                .map_err(unavailable)?;
             if !output.status.success() {
-                return CapabilityStatus::Unavailable(text::bubblewrap_version_failed(
-                    output.status,
-                    &output.stderr,
+                return Err(CapabilityStatus::Unavailable(
+                    text::bubblewrap_version_failed(output.status, &output.stderr),
                 ));
             }
-            check_bubblewrap_version(&output.stdout)
+            match check_bubblewrap_version(&output.stdout) {
+                CapabilityStatus::Available => Ok(String::from_utf8_lossy(&output.stdout)
+                    .trim_end()
+                    .to_owned()),
+                status @ (CapabilityStatus::Unavailable(_) | CapabilityStatus::NotChecked) => {
+                    Err(status)
+                }
+            }
         })
         .clone()
 }
@@ -166,6 +175,7 @@ fn bubblewrap_failure(bubblewrap: CapabilityStatus) -> LinuxAvailability {
         user_namespaces: CapabilityStatus::NotChecked,
         landlock_v3: CapabilityStatus::NotChecked,
         seccomp: CapabilityStatus::NotChecked,
+        capabilities: CapabilityStatus::NotChecked,
     }
 }
 
@@ -176,6 +186,7 @@ fn classify(code: Option<i32>, stderr: &str) -> Result<LinuxAvailability, Sandbo
         user_namespaces: NotChecked,
         landlock_v3: NotChecked,
         seccomp: NotChecked,
+        capabilities: NotChecked,
     };
     if code != Some(125) && stderr.starts_with("bwrap:") {
         result.user_namespaces = Unavailable(stderr.trim().to_owned());
@@ -183,16 +194,24 @@ fn classify(code: Option<i32>, stderr: &str) -> Result<LinuxAvailability, Sandbo
         result.user_namespaces = Available;
         result.landlock_v3 = Available;
         result.seccomp = Available;
+        result.capabilities = Available;
+    } else if code == Some(125)
+        && stderr.starts_with(&format!("{} {}:", text::SETUP, text::CAPABILITIES))
+    {
+        result.user_namespaces = Available;
+        result.capabilities = Unavailable(stderr.trim().to_owned());
     } else if code == Some(125)
         && stderr.starts_with(&format!("{} {}:", text::SETUP, text::LANDLOCK))
     {
         result.user_namespaces = Available;
+        result.capabilities = Available;
         result.landlock_v3 = Unavailable(stderr.trim().to_owned());
     } else if code == Some(125)
         && stderr.starts_with(&format!("{} {}:", text::SETUP, text::SECCOMP))
     {
         result.user_namespaces = Available;
         result.landlock_v3 = Available;
+        result.capabilities = Available;
         result.seccomp = Unavailable(stderr.trim().to_owned());
     } else {
         return Err(SandboxError::Setup {
@@ -274,15 +293,17 @@ mod tests {
             [
                 missing.user_namespaces,
                 missing.landlock_v3,
-                missing.seccomp
+                missing.seccomp,
+                missing.capabilities
             ],
-            [NotChecked, NotChecked, NotChecked]
+            [NotChecked, NotChecked, NotChecked, NotChecked]
         );
-        for (code, stderr, namespace, landlock, seccomp) in [
+        for (code, stderr, namespace, landlock, seccomp, capabilities) in [
             (
                 1,
                 "bwrap: creating new namespace failed",
                 Unavailable("bwrap: creating new namespace failed".into()),
+                NotChecked,
                 NotChecked,
                 NotChecked,
             ),
@@ -292,6 +313,7 @@ mod tests {
                 Available,
                 Unavailable("Sandbox setup failed at Landlock: unavailable".into()),
                 NotChecked,
+                Available,
             ),
             (
                 125,
@@ -299,8 +321,17 @@ mod tests {
                 Available,
                 Available,
                 Unavailable("Sandbox setup failed at seccomp: unavailable".into()),
+                Available,
             ),
-            (0, "", Available, Available, Available),
+            (
+                125,
+                "Sandbox setup failed at capabilities: remaining",
+                Available,
+                NotChecked,
+                NotChecked,
+                Unavailable("Sandbox setup failed at capabilities: remaining".into()),
+            ),
+            (0, "", Available, Available, Available, Available),
         ] {
             assert_eq!(
                 classify(Some(code), stderr)?,
@@ -309,6 +340,7 @@ mod tests {
                     user_namespaces: namespace,
                     landlock_v3: landlock,
                     seccomp,
+                    capabilities,
                 }
             );
         }

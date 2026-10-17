@@ -13,7 +13,7 @@ mod text;
 
 pub use files::FileHistory;
 pub use id::SessionId;
-pub use quota::{StorageUsage, storage_usage};
+pub use quota::{StorageUsage, TOTAL_LIMIT, storage_usage};
 pub use record::*;
 pub use replay::{read_records, replay};
 pub use resume::{ReasoningContext, ResumeState};

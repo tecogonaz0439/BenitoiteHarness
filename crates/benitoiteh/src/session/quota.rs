@@ -10,7 +10,8 @@ use super::{Session, SessionError, open_directory_at, scan, sessions_root, text}
 use crate::config::paths::DataPaths;
 
 pub(super) const SESSION_LIMIT: u64 = 1024 * 1024 * 1024;
-const TOTAL_LIMIT: u64 = 10 * SESSION_LIMIT;
+/// 全セッションの保存量の上限（10 GiB）。
+pub const TOTAL_LIMIT: u64 = 10 * SESSION_LIMIT;
 
 /// 起動で数えた保存量。通常ファイルの論理的な長さを合計する。
 #[derive(Debug, Default)]

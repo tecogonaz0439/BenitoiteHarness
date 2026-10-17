@@ -61,7 +61,7 @@ fn help_lists_command_forms() -> Result<(), Box<dyn Error>> {
     for command in [
         "benitoiteh [options] [request]",
         "benitoiteh exec [options] <request>",
-        "benitoiteh doctor",
+        "benitoiteh doctor [--project <dir>] [--json]",
         "benitoiteh sessions [--project <dir>] [--json]",
         "benitoiteh --help | --version | --licenses",
     ] {
@@ -99,7 +99,6 @@ fn other_arguments_are_usage_errors() -> Result<(), Box<dyn Error>> {
         &[],
         &["--unknown"],
         &["exec"],
-        &["doctor"],
         &["sessions", "--unknown"],
         &["--licenses"],
         &["--help", "--unknown"],

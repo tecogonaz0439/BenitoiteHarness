@@ -4,7 +4,7 @@
 pub const HELP: &str = "Usage:
     benitoiteh [options] [request]
     benitoiteh exec [options] <request>
-    benitoiteh doctor
+    benitoiteh doctor [--project <dir>] [--json]
     benitoiteh sessions [--project <dir>] [--json]
     benitoiteh --help | --version | --licenses
 
@@ -27,7 +27,7 @@ Exec options:
     --help
 
 Use - as the request to read standard input.
-Interactive mode, doctor, and --licenses are not available yet.
+Interactive mode and --licenses are not available yet.
 The following options are not available yet:
     --allow, --project-parent
 ";
