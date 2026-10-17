@@ -199,6 +199,15 @@ P0-04 で作った型: 方針の入力 `PolicyConfig`（`readable: ReadAccess`�
 - `ui::tui`: `NewSession { agent, session, status, diagnostics }` を返す関数を画面の芯が受け取る。コマンドの解釈は `ui/tui/commands.rs`、選択の画面は `ui/tui/selection.rs`、`Confirmation` に `/rewind` の確かめの種類。
 - `cli::exec::prepare` は `SessionOverrides`（モード、プロジェクト、サンドボックス、承認、`normal.network`、`normal.writable_roots`、`restricted.allowed_programs`）を受け取る。`/new` は今のセッションの解いた値を渡す。新しく安全に関わる設定を使い始める作業（P2-05 の `benitoite.path`、P2-09 の `scratch_auto_effects`）は、ここに加えて固定する。
 
+### 処理系の見つけ方と問い合わせ（P2-05）
+
+- `benitoite`（新、持ち主 P2-05）: `PROMPT_VERIFIED_VERSION = "0.0.7"`、`discover(configured, path, locations) -> Result<PathBuf, BenitoiteError>`、`validate_executable(path, locations, allowed_program) -> Result<(PathBuf, String), BenitoiteError>`（実のパスと SHA-256。`O_NOFOLLOW|O_NONBLOCK` で開いた一つの記述子で形とハッシュを確かめる）、`json_object(bytes, kind) -> Result<Map<String, Value>, BenitoiteError>`（一つの完全なオブジェクト、`schemaVersion` 1、`kind`）。
+- `Processor { path, version, build, sha256 }`、`Processor::query(&self, args, QueryLimits { timeout, grace }, cancelled) -> Result<QueryOutput { stdout, stderr }, BenitoiteError>`、`version_warning()`。`pub(crate) Processor::inspect(configured, path, QueryContext)`。`QueryContext { helper, scratch, placeholders, env, locations, denied_candidates, launcher }`、`QueryLauncher { Sandboxed, Unsandboxed, #[cfg(test)] TestDirect }`（`Unsandboxed` は通常モードで実際にサンドボックスを外したときだけ）。
+- `BenitoiteError { Io, Invalid(&'static str), Sandbox, Run, Exit { code, stderr }, TimedOut, Cancelled, OutputLimit }`。標準出力は 16 MiB で止め、標準エラー出力は先頭 64 KiB を保つ（P2-07 で検査の上限を足す）。残りうるプロセスは誤りにする。
+- `sandbox::restricted_policy(&RestrictedAccess { write_project, allow_ip, programs, readable }, locations, denied_candidates)`（`sandbox/restricted.rs`）。エフェクトから `RestrictedAccess` を作るのは `benitoite` の側（P2-08）。
+- `session`: `RecordedBenitoite` に `sha256`・`build`・`skill_content_hash`（`serde(default)`）。`recorded_benitoite(paths, id)`、`previous_benitoite(paths, project, current)`。`ToolContext::with_benitoite(Option<Arc<Processor>>)`、`Environment::with_startup_notice`・`startup_notice() -> &[String]`、`AgentStatus` の `benitoite_path`・`benitoite_version`。
+- テスト: `tests/support/processor.rs` が `BENITOITEH_TEST_BENITOITE` から処理系を得る（なければ理由を示して失敗）。Linux の段は `BENITOITEH_TEST_BENITOITE_AARCH64`・`_X86_64` を同じパスに見せる。制限モードの統合テストは `tests/sandbox_exec_restricted.rs`。
+
 ### `provider`（P1-01、P1-02）
 
 - 共通の形（`provider::types`、`provider` から再公開）: `Destination { provider, base_url, model }`、`AdapterKind`、`Conversation { items }`、`Item::{UserMessage, AssistantTurn, ToolResult}`、`UserMessage { parts: Vec<UserPart> }`（`UserPartKind::{Environment, Request, Steering}`）、`AssistantTurn { parts, raw_items, finish_reason, usage }`、`AssistantPart::{Text, Reasoning, ToolCall}`、`RawItems { destination, adapter, items }`、`ToolCall { id, provider_id, provider_item_id, name, arguments, raw_arguments }`、`ToolResult { id, provider_id, text, is_error }`、`Usage`（各項目 `Option<u64>` と `raw`）、`FinishReason::{Completed, ToolCalls, OutputLimit, Refusal(String), Error, Cancelled, Disconnected}`、`StreamEvent`、`ProviderError`、`Capabilities`。
