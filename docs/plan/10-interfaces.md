@@ -20,7 +20,7 @@ crates/benitoiteh/            試作のクレート（ライブラリと実行�
   tests/                      統合テスト。OS のサンドボックスを要するものは tests/sandbox_*.rs
   tests/support/              統合テストが共有する補助（一時ディレクトリ、模擬の提供者など）
 crates/sandbox-probe/         サンドボックスのテストが起動する、決まった操作だけをする小さなプログラム（P0-04）
-assets/benitoite/v0.0.6/      取り込んだ Skill（手で直さない）
+assets/benitoite/v0.0.7/      処理系の Skill の写し（手で直さない。埋め込まず、Skill は起動した処理系から得る。テストが比べる元）
 ```
 
 `crates/sandbox-probe` は配らない（`publish = false`）。設計書 06-01 の「ワークスペースとクレート」は試作のクレートを一つとするが、これはテストの道具であり、試作の実行ファイルには入らない。`cargo test` はほかのパッケージの実行ファイルを作らないので、`scripts/check.sh` がテストの前に `cargo build -p sandbox-probe` を、ホストと Linux の二つの対象で走らせる。テストの対象の外の操作（ファイルを読む、書く、ソケットにつなぐ、プログラムを起動する）を、引数で指示したとおりに一つ行い、結果を決まった終了状態で返す。
