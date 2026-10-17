@@ -1,6 +1,7 @@
 //! exec のイベントと端末に安全な文字列を出力する（設計書 05-01「exec の出力」、05-02「出力の示し方」）。
 
 mod text;
+pub mod tui;
 
 use std::io::{self, Write};
 
@@ -79,7 +80,12 @@ impl ExecOutput {
             }
         }
         if self.json {
-            return json_line(event);
+            // 差分は画面専用であり、大きい exec の JSON に含めない（実装プラン P4-06）。
+            let mut event = event.clone();
+            if let AgentEvent::ToolResult { display, .. } = &mut event {
+                *display = None;
+            }
+            return json_line(&event);
         }
         let message = match event {
             AgentEvent::SessionStart { notice, .. } => notice.clone(),

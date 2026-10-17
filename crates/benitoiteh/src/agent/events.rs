@@ -97,6 +97,10 @@ pub enum AgentEvent {
         name: String,
         is_error: bool,
         summary: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        screen: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        display: Option<String>,
     },
     /// 番の終了。
     TurnEnd {

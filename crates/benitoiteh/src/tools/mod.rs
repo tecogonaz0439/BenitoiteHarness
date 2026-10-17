@@ -197,7 +197,7 @@ impl ToolSet {
             return ToolOutput::error(text::MODE_MISMATCH);
         }
         let result = match call.id {
-            ToolId::Read => read::execute(context, &call.arguments).map(ToolOutput::success),
+            ToolId::Read => read::execute(context, &call.arguments),
             ToolId::Glob => search::glob(context, &call.arguments, invocation.cancelled)
                 .map(ToolOutput::success),
             ToolId::Grep => search::grep(context, &call.arguments, invocation.cancelled)
@@ -439,6 +439,8 @@ pub struct ToolOutput {
     pub text: String,
     pub is_error: bool,
     pub display: Option<String>,
+    /// 道具が数えた画面用の一行の要約。
+    pub screen: Option<String>,
     pub approval: Option<ApprovalRequest>,
     pub spill: Option<SpillInfo>,
 }
@@ -450,6 +452,7 @@ impl ToolOutput {
             text: truncate::cap_middle(&text.into()),
             is_error: false,
             display: None,
+            screen: None,
             approval: None,
             spill: None,
         }
@@ -470,6 +473,7 @@ impl ToolOutput {
             approval: Some(request),
             is_error: false,
             display: None,
+            screen: None,
             spill: None,
         }
     }

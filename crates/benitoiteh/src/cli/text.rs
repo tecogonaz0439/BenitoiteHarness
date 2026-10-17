@@ -8,7 +8,7 @@ pub const HELP: &str = "Usage:
     benitoiteh sessions [--project <dir>] [--json]
     benitoiteh --help | --version | --licenses
 
-Exec options:
+Options (interactive and exec):
     --mode restricted|normal
     --project <dir>
     --provider <name>
@@ -26,8 +26,10 @@ Exec options:
     --output-last-message <file>
     --help
 
-Use - as the request to read standard input.
-Interactive mode and --licenses are not available yet.
+Use - as the exec request to read standard input.
+--json and --output-last-message are exec-only.
+Interactive --resume and --continue require P4-07.
+--licenses is not available yet.
 The following options are not available yet:
     --allow, --project-parent
 ";
@@ -109,3 +111,12 @@ pub const RESUME_PROJECT: &str = "--project does not match the recorded session 
 pub fn resuming(id: &crate::session::SessionId, project: &std::path::Path) -> String {
     format!("Resuming session {id}; project: {}", project.display())
 }
+
+/// 端末以外からの対話の起動を拒む。
+pub const TERMINAL_REQUIRED: &str =
+    "Interactive mode requires terminal input and output; use benitoiteh exec instead.";
+/// 対話の確認は次の作業に委ねる。
+pub const INTERACTIVE_APPROVAL: &str =
+    "benitoiteh: interactive approval requires P4-07; use --approval never";
+/// 一時的な承認の方針を起動で明示する。
+pub const APPROVAL_NEVER: &str = "Approval is never; operations requiring approval will be denied (interactive approval requires P4-07).";

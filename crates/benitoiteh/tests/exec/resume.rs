@@ -974,7 +974,14 @@ fn startup_quota_stops_bash_spill_and_warns_once_without_stopping_log() -> TestR
         String::from_utf8_lossy(&output.stderr)
     );
     let stderr = String::from_utf8(output.stderr)?;
-    assert_eq!(stderr.matches("Session storage limit reached;").count(), 1);
+    let events = lines(&output.stdout)?;
+    assert_eq!(
+        events
+            .iter()
+            .filter(|event| event.get("kind") == Some(&json!("storage_limit")))
+            .count(),
+        1
+    );
     assert!(stderr.contains("Session storage exceeds 10 GiB; reduce [sessions] retention_days"));
     let records = benitoiteh::session::read_records(&directory)?;
     let mut results = Vec::new();

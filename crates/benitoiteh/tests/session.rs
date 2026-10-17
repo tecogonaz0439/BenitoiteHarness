@@ -657,6 +657,8 @@ fn storage_counts_all_regular_files_and_shares_output_reservations() -> TestResu
     replacement.write_all(b"abc")?;
     replacement.finish()?;
     assert!(!session.reserve(1));
+    assert!(session.take_storage_notice().is_some());
+    assert!(session.take_storage_notice().is_none());
     // 再開用の記録は出力の保存量で止めない。大きな行の分割も同じである。
     session.writer()?.append(&Record::Error {
         kind: "test".into(),

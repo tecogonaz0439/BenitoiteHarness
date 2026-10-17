@@ -7,6 +7,7 @@ mod panic;
 mod sessions;
 mod signals;
 mod text;
+mod tui;
 
 use std::io::{self, Write};
 use std::process::ExitCode;
@@ -16,6 +17,7 @@ enum CliError {
     Arguments(args::ArgsError),
     Output(io::Error),
     Startup(exec::StartupError),
+    Preparation(exec::PreparationError),
     Agent(crate::agent::AgentError),
 }
 
@@ -28,21 +30,29 @@ pub fn main() -> ExitCode {
     if argument.as_deref() == Some(std::ffi::OsStr::new("__sandbox")) {
         return crate::sandbox::run_helper(args);
     }
-    panic::install(None);
+    panic::install(None, None);
     match run(argument, args) {
         Ok(status) => ExitCode::from(status),
         Err(error) => {
+            let error = if let CliError::Preparation(failure) = error {
+                for diagnostic in failure.diagnostics {
+                    let _shown = crate::ui::ExecOutput::diagnostic(&diagnostic);
+                }
+                CliError::Startup(failure.error)
+            } else {
+                error
+            };
             let (message, status) = match error {
                 CliError::Usage => (text::INVALID_ARGUMENTS.to_owned(), ExitCode::from(2)),
                 CliError::Arguments(error) => (error.to_string(), ExitCode::from(2)),
                 CliError::Output(error) => (text::output_error(&error), ExitCode::FAILURE),
+                CliError::Preparation(error) => (text::startup_error(&error), ExitCode::from(2)),
                 CliError::Startup(error) => (text::startup_error(&error), ExitCode::from(2)),
                 CliError::Agent(error) => (text::agent_error(&error), ExitCode::FAILURE),
             };
             let message = crate::ui::terminal_text(&message, false);
-            if writeln!(io::stderr().lock(), "{message}").is_err() {
-                return ExitCode::FAILURE;
-            }
+            // 端末が切れた場合も、診断を書けないことでは終了状態を上書きしない。
+            let _shown = writeln!(io::stderr().lock(), "{message}");
             status
         }
     }
@@ -50,10 +60,12 @@ pub fn main() -> ExitCode {
 
 fn run(
     argument: Option<std::ffi::OsString>,
-    mut args: impl Iterator<Item = std::ffi::OsString>,
+    args: impl Iterator<Item = std::ffi::OsString>,
 ) -> Result<u8, CliError> {
     // 非 UTF-8 の引数も panic させず、使い方の誤りとして扱う（設計書 05-01「終了状態」）。
-    let argument = argument.ok_or(CliError::Usage)?;
+    let Some(argument) = argument else {
+        return tui::run(args::ExecArgs::parse_interactive(args).map_err(CliError::Arguments)?);
+    };
     if argument == "doctor" {
         return doctor::run(args);
     }
@@ -72,7 +84,13 @@ fn run(
         let options = args::ExecArgs::parse(arguments).map_err(CliError::Arguments)?;
         return exec::run(options);
     }
-    if args.next().is_some() {
+    if argument != "--help" && argument != "--version" && argument != "--licenses" {
+        return tui::run(
+            args::ExecArgs::parse_interactive(std::iter::once(argument).chain(args))
+                .map_err(CliError::Arguments)?,
+        );
+    }
+    if args.count() != 0 {
         return Err(CliError::Usage);
     }
     let output = match argument.to_str() {

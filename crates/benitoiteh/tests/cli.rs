@@ -96,7 +96,6 @@ fn help_lists_command_forms() -> Result<(), Box<dyn Error>> {
 #[test]
 fn other_arguments_are_usage_errors() -> Result<(), Box<dyn Error>> {
     let cases: &[&[&str]] = &[
-        &[],
         &["--unknown"],
         &["exec"],
         &["sessions", "--unknown"],
@@ -112,6 +111,42 @@ fn other_arguments_are_usage_errors() -> Result<(), Box<dyn Error>> {
         assert_eq!(error.lines().count(), 1, "{args:?}: {error}");
         assert!(error.starts_with("benitoiteh: "), "{error}");
         assert!(error.ends_with('\n'), "{error}");
+    }
+    Ok(())
+}
+
+// 端末でないときは設定とセッションに触る前に拒む。誤った引数だけの検査では届かない。
+#[test]
+fn interactive_requires_terminals_before_creating_data_and_rejects_exec_options()
+-> Result<(), Box<dyn Error>> {
+    for args in [
+        vec![],
+        vec!["request"],
+        vec!["--json"],
+        vec!["--output-last-message", "result"],
+        vec!["-"],
+        vec!["--approval", "on-request"],
+    ] {
+        let directory = TestDirectory::new("interactive")?;
+        let output = Command::new(env!("CARGO_BIN_EXE_benitoiteh"))
+            .args(&args)
+            .env("HOME", directory.0.join("missing-home"))
+            .env("XDG_CONFIG_HOME", directory.0.join("missing-config"))
+            .env("XDG_DATA_HOME", directory.0.join("missing-data"))
+            .current_dir(&directory.0)
+            .output()?;
+        assert_eq!(output.status.code(), Some(2));
+        assert!(output.stdout.is_empty());
+        let message = String::from_utf8(output.stderr)?;
+        assert_eq!(message.lines().count(), 1);
+        if args.is_empty() || args == ["request"] {
+            assert!(message.contains("use benitoiteh exec"), "{message}");
+        } else if args == ["--approval", "on-request"] {
+            assert!(message.contains("P4-07"), "{message}");
+        } else {
+            assert!(message.contains("invalid arguments"), "{message}");
+        }
+        assert_eq!(fs::read_dir(&directory.0)?.count(), 0);
     }
     Ok(())
 }

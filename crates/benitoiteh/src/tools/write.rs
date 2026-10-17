@@ -36,11 +36,17 @@ pub(super) fn execute(
 
 pub(super) fn output(path: &str, before: &str, after: &str) -> ToolOutput {
     let mut output = ToolOutput::success(text::wrote(path, after.lines().count()));
-    output.display = Some(
-        similar::TextDiff::from_lines(before, after)
-            .unified_diff()
-            .header(path, path)
-            .to_string(),
-    );
+    let diff = similar::TextDiff::from_lines(before, after);
+    let mut added = 0usize;
+    let mut deleted = 0usize;
+    for change in diff.iter_all_changes() {
+        match change.tag() {
+            similar::ChangeTag::Insert => added = added.saturating_add(1),
+            similar::ChangeTag::Delete => deleted = deleted.saturating_add(1),
+            similar::ChangeTag::Equal => {}
+        }
+    }
+    output.screen = Some(text::screen_diff(added, deleted));
+    output.display = Some(diff.unified_diff().header(path, path).to_string());
     output
 }

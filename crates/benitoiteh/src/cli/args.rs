@@ -42,6 +42,8 @@ pub struct DeferredOptions {
 /// P1 の exec が使う明示的な指定。既定の値は config で解決する。
 #[derive(Clone, Debug)]
 pub struct ExecArgs {
+    /// 対話の形では依頼を省略できる。
+    pub interactive: bool,
     pub resume: Option<String>,
     pub continue_session: bool,
     pub sandbox: Option<Sandbox>,
@@ -65,6 +67,8 @@ pub struct ExecArgs {
 pub enum ArgsError {
     /// 知らない引数、欠けた値、または不正な値。
     Invalid,
+    /// 確認の画面は P4-07 で使える。
+    InteractiveApproval,
     /// 同じオプションを二度指定した。
     Duplicate(String),
     /// 解釈したが、まだ使えないオプション。
@@ -77,6 +81,7 @@ pub enum ArgsError {
 impl fmt::Display for ArgsError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            Self::InteractiveApproval => f.write_str(text::INTERACTIVE_APPROVAL),
             Self::Invalid => f.write_str(text::INVALID_ARGUMENTS),
             Self::Duplicate(option) => f.write_str(&text::duplicate_option(option)),
             Self::Unavailable { option, .. } => f.write_str(&text::unavailable_option(option)),
@@ -88,7 +93,22 @@ impl std::error::Error for ArgsError {}
 impl ExecArgs {
     /// `exec` の後ろだけを渡して解釈する。パスの値は非 UTF-8 でも保つ。
     pub fn parse(args: impl IntoIterator<Item = impl Into<OsString>>) -> Result<Self, ArgsError> {
+        Self::parse_mode(args, false)
+    }
+
+    /// 対話の形の引数を解釈し、非対話専用と後続作業の指定を拒む。
+    pub fn parse_interactive(
+        args: impl IntoIterator<Item = impl Into<OsString>>,
+    ) -> Result<Self, ArgsError> {
+        Self::parse_mode(args, true)
+    }
+
+    fn parse_mode(
+        args: impl IntoIterator<Item = impl Into<OsString>>,
+        interactive: bool,
+    ) -> Result<Self, ArgsError> {
         let mut result = Self {
+            interactive,
             resume: None,
             continue_session: false,
             sandbox: None,
@@ -237,7 +257,34 @@ impl ExecArgs {
         if result.resume.is_some() && result.continue_session {
             return Err(ArgsError::Invalid);
         }
-        result.request = request.ok_or(ArgsError::Invalid)?;
+        if interactive {
+            if result.json
+                || result.output_last_message.is_some()
+                || request == Some(Request::Stdin)
+            {
+                return Err(ArgsError::Invalid);
+            }
+            if result.resume.is_some() || result.continue_session {
+                return Err(ArgsError::Unavailable {
+                    option: if result.resume.is_some() {
+                        "--resume"
+                    } else {
+                        "--continue"
+                    }
+                    .into(),
+                    values: Box::new(deferred),
+                });
+            }
+            if result
+                .approval
+                .is_some_and(|value| value != Approval::Never)
+            {
+                return Err(ArgsError::InteractiveApproval);
+            }
+            result.request = request.unwrap_or(Request::Text(String::new()));
+        } else {
+            result.request = request.ok_or(ArgsError::Invalid)?;
+        }
         Ok(result)
     }
 }
