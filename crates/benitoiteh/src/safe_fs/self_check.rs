@@ -19,17 +19,18 @@ pub fn verify_platform_support(temporary_root: &Path) -> Result<(), SafeFsError>
     fs::write(root_path.join("inside"), b"inside")?;
     let scope = ScopeRoot::open(&root_path)?;
     // Linux で openat2 が ENOSYS の場合も、この正の確認を通らず起動を止める。
+    // 検査中に FIFO に差し替わっても待たない（設計書 01-03「道具の定義の共通の規則」）。
     let _inside = os::open(
         &scope.directory,
         Path::new("inside"),
-        OFlags::RDONLY,
+        OFlags::RDONLY | OFlags::NONBLOCK,
         Mode::empty(),
     )?;
     // ScopeRelPath の構文検査で先に拒否せず、OS 自身の拒否を確かめる。
     match os::open(
         &scope.directory,
         Path::new("../outside"),
-        OFlags::RDONLY,
+        OFlags::RDONLY | OFlags::NONBLOCK,
         Mode::empty(),
     ) {
         Err(SafeFsError::OutsideScope) => {}

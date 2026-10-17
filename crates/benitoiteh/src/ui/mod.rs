@@ -44,6 +44,19 @@ impl ExecOutput {
 
     /// JSON では全イベントを、端末では道具・確認・診断だけを示す。
     pub fn event(&mut self, event: &AgentEvent) -> io::Result<()> {
+        if let AgentEvent::SessionStart {
+            instruction_files,
+            skipped_instructions,
+            ..
+        } = event
+        {
+            for path in instruction_files {
+                Self::diagnostic(&text::instruction_loaded(path))?;
+            }
+            for skipped in skipped_instructions {
+                Self::diagnostic(&text::instruction_skipped(&skipped.path, &skipped.reason))?;
+            }
+        }
         if self.json {
             return json_line(event);
         }

@@ -686,3 +686,170 @@ fn invalid_project_configuration_is_reported_and_noninteractive_confirmation_is_
     server.shutdown()?;
     Ok(())
 }
+
+#[test]
+fn exec_sends_displays_and_records_instructions_and_reads_legacy_records() -> TestResult {
+    // 起動での収集忘れ、イベントへの転記漏れ、JSON と端末での表示漏れを入口で捕まえる。
+    // 除外の個々の条件は context 側で確かめる（設計書 07-01「持ち主の境界」）。
+    for json_output in [false, true] {
+        let protocol = Protocol::Chat;
+        let mut server = MockProvider::start(vec![ResponseScript::sse(
+            protocol.response(None, "Done.", false),
+        )])?;
+        let f = Fixture::new(protocol, &server)?;
+        fs::write(f.root.join("project/.git"), "worktree")?;
+        fs::write(f.root.join("project/AGENTS.md"), "project <& instruction")?;
+        fs::create_dir(f.root.join("project/sub"))?;
+        let skipped_path = f.root.join("project/sub/AGENTS.md");
+        fs::create_dir(&skipped_path)?;
+        let user_path = f.root.join("config/benitoiteh/AGENTS.md");
+        fs::write(&user_path, "user instruction")?;
+        let expected_paths = json!([user_path, f.root.join("project/AGENTS.md")]);
+        let mut command = f.command("Use project instructions.");
+        command
+            .args(["--mode", "normal"])
+            .current_dir(f.root.join("project/sub"));
+        if json_output {
+            command.arg("--json");
+        }
+        let output = Running::start(&mut command)?.finish()?;
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        server.shutdown()?;
+        let (directory, mut records) = f.records()?;
+        let start = records
+            .iter()
+            .find(|value| value.get("type") == Some(&json!("session_start")))
+            .ok_or("missing session_start")?;
+        assert_eq!(start.get("instruction_files"), Some(&expected_paths));
+        let exclusions = start
+            .get("skipped_instructions")
+            .and_then(Value::as_array)
+            .ok_or("missing exclusions")?;
+        assert_eq!(exclusions.len(), 1);
+        let skipped = exclusions.first().ok_or("missing exclusion diagnostic")?;
+        assert_eq!(skipped.get("path"), Some(&json!(skipped_path)));
+        assert!(
+            skipped
+                .get("reason")
+                .and_then(Value::as_str)
+                .is_some_and(|reason| reason.contains("regular file"))
+        );
+        if json_output {
+            let events = lines(&output.stdout)?;
+            assert_eq!(events.first(), Some(start));
+        }
+        let stderr = std::str::from_utf8(&output.stderr)?;
+        for path in [user_path, f.root.join("project/AGENTS.md")] {
+            assert!(
+                stderr
+                    .lines()
+                    .any(|line| line == format!("Instruction file loaded: {}", path.display()))
+            );
+        }
+        assert!(stderr.lines().any(|line| line.starts_with(&format!(
+            "Instruction file skipped: {}:",
+            skipped_path.display()
+        ))));
+        let requests = server.requests()?;
+        let body = &requests.first().ok_or("missing request")?.body;
+        let messages = body
+            .get("messages")
+            .and_then(Value::as_array)
+            .ok_or("missing messages")?;
+        let environment = messages
+            .iter()
+            .filter_map(|message| message.get("content").and_then(Value::as_array))
+            .flatten()
+            .filter_map(|part| part.get("text").and_then(Value::as_str))
+            .find(|content| content.contains("<environment>"))
+            .ok_or("missing environment")?;
+        assert!(environment.contains("project &lt;&amp; instruction</project_instructions>"));
+        assert!(
+            environment
+                .find("user instruction")
+                .ok_or("missing user instructions")?
+                < environment
+                    .find("project &lt;&amp; instruction")
+                    .ok_or("missing project instructions")?
+        );
+        assert_eq!(
+            records.first().and_then(|value| value.get("format")),
+            Some(&json!(1))
+        );
+        assert_eq!(
+            benitoiteh::session::read_records(&directory)?.len(),
+            records.len()
+        );
+        // 新しい欄がない旧形式を、実際の JSON Lines の読み手で読む。
+        for record in &mut records {
+            if record.get("type") == Some(&json!("session_start")) {
+                let object = record.as_object_mut().ok_or("invalid record")?;
+                object.remove("instruction_files");
+                object.remove("skipped_instructions");
+            }
+        }
+        let legacy = records
+            .iter()
+            .map(serde_json::to_string)
+            .collect::<Result<Vec<_>, _>>()?
+            .join("\n")
+            + "\n";
+        fs::write(directory.join("session.jsonl"), legacy)?;
+        let restored = benitoiteh::session::read_records(&directory)?;
+        assert!(restored.iter().any(|record| matches!(record,
+            benitoiteh::session::Record::SessionStart { instruction_files, skipped_instructions, .. }
+                if instruction_files.is_empty() && skipped_instructions.is_empty())));
+        let start = restored
+            .iter()
+            .find(|record| matches!(record, benitoiteh::session::Record::SessionStart { .. }))
+            .ok_or("missing restored start")?;
+        let serialized = serde_json::to_value(start)?;
+        assert!(serialized.get("instruction_files").is_none());
+        assert!(serialized.get("skipped_instructions").is_none());
+    }
+    Ok(())
+}
+
+#[test]
+fn exec_does_not_wait_for_instruction_fifo() -> TestResult {
+    // FIFO の拒否は、起動を待ち続ける失敗も捕まえるため、時間上限付きの入口で守る。
+    let protocol = Protocol::Chat;
+    let mut server = MockProvider::start(vec![ResponseScript::sse(
+        protocol.response(None, "Done.", false),
+    )])?;
+    let f = Fixture::new(protocol, &server)?;
+    let candidate = f.root.join("project/AGENTS.md");
+    assert!(
+        Command::new("mkfifo")
+            .arg(&candidate)
+            .current_dir(&f.root)
+            .status()?
+            .success()
+    );
+    let mut command = f.command("Report skipped instructions.");
+    command.args(["--mode", "normal", "--json"]);
+    let output = Running::start(&mut command)?.finish()?;
+    assert!(output.status.success());
+    let events = lines(&output.stdout)?;
+    let start = events.first().ok_or("missing session_start")?;
+    assert!(start.get("instruction_files").is_none());
+    let skipped = start
+        .get("skipped_instructions")
+        .and_then(Value::as_array)
+        .ok_or("missing exclusions")?;
+    assert_eq!(skipped.len(), 1);
+    let skipped = skipped.first().ok_or("missing FIFO exclusion")?;
+    assert_eq!(skipped.get("path"), Some(&json!(candidate)));
+    assert!(
+        skipped
+            .get("reason")
+            .and_then(Value::as_str)
+            .is_some_and(|reason| reason.contains("regular file"))
+    );
+    server.shutdown()?;
+    Ok(())
+}

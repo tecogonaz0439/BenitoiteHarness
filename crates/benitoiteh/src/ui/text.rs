@@ -27,3 +27,13 @@ pub fn approval(summary: &str, decision: ApprovalOutcome) -> String {
 pub fn error(message: &str) -> String {
     format!("benitoiteh: {message}")
 }
+
+/// 文脈に入れた指示の探索時のパスを示す。
+pub fn instruction_loaded(path: &std::path::Path) -> String {
+    format!("Instruction file loaded: {}", path.display())
+}
+
+/// 読まなかった指示と除外理由を示す。
+pub fn instruction_skipped(path: &std::path::Path, reason: &str) -> String {
+    format!("Instruction file skipped: {}: {reason}", path.display())
+}

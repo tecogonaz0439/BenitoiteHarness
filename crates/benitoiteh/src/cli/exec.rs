@@ -14,7 +14,7 @@ use crate::config::credentials::CredentialError;
 use crate::config::paths::DataPaths;
 use crate::config::writable::{WritableError, validate_writable};
 use crate::config::{ConfigError, Mode, ProjectConfig, ReadConfig, UserConfig};
-use crate::context::{ContextError, Environment};
+use crate::context::{ContextError, Environment, instructions};
 use crate::provider::{AssistantPart, Item};
 use crate::safe_fs::{self, SafeFsError, ScopeRoot};
 use crate::session::{self, Record, Session, SessionError, SessionId};
@@ -111,6 +111,18 @@ fn prepare(args: &ExecArgs) -> Result<Prepared, StartupError> {
         &ReadConfig::default(),
     )
     .map_err(StartupError::Tools)?;
+    let instructions = if resolved.mode == Mode::Normal {
+        let home = std::fs::canonicalize(&paths.home).map_err(StartupError::Io)?;
+        instructions::collect(
+            resolved.mode,
+            root.real_path(),
+            &paths.instructions_file,
+            &home,
+            &exclude,
+        )
+    } else {
+        instructions::ProjectInstructions::default()
+    };
     let context = ToolContext::new(
         resolved.mode,
         root,
@@ -126,7 +138,8 @@ fn prepare(args: &ExecArgs) -> Result<Prepared, StartupError> {
         false,
         now,
     )
-    .map_err(StartupError::Context)?;
+    .map_err(StartupError::Context)?
+    .with_project_instructions(instructions);
     let agent = Agent::new(
         resolved.into(),
         key.map(|key| key.expose_secret().to_owned())

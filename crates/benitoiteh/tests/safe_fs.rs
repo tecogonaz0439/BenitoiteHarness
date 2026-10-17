@@ -534,3 +534,71 @@ fn metadata_listing_link_operations_and_deletion_do_not_follow_final_links() -> 
     ));
     Ok(())
 }
+
+// 作成時の関門: FIFO の相手を待つ退行を、safe_fs の公開操作で時間内の完了として検出する。
+// exec 側だけでは write_target の待ちを捕まえられない。内部の関数の公開は増やさない
+// （設計書 01-03「道具の定義の共通の規則」「書く道具のパスの規則」）。
+fn check_fifo_without_waiting(write: bool) -> TestResult {
+    use std::os::unix::fs::FileTypeExt;
+    use std::sync::mpsc;
+    use std::thread;
+    use std::time::Duration;
+
+    let fixture = Fixture::new(if write { "fifo-write" } else { "fifo-metadata" })?;
+    let path = fixture.root().join("pipe");
+    #[cfg(target_os = "linux")]
+    rustix::fs::mkfifoat(rustix::fs::CWD, &path, rustix::fs::Mode::RWXU)?;
+    #[cfg(target_os = "macos")]
+    {
+        // rustix 1.1.5 は Apple 向けに mkfifoat を公開しないため、OS の道具で作る。
+        assert!(
+            std::process::Command::new("mkfifo")
+                .arg(&path)
+                .current_dir(&fixture.0)
+                .status()?
+                .success()
+        );
+    }
+    let scope = fixture.scope()?;
+    let relative = rel("pipe")?;
+    let (sender, receiver) = mpsc::channel();
+    let worker = thread::spawn(move || {
+        let result = if write {
+            match scope.write(&relative, b"must not replace FIFO", false) {
+                Err(SafeFsError::NotRegularFile) => Ok(()),
+                other => Err(format!("Expected NotRegularFile, got {other:?}")),
+            }
+        } else {
+            scope
+                .metadata(&relative)
+                .map_err(|error| error.to_string())
+                .and_then(|metadata| {
+                    if metadata.file_type().is_fifo() {
+                        Ok(())
+                    } else {
+                        Err("Expected FIFO metadata".to_owned())
+                    }
+                })
+        };
+        let _sent = sender.send(result);
+    });
+    // scoped thread の終了待ちは使わず、待った場合もテストを時間内に失敗させる。
+    // 相手を開いて待ちを解消すると、NONBLOCK がなくても通ってしまうため開かない。
+    let result = receiver.recv_timeout(Duration::from_secs(5))?;
+    worker
+        .join()
+        .map_err(|_| io::Error::other("FIFO worker panicked"))?;
+    result.map_err(io::Error::other)?;
+    assert!(fs::symlink_metadata(&path)?.file_type().is_fifo());
+    Ok(())
+}
+
+#[test]
+fn fifo_metadata_returns_without_waiting_for_a_peer() -> TestResult {
+    check_fifo_without_waiting(false)
+}
+
+#[test]
+fn fifo_write_rejection_returns_without_waiting_for_a_peer() -> TestResult {
+    check_fifo_without_waiting(true)
+}

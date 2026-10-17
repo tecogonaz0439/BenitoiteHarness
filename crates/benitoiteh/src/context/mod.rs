@@ -1,6 +1,7 @@
 //! 会話の前に置く固定の文脈と環境の情報を組み立てる（設計書 01-04「文脈の構成」）。
 
 mod environment;
+pub mod instructions;
 mod text;
 
 #[cfg(test)]

@@ -5,7 +5,9 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::config::Mode;
 
+use super::instructions::{InstructionFile, ProjectInstructions};
 use super::{ContextError, text};
+use crate::session::SkippedInstruction;
 
 /// 最初の依頼の前、または変化の後に置く環境の情報。
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -17,6 +19,7 @@ pub struct Environment {
     writable_roots: Vec<String>,
     network_allowed: bool,
     benitoite_version: &'static str,
+    instructions: ProjectInstructions,
 }
 
 impl Environment {
@@ -41,7 +44,24 @@ impl Environment {
                 .collect::<Result<_, _>>()?,
             network_allowed,
             benitoite_version: text::NOT_CONFIGURED,
+            instructions: ProjectInstructions::default(),
         })
+    }
+
+    /// 起動時に集めた指示と除外理由を環境の情報に加える。
+    pub fn with_project_instructions(mut self, instructions: ProjectInstructions) -> Self {
+        self.instructions = instructions;
+        self
+    }
+
+    /// 開始の通知に使う、読んだ指示の一覧。
+    pub fn project_instructions(&self) -> &[InstructionFile] {
+        &self.instructions.files
+    }
+
+    /// 開始の通知に使う、読まなかった指示とその理由。
+    pub fn skipped_instructions(&self) -> &[SkippedInstruction] {
+        &self.instructions.skipped
     }
 
     /// セッションの最初の利用者の発言に含める全文。
@@ -65,7 +85,11 @@ impl Environment {
             }) {
                 continue;
             }
-            lines.push(format!("<{name}>{}</{name}>", escape(&value)));
+            if name == "project_instructions" {
+                lines.push(value);
+            } else {
+                lines.push(format!("<{name}>{}</{name}>", escape(&value)));
+            }
         }
         if lines.is_empty() {
             None
@@ -77,8 +101,8 @@ impl Environment {
         }
     }
 
-    fn fields(&self) -> [(&'static str, String); 7] {
-        [
+    fn fields(&self) -> Vec<(&'static str, String)> {
+        let mut fields = vec![
             ("project_directory", self.project.clone()),
             ("os", self.os.into()),
             ("date_utc", self.date_utc.clone()),
@@ -90,7 +114,18 @@ impl Environment {
             ),
             ("network", text::network(self.network_allowed).into()),
             ("benitoite_version", self.benitoite_version.into()),
-        ]
+        ];
+        fields.extend(self.instructions.files.iter().map(|file| {
+            (
+                "project_instructions",
+                format!(
+                    "<project_instructions path=\"{}\">{}</project_instructions>",
+                    escape_attribute(&file.path.to_string_lossy()),
+                    escape(&file.contents),
+                ),
+            )
+        }));
+        fields
     }
 }
 
@@ -108,6 +143,10 @@ fn escape(value: &str) -> String {
         .replace('&', "&amp;")
         .replace('<', "&lt;")
         .replace('>', "&gt;")
+}
+
+fn escape_attribute(value: &str) -> String {
+    escape(value).replace('"', "&quot;")
 }
 
 fn utc_date(now: SystemTime) -> Result<String, ContextError> {
