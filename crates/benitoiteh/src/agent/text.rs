@@ -7,8 +7,7 @@ pub const RUN_CANCELLED: &str =
     "The run was cancelled. Effects of tools that already ran have not been undone.";
 pub const TURN_LIMIT: &str = "The run reached the maximum number of turns.";
 pub const TOKEN_LIMIT: &str = "The run reached the maximum number of tokens.";
-pub const CONTEXT_OVERFLOW: &str =
-    "The provider reported a context overflow. Context compaction is not implemented in P1.";
+pub const CONTEXT_OVERFLOW: &str = "The provider reported a context overflow. The conversation could not be reduced enough to continue.";
 pub const INVALID_CONFIGURATION: &str =
     "The agent configuration does not match its tool context or provider URL.";
 pub const CHANNEL_CLOSED: &str = "The agent event receiver was closed.";
@@ -28,5 +27,33 @@ pub fn repeated(count: u64) -> String {
     };
     format!(
         "[note: this is the {ordinal} identical call. Its result will not change unless something else changes. Try a different approach.]"
+    )
+}
+
+pub const COMPACTION_FAILED: &str =
+    "Conversation compaction failed. The conversation has not been changed.";
+pub const RECENT_RETAINED: &str =
+    "The most recent part of the conversation will remain verbatim after the summary.";
+
+pub fn omitted_items(count: usize) -> String {
+    format!(
+        "The oldest {count} items were omitted from the conversation below to fit the context limit."
+    )
+}
+
+pub fn omitted_bytes(count: usize) -> String {
+    format!("\n[... {count} bytes omitted ...]\n")
+}
+
+pub fn additional_instructions(instructions: &str) -> String {
+    format!("\n\nAdditional instructions from the user:\n{instructions}")
+}
+
+pub const OMITTED_PREVIOUS_SUMMARY: &str =
+    "The previous compacted summary was omitted to fit the context limit.";
+
+pub fn summary_scope(items: usize) -> String {
+    format!(
+        "Summarize any previous compacted summary and the user's request and steering text in the first user message, together with the next {items} conversation items after that message. Exclude environment information."
     )
 }

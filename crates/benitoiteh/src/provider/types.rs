@@ -77,6 +77,8 @@ pub enum UserPartKind {
     Request,
     /// 処理の途中の操縦。
     Steering,
+    /// 圧縮で作った要約。利用者の依頼には数えない。
+    Summary,
 }
 
 /// 応答の写しと、同じ送り先へ戻すための元の項目。

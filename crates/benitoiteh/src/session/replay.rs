@@ -88,6 +88,7 @@ pub fn replay(directory: &Path) -> Result<Conversation, SessionError> {
             }
             Record::Compaction {
                 conversation: compacted,
+                ..
             } => {
                 conversation = compacted.clone();
                 starts.clear();

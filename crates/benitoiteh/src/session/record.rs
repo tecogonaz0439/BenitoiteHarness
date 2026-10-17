@@ -96,6 +96,8 @@ pub enum ApprovalOutcome {
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct Summary {
     pub turns: u64,
+    #[serde(default)]
+    pub compactions: u64,
     pub tool_calls: BTreeMap<String, u64>,
     pub checks: u64,
     pub fixes: u64,
@@ -128,6 +130,11 @@ impl Summary {
     /// 応答を数え、報告された量だけ合計する。
     pub fn add_turn(&mut self, usage: &Usage) {
         self.turns = self.turns.saturating_add(1);
+        self.add_usage(usage);
+    }
+
+    /// 要約の要求など、番を増やさずに使用量だけを足す。
+    pub fn add_usage(&mut self, usage: &Usage) {
         self.tokens.input = self
             .tokens
             .input
@@ -273,7 +280,39 @@ pub enum Record {
     /// 後の段階で使う、残す会話の項目数と記録時点。
     Rewind { items: usize, checkpoint: String },
     /// 圧縮後の会話を起点として保持する。後続の行だけをこの後へ加える。
-    Compaction { conversation: Conversation },
+    Compaction {
+        conversation: Conversation,
+        #[serde(default)]
+        reason: CompactionReason,
+        #[serde(default)]
+        summarized_items: usize,
+        #[serde(default)]
+        kept_items: usize,
+    },
     /// 行の上限を超えた記録の JSON の分割保存先。読み手が元の Record に戻す。
     Spilled { parts: Vec<PathBuf> },
+}
+
+/// 記録とイベントで共有する圧縮の理由。
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CompactionReason {
+    /// 番の前の見積もりが閾値を超えた。
+    #[default]
+    Threshold,
+    /// 利用者が圧縮を求めた。
+    Manual,
+    /// 提供者が文脈の超過を返した。
+    Overflow,
+}
+
+impl CompactionReason {
+    /// 画面にも記録と同じ綴りを示す。
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Threshold => "threshold",
+            Self::Manual => "manual",
+            Self::Overflow => "overflow",
+        }
+    }
 }

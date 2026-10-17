@@ -1,5 +1,7 @@
 //! 模擬 HTTP 提供者と本物の道具・記録をつなぐループの契約（設計書 07-01「持ち主の境界」）。
 
+#[path = "agent_loop/compaction.rs"]
+mod compaction;
 mod support;
 
 use std::error::Error;
@@ -618,34 +620,58 @@ fn retry_after_and_backoff_keep_request_identical_then_accept_success() -> TestR
 }
 
 #[test]
-fn authentication_and_context_overflow_stop_without_retry() -> TestResult {
-    for (status, code, expected_kind) in [
-        (401, "invalid_api_key", "provider"),
-        (400, "context_length_exceeded", "context_overflow"),
-    ] {
+fn authentication_stops_and_initial_context_overflow_summarizes_the_first_request() -> TestResult {
+    for authentication in [false, true] {
         let f = Fixture::new()?;
-        let mut server = MockProvider::start(vec![ResponseScript::json(
-            status,
-            &json!({"error":{"code":code,"message":"synthetic-agent-key"}}),
-        )?])?;
+        let mut scripts = vec![ResponseScript::json(
+            if authentication { 401 } else { 400 },
+            &json!({"error":{"code":if authentication {"invalid_api_key"} else {"context_length_exceeded"},"message":"synthetic-agent-key"}}),
+        )?];
+        if !authentication {
+            scripts.push(ResponseScript::sse(chat(
+                &json!({"content":"first request summary"}),
+                "stop",
+                true,
+            )));
+            scripts.push(final_text());
+        }
+        let mut server = MockProvider::start(scripts)?;
         let (mut agent, directory) = f.agent(f.config(&server, AdapterKind::OpenAiChat))?;
         let (report, events) = complete(&mut agent)?;
-        assert_eq!(report.outcome, Outcome::Failed);
-        assert_eq!(server.requests()?.len(), 1);
-        assert!(!events.iter().any(|e| matches!(e, AgentEvent::Retry { .. })));
-        assert!(
-            events
-                .iter()
-                .any(|e| matches!(e, AgentEvent::Error { kind, .. } if kind == expected_kind))
+        assert_eq!(
+            report.outcome,
+            if authentication {
+                Outcome::Failed
+            } else {
+                Outcome::Completed
+            }
         );
-        if status == 400 {
+        assert_eq!(server.requests()?.len(), if authentication { 1 } else { 3 });
+        assert!(!events.iter().any(|e| matches!(e, AgentEvent::Retry { .. })));
+        if authentication {
             assert!(
-                report
-                    .summary
-                    .reason
-                    .contains("compaction is not implemented")
+                events
+                    .iter()
+                    .any(|e| matches!(e, AgentEvent::Error { kind, .. } if kind == "provider"))
             );
+        } else {
+            assert!(events.iter().any(|e| matches!(
+                e,
+                AgentEvent::Compaction {
+                    reason: benitoiteh::agent::CompactionReason::Overflow,
+                    summarized_items: 1,
+                    ..
+                }
+            )));
+            let requests = server.requests()?;
+            let text = requests
+                .get(1)
+                .and_then(|r| r.body.pointer("/messages/1/content/0/text"))
+                .and_then(Value::as_str)
+                .ok_or("missing first request transcript")?;
+            assert!(text.contains("[User]\nRead and update the project."));
         }
+        assert_eq!(replay(&directory)?, *agent.conversation());
         assert!(
             !fs::read_to_string(directory.join("session.jsonl"))?.contains("synthetic-agent-key")
         );

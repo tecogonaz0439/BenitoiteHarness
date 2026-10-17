@@ -74,6 +74,12 @@ impl ExecOutput {
             AgentEvent::ApprovalResult {
                 summary, decision, ..
             } => Some(text::approval(summary, *decision)),
+            AgentEvent::Compaction {
+                reason,
+                summarized_items,
+                kept_items,
+                ..
+            } => Some(text::compaction(*reason, *summarized_items, *kept_items)),
             AgentEvent::Error { message, .. } => Some(text::error(message)),
             AgentEvent::SessionEnd { outcome, reason }
                 if *outcome == crate::agent::Outcome::Cancelled =>
@@ -85,7 +91,6 @@ impl ExecOutput {
             | AgentEvent::ReasoningDelta { .. }
             | AgentEvent::ApprovalRequest { .. }
             | AgentEvent::TurnEnd { .. }
-            | AgentEvent::Compaction
             | AgentEvent::Retry { .. }
             | AgentEvent::SessionEnd { .. } => None,
         };
