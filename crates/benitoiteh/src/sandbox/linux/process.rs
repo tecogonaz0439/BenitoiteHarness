@@ -9,6 +9,7 @@ use std::os::unix::net::UnixStream;
 use std::path::Path;
 use std::process::{Child, Command, ExitStatus, Output, Stdio};
 
+use super::availability::{CapabilityStatus, check_bubblewrap};
 use super::mounts::{self, Cleanup};
 use crate::sandbox::run::StopSignal;
 use crate::sandbox::{SandboxCommand, SandboxError, SandboxStdin, policy, text};
@@ -48,6 +49,9 @@ impl SandboxCommand {
         scratch: &Path,
         placeholders: &Path,
     ) -> Result<PreparedSandbox, SandboxError> {
+        if check_bubblewrap() != CapabilityStatus::Available {
+            return Err(SandboxError::Unavailable);
+        }
         policy::canonical_path(&self.program)?;
         policy::canonical_path(&self.cwd)?;
         policy::directory(&self.cwd)?;

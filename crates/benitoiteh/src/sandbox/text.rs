@@ -66,3 +66,28 @@ pub const INVALID_PLACEHOLDERS: &str = "The placeholders directory must be a rea
 #[cfg(target_os = "linux")]
 pub const WRITABLE_PLACEHOLDERS: &str =
     "The placeholders directory must be outside every writable root.";
+
+#[cfg(target_os = "linux")]
+pub const SETUID_BUBBLEWRAP: &str = "/usr/bin/bwrap must not have the setuid bit set.";
+#[cfg(target_os = "linux")]
+pub const CAPABILITIES: &str = "capabilities";
+#[cfg(target_os = "linux")]
+pub const REMAINING_CAPABILITIES: &str = "The sandbox helper must have empty effective, permitted, inheritable and ambient capability sets.";
+
+#[cfg(target_os = "linux")]
+/// 版の不一致と、受け取った標準出力を診断に残す。
+pub fn bubblewrap_version(stdout: &[u8]) -> String {
+    format!(
+        "Expected exactly one 'bubblewrap X.Y.Z' line with a newline and version 0.8.0 or newer; received {:?}.",
+        String::from_utf8_lossy(stdout)
+    )
+}
+
+#[cfg(target_os = "linux")]
+/// 版の確認の異常終了と、受け取った標準エラー出力を示す。
+pub fn bubblewrap_version_failed(status: std::process::ExitStatus, stderr: &[u8]) -> String {
+    format!(
+        "/usr/bin/bwrap --version failed with {status}; stderr: {:?}.",
+        String::from_utf8_lossy(stderr)
+    )
+}

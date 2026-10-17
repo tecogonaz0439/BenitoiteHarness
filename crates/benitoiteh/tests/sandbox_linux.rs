@@ -193,6 +193,27 @@ fn kernel_landlock_and_seccomp_are_available() -> TestResult {
     Ok(())
 }
 
+// 作成時の関門: 引数の並びだけでは bubblewrap が特権を本当に外したか確かめられない。
+// 同じテストを podman の root でも走らせ、--cap-drop ALL の欠落を検出する。
+#[test]
+fn sandbox_program_has_no_capabilities() -> TestResult {
+    let f = Fixture::new()?;
+    let output = f.command(f.config(), &[OsStr::new("caps")])?.output()?;
+    check(&output, 0, "capability sets after helper setup");
+    let stdout = std::str::from_utf8(&output.stdout)?;
+    println!("{stdout}");
+    let fields: BTreeMap<_, _> = stdout
+        .lines()
+        .filter_map(|line| line.split_once(':'))
+        .map(|(key, value)| (key, value.trim()))
+        .collect();
+    for field in ["CapInh", "CapPrm", "CapEff", "CapAmb"] {
+        assert_eq!(fields.get(field), Some(&"0000000000000000"), "{stdout}");
+    }
+    assert!(fields.contains_key("CapBnd"), "{stdout}");
+    Ok(())
+}
+
 // 作成時の関門: 内容とディレクトリの一覧の両方を拒む契約。兄弟と symlink の別名も試す。
 #[test]
 fn reading_excludes_secrets_and_confines_readable_roots() -> TestResult {

@@ -76,6 +76,8 @@ pub(super) fn build(
             "--disable-userns",
             "--new-session",
             "--die-with-parent",
+            "--cap-drop",
+            "ALL",
         ]
         .into_iter()
         .map(OsString::from)

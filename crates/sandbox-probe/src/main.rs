@@ -87,6 +87,19 @@ fn run(operation: &OsStr, args: &[OsString]) -> io::Result<Option<u8>> {
         ("rename", [from, to]) => fs::rename(from, to),
         ("hardlink", [from, to]) => fs::hard_link(from, to),
         #[cfg(target_os = "linux")]
+        ("caps", []) => {
+            let status = fs::read_to_string("/proc/self/status")?;
+            let mut stdout = io::stdout().lock();
+            for line in status.lines().filter(|line| {
+                text::CAPABILITY_FIELDS
+                    .iter()
+                    .any(|field| line.starts_with(field))
+            }) {
+                writeln!(stdout, "{line}")?;
+            }
+            Ok(())
+        }
+        #[cfg(target_os = "linux")]
         ("umount", [path]) => {
             rustix::mount::unmount(path, rustix::mount::UnmountFlags::empty()).map_err(Into::into)
         }

@@ -20,6 +20,7 @@ use std::path::Path;
 use std::process::{Command, ExitCode};
 
 use rustix::fs::RawDir;
+use rustix::thread::{CapabilitySet, CapabilitySets};
 
 use super::{PolicyConfig, SandboxError, SandboxPolicy, policy, text};
 
@@ -99,6 +100,7 @@ fn prepare_and_run(
     policy::canonical_path(Path::new(&program)).map_err(|e| failure(text::POLICY, e))?;
     let control = control::receive_stdin().map_err(|e| failure(text::DESCRIPTORS, e))?;
     check_descriptors(control.as_raw_fd()).map_err(|e| failure(text::DESCRIPTORS, e))?;
+    check_capabilities()?;
     rustix::thread::set_no_new_privs(true).map_err(|e| failure(text::NO_NEW_PRIVS, e))?;
     filesystem::restrict(&policy, required)?;
     let filter =
@@ -112,6 +114,40 @@ fn prepare_and_run(
         .spawn()
         .map_err(|e| failure(text::EXEC, e))?;
     control::supervise(control, child)
+}
+
+fn check_capabilities() -> Result<(), SandboxError> {
+    let sets = rustix::thread::capabilities(None).map_err(|e| failure(text::CAPABILITIES, e))?;
+    let mut ambient = CapabilitySet::empty();
+    // 番号を順に照会し、カーネルが知らない番号で終える。クレートがまだ名前を
+    // 持たない特権も検出し、照会自体の失敗でも目的のプログラムを動かさない。
+    // （設計書 03-02「サンドボックスの掛け方」）
+    for bit in 0..u64::BITS {
+        let capability = CapabilitySet::from_bits_retain(1_u64 << bit);
+        match rustix::thread::capability_is_in_ambient_set(capability) {
+            Ok(true) => ambient.insert(capability),
+            Ok(false) => {}
+            Err(rustix::io::Errno::INVAL)
+                if bit > CapabilitySet::CHECKPOINT_RESTORE.bits().trailing_zeros() =>
+            {
+                break;
+            }
+            Err(error) => return Err(failure(text::CAPABILITIES, error)),
+        }
+    }
+    check_capability_sets(sets, ambient)
+}
+
+fn check_capability_sets(sets: CapabilitySets, ambient: CapabilitySet) -> Result<(), SandboxError> {
+    if sets.effective.is_empty()
+        && sets.permitted.is_empty()
+        && sets.inheritable.is_empty()
+        && ambient.is_empty()
+    {
+        Ok(())
+    } else {
+        Err(failure(text::CAPABILITIES, text::REMAINING_CAPABILITIES))
+    }
 }
 
 fn check_descriptors(control: i32) -> io::Result<()> {
@@ -135,4 +171,53 @@ fn check_descriptors(control: i32) -> io::Result<()> {
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    //! 一般利用者では作れない特権の残存を拒む契約（設計書 03-02「サンドボックスの掛け方」）。
+
+    use super::*;
+
+    // 作成時の関門: root でない統合試験では、どの集合の確認を落としても空のまま通る。
+    // 本番でも使う集合の判定で、それぞれ単独の残存と未知のビットを拒むことを確かめる。
+    #[test]
+    fn helper_rejects_each_nonempty_capability_set() -> Result<(), SandboxError> {
+        let empty = CapabilitySet::empty();
+        check_capability_sets(
+            CapabilitySets {
+                effective: empty,
+                permitted: empty,
+                inheritable: empty,
+            },
+            empty,
+        )?;
+        for capability in [
+            CapabilitySet::DAC_OVERRIDE,
+            CapabilitySet::from_bits_retain(1_u64 << 63),
+        ] {
+            for [effective, permitted, inheritable, ambient] in [
+                [capability, empty, empty, empty],
+                [empty, capability, empty, empty],
+                [empty, empty, capability, empty],
+                [empty, empty, empty, capability],
+            ] {
+                assert!(matches!(
+                    check_capability_sets(
+                        CapabilitySets {
+                            effective,
+                            permitted,
+                            inheritable,
+                        },
+                        ambient
+                    ),
+                    Err(SandboxError::Setup {
+                        stage: text::CAPABILITIES,
+                        ..
+                    })
+                ));
+            }
+        }
+        Ok(())
+    }
 }

@@ -12,3 +12,6 @@ pub const ECHO_STDERR: &str = "echo stderr\n";
 pub const EXTRA_DESCRIPTOR: &str = "Unexpected inherited descriptor.";
 #[cfg(target_os = "linux")]
 pub const CONTROL_ACCESS: &str = "The helper control descriptors are accessible.";
+
+#[cfg(target_os = "linux")]
+pub const CAPABILITY_FIELDS: [&str; 5] = ["CapInh:", "CapPrm:", "CapEff:", "CapBnd:", "CapAmb:"];
