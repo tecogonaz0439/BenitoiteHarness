@@ -77,7 +77,7 @@ Gemini の API の専用のアダプタ（ADR 0340 の E）と、Sign in with Ch
 - ストリームの各行は `event:` の名前と、同じ名前を `type` に持つ `data:` の JSON から成り、`:` で始まる注釈の行を含みうる。終わりは `response.completed`・`response.incomplete`・`response.failed` のイベントで知り、Chat Completions の `[DONE]` の行はない（OpenAPI の定義の例）。`error` のイベントは誤りとして扱う。
 - 使ったトークンの量は、最後の応答の `usage`（`input_tokens`、`input_tokens_details.cached_tokens`・`cache_write_tokens`、`output_tokens`、`output_tokens_details.reasoning_tokens`）から取る。キャッシュから読んだ量は入力の内数として扱う（前述の「共通の形」）。キャッシュの文書は、当たりの率を、キャッシュから読んだ量を入力の量で割って求めるとしている。
 - 終わりの理由は、`status` と `incomplete_details.reason` から作る。`max_output_tokens` は出力の上限、`content_filter` は拒否とする。応答の文の部分が `refusal` の形のときも拒否とする。
-- HTTP の状態が 500 と 503 のときと、429 のうち回数の上限によるものは、やり直せる誤りとして扱い、`Retry-After` があれば少なくともその時間を待つ。429 のうち、利用の上限や支払いに関わるもの（`credit_balance_exhausted` などの符号）は、やり直さない。誤りの符号の文書は、支払い、使う額、割り当ての誤りをやり直しても使えるようにならないと書いている。
+- HTTP の状態が 500〜599 のときと、429 のうち回数の上限によるもの（`slow_down` など）は、やり直せる誤りとして扱い、`Retry-After` があれば少なくともその時間を待つ。429 のうち、利用の上限や支払いに関わるもの（`credit_balance_exhausted`・`organization_spend_limit_exceeded`・`project_spend_limit_exceeded`・`organization_usage_limit_exceeded` の符号と、`insufficient_quota`）は、やり直さない。誤りの符号の文書は、支払い、使う額、割り当ての誤りをやり直しても使えるようにならないと書いている。
 
 ### OpenAI の Chat Completions API
 
