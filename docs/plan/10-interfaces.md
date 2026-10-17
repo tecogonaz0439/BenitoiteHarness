@@ -104,6 +104,7 @@ P0-04 で作った型: 方針の入力 `PolicyConfig`（`readable: ReadAccess`�
   - `SandboxChild`: `child_mut`、`wait`、`wait_with_output`。塞ぐために作らせた空のディレクトリと覆いのファイルは、子の終了を確かめた後にだけ片付ける。`Drop` では片付けない。
   - `probe_linux(helper: &Path, scratch: &Path) -> Result<LinuxAvailability, SandboxError>`。`LinuxAvailability` は `bubblewrap`・`user_namespaces`・`landlock_v3`・`seccomp` の欄を持ち、値は `CapabilityStatus`（`Available`・`Unavailable(String)`・`NotChecked`）である。
   - 方針の検査は、`protected_names` に綴りどおりの `.git` と `.benitoiteh` を含むことを求める。
+  - P2-04 で、`check_bubblewrap() -> CapabilityStatus`（setuid の印がなく、版が 0.8.0 以上か。プロセスの中で一度だけ求める）を加えた。`probe_linux` と `prepare` の両方が使い、`prepare` は使えなければ `SandboxError::Unavailable` を返す。
 - `SandboxPolicy` の中のパスは正規の形（`std::fs::canonicalize` の結果。macOS の `/var` は `/private/var`）とし、作るときに確かめる。理由: Seatbelt は正規の形のパスで照合するので、`/var/folders` の形では規則が当たらない。
 - `SandboxError`: 方針の誤り、掛けられない、補助のプロセスの段階ごとの失敗。
 - P2-01 で、子プロセスの実行の部分 `benitoiteh::sandbox::run` を加えた。道具が子プロセスを動かすときは、この部分を通す。
