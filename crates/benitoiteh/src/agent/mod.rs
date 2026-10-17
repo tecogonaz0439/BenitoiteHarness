@@ -213,7 +213,7 @@ impl Agent {
             system_prompt_sha256: context::system_prompt_hash(&system.system_prompt),
             tools_sha256: context::tool_definitions_hash(&system.tools)?,
         }))?;
-        let approval_policy = ApprovalPolicy {
+        let mut approval_policy = ApprovalPolicy {
             approval: Approval::Never,
             sandbox: match config.mode {
                 Mode::Normal => Sandbox::WorkspaceWrite,
@@ -221,6 +221,10 @@ impl Agent {
             },
             sandboxed: true,
         };
+        if let Some(shell) = &tool_context.shell {
+            approval_policy.sandbox = shell.sandbox;
+            approval_policy.sandboxed = shell.policy.is_some();
+        }
         Ok(Self {
             config,
             adapter,
@@ -247,6 +251,10 @@ impl Agent {
     pub fn with_approvals(mut self, approver: Box<dyn Approver>, policy: ApprovalPolicy) -> Self {
         self.approver = approver;
         self.approval_policy = policy;
+        if let Some(shell) = &self.tool_context.shell {
+            self.approval_policy.sandbox = shell.sandbox;
+            self.approval_policy.sandboxed = shell.policy.is_some();
+        }
         self
     }
 

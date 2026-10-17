@@ -7,6 +7,7 @@ pub const READ: (&str, &str) = prompt_parts(include_str!("../../prompts/tools/re
 pub const GLOB: (&str, &str) = prompt_parts(include_str!("../../prompts/tools/glob.md"));
 pub const GREP: (&str, &str) = prompt_parts(include_str!("../../prompts/tools/grep.md"));
 pub const WRITE: (&str, &str) = prompt_parts(include_str!("../../prompts/tools/write.md"));
+pub const BASH: (&str, &str) = prompt_parts(include_str!("../../prompts/tools/bash.md"));
 pub const EDIT: (&str, &str) = prompt_parts(include_str!("../../prompts/tools/edit.md"));
 
 // 最初の一行を説明、残りを規則として同じファイルから取り出す。
@@ -52,6 +53,10 @@ pub const DATA_DIRECTORY: &str = "benitoiteh data directory (except this session
 
 pub fn argument(name: &str) -> &'static str {
     match name {
+        "command" => "Shell command to run in the project directory.",
+        "timeout" => "Time limit in seconds (1-600; default 120).",
+        "escalate" => "Request execution outside the sandbox for this call.",
+        "justification" => "Reason for requesting execution outside the sandbox.",
         "path" => "Project-relative or absolute path.",
         "pattern" => "Pattern to match.",
         "offset" => "First line to read (1-based).",
@@ -67,8 +72,13 @@ pub fn argument(name: &str) -> &'static str {
         _ => "Argument value.",
     }
 }
-pub fn unknown_tool(name: &str) -> String {
-    format!("Unknown tool {name:?}. Use read, glob, grep, write, or edit.")
+pub fn unknown_tool(name: &str, definitions: &[super::ToolDefinition]) -> String {
+    let names = definitions
+        .iter()
+        .map(|tool| tool.id.name())
+        .collect::<Vec<_>>()
+        .join(", ");
+    format!("Unknown tool {name:?}. Available tools: {names}.")
 }
 pub fn unknown_argument(name: &str) -> String {
     format!("Unknown argument {name:?}.")
@@ -155,4 +165,56 @@ pub fn numbered(line: usize, contents: &str) -> String {
 }
 pub fn matched(path: &str, line: usize, contents: &str) -> String {
     format!("{path}:{line}:{contents}")
+}
+
+pub const BASH_CONTEXT: &str =
+    "Shell execution context or session is unavailable. Restart the session before retrying.";
+pub const BASH_TIMEOUT: &str =
+    "timeout must be an integer from 1 to 600 seconds. Correct the timeout and retry.";
+pub const BASH_CANCELLED: &str =
+    "[The command was stopped because the user cancelled the tool call.]";
+pub const BASH_LEFTOVERS: &str = "[Processes started by the command may still be running.]";
+pub const BASH_SANDBOX: &str = "[sandbox: the command may have been blocked by the sandbox. If it must run outside the sandbox, call bash again with escalate=true and a justification; the user will be asked.]";
+pub fn bash_failure(error: &dyn std::fmt::Display) -> String {
+    format!(
+        "Could not execute the command safely: {error}. Check the execution environment before retrying."
+    )
+}
+pub fn bash_approval(command: &str, escalate: bool) -> String {
+    let scope = if escalate {
+        "outside the sandbox"
+    } else {
+        "with the selected sandbox policy"
+    };
+    format!("Run this command {scope}: {command}")
+}
+pub fn bash_exit(code: i32) -> String {
+    format!("[exit code: {code}]")
+}
+pub fn bash_timed_out(seconds: u64) -> String {
+    format!("[The command timed out after {seconds} seconds and was stopped.]")
+}
+pub fn bash_truncated(
+    first: usize,
+    last: usize,
+    total: usize,
+    saved: Option<(&crate::session::SpillInfo, &std::path::Path)>,
+) -> String {
+    let location = match saved {
+        Some((info, directory)) => {
+            let path = directory.join(&info.path);
+            if info.discarded_bytes == 0 {
+                format!("Full output: {}", path.display())
+            } else {
+                format!(
+                    "Partial output (first {} of {} bytes): {}",
+                    info.written_bytes,
+                    info.written_bytes.saturating_add(info.discarded_bytes),
+                    path.display()
+                )
+            }
+        }
+        None => "Full output was not saved.".to_owned(),
+    };
+    format!("[Showing last lines {first}-{last} of {total}. {location}]")
 }

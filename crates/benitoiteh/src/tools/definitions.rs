@@ -49,9 +49,9 @@ pub fn repair_and_validate(spec: &ToolSpec, arguments: &mut Value) -> Result<(),
     Ok(())
 }
 
-pub(super) fn definitions() -> Vec<ToolDefinition> {
+pub(super) fn definitions(mode: crate::config::Mode) -> Vec<ToolDefinition> {
     use ArgumentType::{Boolean, Integer, String};
-    vec![
+    let mut tools = vec![
         definition(
             ToolId::Read,
             text::READ,
@@ -103,7 +103,22 @@ pub(super) fn definitions() -> Vec<ToolDefinition> {
             ],
             false,
         ),
-    ]
+    ];
+    if mode == crate::config::Mode::Normal {
+        tools.push(definition(
+            ToolId::Bash,
+            text::BASH,
+            &[text::BASH.1],
+            vec![
+                arg("command", String, true),
+                arg("timeout", Integer, false),
+                arg("escalate", Boolean, false),
+                arg("justification", String, false),
+            ],
+            false,
+        ));
+    }
+    tools
 }
 
 fn definition(

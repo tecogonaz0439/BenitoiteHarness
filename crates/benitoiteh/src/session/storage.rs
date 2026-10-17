@@ -102,6 +102,22 @@ pub struct SpillWriter {
 }
 
 impl SpillWriter {
+    /// 書き手を閉じ、不要になった出力を保持したディレクトリから消す。
+    pub fn discard(self) -> Result<(), SessionError> {
+        let name = self
+            .info
+            .path
+            .file_name()
+            .ok_or(SessionError::Invalid(text::INVALID_SPILL))?;
+        drop(self.file);
+        rustix::fs::unlinkat(
+            &self._session.inner.spill,
+            name,
+            rustix::fs::AtFlags::empty(),
+        )?;
+        Ok(())
+    }
+
     pub(super) fn open(session: Session, tool_id: &str) -> Result<Self, SessionError> {
         // 未検証の ID をパスの要素にせず、同じ ID の出力を上書きしない。
         // （設計書 01-03「道具の定義の共通の規則」）。
@@ -123,13 +139,22 @@ impl SpillWriter {
 
     /// 超過があったときだけ、保存量と捨てた量を末尾に付けて書き終える。
     pub fn finish(mut self) -> Result<SpillInfo, SessionError> {
+        let result = self.finish_output();
+        if let Err(error) = result {
+            let _removed = self.discard();
+            return Err(error);
+        }
+        Ok(self.info)
+    }
+
+    fn finish_output(&mut self) -> Result<(), SessionError> {
         if self.info.discarded_bytes != 0 {
             self.file.write_all(
                 text::spill_footer(self.info.written_bytes, self.info.discarded_bytes).as_bytes(),
             )?;
         }
         self.file.flush()?;
-        Ok(self.info)
+        Ok(())
     }
 }
 

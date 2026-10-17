@@ -14,7 +14,7 @@ set -euo pipefail
 
 # Linux のサンドボックスは bubblewrap を使う（設計書 03-02「サンドボックスの掛け方」）ので、alpine に入れたイメージで走らせる。
 base_image=docker.io/library/alpine:3.22
-image=localhost/benitoiteh-test:alpine-3.22-bwrap
+image=localhost/benitoiteh-test:alpine-3.22-bwrap-bash
 target=x86_64-unknown-linux-musl
 host=${BENITOITEH_X86_64_HOST:?BENITOITEH_X86_64_HOST is required}
 remote_dir=${BENITOITEH_X86_64_DIR:?BENITOITEH_X86_64_DIR is required}
@@ -36,7 +36,7 @@ rsync_ssh="ssh ${ssh_opts[*]}"
 if [[ "$1" == --sync ]]; then
     ssh "${ssh_opts[@]}" "$host" "mkdir -p $(printf '%q' "$remote_dir$repo_root")"
     image_dir=$(printf '%q' "$remote_dir/image")
-    ssh "${ssh_opts[@]}" "$host" "podman image exists $image || { mkdir -p $image_dir && printf 'FROM %s\\nRUN apk add --no-cache bubblewrap\\n' $base_image > $image_dir/Containerfile && podman build -q -t $image $image_dir; }"
+    ssh "${ssh_opts[@]}" "$host" "podman image exists $image || { mkdir -p $image_dir && printf 'FROM %s\\nRUN apk add --no-cache bubblewrap bash\\n' $base_image > $image_dir/Containerfile && podman build -q -t $image $image_dir; }"
     rsync -a --delete --exclude=/target/ --exclude=/.git/ -e "$rsync_ssh" \
         "$repo_root/" "$host:$remote_dir$repo_root/"
     executables=()

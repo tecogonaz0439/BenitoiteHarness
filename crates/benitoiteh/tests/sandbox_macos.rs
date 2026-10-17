@@ -2,6 +2,9 @@
 
 #![cfg(target_os = "macos")]
 
+#[path = "support/bash_sandbox.rs"]
+mod bash_sandbox;
+
 use std::collections::BTreeMap;
 use std::error::Error;
 use std::ffi::{OsStr, OsString};

@@ -1,5 +1,6 @@
 //! 道具の検証と実行をまとめ、範囲と結果の上限を守る（設計書 01-03「道具の定義の共通の規則」）。
 
+mod bash;
 mod definitions;
 mod edit;
 pub mod exclude;
@@ -19,6 +20,7 @@ use std::io;
 use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
 use serde_json::Value;
 
@@ -27,6 +29,7 @@ use crate::config::{Approval, Mode, Sandbox};
 use crate::provider::ToolSpec;
 use crate::safe_fs::{SafeFsError, ScopeRoot};
 use crate::sandbox::SandboxPolicy;
+use crate::session::{Session, SpillInfo};
 use exclude::ExcludeRules;
 
 /// セッション中に順序を変えない道具の識別子。
@@ -42,6 +45,8 @@ pub enum ToolId {
     Write,
     /// 文字列の置き換え。
     Edit,
+    /// 通常モードのシェルのコマンド。
+    Bash,
 }
 
 impl ToolId {
@@ -53,6 +58,7 @@ impl ToolId {
             Self::Grep => "grep",
             Self::Write => "write",
             Self::Edit => "edit",
+            Self::Bash => "bash",
         }
     }
 }
@@ -102,14 +108,22 @@ impl ValidatedCall {
 pub struct ToolSet {
     mode: Mode,
     definitions: Vec<ToolDefinition>,
+    direct_id: AtomicU64,
+}
+
+/// JSON から独立した呼び出しの識別子と取り消しの印。
+pub struct Invocation<'a> {
+    pub call_id: &'a str,
+    pub cancelled: &'a AtomicBool,
 }
 
 impl ToolSet {
-    /// P1 の両モードで同じ五つを、決まった順序で用意する。
+    /// モードで許す道具を、決まった順序で用意する。
     pub fn new(mode: Mode) -> Self {
         Self {
             mode,
-            definitions: definitions::definitions(),
+            definitions: definitions::definitions(mode),
+            direct_id: AtomicU64::new(0),
         }
     }
 
@@ -137,7 +151,9 @@ impl ToolSet {
             .definitions
             .iter()
             .find(|tool| tool.spec.name == name)
-            .ok_or_else(|| ToolError::InvalidArguments(text::unknown_tool(name)))?;
+            .ok_or_else(|| {
+                ToolError::InvalidArguments(text::unknown_tool(name, &self.definitions))
+            })?;
         repair_and_validate(&tool.spec, &mut arguments)?;
         Ok(ValidatedCall {
             id: tool.id,
@@ -148,7 +164,15 @@ impl ToolSet {
     /// JSON の道具呼び出しを検証して実行する、持ち主の境界。
     pub fn execute(&self, context: &ToolContext, name: &str, arguments: Value) -> ToolOutput {
         match self.validate(name, arguments) {
-            Ok(call) => self.execute_validated(context, &call, ApprovalStatus::Unapproved),
+            Ok(call) => self.execute_validated(
+                context,
+                &call,
+                ApprovalStatus::Unapproved,
+                Invocation {
+                    call_id: &format!("direct-{}", self.direct_id.fetch_add(1, Ordering::Relaxed)),
+                    cancelled: &AtomicBool::new(false),
+                },
+            ),
             Err(error) => ToolOutput::error(error.to_string()),
         }
     }
@@ -159,6 +183,7 @@ impl ToolSet {
         context: &ToolContext,
         call: &ValidatedCall,
         approval: ApprovalStatus,
+        invocation: Invocation<'_>,
     ) -> ToolOutput {
         if self.mode != context.mode {
             return ToolOutput::error(text::MODE_MISMATCH);
@@ -169,6 +194,7 @@ impl ToolSet {
             ToolId::Grep => search::grep(context, &call.arguments).map(ToolOutput::success),
             ToolId::Write => write::execute(context, &call.arguments, approval),
             ToolId::Edit => edit::execute(context, &call.arguments, approval),
+            ToolId::Bash => bash::execute(context, &call.arguments, approval, invocation),
         };
         match result {
             Ok(output) => output,
@@ -236,6 +262,7 @@ pub struct ToolContext {
     pub spill: ScopeRoot,
     pub exclude: ExcludeRules,
     pub shell: Option<ShellContext>,
+    pub session: Option<Session>,
     read_versions: Mutex<BTreeMap<PathBuf, FileVersion>>,
 }
 
@@ -255,6 +282,7 @@ impl ToolContext {
             spill,
             exclude,
             shell: None,
+            session: None,
             read_versions: Mutex::new(BTreeMap::new()),
         }
     }
@@ -262,6 +290,12 @@ impl ToolContext {
     /// 通常モードの起動時に検査した子プロセスの情報を追加する。
     pub fn with_shell(mut self, shell: ShellContext) -> Self {
         self.shell = Some(shell);
+        self
+    }
+
+    /// 子プロセスの出力を保存するセッションを設定する。
+    pub fn with_session(mut self, session: Session) -> Self {
+        self.session = Some(session);
         self
     }
 
@@ -305,6 +339,7 @@ pub struct ToolOutput {
     pub is_error: bool,
     pub display: Option<String>,
     pub approval: Option<ApprovalRequest>,
+    pub spill: Option<SpillInfo>,
 }
 
 impl ToolOutput {
@@ -315,6 +350,7 @@ impl ToolOutput {
             is_error: false,
             display: None,
             approval: None,
+            spill: None,
         }
     }
 
@@ -333,6 +369,7 @@ impl ToolOutput {
             approval: Some(request),
             is_error: false,
             display: None,
+            spill: None,
         }
     }
 }

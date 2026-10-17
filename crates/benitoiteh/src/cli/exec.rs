@@ -217,7 +217,8 @@ fn prepare(
         ScopeRoot::open(session.temporary_dir()).map_err(StartupError::SafeFs)?,
         ScopeRoot::open(&spill).map_err(StartupError::SafeFs)?,
         exclude,
-    );
+    )
+    .with_session(session.clone());
     let approval_policy = shell.as_ref().map(|shell| ApprovalPolicy {
         approval: shell.approval,
         sandbox: shell.sandbox,

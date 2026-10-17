@@ -9,7 +9,7 @@ use std::time::{Duration, SystemTime};
 use benitoiteh::config::{Mode, ReadConfig, paths::DataPaths};
 use benitoiteh::safe_fs::ScopeRoot;
 use benitoiteh::tools::exclude::ExcludeRules;
-use benitoiteh::tools::{ApprovalStatus, FileVersion, ToolContext, ToolSet};
+use benitoiteh::tools::{ApprovalStatus, FileVersion, Invocation, ToolContext, ToolSet};
 use serde_json::{Value, json};
 
 type TestResult = Result<(), Box<dyn Error>>;
@@ -327,9 +327,15 @@ fn normal_mode_requests_approval_before_any_mutation_and_accepts_trusted_approva
             );
         }
         let call = f.tools.validate("write", args("write", json!(path)))?;
-        let output = f
-            .tools
-            .execute_validated(&f.context, &call, ApprovalStatus::Approved);
+        let output = f.tools.execute_validated(
+            &f.context,
+            &call,
+            ApprovalStatus::Approved,
+            Invocation {
+                call_id: "write-test",
+                cancelled: &std::sync::atomic::AtomicBool::new(false),
+            },
+        );
         assert!(
             !output.is_error && output.approval.is_none(),
             "{}",
@@ -340,9 +346,15 @@ fn normal_mode_requests_approval_before_any_mutation_and_accepts_trusted_approva
             "edit",
             json!({"path":path, "old_string":"after", "new_string":"approved"}),
         )?;
-        let output = f
-            .tools
-            .execute_validated(&f.context, &call, ApprovalStatus::Approved);
+        let output = f.tools.execute_validated(
+            &f.context,
+            &call,
+            ApprovalStatus::Approved,
+            Invocation {
+                call_id: "write-test",
+                cancelled: &std::sync::atomic::AtomicBool::new(false),
+            },
+        );
         assert!(!output.is_error, "{}", output.text);
         assert_eq!(fs::read(&path)?, b"approved\n");
     }

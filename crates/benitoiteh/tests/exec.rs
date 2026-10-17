@@ -995,3 +995,77 @@ fn exec_rejects_normal_options_in_restricted_mode_and_interactive_approval() -> 
     }
     Ok(())
 }
+
+// 作成時の関門: exec が ToolContext に Session を渡し忘れる退行と、
+// 設定で参照した提供者のキーが子へ漏れる退行を、入口と記録の境界で捕まえる。
+#[test]
+fn exec_bash_connects_session_and_preserves_spill_metadata_without_provider_keys() -> TestResult {
+    let protocol = Protocol::Chat;
+    let mut server = MockProvider::start(vec![
+        ResponseScript::sse(protocol.response(
+            Some(("large", "bash", json!({"command":"cat input"}))),
+            "",
+            false,
+        )),
+        ResponseScript::sse(protocol.response(
+            Some(("env", "bash", json!({"command":"env"}))),
+            "",
+            false,
+        )),
+        ResponseScript::sse(protocol.response(None, "Done.", false)),
+    ])?;
+    let f = Fixture::new(protocol, &server)?;
+    let all = (1..=2001)
+        .map(|n| format!("line-{n}\n"))
+        .collect::<String>();
+    fs::write(f.root.join("project/input"), &all)?;
+    let mut command = f.command("Run the commands.");
+    command.args([
+        "--mode",
+        "normal",
+        "--sandbox",
+        "danger-full-access",
+        "--json",
+    ]);
+    let output = Running::start(&mut command)?.finish()?;
+    assert_eq!(
+        output.status.code(),
+        Some(0),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let events = lines(&output.stdout)?;
+    assert_eq!(
+        events
+            .iter()
+            .filter(|e| e.get("type") == Some(&json!("tool_result")))
+            .count(),
+        2
+    );
+    let (directory, records) = f.records()?;
+    let results = records
+        .iter()
+        .filter(|r| r.get("type") == Some(&json!("tool_result")))
+        .collect::<Vec<_>>();
+    assert_eq!(results.len(), 2);
+    let large = results.first().ok_or("missing bash result")?;
+    assert_eq!(large.pointer("/result/is_error"), Some(&json!(false)));
+    let path = large
+        .pointer("/spill/path")
+        .and_then(Value::as_str)
+        .ok_or("missing spill path")?;
+    assert_eq!(fs::read_to_string(directory.join(path))?, all);
+    let env = results.get(1).ok_or("missing environment result")?;
+    let text = env
+        .pointer("/result/text")
+        .and_then(Value::as_str)
+        .ok_or("missing environment text")?;
+    assert!(text.ends_with("[exit code: 0]"), "{text}");
+    assert!(
+        !text.contains("BENITOITEH_EXEC_TEST_KEY") && !text.contains(KEY),
+        "{text}"
+    );
+    assert!(env.get("spill").is_none_or(Value::is_null));
+    server.shutdown()?;
+    Ok(())
+}
