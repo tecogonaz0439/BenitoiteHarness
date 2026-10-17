@@ -262,6 +262,25 @@ fn exec_resolution_applies_options_project_user_and_defaults_in_order() -> TestR
 #[test]
 fn credential_references_resolve_real_environment_and_commands_without_disclosing_keys()
 -> TestResult {
+    use benitoiteh::config::credentials::{ApiKey, CredentialError};
+
+    fn resolve_script_key(reference: &ApiKeyRef) -> Result<ApiKey, CredentialError> {
+        let mut retries = 50_u32;
+        loop {
+            match reference.resolve() {
+                Err(CredentialError::Spawn(error))
+                    if error.kind() == io::ErrorKind::ExecutableFileBusy && retries > 0 =>
+                {
+                    // 並行する fork が書き込みの記述子を一時的に持つ競合だけを待つ。
+                    // 回数を限り、ほかの起動失敗やキーの解決の誤りはそのまま返す。
+                    retries = retries.saturating_sub(1);
+                    std::thread::sleep(std::time::Duration::from_millis(10));
+                }
+                result => return result,
+            }
+        }
+    }
+
     let fixture = Fixture::new()?;
     let key = ApiKeyRef::Env("PATH".to_owned()).resolve()?;
     assert!(key.expose_secret() == std::env::var("PATH")?);
@@ -277,14 +296,16 @@ fn credential_references_resolve_real_environment_and_commands_without_disclosin
         "sample-secret".to_owned(),
     ]);
     assert!(!format!("{reference:?}").contains("sample-secret"));
-    let key = reference.resolve()?;
+    let key = resolve_script_key(&reference)?;
     assert!(key.expose_secret() == "sample-secret");
     assert!(!format!("{key:?}").contains("sample-secret"));
     let script = fixture.script(
         "failure",
         "printf 'sample-secret\\n'\nprintf 'lookup failed for sample-secret\\n' >&2\nexit 9\n",
     )?;
-    let result = ApiKeyRef::Command(vec![script.to_string_lossy().into_owned()]).resolve();
+    let result = resolve_script_key(&ApiKeyRef::Command(vec![
+        script.to_string_lossy().into_owned(),
+    ]));
     let error = result
         .err()
         .ok_or_else(|| io::Error::from(io::ErrorKind::InvalidData))?;
@@ -294,11 +315,12 @@ fn credential_references_resolve_real_environment_and_commands_without_disclosin
         assert!(diagnostic.contains('9'));
     }
     let script = fixture.script("empty", "printf '\\nsecret-on-second-line\\n'\n")?;
-    assert!(
-        ApiKeyRef::Command(vec![script.to_string_lossy().into_owned()])
-            .resolve()
-            .is_err()
-    );
+    assert!(matches!(
+        resolve_script_key(&ApiKeyRef::Command(vec![
+            script.to_string_lossy().into_owned(),
+        ])),
+        Err(CredentialError::Output)
+    ));
     Ok(())
 }
 
