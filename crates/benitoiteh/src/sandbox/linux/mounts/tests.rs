@@ -80,6 +80,8 @@ fn mount_order_keeps_masks_after_writable_roots() -> TestResult {
             "--disable-userns",
             "--new-session",
             "--die-with-parent",
+            "--cap-drop",
+            "ALL",
         ]
         .map(OsString::from)
         .to_vec();
@@ -173,6 +175,8 @@ fn gitdir_and_custom_protection_use_the_same_mount_precedence() -> TestResult {
         "--disable-userns",
         "--new-session",
         "--die-with-parent",
+        "--cap-drop",
+        "ALL",
         "--unshare-net",
         "--ro-bind",
         "/",

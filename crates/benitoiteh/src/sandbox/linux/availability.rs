@@ -3,8 +3,10 @@
 use std::collections::BTreeMap;
 use std::fs::{self, DirBuilder};
 use std::io;
-use std::os::unix::fs::DirBuilderExt;
+use std::os::unix::fs::{DirBuilderExt, PermissionsExt};
 use std::path::Path;
+use std::process::{Command, Stdio};
+use std::sync::OnceLock;
 
 use crate::sandbox::{
     PolicyConfig, SandboxCommand, SandboxError, SandboxPolicy, SandboxStdin, policy, text,
@@ -34,9 +36,85 @@ pub struct LinuxAvailability {
     pub seccomp: CapabilityStatus,
 }
 
+/// 固定の bubblewrap の権限と版を確認し、プロセス内で結果を共有する。
+pub(super) fn check_bubblewrap() -> CapabilityStatus {
+    static STATUS: OnceLock<CapabilityStatus> = OnceLock::new();
+    // 制限モードの prepare も同じ確認を通し、プロセス内の結果を共用する。
+    // （設計書 03-02「サンドボックスの掛け方」）
+    STATUS
+        .get_or_init(|| {
+            let metadata = match fs::metadata("/usr/bin/bwrap") {
+                Ok(metadata) => metadata,
+                Err(error) => return CapabilityStatus::Unavailable(error.to_string()),
+            };
+            let mode = check_bubblewrap_mode(metadata.permissions().mode());
+            if mode != CapabilityStatus::Available {
+                return mode;
+            }
+            let output = match Command::new("/usr/bin/bwrap")
+                .arg("--version")
+                .env_clear()
+                .stdin(Stdio::null())
+                .stdout(Stdio::piped())
+                .stderr(Stdio::piped())
+                .output()
+            {
+                Ok(output) => output,
+                Err(error) => return CapabilityStatus::Unavailable(error.to_string()),
+            };
+            if !output.status.success() {
+                return CapabilityStatus::Unavailable(text::bubblewrap_version_failed(
+                    output.status,
+                    &output.stderr,
+                ));
+            }
+            check_bubblewrap_version(&output.stdout)
+        })
+        .clone()
+}
+
+fn check_bubblewrap_mode(mode: u32) -> CapabilityStatus {
+    if mode & 0o4000 != 0 {
+        CapabilityStatus::Unavailable(text::SETUID_BUBBLEWRAP.to_owned())
+    } else {
+        CapabilityStatus::Available
+    }
+}
+
+fn check_bubblewrap_version(stdout: &[u8]) -> CapabilityStatus {
+    let version = (|| {
+        let line = std::str::from_utf8(stdout)
+            .ok()?
+            .strip_suffix('\n')?
+            .strip_prefix("bubblewrap ")?;
+        let mut components = line.split('.');
+        let mut component = || {
+            let value = components.next()?;
+            if value.is_empty() || !value.bytes().all(|byte| byte.is_ascii_digit()) {
+                return None;
+            }
+            value.parse::<u32>().ok()
+        };
+        let version = (component()?, component()?, component()?);
+        if components.next().is_some() {
+            return None;
+        }
+        Some(version)
+    })();
+    if version.is_some_and(|version| version >= (0, 8, 0)) {
+        CapabilityStatus::Available
+    } else {
+        CapabilityStatus::Unavailable(text::bubblewrap_version(stdout))
+    }
+}
+
 /// 一時ディレクトリだけを書ける場所として、補助の実行ファイル自身を `--version` で起動する。
 /// `scratch` は一時ディレクトリを排他に作れる、実の絶対パスのディレクトリ。
 pub fn probe_linux(helper: &Path, scratch: &Path) -> Result<LinuxAvailability, SandboxError> {
+    let bubblewrap = check_bubblewrap();
+    if bubblewrap != CapabilityStatus::Available {
+        return Ok(bubblewrap_failure(bubblewrap));
+    }
     policy::canonical_path(scratch)?;
     policy::directory(scratch)?;
     let mut random = [0; 16];
@@ -79,8 +157,12 @@ pub fn probe_linux(helper: &Path, scratch: &Path) -> Result<LinuxAvailability, S
 }
 
 fn spawn_failure(error: io::Error) -> LinuxAvailability {
+    bubblewrap_failure(CapabilityStatus::Unavailable(error.to_string()))
+}
+
+fn bubblewrap_failure(bubblewrap: CapabilityStatus) -> LinuxAvailability {
     LinuxAvailability {
-        bubblewrap: CapabilityStatus::Unavailable(error.to_string()),
+        bubblewrap,
         user_namespaces: CapabilityStatus::NotChecked,
         landlock_v3: CapabilityStatus::NotChecked,
         seccomp: CapabilityStatus::NotChecked,
@@ -125,6 +207,62 @@ fn classify(code: Option<i32>, stderr: &str) -> Result<LinuxAvailability, Sandbo
 mod tests {
     //! 起動の誤りを別の機能の失敗と誤診しない契約（実装プラン P0-07）。
     use super::*;
+
+    // 作成時の関門: 配布物を置き換える差し込み口を作らず、版と setuid の拒否を確かめる。
+    // 実機の統合試験だけでは古い版や不正な出力の受理、辞書順での比較を検出できない。
+    #[test]
+    fn bubblewrap_requires_a_supported_release_without_setuid() {
+        use CapabilityStatus::{Available, Unavailable};
+        for output in [
+            b"bubblewrap 0.12.0\n".as_slice(),
+            b"bubblewrap 0.8.0\n",
+            b"bubblewrap 0.10.0\n",
+            b"bubblewrap 1.0.0\n",
+            b"bubblewrap 4294967295.4294967295.4294967295\n",
+        ] {
+            assert_eq!(check_bubblewrap_version(output), Available, "{output:?}");
+        }
+        for output in [
+            b"bubblewrap 0.7.9\n".as_slice(),
+            b"bubblewrap 0.11.0-rc1\n",
+            b"bubblewrap 0.11\n",
+            b"bubblewrap 0.11.0.1\n",
+            b"bwrap 0.11.0\n",
+            b"bubblewrap  0.11.0\n",
+            b"bubblewrap 0.99999999999.0\n",
+            b"bubblewrap 0.4294967296.0\n",
+            b"bubblewrap 0.11.0\nextra\n",
+            b"bubblewrap 0.11.0\n\n",
+            b"bubblewrap 0.11.0",
+            b"bubblewrap 0.11.0\r\n",
+            b"bubblewrap 0.11.0 \n",
+            b"bubblewrap +0.11.0\n",
+            b"bubblewrap 0..0\n",
+            b"bubblewrap 0.11.\n",
+            b"bubblewrap \xff.11.0\n",
+            b"",
+        ] {
+            let status = check_bubblewrap_version(output);
+            assert!(
+                matches!(status, Unavailable(ref reason) if reason.contains(&format!("{:?}", String::from_utf8_lossy(output)))),
+                "{output:?}: {status:?}"
+            );
+        }
+        for (mode, available) in [
+            (0o100755, true),
+            (0o100775, true),
+            (0o102755, true),
+            (0o104755, false),
+            (0o104700, false),
+            (0o106755, false),
+        ] {
+            assert_eq!(
+                check_bubblewrap_mode(mode) == Available,
+                available,
+                "{mode:o}"
+            );
+        }
+    }
 
     // 作成時の関門: 本物の機械では再現できない欠落と、後の項目を未確認にする契約。
     #[test]
