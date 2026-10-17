@@ -1,6 +1,9 @@
 //! 端末から独立した対話の画面と、入力・イベントの接続（設計書 05-02）。
 
+mod commands;
 mod confirmation;
+mod selection;
+pub use commands::{Command, NewSession};
 mod control;
 pub mod history;
 pub use confirmation::ConfirmationGuard;
@@ -58,10 +61,23 @@ pub struct Screen {
     rows_below: u16,
     confirmation: Option<confirmation::Confirmation>,
     confirmation_result: Option<bool>,
-    followups: VecDeque<String>,
+    followups: VecDeque<SubmittedInput>,
+    original_submission: Option<String>,
     history_file: Option<history::History>,
     active_tools: BTreeSet<String>,
     cancellation_notice_shown: bool,
+    selection: Option<selection::Selection>,
+    rewind_preview: Option<crate::agent::RewindPreview>,
+    rewind_retry: bool,
+    operation: Option<&'static str>,
+    before_rewind: Option<String>,
+    interrupted_rewind: Option<String>,
+}
+
+// 送る文と復元する原文を分け、// を外した文が取り消し後にコマンドにならないようにする。
+struct SubmittedInput {
+    text: String,
+    original: String,
 }
 
 impl Screen {
@@ -84,9 +100,16 @@ impl Screen {
             confirmation: None,
             confirmation_result: None,
             followups: VecDeque::new(),
+            original_submission: None,
             history_file: None,
             active_tools: BTreeSet::new(),
             cancellation_notice_shown: false,
+            selection: None,
+            rewind_preview: None,
+            rewind_retry: false,
+            operation: None,
+            before_rewind: None,
+            interrupted_rewind: None,
         }
     }
 
@@ -128,7 +151,11 @@ impl Screen {
         if self.confirming() {
             return self.confirmation_input(event, read_at, now, running);
         }
-        self.input.event(event, now, running)
+        if self.selection.is_some() {
+            return self.selection_input(event);
+        }
+        let action = self.input.event(event, now, running);
+        self.command_action(action, running)
     }
 
     /// 外から指定した最初の依頼も、同じ履歴と画面の経路を通す。
@@ -266,6 +293,9 @@ impl Screen {
                 self.notice(&text::event_detail(text::COMPACTION, estimate_after));
             }
             AgentEvent::Checkpoint { checkpoint } => {
+                if checkpoint.reason == crate::rewind::CheckpointReason::BeforeRewind {
+                    self.before_rewind = Some(checkpoint.id.clone());
+                }
                 self.notice(&super::text::checkpoint(checkpoint))
             }
             AgentEvent::HardLinks { paths } => self.notice(&super::text::hard_links(paths)),
@@ -371,18 +401,21 @@ impl Screen {
     /// 後続を画面側で保つ。Agent は一連の処理の中では受け取らない。
     pub fn queue_followup(&mut self, value: String) {
         self.remember(&value);
-        self.followups.push_back(value);
+        self.followups.push_back(SubmittedInput {
+            original: value.clone(),
+            text: value,
+        });
     }
 
     /// 依頼の完了後だけ、次の後続を取り出す。
     pub fn next_followup(&mut self) -> Option<String> {
-        self.followups.pop_front()
+        self.followups.pop_front().map(|value| value.text)
     }
 
     /// 取り消しでは後続も入力欄へ戻す。加えられなかった操縦は結果によらず戻す。
     pub fn finished(&mut self, cancelled: bool, mut steering: Vec<String>) {
         if cancelled {
-            steering.extend(self.followups.drain(..));
+            steering.extend(self.followups.drain(..).map(|value| value.original));
         }
         self.input.restore(steering);
         self.active_tools.clear();
@@ -438,6 +471,11 @@ impl Screen {
         }
     }
 
+    /// 中断して端末を戻した後に、回復に使える時点を示す。
+    pub fn checkpoint_before_rewind(&self) -> Option<&str> {
+        self.interrupted_rewind.as_deref()
+    }
+
     /// 入力位置から下の行数。panic hook も同じ復元の列を組み立てる。
     pub fn rows_below_cursor(&self) -> u16 {
         self.rows_below
@@ -468,6 +506,12 @@ impl Screen {
             .take(input_count)
             .map(|line| plain(line, Decoration::Plain))
             .collect();
+        if let Some(selection) = &self.selection {
+            inputs = selection.bottom(self.size);
+            cursor_row = 0;
+            cursor_column = 0;
+            start = 0;
+        }
         if let Some(confirmation) = &self.confirmation {
             let (rows, cursor) = confirmation.bottom(self.size);
             inputs = rows;
@@ -536,9 +580,11 @@ impl Screen {
                 text::QUIT_HINT.to_owned()
             } else {
                 format!(
-                    "{}{}",
+                    "{}{}{}",
                     text::status(&self.status, elapsed),
-                    text::queued(self.followups.len())
+                    text::queued(self.followups.len()),
+                    self.operation
+                        .map_or(String::new(), |value| format!(" | {value}"))
                 )
             };
             bottom.push(vec![(format::clipped(&status, width), Decoration::Dim)]);

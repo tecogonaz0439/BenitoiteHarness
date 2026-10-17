@@ -117,3 +117,9 @@ pub const TERMINAL_REQUIRED: &str =
     "Interactive mode requires terminal input and output; use benitoiteh exec instead.";
 /// モードの変更を拒否した通常終了。
 pub const MODE_CHANGE_DECLINED: &str = "Resume in normal mode was declined.";
+
+pub fn checkpoint_before_rewind(checkpoint: &str) -> String {
+    format!("Checkpoint before rewind: {checkpoint}")
+}
+
+pub const SESSION_PATH_CHANGED: &str = "A fixed session path now resolves to a different location.";

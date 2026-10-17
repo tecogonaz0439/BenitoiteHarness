@@ -120,11 +120,17 @@ pub struct Checkpoint {
 }
 
 /// 画面用の時点と、その時点へ会話を戻せるか。
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct CheckpointInfo {
     #[serde(flatten)]
     pub checkpoint: Checkpoint,
     pub conversation_available: bool,
+    /// 依頼の先頭。表示の可視化は画面の責任とする。
+    #[serde(default)]
+    pub request: Option<String>,
+    /// 道具の前の時点に対応する呼び出し。
+    #[serde(default)]
+    pub tool: Option<crate::provider::ToolCall>,
 }
 
 /// ファイルと会話のどちらを戻すか。

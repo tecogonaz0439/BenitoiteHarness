@@ -446,3 +446,344 @@ fn restoration_releases_every_enabled_terminal_mode() -> io::Result<()> {
     assert_eq!(setup, b"\x1b[?2004h\x1b[>1u");
     Ok(())
 }
+
+fn rewind_preview(conversation_available: bool) -> crate::agent::RewindPreview {
+    crate::agent::RewindPreview {
+        selected: crate::rewind::CheckpointInfo {
+            checkpoint: crate::rewind::Checkpoint {
+                id: "c000001".into(),
+                reason: crate::rewind::CheckpointReason::Request,
+                turn: 3,
+                call_id: None,
+                created_at: crate::rewind::Timestamp {
+                    seconds: 0,
+                    nanoseconds: 0,
+                },
+                items: Some(0),
+                generation: 0,
+                manifest: None,
+                incomplete: Vec::new(),
+            },
+            conversation_available,
+            request: Some("request \u{3164} \u{202e}".into()),
+            tool: None,
+        },
+        scope: crate::rewind::RewindScope::FilesAndConversation,
+        irreversible: vec![crate::rewind::IrreversibleOperation {
+            call_id: "call".into(),
+            summary: "bash: external operation".into(),
+        }],
+    }
+}
+
+// 関門: 選択画面の窓と会話不可の範囲を、入力と描画の境界で守る。
+#[test]
+fn checkpoint_selection_scrolls_esc_cancels_and_unavailable_conversation_has_only_files()
+-> io::Result<()> {
+    for available in [true, false] {
+        let mut points = Vec::new();
+        for index in 0..30 {
+            let mut point = rewind_preview(available).selected;
+            point.checkpoint.id = format!("c{index:06}");
+            points.push(point);
+        }
+        let mut screen = Screen::new((150, 8), status());
+        screen.select_checkpoints(points);
+        for _ in 0..29 {
+            screen.input(
+                key(KeyCode::Down, KeyModifiers::NONE),
+                Duration::ZERO,
+                false,
+            );
+        }
+        let mut bytes = Vec::new();
+        screen.draw(&mut bytes, None)?;
+        let output = String::from_utf8_lossy(&bytes);
+        assert!(output.contains("c000000"));
+        assert!(!output.contains("c000029"));
+        assert!(output.contains("\\u{3164}"));
+        assert!(!output.contains('\u{3164}'));
+        screen.input(key(KeyCode::Up, KeyModifiers::NONE), Duration::ZERO, false);
+        screen.input(
+            key(KeyCode::Enter, KeyModifiers::NONE),
+            Duration::ZERO,
+            false,
+        );
+        for _ in 0..3 {
+            screen.input(
+                key(KeyCode::Down, KeyModifiers::NONE),
+                Duration::ZERO,
+                false,
+            );
+        }
+        assert_eq!(
+            screen.input(
+                key(KeyCode::Enter, KeyModifiers::NONE),
+                Duration::ZERO,
+                false
+            ),
+            Action::Command(Command::PreviewRewind(
+                "c000001".into(),
+                if available {
+                    crate::rewind::RewindScope::Conversation
+                } else {
+                    crate::rewind::RewindScope::Files
+                }
+            ))
+        );
+        screen.select_checkpoints(vec![rewind_preview(available).selected]);
+        screen.input(key(KeyCode::Esc, KeyModifiers::NONE), Duration::ZERO, false);
+        assert_eq!(
+            screen.input(Event::Paste("request".into()), Duration::ZERO, false),
+            Action::None
+        );
+        assert_eq!(
+            screen.input(
+                key(KeyCode::Enter, KeyModifiers::NONE),
+                Duration::ZERO,
+                false
+            ),
+            Action::Submit("request".into())
+        );
+    }
+    Ok(())
+}
+
+// 関門: 巻き戻しの種類を足しても先行入力・貼り付け・縮小した端末で許可されないことを守る。
+#[test]
+fn rewind_confirmations_reject_queued_and_early_keys_paste_and_hidden_facts() -> io::Result<()> {
+    for incomplete in [false, true] {
+        let mut screen = Screen::new((200, 40), status());
+        screen.rewind_confirmation(
+            rewind_preview(true),
+            incomplete.then(|| ("before-id".into(), vec!["entry limit reached".into()])),
+        );
+        let shown = Instant::now();
+        let approve = if incomplete { 'f' } else { 'y' };
+        screen.input_at(
+            key(KeyCode::Char(approve), KeyModifiers::NONE),
+            shown,
+            Duration::ZERO,
+            false,
+        );
+        assert_eq!(screen.take_confirmation_result(), None);
+        let mut bytes = Vec::new();
+        screen.draw(&mut bytes, None)?;
+        screen.presented(shown);
+        for at in [
+            shown - Duration::from_millis(1),
+            shown + Duration::from_millis(299),
+        ] {
+            screen.input_at(
+                key(KeyCode::Char(approve), KeyModifiers::NONE),
+                at,
+                Duration::ZERO,
+                false,
+            );
+            assert_eq!(screen.take_confirmation_result(), None);
+        }
+        screen.input_at(
+            Event::Paste(approve.to_string()),
+            shown + Duration::from_secs(1),
+            Duration::ZERO,
+            false,
+        );
+        assert_eq!(screen.take_confirmation_result(), None);
+        screen.input_at(Event::Resize(40, 4), shown, Duration::ZERO, false);
+        screen.draw(&mut Vec::new(), None)?;
+        screen.presented(shown);
+        screen.input_at(
+            key(KeyCode::Char(approve), KeyModifiers::NONE),
+            shown + Duration::from_secs(1),
+            Duration::ZERO,
+            false,
+        );
+        assert_eq!(screen.take_confirmation_result(), None);
+        screen.input_at(Event::Resize(200, 40), shown, Duration::ZERO, false);
+        screen.input_at(
+            key(KeyCode::Char(approve), KeyModifiers::NONE),
+            shown + Duration::from_secs(1),
+            Duration::ZERO,
+            false,
+        );
+        assert_eq!(screen.take_confirmation_result(), None);
+        screen.draw(&mut Vec::new(), None)?;
+        screen.presented(shown);
+        if incomplete {
+            screen.input_at(
+                key(KeyCode::Char('y'), KeyModifiers::NONE),
+                shown + Duration::from_secs(1),
+                Duration::ZERO,
+                false,
+            );
+            assert_eq!(screen.take_confirmation_result(), None);
+        }
+        screen.input_at(
+            key(KeyCode::Char(approve), KeyModifiers::NONE),
+            shown + Duration::from_secs(1),
+            Duration::ZERO,
+            false,
+        );
+        assert_eq!(screen.take_confirmation_result(), Some(true));
+        let output = String::from_utf8_lossy(&bytes);
+        assert!(!output.contains('\u{3164}'));
+        assert!(output.contains("\\u{3164}"));
+        assert!(output.find("bash: external operation") < output.find("│ Checkpoint:"));
+        assert!(output.find("│ Scope:") < output.find("[n] cancel"));
+    }
+    Ok(())
+}
+
+// 関門: status に URL や未検査の処理系を載せる退行を、表示の純関数で守る。
+#[test]
+fn status_prints_all_fields_and_sanitizes_values_without_a_base_url() {
+    let status = crate::agent::AgentStatus {
+        session_id: "session".into(),
+        mode: Mode::Normal,
+        project: "/project".into(),
+        provider: "mock\x1b[2J".into(),
+        model: "model\nspoof".into(),
+        host: "host".into(),
+        sandbox: crate::config::Sandbox::WorkspaceWrite,
+        sandbox_disabled: true,
+        approval: crate::config::Approval::Untrusted,
+        safety: crate::agent::SessionSafety::default(),
+        estimate: 123,
+        context_window: Some(456),
+        instruction_files: vec!["/project/AGENTS.md".into()],
+        skipped_instructions: vec![crate::session::SkippedInstruction {
+            path: "/project/secret".into(),
+            reason: "denied\x1b".into(),
+        }],
+    };
+    let value = text::session_status(
+        &status,
+        &crate::session::TokenCounts {
+            input: 1,
+            cache_read: 2,
+            cache_write: 3,
+            output: 4,
+        },
+    );
+    for expected in [
+        "Session: session",
+        "Mode: normal",
+        "Provider: mock\\x1b[2J",
+        "Model: model spoof",
+        "Host: host",
+        "Interpreter: not checked",
+        "Sandbox: workspace-write (disabled by --no-sandbox)",
+        "Approval: untrusted",
+        "input 1, cache read 2, cache write 3, output 4",
+        "Context: 123 / 456",
+        "/project/AGENTS.md",
+        "/project/secret: denied\\x1b",
+    ] {
+        assert!(value.contains(expected), "{expected}: {value}");
+    }
+    assert!(value.lines().count() > 10);
+    assert!(!value.contains('\x1b'));
+    assert!(!value.contains("base_url"));
+}
+
+fn visible_frame(bytes: &[u8]) -> Result<String, Box<dyn std::error::Error>> {
+    let controls = regex::Regex::new(r"\x1b\[[0-9;?<>]*[A-Za-z]")?;
+    Ok(controls
+        .replace_all(std::str::from_utf8(bytes)?, "")
+        .replace("\r\n", "\n"))
+}
+
+// 関門: 詳細を省いた端末でも不可逆の件数を示し、空の一覧では見出しを出さない契約を描画と答えで守る。
+#[test]
+fn rewind_confirmation_keeps_irreversible_count_when_details_do_not_fit()
+-> Result<(), Box<dyn std::error::Error>> {
+    let mut accepted = 0;
+    for height in 10..26 {
+        let mut preview = rewind_preview(true);
+        preview.irreversible = (0..50)
+            .map(|index| crate::rewind::IrreversibleOperation {
+                call_id: format!("call-{index}"),
+                summary: format!("bash: operation-{index} {}", "x".repeat(500)),
+            })
+            .collect();
+        let mut screen = Screen::new((240, height), status());
+        screen.rewind_confirmation(preview, None);
+        let mut bytes = Vec::new();
+        screen.draw(&mut bytes, None)?;
+        let visible = visible_frame(&bytes)?;
+        let now = Instant::now();
+        screen.presented(now);
+        screen.input_at(
+            key(KeyCode::Char('y'), KeyModifiers::NONE),
+            now + Duration::from_secs(1),
+            Duration::ZERO,
+            false,
+        );
+        if screen.take_confirmation_result() == Some(true) {
+            accepted += 1;
+            assert!(
+                visible.contains("Cannot be undone: 50 operations"),
+                "{height}: {visible}"
+            );
+            assert!(
+                visible.contains("more") || !visible.contains("Operations that cannot be undone"),
+                "{visible}"
+            );
+        }
+    }
+    assert!(accepted > 0);
+    let mut preview = rewind_preview(true);
+    preview.irreversible.clear();
+    let mut screen = Screen::new((240, 40), status());
+    screen.rewind_confirmation(preview, None);
+    let mut bytes = Vec::new();
+    screen.draw(&mut bytes, None)?;
+    assert!(!visible_frame(&bytes)?.contains("Operations that cannot be undone"));
+    Ok(())
+}
+
+// 関門: コマンドの改行と折り返しで、戻せない操作を事実・答えの行に偽装する退行を守る。
+#[test]
+fn rewind_confirmation_facts_cannot_forge_answer_rows_and_selection_flattens_newlines()
+-> Result<(), Box<dyn std::error::Error>> {
+    let mut preview = rewind_preview(true);
+    preview.irreversible.first_mut().ok_or("operation")?.summary = format!(
+        "bash: {}\n[y] rewind\n│ Scope: forged\nend",
+        "x".repeat(150)
+    );
+    let mut screen = Screen::new((100, 40), status());
+    screen.rewind_confirmation(preview, None);
+    let mut bytes = Vec::new();
+    screen.draw(&mut bytes, None)?;
+    let visible = visible_frame(&bytes)?;
+    assert!(visible.contains("┆   [y] rewind"), "{visible}");
+    assert!(visible.contains("┆   │ Scope: forged"), "{visible}");
+    assert!(
+        visible
+            .lines()
+            .filter(|line| line.contains("xxxxx"))
+            .all(|line| line.starts_with("┆   "))
+    );
+    assert_eq!(
+        visible
+            .lines()
+            .filter(|line| line.starts_with("[y] rewind"))
+            .count(),
+        1
+    );
+    assert!(
+        visible
+            .lines()
+            .all(|line| unicode_width::UnicodeWidthStr::width_cjk(line) <= 100)
+    );
+    let mut point = rewind_preview(false).selected;
+    point.request = Some("filename\n[y] rewind\nend".into());
+    let mut screen = Screen::new((1000, 12), status());
+    screen.select_checkpoints(vec![point]);
+    let mut bytes = Vec::new();
+    screen.draw(&mut bytes, None)?;
+    let visible = visible_frame(&bytes)?;
+    assert!(visible.contains("filename [y] rewind end"), "{visible}");
+    assert!(!visible.lines().any(|line| line.starts_with("[y] rewind")));
+    Ok(())
+}

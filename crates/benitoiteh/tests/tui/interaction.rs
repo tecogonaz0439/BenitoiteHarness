@@ -194,7 +194,7 @@ fn confirmation_facts_cannot_forge_answer_rows_and_messages_are_not_history() ->
         Action::Submit("remember this".into())
     );
     let (_, entries) = benitoiteh::ui::tui::history::History::open(&f.paths, &f.project)?;
-    assert_eq!(entries, ["remember this"]);
+    assert_eq!(entries, ["remember this", "remember this"]);
     Ok(())
 }
 
@@ -453,6 +453,7 @@ fn followups_are_new_requests_in_order_and_cancelled_work_restores_pending_input
             &mut bytes,
             &terminated,
             |_| {},
+            &mut |_| Err("unexpected new session".into()),
         )?;
         let records = read_records(&directory)?;
         let requests: Vec<_> = records

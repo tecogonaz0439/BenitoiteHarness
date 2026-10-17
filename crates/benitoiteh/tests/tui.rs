@@ -1,5 +1,7 @@
 //! 画面の芯に模擬の端末と提供者をつなぐ（設計書 07-01、実装プラン P4-06）。
 
+#[path = "tui/commands.rs"]
+mod commands;
 #[path = "tui/interaction.rs"]
 mod interaction;
 #[path = "tui/pty.rs"]
@@ -230,6 +232,15 @@ impl Fixture {
     }
 
     fn worker(&self, server: &MockProvider) -> Result<(Worker, PathBuf), Box<dyn Error>> {
+        let prepared = self.new_session(server)?;
+        let directory = prepared.session.directory().to_owned();
+        Ok((Worker::start(prepared.agent, prepared.session)?, directory))
+    }
+
+    fn new_session(
+        &self,
+        server: &MockProvider,
+    ) -> Result<benitoiteh::ui::tui::NewSession, Box<dyn Error>> {
         let session = Session::create(&self.paths, SessionId::generate(SystemTime::now())?)?;
         let directory = session.directory().to_owned();
         let spill = directory.join("spill");
@@ -265,7 +276,24 @@ impl Fixture {
                 &ReadConfig::default(),
             )?,
         )
-        .with_session(session.clone());
+        .with_session(session.clone())
+        .with_shell(benitoiteh::tools::ShellContext {
+            policy: None,
+            policy_name: None,
+            helper: fs::canonicalize(env!("CARGO_BIN_EXE_benitoiteh"))?,
+            scratch: directory.join("sandbox"),
+            placeholders: self.paths.data_dir.join("placeholders"),
+            env: benitoiteh::config::child_environment(
+                [("PATH".into(), "/bin:/usr/bin".into())],
+                &Default::default(),
+                session.temporary_dir(),
+                None,
+            ),
+            writable_roots: vec![self.project.clone(), session.temporary_dir().into()],
+            sandbox: benitoiteh::config::Sandbox::DangerFullAccess,
+            sandboxed: false,
+            approval: benitoiteh::config::Approval::Never,
+        });
         let environment = Environment::capture(
             &self.project,
             Mode::Normal,
@@ -282,7 +310,12 @@ impl Fixture {
         )?;
         assert!(agent.context_estimate() > 0);
         assert_eq!(agent.context_window(), None);
-        Ok((Worker::start(agent, session)?, directory))
+        Ok(benitoiteh::ui::tui::NewSession::new(
+            agent,
+            session,
+            status(),
+            Vec::new(),
+        ))
     }
 }
 impl Drop for Fixture {
@@ -487,7 +520,8 @@ fn shutdown_drains_the_worker_and_preserves_the_restoration_position() -> TestRe
                 &mut input,
                 &mut output,
                 &signal,
-                |rows| below = rows
+                |rows| below = rows,
+                &mut |_| Err("unexpected new session".into()),
             )?,
             if external { 130 } else { 0 }
         );
@@ -554,7 +588,15 @@ fn repeated_shutdown_returns_immediately_and_resize_is_kept_while_exiting() -> T
         let mut screen = Screen::new((100, 24), status());
         let mut bytes = Vec::new();
         assert_eq!(
-            run(&mut screen, worker, &mut input, &mut bytes, &signal, |_| {})?,
+            run(
+                &mut screen,
+                worker,
+                &mut input,
+                &mut bytes,
+                &signal,
+                |_| {},
+                &mut |_| Err("unexpected new session".into())
+            )?,
             130
         );
         if second.is_some() {

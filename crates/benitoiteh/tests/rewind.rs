@@ -549,12 +549,14 @@ fn agent_rewind_replay_resume_and_read_versions_agree() -> TestResult {
         )
         .is_err()
     );
+    let preview = agent.rewind_preview(&second.id, RewindScope::FilesAndConversation)?;
     let report = rewind(
         &mut agent,
         &second.id,
         RewindScope::FilesAndConversation,
         false,
     )?;
+    assert_eq!(preview.irreversible, report.irreversible);
     assert!(report.conversation_rewound);
     assert_eq!(report.irreversible.len(), 1);
     assert!(
@@ -1258,7 +1260,9 @@ fn web_fetch_calls_are_reported_as_irreversible_after_the_selected_checkpoint() 
     run(&mut agent)?;
     let points = agent.checkpoints()?;
     let first = points.first().ok_or("missing checkpoint")?;
+    let preview = agent.rewind_preview(&first.checkpoint.id, RewindScope::Files)?;
     let report = rewind(&mut agent, &first.checkpoint.id, RewindScope::Files, false)?;
+    assert_eq!(preview.irreversible, report.irreversible);
     assert_eq!(report.irreversible.len(), 1);
     assert!(
         report

@@ -72,6 +72,7 @@ fn run_interactive(args: ExecArgs, signals: &mut Signals) -> Result<u8, CliError
     let restore = TerminalRestore::capture().map_err(CliError::Output)?;
     panic::install(None, Some(Arc::clone(&restore)));
     let mut mode_declined = false;
+    let mut interrupted_before = None;
     let result = (|| {
         let _terminal = TerminalGuard::enter(Arc::clone(&restore)).map_err(CliError::Output)?;
         let mut output = restore.output().map_err(CliError::Output)?;
@@ -79,6 +80,7 @@ fn run_interactive(args: ExecArgs, signals: &mut Signals) -> Result<u8, CliError
         let mut confirmation_error = None;
         let prepared = exec::prepare(
             &args,
+            None,
             &paths,
             crate::sandbox::check_availability,
             &mut |change| {
@@ -158,15 +160,41 @@ fn run_interactive(args: ExecArgs, signals: &mut Signals) -> Result<u8, CliError
                 .submit(request.clone(), RunControl::default())
                 .map_err(CliError::Agent)?;
         }
-        crate::ui::tui::run(
+        let result = crate::ui::tui::run(
             &mut screen,
             worker,
             &mut TerminalInput { signals },
             &mut output,
             &terminated,
             |rows| restore.set_rows_below(rows),
-        )
-        .map_err(|error| match error {
+            &mut |current| {
+                let exec::Prepared {
+                    agent,
+                    session,
+                    status,
+                    diagnostics,
+                    panic_record,
+                } = exec::prepare_new(&args, current, &paths, crate::sandbox::check_availability)
+                    .map_err(|error| {
+                    error
+                        .diagnostics
+                        .iter()
+                        .chain(std::iter::once(&error.error.to_string()))
+                        .cloned()
+                        .collect::<Vec<_>>()
+                        .join("\n")
+                })?;
+                let restore = Arc::clone(&restore);
+                Ok(
+                    crate::ui::tui::NewSession::new(agent, session, status, diagnostics)
+                        .on_start(move || panic::install(Some(panic_record), Some(restore))),
+                )
+            },
+        );
+        if matches!(result, Ok(130)) {
+            interrupted_before = screen.checkpoint_before_rewind().map(str::to_owned);
+        }
+        result.map_err(|error| match error {
             TuiError::Io(error) => CliError::Output(error),
             TuiError::Agent(error) => CliError::Agent(error),
         })
@@ -175,6 +203,10 @@ fn run_interactive(args: ExecArgs, signals: &mut Signals) -> Result<u8, CliError
     // raw のモードを戻した後でだけ、断った旨を通常の診断の書き先へ出す。
     if mode_declined {
         crate::ui::ExecOutput::diagnostic(text::MODE_CHANGE_DECLINED).map_err(CliError::Output)?;
+    }
+    if let Some(checkpoint) = interrupted_before {
+        crate::ui::ExecOutput::diagnostic(&text::checkpoint_before_rewind(&checkpoint))
+            .map_err(CliError::Output)?;
     }
     result
 }

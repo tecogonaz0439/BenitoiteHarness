@@ -9,7 +9,10 @@ mod reasoning;
 mod resume_tests;
 mod retry;
 mod rewind;
+mod status;
 mod text;
+pub use rewind::RewindPreview;
+pub use status::{AgentStatus, SessionSafety};
 mod transport;
 
 pub use crate::session::CompactionReason;
@@ -219,6 +222,7 @@ pub struct Agent {
     detached: Vec<Stream>,
     approver: Box<dyn Approver>,
     approval_policy: ApprovalPolicy,
+    session_safety: SessionSafety,
     allowed_commands: BTreeSet<String>,
     session_domains: BTreeSet<String>,
     started: bool,
@@ -342,6 +346,7 @@ impl Agent {
             detached: Vec::new(),
             approver: Box::new(NonInteractiveApprover),
             approval_policy,
+            session_safety: SessionSafety::default(),
             allowed_commands: BTreeSet::new(),
             session_domains: BTreeSet::new(),
             started: false,

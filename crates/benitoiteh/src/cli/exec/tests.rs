@@ -99,6 +99,7 @@ fn startup_selects_policy_and_fails_closed_unless_explicitly_disabled() -> Resul
         let probed = Cell::new(false);
         let prepared = prepare(
             &args,
+            None,
             &paths,
             |helper, scratch| {
                 probed.set(true);
@@ -236,6 +237,7 @@ fn unavailable_sandbox_keeps_write_approval_policy_and_configured_roots()
             mut agent, session, ..
         } = prepare(
             &args,
+            None,
             &paths,
             |_, _| Err(SandboxError::Unavailable),
             &mut |_| false,
@@ -267,7 +269,7 @@ fn declined_normal_resume_preserves_record_bytes_and_releases_lock() -> Result<(
     let restricted = f.args(&["--mode", "restricted"])?;
     let Prepared {
         mut agent, session, ..
-    } = prepare(&restricted, &paths, |_, _| Ok(()), &mut |_| false)
+    } = prepare(&restricted, None, &paths, |_, _| Ok(()), &mut |_| false)
         .map_err(|e| io::Error::other(e.to_string()))?;
     let id = session.id().clone();
     let record = session.directory().join("session.jsonl");
@@ -291,6 +293,7 @@ fn declined_normal_resume_preserves_record_bytes_and_releases_lock() -> Result<(
     let confirmed = Cell::new(false);
     let result = prepare(
         &args,
+        None,
         &paths,
         |_, _| Err(SandboxError::Unavailable),
         &mut |change| {
@@ -311,7 +314,7 @@ fn declined_normal_resume_preserves_record_bytes_and_releases_lock() -> Result<(
     drop(Session::open(&paths, &id)?);
     assert_eq!(fs::read(&record)?, before);
     args.interactive = false;
-    let result = prepare(&args, &paths, |_, _| Ok(()), &mut |_| {
+    let result = prepare(&args, None, &paths, |_, _| Ok(()), &mut |_| {
         confirmed.set(false);
         true
     });
@@ -414,6 +417,7 @@ fn interactive_preparation_uses_configured_approval_and_restricted_web_confirmat
         args.no_sandbox = mode == "normal";
         let Prepared { agent, session, .. } = prepare(
             &args,
+            None,
             &paths,
             |_, _| Err(SandboxError::Unavailable),
             &mut |_| false,
@@ -434,5 +438,179 @@ fn interactive_preparation_uses_configured_approval_and_restricted_web_confirmat
         drop(session);
         server.shutdown()?;
     }
+    Ok(())
+}
+
+// 関門: resume の記録と設定の既定値が違っても、/new が安全の方針を変えないことを起動の境界で守る。
+#[test]
+fn new_after_restricted_resume_preserves_mode_and_project_and_normal_preserves_policies()
+-> Result<(), Box<dyn Error>> {
+    for (mode, sandbox) in [
+        (Mode::Restricted, Sandbox::ReadOnly),
+        (Mode::Normal, Sandbox::ReadOnly),
+        (Mode::Normal, Sandbox::WorkspaceWrite),
+    ] {
+        let f = Fixture::new()?;
+        let old_root = f.0.join("old-writable");
+        let alias = f.0.join("writable-alias");
+        let extra_root = f.0.join("new-writable");
+        for path in [&old_root, &extra_root] {
+            fs::create_dir(path)?;
+        }
+        std::os::unix::fs::symlink(&old_root, &alias)?;
+        let paths = f.paths(&format!(
+            "sandbox = '{}'\napproval = 'untrusted'\nnetwork = false\nwritable_roots = [{}]",
+            sandbox.name(),
+            serde_json::to_string(&alias)?
+        ))?;
+        let mut config = fs::read_to_string(&paths.config_file)?;
+        config.push_str("[restricted]\nallowed_programs = ['/bin/sh']\n");
+        fs::write(&paths.config_file, config)?;
+        let mut original = f.args(&[
+            "--mode",
+            if mode == Mode::Restricted {
+                "restricted"
+            } else {
+                "normal"
+            },
+        ])?;
+        original.interactive = true;
+        let mut initial = prepare(&original, None, &paths, |_, _| Ok(()), &mut |_| false)
+            .map_err(|error| io::Error::other(error.to_string()))?;
+        let id = initial.session.id().to_string();
+        let (tx, _rx) = mpsc::sync_channel(64);
+        initial
+            .agent
+            .run("old request".into(), Arc::new(AtomicBool::new(true)), tx)?;
+        drop(initial);
+        let mut resumed_args = original.clone();
+        resumed_args.mode = None;
+        resumed_args.project = None;
+        resumed_args.resume = Some(id.clone());
+        let resumed = prepare(&resumed_args, None, &paths, |_, _| Ok(()), &mut |_| false)
+            .map_err(|error| io::Error::other(error.to_string()))?;
+        assert_eq!(resumed.agent.status().mode, mode);
+        let old_safety = resumed.agent.status().safety;
+        if mode == Mode::Normal {
+            assert_eq!(old_safety.writable_roots, std::slice::from_ref(&old_root));
+        } else {
+            assert_eq!(old_safety.allowed_programs, [fs::canonicalize("/bin/sh")?]);
+        }
+        // 元の起動の依頼を送らず、設定の変更のうち provider/model は読み直す。
+        fs::write(
+            &paths.config_file,
+            format!(
+                "default_mode = 'normal'\ndefault_provider = 'changed'\n[providers.changed]\nkind = 'openai-chat'\nmodel = 'new-model'\n[normal]\nsandbox = 'danger-full-access'\napproval = 'never'\nnetwork = true\nwritable_roots = [{}]\n[restricted]\nallowed_programs = ['/bin/ls']\n",
+                serde_json::to_string(&extra_root)?
+            ),
+        )?;
+        let new = prepare_new(
+            &resumed_args,
+            &resumed.agent.status(),
+            &paths,
+            |_, _| Ok(()),
+        )
+        .map_err(|error| io::Error::other(error.to_string()))?;
+        let status = new.agent.status();
+        assert_ne!(status.session_id, id);
+        assert_eq!(status.mode, mode);
+        assert_eq!(status.project, fs::canonicalize(f.0.join("project"))?);
+        assert_eq!(status.provider, "changed");
+        assert_eq!(status.model, "new-model");
+        assert!(new.agent.conversation().items.is_empty());
+        assert!(
+            !crate::session::read_records(new.session.directory())?
+                .iter()
+                .any(|record| matches!(record, Record::User { .. }))
+        );
+        if mode == Mode::Normal {
+            assert_eq!(status.sandbox, sandbox);
+            assert_eq!(status.approval, Approval::Untrusted);
+        }
+        assert_eq!(status.safety, old_safety);
+        assert_eq!(resumed.agent.status().session_id, id);
+        if mode == Mode::Normal {
+            // 解決済みのパスにリンクが差し込まれたら、再検査で別の場所への拡大を拒む。
+            fs::remove_dir(&old_root)?;
+            std::os::unix::fs::symlink(&extra_root, &old_root)?;
+            assert!(matches!(
+                prepare_new(
+                    &resumed_args,
+                    &resumed.agent.status(),
+                    &paths,
+                    |_, _| Ok(())
+                ),
+                Err(PreparationError {
+                    error: StartupError::Invalid(text::SESSION_PATH_CHANGED),
+                    ..
+                })
+            ));
+        }
+    }
+    Ok(())
+}
+
+// 関門: /new のとき OS の機能が使えるようになっても、外したサンドボックスの状態を勝手に替えない。
+#[test]
+fn new_preserves_explicitly_disabled_sandbox_without_reprobing() -> Result<(), Box<dyn Error>> {
+    let f = Fixture::new()?;
+    let paths = f.paths("sandbox = 'workspace-write'\napproval = 'untrusted'")?;
+    let mut args = f.args(&["--no-sandbox"])?;
+    args.interactive = true;
+    let old = prepare(
+        &args,
+        None,
+        &paths,
+        |_, _| Err(SandboxError::Unavailable),
+        &mut |_| false,
+    )
+    .map_err(|error| io::Error::other(error.to_string()))?;
+    assert!(old.agent.status().sandbox_disabled);
+    let probed = Cell::new(false);
+    let new = prepare_new(&args, &old.agent.status(), &paths, |_, _| {
+        probed.set(true);
+        Ok(())
+    })
+    .map_err(|error| io::Error::other(error.to_string()))?;
+    assert!(!probed.get());
+    assert!(new.agent.status().sandbox_disabled);
+    assert!(new.status.sandbox_disabled);
+    assert_eq!(new.agent.status().sandbox, Sandbox::WorkspaceWrite);
+    Ok(())
+}
+
+// 関門: 固定した許可プログラムのすり替えを、セッションを作る前に同じ誤りで拒む。
+#[test]
+fn new_rejects_changed_allowed_program_path_before_creating_a_session() -> Result<(), Box<dyn Error>>
+{
+    let f = Fixture::new()?;
+    let paths = f.paths("")?;
+    let program = f.0.join("program-a");
+    let other = f.0.join("program-b");
+    for path in [&program, &other] {
+        fs::write(path, "#!/bin/sh\nexit 0\n")?;
+        fs::set_permissions(path, fs::Permissions::from_mode(0o755))?;
+    }
+    let mut config = fs::read_to_string(&paths.config_file)?;
+    config.push_str(&format!(
+        "[restricted]\nallowed_programs = [{}]\n",
+        serde_json::to_string(&program)?
+    ));
+    fs::write(&paths.config_file, config)?;
+    let mut args = f.args(&["--mode", "restricted"])?;
+    args.interactive = true;
+    let old = prepare(&args, None, &paths, |_, _| Ok(()), &mut |_| false)
+        .map_err(|error| io::Error::other(error.to_string()))?;
+    let count = fs::read_dir(&paths.sessions_dir)?.count();
+    fs::remove_file(&program)?;
+    std::os::unix::fs::symlink(&other, &program)?;
+    assert!(matches!(
+        prepare_new(&args, &old.agent.status(), &paths, |_, _| Ok(())),
+        Err(PreparationError {
+            error: StartupError::Invalid(text::SESSION_PATH_CHANGED),
+            ..
+        })
+    ));
+    assert_eq!(fs::read_dir(&paths.sessions_dir)?.count(), count);
     Ok(())
 }

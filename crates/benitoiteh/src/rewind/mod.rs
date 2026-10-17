@@ -21,6 +21,10 @@ pub enum RewindError {
     Session(SessionError),
     SafeFs(SafeFsError),
     Invalid(&'static str),
+    IncompleteBefore {
+        checkpoint: String,
+        incomplete: Vec<String>,
+    },
     Cancelled,
 }
 impl fmt::Display for RewindError {
@@ -29,6 +33,7 @@ impl fmt::Display for RewindError {
             Self::Session(error) => error.fmt(f),
             Self::SafeFs(error) => error.fmt(f),
             Self::Invalid(message) => f.write_str(message),
+            Self::IncompleteBefore { .. } => f.write_str(text::INCOMPLETE_BEFORE),
             Self::Cancelled => f.write_str(text::CANCELLED),
         }
     }
@@ -148,6 +153,8 @@ impl CheckpointRecorder {
                 conversation_available: checkpoint.reason == CheckpointReason::Request
                     && checkpoint.generation == state.generation,
                 checkpoint: checkpoint.clone(),
+                request: None,
+                tool: None,
             })
             .collect())
     }

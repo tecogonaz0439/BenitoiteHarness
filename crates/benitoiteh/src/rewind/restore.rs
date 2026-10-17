@@ -17,6 +17,17 @@ impl CheckpointRecorder {
         checkpoint: &str,
         allow_incomplete: bool,
     ) -> Result<RewindReport, RewindError> {
+        self.prepare_restore_files(checkpoint)?
+            .restore(allow_incomplete)
+    }
+
+    // 時点を保存してから書き戻すまでの間に、主の画面へ ID を通知できるように分ける。
+    // 二度目の終了の合図で中断されても、保存済みの時点から復旧できる（設計書 05-02）。
+    /// 保存済みの時点を通知できるよう、書き戻す前の状態まで準備する。
+    pub(crate) fn prepare_restore_files(
+        &self,
+        checkpoint: &str,
+    ) -> Result<PreparedRestore, RewindError> {
         let selected = self.manifest(checkpoint)?;
         let before = self.capture(
             CheckpointReason::BeforeRewind,
@@ -24,27 +35,49 @@ impl CheckpointRecorder {
             None,
             &AtomicBool::new(false),
         )?;
-        if !before.incomplete.is_empty() && !allow_incomplete {
-            return Err(RewindError::Invalid(text::INCOMPLETE_BEFORE));
-        }
-        // 保存量の不足でも、利用者が不完全な before を許した場合は、今作った一覧を使う。
-        // 読み直す対象は選んだ時点だけであり、この値は主プロセスが組み立てたもの
-        // （設計書 01-05「不完全な時点」）。
         let current = self
             .lock()?
             .previous
             .clone()
             .ok_or(RewindError::Invalid(text::NO_MANIFEST))?;
+        Ok(PreparedRestore {
+            recorder: self.clone(),
+            selected,
+            before,
+            current,
+        })
+    }
+}
+
+/// 選択した一覧と、書き戻す直前に主プロセスが採った一覧を保持する。
+pub(crate) struct PreparedRestore {
+    recorder: CheckpointRecorder,
+    selected: Manifest,
+    before: Checkpoint,
+    current: Manifest,
+}
+impl PreparedRestore {
+    /// 不完全な保存を許すか確かめてから、検証済みの一覧に従って書き戻す。
+    pub(crate) fn restore(self, allow_incomplete: bool) -> Result<RewindReport, RewindError> {
+        if !self.before.incomplete.is_empty() && !allow_incomplete {
+            return Err(RewindError::IncompleteBefore {
+                checkpoint: self.before.id,
+                incomplete: self.before.incomplete,
+            });
+        }
+        // 保存量の不足でも、利用者が不完全な before を許した場合は、今作った一覧を使う。
+        // 読み直す対象は選んだ時点だけであり、この値は主プロセスが組み立てたもの
+        // （設計書 01-05「不完全な時点」）。
         let mut restore = Restore {
-            root: &self.project,
-            session: &self.session,
-            limit: self.lock()?.limits.max_file_bytes,
-            selected: &selected,
-            target: indexed(&selected)?,
-            current: indexed(&current)?,
+            root: &self.recorder.project,
+            session: &self.recorder.session,
+            limit: self.recorder.lock()?.limits.max_file_bytes,
+            selected: &self.selected,
+            target: indexed(&self.selected)?,
+            current: indexed(&self.current)?,
             removed: BTreeSet::new(),
             report: RewindReport {
-                before_rewind: Some(before.id),
+                before_rewind: Some(self.before.id),
                 ..RewindReport::default()
             },
         };
@@ -52,6 +85,7 @@ impl CheckpointRecorder {
         Ok(restore.report)
     }
 }
+
 fn indexed(manifest: &Manifest) -> Result<BTreeMap<PathBuf, ManifestEntry>, RewindError> {
     manifest
         .entries

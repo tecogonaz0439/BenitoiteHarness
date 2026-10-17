@@ -48,9 +48,17 @@ pub(super) fn is_interrupt(event: &Event) -> bool {
 
 pub(super) struct Confirmation {
     pub prompt: Option<ApprovalPrompt>,
+    rewind: Option<RewindConfirmation>,
     pub guard: ConfirmationGuard,
     pub message: Option<String>,
     message_overflow: bool,
+}
+
+struct RewindConfirmation {
+    facts: Vec<(&'static str, String)>,
+    extra: Vec<String>,
+    incomplete: bool,
+    irreversible_count: usize,
 }
 
 impl Confirmation {
@@ -64,10 +72,40 @@ impl Confirmation {
     }
 
     fn title(&self) -> &'static str {
-        self.kind().map_or(text::MODE_CHANGE, text::approval_title)
+        if let Some(rewind) = &self.rewind {
+            if rewind.incomplete {
+                text::INCOMPLETE_TITLE
+            } else {
+                text::REWIND_TITLE
+            }
+        } else {
+            self.kind().map_or(text::MODE_CHANGE, text::approval_title)
+        }
     }
 
     fn facts(&self, width: u16, compact: bool) -> Vec<FactRow> {
+        if let Some(rewind) = &self.rewind {
+            let mut rows: Vec<_> = rewind
+                .facts
+                .iter()
+                .flat_map(|(label, value)| fact(label, value, width, compact))
+                .collect();
+            if rewind.irreversible_count > 0 {
+                rows.extend(
+                    wrapped_plain(
+                        &text::irreversible_count(rewind.irreversible_count),
+                        width,
+                        Decoration::Plain,
+                    )
+                    .into_iter()
+                    .map(|line| FactRow {
+                        line,
+                        characters: 0,
+                    }),
+                );
+            }
+            return rows;
+        }
         if let Some(prompt) = &self.prompt {
             let request = &prompt.request;
             let cwd = request
@@ -99,6 +137,26 @@ impl Confirmation {
         }
     }
 
+    fn answer_keys(&self) -> &'static str {
+        self.rewind.as_ref().map_or_else(
+            || text::answer_keys(self.kind()),
+            |rewind| {
+                if rewind.incomplete {
+                    text::INCOMPLETE_KEYS
+                } else {
+                    text::REWIND_KEYS
+                }
+            },
+        )
+    }
+    fn decline_keys(&self) -> &'static str {
+        if self.rewind.is_some() {
+            text::REWIND_DECLINE
+        } else {
+            text::decline_keys(self.kind())
+        }
+    }
+
     pub fn fits(&self, size: (u16, u16)) -> bool {
         // 空白をまとめる前の全文で判定する。見かけの短さで承認を許さない
         // （設計書 03-03「確認の共通の規則」）。説明の高さは数えない。
@@ -121,9 +179,7 @@ impl Confirmation {
                 .len()
                 .saturating_add(facts.len())
                 .saturating_add(wrapped_plain(text::APPROVAL_BORDER, width, Decoration::Dim).len())
-                .saturating_add(
-                    wrapped_plain(text::answer_keys(self.kind()), width, Decoration::Error).len(),
-                )
+                .saturating_add(wrapped_plain(self.answer_keys(), width, Decoration::Error).len())
                 <= Self::available(size)
     }
 
@@ -176,6 +232,28 @@ impl Confirmation {
             rows.extend(border);
             rows.truncate(maximum);
             return rows;
+        }
+        if let Some(rewind) = &self.rewind {
+            let spare = maximum
+                .saturating_sub(rows.len())
+                .saturating_sub(facts.len())
+                .saturating_sub(border.len());
+            let extra: Vec<_> = rewind
+                .extra
+                .iter()
+                .flat_map(|value| prefixed_details(value, width))
+                .collect();
+            if extra.len() <= spare {
+                rows.extend(extra);
+            } else if spare > 0 {
+                let shown = spare.saturating_sub(1);
+                let omitted = extra.len().saturating_sub(shown);
+                rows.extend(extra.into_iter().take(shown));
+                rows.push(vec![(
+                    format::clipped(&text::details_omitted(omitted), width),
+                    Decoration::Dim,
+                )]);
+            }
         }
         if let Some(reason) = self
             .prompt
@@ -233,9 +311,9 @@ impl Confirmation {
         let value = self.message.as_ref().map_or_else(
             || {
                 if self.fits(size) {
-                    text::answer_keys(self.kind())
+                    self.answer_keys()
                 } else {
-                    text::decline_keys(self.kind())
+                    self.decline_keys()
                 }
                 .to_owned()
             },
@@ -275,6 +353,24 @@ fn wrapped_plain(value: &str, width: u16, decoration: Decoration) -> Vec<Line> {
         .0
         .into_iter()
         .map(|line| plain(&line, decoration))
+        .collect()
+}
+
+// 信頼しない一覧も説明と同じ印で囲み、改行や折り返しで事実・回答の行を作らせない。
+fn prefixed_details(value: &str, width: u16) -> Vec<Line> {
+    SafeText::strict(value, true)
+        .as_str()
+        .split('\n')
+        .flat_map(|source| {
+            format::wrapped(
+                &SafeText::strict(source, false),
+                content_width(width, "┆   "),
+                usize::MAX,
+            )
+            .0
+            .into_iter()
+            .map(|line| plain(&format!("┆   {line}"), Decoration::Dim))
+        })
         .collect()
 }
 
@@ -350,6 +446,7 @@ impl Screen {
         self.flush_pending();
         self.confirmation = Some(Confirmation {
             prompt: Some(prompt),
+            rewind: None,
             guard: ConfirmationGuard::default(),
             message: None,
             message_overflow: false,
@@ -362,6 +459,63 @@ impl Screen {
         self.confirmation_result = None;
         self.confirmation = Some(Confirmation {
             prompt: None,
+            rewind: None,
+            guard: ConfirmationGuard::default(),
+            message: None,
+            message_overflow: false,
+        });
+    }
+
+    pub(super) fn open_rewind(
+        &mut self,
+        preview: &crate::agent::RewindPreview,
+        incomplete: Option<(String, Vec<String>)>,
+    ) {
+        self.flush_pending();
+        self.confirmation_result = None;
+        let mut facts = vec![
+            (text::CHECKPOINT, text::checkpoint_row(&preview.selected)),
+            (text::SCOPE, text::scope(preview.scope).into()),
+        ];
+        if preview.scope != crate::rewind::RewindScope::Conversation {
+            facts.push((text::BACKUP, text::BACKUP_NOTICE.into()));
+        }
+        if !preview.selected.checkpoint.incomplete.is_empty() {
+            facts.push((text::WARNING, text::INCOMPLETE_TARGET.into()));
+        }
+        let mut extra = Vec::new();
+        if !preview.irreversible.is_empty() {
+            extra.push(text::IRREVERSIBLE.into());
+        }
+        extra.extend(
+            preview
+                .irreversible
+                .iter()
+                .take(20)
+                .map(|operation| operation.summary.clone()),
+        );
+        if preview.irreversible.len() > 20 {
+            extra.push(text::more(preview.irreversible.len().saturating_sub(20)));
+        }
+        let retry = incomplete.is_some();
+        if let Some((id, reasons)) = incomplete {
+            facts.push((text::BACKUP, id));
+            facts.push((text::WARNING, text::INCOMPLETE_BACKUP.into()));
+            extra.push(text::INCOMPLETE_REASONS.into());
+            let count = reasons.len();
+            extra.extend(reasons.into_iter().take(20));
+            if count > 20 {
+                extra.push(text::more(count.saturating_sub(20)));
+            }
+        }
+        self.confirmation = Some(Confirmation {
+            prompt: None,
+            rewind: Some(RewindConfirmation {
+                facts,
+                extra,
+                incomplete: retry,
+                irreversible_count: preview.irreversible.len(),
+            }),
             guard: ConfirmationGuard::default(),
             message: None,
             message_overflow: false,
@@ -490,7 +644,22 @@ impl Screen {
             return Action::None;
         };
         match ch.to_ascii_lowercase() {
-            'y' if confirmation.fits(self.size) => self.answer(ApprovalOutcome::Approved, None),
+            'f' if confirmation.fits(self.size)
+                && confirmation
+                    .rewind
+                    .as_ref()
+                    .is_some_and(|rewind| rewind.incomplete) =>
+            {
+                self.answer(ApprovalOutcome::Approved, None)
+            }
+            'y' if confirmation.fits(self.size)
+                && !confirmation
+                    .rewind
+                    .as_ref()
+                    .is_some_and(|rewind| rewind.incomplete) =>
+            {
+                self.answer(ApprovalOutcome::Approved, None)
+            }
             'n' => self.answer(ApprovalOutcome::Denied, None),
             'a' if confirmation.fits(self.size)
                 && confirmation.kind() == Some(ApprovalKind::Command) =>
