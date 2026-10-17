@@ -85,7 +85,7 @@
 【方針】非対話（`benitoiteh exec`）では、対話の確認ができないので、次のように扱う。ADR 0345 の決定 4 を元にする。
 
 - 制限モードでは、許可するエフェクトを `--allow` で指定する（例: `--allow File.Read,File.Write`）。名前は、処理系の `--allow-effects` と同じ原子の名前（`IO.All` は受け付けない）とする。エフェクトが確認なしの範囲と `--allow` の和に収まるスクリプトだけを実行する。テストの `Assert.Check` は、いつも収まるものとして扱う。`--allow` を省いたときは、確認なしの範囲だけを許す。
-- 範囲を超えるスクリプトは実行せず、`This non-interactive run allows only these effects: <list>. <path> uses: <list>. Narrow the uses of main, or stop and report.` を道具の結果として LLM に返す。同じ一連の処理で 3 回続いたら、処理を止めて、終了状態で失敗を示す。
+- 範囲を超えるスクリプトは実行せず、`This non-interactive run allows only these effects: <list>. <path> uses: <list>. Narrow the uses of main, or stop and report.` を道具の結果として LLM に返す。テスト（`benitoite_test`）では、【方針】`This non-interactive run allows only these effects: <list>. <paths> use: <list>. Narrow the uses of the tests, or stop and report.` を返す（`<paths>` は指定した対象の表示用のパスを `, ` で繋いだもの）。理由: テストのエフェクトは `main` でなく選んだテストの関数の宣言の和なので、`main` を狭めるよう求める文では LLM が直す箇所を誤る。同じ一連の処理で 3 回続いたら、処理を止めて、終了状態で失敗を示す。
 - 通常モードでは、承認の方針を `never` とする。起動のときに `--sandbox danger-full-access` を指定すれば、サンドボックスなしで動かす。
 - `web_fetch` は利用者の設定の一覧のドメインだけを取得し、`create_project` は `--project-parent` の下にだけ作る。
 
