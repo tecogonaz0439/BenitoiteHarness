@@ -168,6 +168,12 @@ P0-04 で作った型: 方針の入力 `PolicyConfig`（`readable: ReadAccess`�
 - `ToolContext::with_web_fetch(WebFetchContext { allowed_domains, client })`、`HttpClient::with_timeouts`。`config::domain` の正規化。
 - 戻せないものの一覧に `web_fetch` が入る。
 
+### 安全な辿り方と読み方（P4-09）
+
+- `safe_fs::gitignore`（`.gitignore` を待たない形で 1 MiB まで読み、不正な行を飛ばし BOM を除く）。rewind と `glob`・`grep` が共有する。
+- `ToolContext::with_search_limits(SearchLimits { max_entries, max_duration, max_file_bytes })`（既定より広げられない）。`glob`・`grep` に取り消しの印を渡す。
+- `grep`・`read` は 64 MiB を超えるファイルを飛ばすか拒む。
+
 ### `provider`（P1-01、P1-02）
 
 - 共通の形（`provider::types`、`provider` から再公開）: `Destination { provider, base_url, model }`、`AdapterKind`、`Conversation { items }`、`Item::{UserMessage, AssistantTurn, ToolResult}`、`UserMessage { parts: Vec<UserPart> }`（`UserPartKind::{Environment, Request, Steering}`）、`AssistantTurn { parts, raw_items, finish_reason, usage }`、`AssistantPart::{Text, Reasoning, ToolCall}`、`RawItems { destination, adapter, items }`、`ToolCall { id, provider_id, provider_item_id, name, arguments, raw_arguments }`、`ToolResult { id, provider_id, text, is_error }`、`Usage`（各項目 `Option<u64>` と `raw`）、`FinishReason::{Completed, ToolCalls, OutputLimit, Refusal(String), Error, Cancelled, Disconnected}`、`StreamEvent`、`ProviderError`、`Capabilities`。
