@@ -79,6 +79,8 @@ Benitoite の処理系（`benitoite`）を見つけ、`--version=json` で要る
 - 処理系を要するテストは、環境変数がなければ、理由を示して失敗する（飛ばさない）。テストの共通の部品（`tests/support/`）に、処理系のパスを得る関数を一つ置く。
 - Codex の中では、`BENITOITEH_TEST_BENITOITE=/Users/tecogonaz/src/BenitoiteHarness/work/benitoite-v0.0.7/target/release/benitoite` を設定して `scripts/check.sh --inside-codex` を走らせる。
 
+- `/new`（P4-08）は、安全に関わる値を今のセッションの値に固定する（`SessionOverrides`）。この作業で `benitoite.path` を使い始めるので、`/new` では、確かめた処理系の実のパスを固定し、読み直した設定の `benitoite.path` で置き換えない（新しいセッションでも形の確かめとハッシュは行い直す）。テストを加える。
+
 ## 触るファイル
 
 - `crates/benitoiteh/src/benitoite/`（新。`mod.rs`、`text.rs`、版の確かめ、問い合わせ、実行ファイルの形の確かめ）
