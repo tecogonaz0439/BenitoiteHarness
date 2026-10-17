@@ -139,6 +139,14 @@ P0-04 で作った型: 方針の入力 `PolicyConfig`（`readable: ReadAccess`�
 - `Agent` は、`ShellContext` があれば、判定に使う `sandbox` と `sandboxed`（`ShellContext.policy` が `Some` か）を `ShellContext` から取る。
 - 道具の一覧は `definitions(mode)` で作り、`text::unknown_tool` はその名前を並べる。
 
+### 圧縮（P4-01）
+
+- `Agent::compact(instructions, cancelled, events) -> Result<CompactReport, AgentError>` と `Agent::compact_with_options(CompactOptions { reason, instructions, keep_recent }, ...)`。`CompactReport { outcome: CompactOutcome::{Compacted, NothingToCompact, Cancelled, Failed}, usage, estimate_before, estimate_after, summarized_items, kept_items }`。
+- `session::CompactionReason::{Threshold, Manual, Overflow}`（`agent` からも再公開）。`Record::Compaction { conversation, reason, summarized_items, kept_items }`、`AgentEvent::Compaction { reason, summarized_items, kept_items, estimate_before, estimate_after }`、`Summary.compactions`、`Summary::add_usage`。
+- `UserPartKind::Summary`、`AgentError::Compaction`（`kind` は `compaction`）。
+- `session::FileHistory { read, modified }`（`add_call`、`from_records`）。
+- 推論を除く処理は `agent/compaction/conversation.rs` にある（P4-02 で共有の関数に切り出す）。
+
 ### `provider`（P1-01、P1-02）
 
 - 共通の形（`provider::types`、`provider` から再公開）: `Destination { provider, base_url, model }`、`AdapterKind`、`Conversation { items }`、`Item::{UserMessage, AssistantTurn, ToolResult}`、`UserMessage { parts: Vec<UserPart> }`（`UserPartKind::{Environment, Request, Steering}`）、`AssistantTurn { parts, raw_items, finish_reason, usage }`、`AssistantPart::{Text, Reasoning, ToolCall}`、`RawItems { destination, adapter, items }`、`ToolCall { id, provider_id, provider_item_id, name, arguments, raw_arguments }`、`ToolResult { id, provider_id, text, is_error }`、`Usage`（各項目 `Option<u64>` と `raw`）、`FinishReason::{Completed, ToolCalls, OutputLimit, Refusal(String), Error, Cancelled, Disconnected}`、`StreamEvent`、`ProviderError`、`Capabilities`。
