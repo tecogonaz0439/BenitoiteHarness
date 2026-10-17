@@ -169,3 +169,21 @@
 
 - `scripts/check.sh --inside-codex` が通る（`BENITOITEH_TEST_BENITOITE` を設定して）。
 - 完了の報告に、道具の説明と、足した英文の全文、診断の文の例（入力の JSON と出力。警告、`label`、`secondary`、別のファイルの `edits` を含むもの）、期待のファイルの差分の要約、BH-028 の測り直しの表、実行ファイルの大きさの変化を書く。
+
+## P2-06 の実装の後の補足（2026-10-18）
+
+P2-05 と P2-06 を取り込んだ後に、この文書を実装に突き合わせた。上の記述と食い違うところは、この節を正とする。
+
+- 既存のもの: `config::Limits.max_check_fix`（`--max-check-fix` と設定の `[limits] max_check_fix` は P1 で実装済み）、`AgentConfig.limits` の「P1 では数えない」の注記、`AgentError` と非公開の `kind()`。`json_object` は標準出力の全体を一つのオブジェクトとして読むもので、診断の行には使わず、`serde_json` で一行ずつ読む。P2-06 の部品: `benitoite::skill::query_reason`、`benitoite::text::skill_exit(code)`、`tools::text::SKILL_UNAVAILABLE`・`skill_failure`。`ToolContext` は処理系の取得口を持たず、公開の欄 `benitoite` と `skill` を持つ。道具の一覧は `Agent::new` が `tool_context.skill.is_some()` で選ぶ。`prompts/benitoite-mapping.md` の `benitoite_check` の行は P2-06 で入れてあるので、`system-*.txt` の差分は `<tools>` の一行と `<rules>` の行だけになる。
+- `ToolOutput` は `Clone, Debug, Eq, PartialEq` を導くので、`CheckLaunch` と `CheckOutcome` も同じものを導く。`ToolOutput::success` と、構造体を全部書く `needs_approval` で、二つの欄を `None` にする。
+- `QueryLimits { timeout, grace }`（`Copy`、`Default` は 10 秒と 10 秒）に `stderr: StderrLimit`（`Copy`）を加え、`Default` は `StderrLimit::KeepFirst(64 KiB)` とする。`src/benitoite/tests.rs` の構造体のリテラルを直す。超過の誤りの変種は `BenitoiteError::DiagnosticsLimit` とし、`query_reason` の網羅の match にも加える。超過の判定は `query.rs` の `Output.overflow` の仕組みを標準出力とは別の旗で使い、標準出力の判定と並べて、`RunEnd::Cancelled` と `Exit` への写しより前に置く。
+- 終了状態の分類: `Processor::query` は終了状態が 0 でないとき `Err(BenitoiteError::Exit { code, stderr })` を返す。`Ok(output)` は終了状態 0 で `output.stderr` を読む。`Err(Exit { code: Some(c), stderr })` は終了状態 c でその `stderr` を読む。`Exit { code: None }` と `Exit` 以外の誤りは処理系の誤り（取り消しは取り消し）。
+- `<reason>`: `Exit` は `skill_exit(code)` の文（名前を `exit_reason` に改めて共用してよい）、ほかは誤りの表示から末尾の `.` を除いたもの。検査の理由を作る関数は `query_reason` の隣に別に作る（`query_reason` は標準出力の超過を Skill の文にするため）。処理系を持たないときの文は `tools::text::SKILL_UNAVAILABLE` を使う（共用の名前に改めてよい）。
+- `tests` の説明は `arg_described("tests", Boolean, false, text::CHECK_TESTS)` とし、文は `tools/text.rs` の定数に置く。
+- `ToolSet::without_benitoite` が除く対象（`retain` の `matches!`）に `ToolId::BenitoiteCheck` を加える。
+- 検査の問い合わせの口: `benitoite::CheckQuery`（`dyn Fn(&[OsString], QueryLimits, &AtomicBool) -> Result<QueryOutput, BenitoiteError> + Send + Sync`）を置き、`ToolContext` に `check_query: Option<Arc<CheckQuery>>` と `with_check_query` を置く。`exec` は `with_benitoite` と同じ所で `Processor::query` を包んだ口を渡す（`SkillDocuments::from_processor` と同じ形）。`benitoite_check` と書いた後の検査はこの口を使い、口がないことを「処理系を持たない」とする。理由: 統合テストは `Processor` を作れず（`Processor::inspect` は `pub(crate)`）、`sandbox-probe` は `check` の引数を受けられない。
+- テストの分け方: 本物の処理系は、`tests/support/skill.rs` に倣い、作業ディレクトリをプロジェクトにして直接起動する口を `tests/support/` に置く。サンドボックスの中で起動することは、`tests/sandbox_exec_restricted.rs` の `Fixture::restricted` で、模擬の提供者が `.bnt` の `write` と `benitoite_check` を呼ぶテストを一つ置いて確かめる。時間切れと 16 MiB は、問い合わせの段（`benitoite/tests.rs`。`sandbox-probe` の `query-output 0 16777217 1000` と `FailOver(16 MiB)` で新しい変種になること、既存の `3 65537 0` が既定のまま 64 KiB を保つこと）と、道具の段（`TimedOut` と新しい変種を返す偽の口。口に渡された `QueryLimits`（30 秒、`FailOver(16 MiB)`）も確かめる）に分ける。回数のテストは `tests/agent_loop.rs` で、`Exit { code: Some(2), stderr: <診断の JSON> }` を返す偽の口を渡して確かめる。
+- 回数は、すべての道具の結果が通る `execution.rs` の `Agent::result` で数える（`summary` を受け取る形にする）。止める判定は `run_request` の中で `execute_calls` を終えた後に置く。`summary.reason` と `AgentEvent::Error` の `message` には、止めた理由の一行（下の英文の一行目）だけを入れ、診断の全文は入れない（診断はその道具の結果にある）。
+- 止めるときの英文は `The run stopped because checks of <path> failed <n> times without passing (limit: <max>; change it with --max-check-fix or limits.max_check_fix).` とする。`max_check_fix` の 0 は、引数でも設定でも誤り（1 以上）とする（「最初の誤りで止める」と「上限なし」のどちらにも読めるため。2026-10-18 に決めた）。
+- 書いた後の検査: `edit` も `write::output(path, before, after)` で結果を作る（`edit.rs`）。`Wrote` の行の `<path>` は LLM が渡した文字列のまま（`text::wrote`）で、書いた実のパスは `WriteTarget.real_path` にある。足す行は `text` にだけ加え、`display` と `screen` は変えない。
+- 触るファイルに加える: `src/benitoite/skill.rs`、`src/benitoite/tests.rs`、`src/tools/benitoite_reference.rs`（共用の名前に改めるとき）、`src/agent/execution.rs`、`src/cli/exec.rs`、`src/config/`（`max_check_fix` の 0 の誤り）、`tests/support/`、`tests/agent_loop.rs`。

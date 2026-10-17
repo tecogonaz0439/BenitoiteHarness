@@ -208,6 +208,13 @@ P0-04 で作った型: 方針の入力 `PolicyConfig`（`readable: ReadAccess`�
 - `session`: `RecordedBenitoite` に `sha256`・`build`・`skill_content_hash`（`serde(default)`）。`recorded_benitoite(paths, id)`、`previous_benitoite(paths, project, current)`。`ToolContext::with_benitoite(Option<Arc<Processor>>)`、`Environment::with_startup_notice`・`startup_notice() -> &[String]`、`AgentStatus` の `benitoite_path`・`benitoite_version`。
 - テスト: `tests/support/processor.rs` が `BENITOITEH_TEST_BENITOITE` から処理系を得る（なければ理由を示して失敗）。Linux の段は `BENITOITEH_TEST_BENITOITE_AARCH64`・`_X86_64` を同じパスに見せる。制限モードの統合テストは `tests/sandbox_exec_restricted.rs`。
 
+### Skill の文書と参照の道具（P2-06）
+
+- `benitoite::skill`: `SkillDocument::from_json(requested_name, stdout)`（`text()`・`content_hash()`）、`SkillDocuments`（`new(問い合わせの関数)`・`from_processor(Arc<Processor>)`。名前ごとに一度だけ問い合わせ、成功だけを保つ）、属性と注釈の解析、`query_reason`（`BenitoiteError` を Skill 向けの理由にする）。`benitoite::text::skill_exit(code)`。
+- `ToolContext` の公開の欄 `benitoite: Option<Arc<Processor>>` と `skill`。`Agent::new` は `tool_context.skill.is_some()` で `ToolSet::new(mode)` か `ToolSet::without_benitoite(mode)` を選ぶ。`SystemContext::new(tools, skill)`。道具の定義の `arg_described(name, kind, required, description)`（definitions.rs の非公開の関数）。
+- 道具 `benitoite_reference`（`read.rs` の `LineStyle::Reference` で区切る）と `benitoite_explain`。`tools::text::SKILL_UNAVAILABLE`・`skill_failure`。
+- `assets/benitoite/v0.0.6/` は消した。`assets/benitoite/v0.0.7/` はテストが比べる元である。
+
 ### `provider`（P1-01、P1-02）
 
 - 共通の形（`provider::types`、`provider` から再公開）: `Destination { provider, base_url, model }`、`AdapterKind`、`Conversation { items }`、`Item::{UserMessage, AssistantTurn, ToolResult}`、`UserMessage { parts: Vec<UserPart> }`（`UserPartKind::{Environment, Request, Steering}`）、`AssistantTurn { parts, raw_items, finish_reason, usage }`、`AssistantPart::{Text, Reasoning, ToolCall}`、`RawItems { destination, adapter, items }`、`ToolCall { id, provider_id, provider_item_id, name, arguments, raw_arguments }`、`ToolResult { id, provider_id, text, is_error }`、`Usage`（各項目 `Option<u64>` と `raw`）、`FinishReason::{Completed, ToolCalls, OutputLimit, Refusal(String), Error, Cancelled, Disconnected}`、`StreamEvent`、`ProviderError`、`Capabilities`。
