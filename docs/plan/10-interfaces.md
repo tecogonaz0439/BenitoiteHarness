@@ -178,6 +178,13 @@ P0-04 で作った型: 方針の入力 `PolicyConfig`（`readable: ReadAccess`�
 
 - `benitoiteh doctor [--project <dir>] [--json]`。`cli::doctor`。`LinuxAvailability.capabilities`、bubblewrap の版を返す公開の関数、`session::quota::TOTAL_LIMIT`、読ませない場所の候補の共有の関数。
 
+### 対話の画面の土台（P4-06）
+
+- `cli::exec::prepare(args, paths, check_sandbox) -> Result<Prepared, PreparationError>`。`Prepared { agent, session, status: ui::tui::Status, diagnostics, panic_record }`、`PreparationError { error, diagnostics }`。依頼の読み取りは `exec::run` に移した。
+- `ui::tui`: 画面の芯（端末の大きさ、入力のイベント、`AgentEvent`、書き先を外から受け取る）、`SafeText`、`control` のモジュール（許す制御の列だけを作る）、`TerminalOutput`（復元の後は書かない）、`TerminalRestore`、`InputSource { poll, termination_count }`、`Worker`（`Agent` を別のスレッドで動かす）。一枚を一回の `write` と `flush` で書く。
+- `Agent::context_estimate()`、`context_window()`。`AgentEvent::ToolResult` の `screen`・`display`（`exec --json` には `display` を出さない）、`ToolOutput::screen`。
+- `cli::panic::install` は端末を戻すかを指定できる。終える印と依頼ごとの取り消しの印を分けた。上限の通知はイベントで返す。
+
 ### `provider`（P1-01、P1-02）
 
 - 共通の形（`provider::types`、`provider` から再公開）: `Destination { provider, base_url, model }`、`AdapterKind`、`Conversation { items }`、`Item::{UserMessage, AssistantTurn, ToolResult}`、`UserMessage { parts: Vec<UserPart> }`（`UserPartKind::{Environment, Request, Steering}`）、`AssistantTurn { parts, raw_items, finish_reason, usage }`、`AssistantPart::{Text, Reasoning, ToolCall}`、`RawItems { destination, adapter, items }`、`ToolCall { id, provider_id, provider_item_id, name, arguments, raw_arguments }`、`ToolResult { id, provider_id, text, is_error }`、`Usage`（各項目 `Option<u64>` と `raw`）、`FinishReason::{Completed, ToolCalls, OutputLimit, Refusal(String), Error, Cancelled, Disconnected}`、`StreamEvent`、`ProviderError`、`Capabilities`。
