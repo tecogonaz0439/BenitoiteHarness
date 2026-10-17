@@ -133,10 +133,11 @@ fn mode_confirmation_signals_exit_130_and_decline_is_printed_after_terminal_rest
         let mut input = pty.input()?;
         let mut command = Command::new(env!("CARGO_BIN_EXE_benitoiteh"));
         command
-            .args(["--mode", "normal", "--resume"])
+            .args(["--mode", "normal", "--no-sandbox", "--resume"])
             .arg(directory.file_name().ok_or("session ID")?)
             .current_dir(&f.project)
             .env_clear()
+            .env("PATH", "")
             .env("HOME", f.root.join("home"))
             .env("XDG_CONFIG_HOME", f.root.join("config"))
             .env("XDG_STATE_HOME", f.root.join("state"))
@@ -240,11 +241,13 @@ fn unsandboxed_session_launch_has_no_controlling_terminal() -> TestResult {
                 "normal",
                 "--sandbox",
                 "danger-full-access",
+                "--no-sandbox",
                 "--approval",
                 "never",
                 "--json",
                 "Check the controlling terminal",
             ])
+            .env("PATH", "")
             .env("HOME", f.root.join("home"))
             .env("XDG_CONFIG_HOME", f.root.join("config"))
             .env("XDG_STATE_HOME", f.root.join("state"))
@@ -302,6 +305,7 @@ fn slash_quit_exits_zero_and_restores_terminal_while_idle_and_processing() -> Te
             "normal",
             "--sandbox",
             "danger-full-access",
+            "--no-sandbox",
             "--approval",
             "never",
         ]);
@@ -311,6 +315,7 @@ fn slash_quit_exits_zero_and_restores_terminal_while_idle_and_processing() -> Te
         command
             .current_dir(&f.project)
             .env_clear()
+            .env("PATH", "")
             .env("HOME", f.root.join("home"))
             .env("XDG_CONFIG_HOME", f.root.join("config"))
             .env("XDG_STATE_HOME", f.root.join("state"))
@@ -392,6 +397,7 @@ fn second_signal_prints_checkpoint_after_terminal_restore_only_during_rewind() -
                 "normal",
                 "--sandbox",
                 "danger-full-access",
+                "--no-sandbox",
                 "--approval",
                 "never",
                 "--resume",
@@ -399,6 +405,7 @@ fn second_signal_prints_checkpoint_after_terminal_restore_only_during_rewind() -
             .arg(directory.file_name().ok_or("session ID")?)
             .current_dir(&f.project)
             .env_clear()
+            .env("PATH", "")
             .env("HOME", f.root.join("home"))
             .env("XDG_CONFIG_HOME", f.root.join("config"))
             .env("XDG_STATE_HOME", f.root.join("state"))

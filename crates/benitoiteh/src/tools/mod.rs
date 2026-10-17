@@ -21,8 +21,8 @@ use std::fs::Metadata;
 use std::io;
 use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
-use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::{Arc, Mutex};
 
 use serde_json::Value;
 
@@ -281,6 +281,7 @@ pub struct ToolContext {
     pub temporary: ScopeRoot,
     pub spill: ScopeRoot,
     pub exclude: ExcludeRules,
+    pub benitoite: Option<Arc<crate::benitoite::Processor>>,
     pub shell: Option<ShellContext>,
     pub web_fetch: WebFetchContext,
     pub session: Option<Session>,
@@ -322,6 +323,7 @@ impl ToolContext {
             temporary,
             spill,
             exclude,
+            benitoite: None,
             shell: None,
             web_fetch: WebFetchContext::default(),
             session: None,
@@ -329,6 +331,12 @@ impl ToolContext {
             checkpoints: None,
             search_limits: SearchLimits::default(),
         }
+    }
+
+    /// 起動時に確かめた処理系を、ヘッダと Benitoite の道具で共有する。
+    pub fn with_benitoite(mut self, processor: Option<Arc<crate::benitoite::Processor>>) -> Self {
+        self.benitoite = processor;
+        self
     }
 
     /// 通常モードの起動時に検査した子プロセスの情報を追加する。

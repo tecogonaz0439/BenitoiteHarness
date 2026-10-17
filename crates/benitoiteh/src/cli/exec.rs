@@ -13,6 +13,7 @@ use std::time::SystemTime;
 
 use crate::agent::{Agent, AgentError, Outcome};
 use crate::approval::{ApprovalPolicy, NonInteractiveApprover};
+use crate::benitoite::{self, Processor, QueryContext, QueryLauncher};
 use crate::config::credentials::CredentialError;
 use crate::config::paths::DataPaths;
 use crate::config::writable::{WritableError, validate_writable_with_executable};
@@ -30,6 +31,7 @@ use crate::ui::ExecOutput;
 use super::{CliError, args::ExecArgs, panic, signals::Signals, text};
 
 pub(super) enum StartupError {
+    Benitoite(benitoite::BenitoiteError),
     Config(ConfigError),
     Credentials(CredentialError),
     Writable(WritableError),
@@ -47,6 +49,7 @@ pub(super) enum StartupError {
 impl fmt::Display for StartupError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            Self::Benitoite(e) => e.fmt(f),
             Self::Config(e) => e.fmt(f),
             Self::Credentials(e) => e.fmt(f),
             Self::Writable(e) => e.fmt(f),
@@ -98,6 +101,7 @@ pub(super) struct SessionOverrides {
     sandbox_disabled: bool,
     approval: Approval,
     safety: crate::agent::SessionSafety,
+    benitoite_path: Option<PathBuf>,
 }
 
 impl From<&crate::agent::AgentStatus> for SessionOverrides {
@@ -109,6 +113,7 @@ impl From<&crate::agent::AgentStatus> for SessionOverrides {
             sandbox_disabled: current.sandbox_disabled,
             approval: current.approval,
             safety: current.safety.clone(),
+            benitoite_path: current.benitoite_path.clone(),
         }
     }
 }
@@ -119,6 +124,7 @@ pub(super) fn prepare(
     overrides: Option<&SessionOverrides>,
     paths: &DataPaths,
     check_sandbox: impl FnOnce(&Path, &Path) -> Result<(), SandboxError>,
+    query_launcher: QueryLauncher,
     confirm_mode_change: &mut dyn FnMut(&ModeChange) -> bool,
 ) -> Result<Prepared, PreparationError> {
     let mut diagnostics = Vec::new();
@@ -127,6 +133,7 @@ pub(super) fn prepare(
         let mut user = UserConfig::load(&paths.config_file).map_err(StartupError::Config)?;
         let mut args = args.clone();
         if let Some(fixed) = overrides {
+            user.benitoite.path.clone_from(&fixed.benitoite_path);
             args.mode = Some(fixed.mode);
             args.project = Some(fixed.project.clone());
             user.normal.network = fixed.safety.network;
@@ -254,9 +261,11 @@ pub(super) fn prepare(
             user.restricted
                 .allowed_programs
                 .iter()
-                .map(std::fs::canonicalize)
+                .map(|path| {
+                    benitoite::validate_executable(path, &locations, true).map(|(path, _)| path)
+                })
                 .collect::<Result<Vec<_>, _>>()
-                .map_err(StartupError::Io)?
+                .map_err(StartupError::Benitoite)?
         } else {
             Vec::new()
         };
@@ -283,30 +292,106 @@ pub(super) fn prepare(
         // macOS の TMPDIR の /var という別名を Seatbelt に渡さない（設計書 03-02）。
         locations.temporary =
             std::fs::canonicalize(session.temporary_dir()).map_err(StartupError::Io)?;
-        let mut sandbox_disabled = overrides.is_some_and(|fixed| fixed.sandbox_disabled);
+        let scratch = private_directory(&session.directory().join("sandbox"))?;
+        let placeholders = private_directory(&paths.data_dir.join("placeholders"))?;
+        let candidates = super::denied_candidates(paths);
+        let fixed_disabled = overrides.is_some_and(|fixed| fixed.sandbox_disabled);
+        let availability = if fixed_disabled {
+            Ok(())
+        } else {
+            check_sandbox(&helper, &scratch)
+        };
+        let selected = args.sandbox.unwrap_or(user.normal.sandbox);
+        if (resolved.mode == Mode::Restricted
+            || (selected != Sandbox::DangerFullAccess && !args.no_sandbox))
+            && let Err(error) = availability
+        {
+            return Err(StartupError::Sandbox(error));
+        }
+        let mut sandbox_disabled = fixed_disabled;
+        if resolved.mode == Mode::Normal && args.no_sandbox && availability.is_err() {
+            if let Err(error) = &availability {
+                diagnostics.push(text::sandbox_disabled(error));
+            }
+            sandbox_disabled = true;
+        }
+        let launcher = select_query_launcher(resolved.mode, sandbox_disabled);
+        let mut processor_notices = Vec::new();
+        let processor_result = if let Err(error) = availability
+            && !sandbox_disabled
+        {
+            Err(benitoite::BenitoiteError::Sandbox(error))
+        } else if overrides.is_some_and(|fixed| fixed.benitoite_path.is_none()) {
+            Err(benitoite::BenitoiteError::Invalid(
+                benitoite::text::NOT_FOUND,
+            ))
+        } else {
+            Processor::inspect(
+                user.benitoite.path.as_deref(),
+                std::env::var_os("PATH").as_deref(),
+                QueryContext {
+                    helper: helper.clone(),
+                    scratch: scratch.clone(),
+                    placeholders: placeholders.clone(),
+                    env: child_environment(
+                        std::env::vars_os(),
+                        &user.referenced_env_vars(),
+                        &locations.temporary,
+                        launcher.environment_policy(),
+                    ),
+                    locations: locations.clone(),
+                    denied_candidates: candidates.clone(),
+                    launcher: match query_launcher {
+                        // 起動の形の選択を終えた後にだけ、テスト実行ファイル用の形へ替える。
+                        #[cfg(test)]
+                        QueryLauncher::TestDirect => QueryLauncher::TestDirect,
+                        QueryLauncher::Sandboxed | QueryLauncher::Unsandboxed => launcher,
+                    },
+                },
+            )
+        };
+        let processor = match processor_result {
+            Ok(processor) => {
+                if let Some(notice) = processor.version_warning() {
+                    processor_notices.push(notice);
+                }
+                let previous = if resume.is_some() {
+                    session::recorded_benitoite(paths, session.id())
+                } else {
+                    session::previous_benitoite(paths, &locations.project, session.id())
+                };
+                let previous = match previous {
+                    Ok(previous) => previous,
+                    Err(SessionError::Json(_)) => {
+                        diagnostics.push(benitoite::text::PREVIOUS_UNREADABLE.into());
+                        None
+                    }
+                    Err(error) => return Err(StartupError::Session(error)),
+                };
+                if let Some(previous) = previous
+                    && !previous.sha256.is_empty()
+                    && previous.sha256 != processor.sha256
+                {
+                    processor_notices.push(benitoite::text::changed(
+                        &previous.version,
+                        &processor.version,
+                    ));
+                }
+                Some(Arc::new(processor))
+            }
+            Err(error) if resolved.mode == Mode::Normal => {
+                diagnostics.push(format!("{} {error}", benitoite::text::DISABLED));
+                None
+            }
+            Err(error) => return Err(StartupError::Benitoite(error)),
+        };
+        diagnostics.extend(processor_notices.iter().cloned());
         let shell = if resolved.mode == Mode::Normal {
-            let selected = args.sandbox.unwrap_or(user.normal.sandbox);
-            let scratch = private_directory(&session.directory().join("sandbox"))?;
-            let placeholders = private_directory(&paths.data_dir.join("placeholders"))?;
-            let candidates = super::denied_candidates(paths);
             let policy = if selected == Sandbox::DangerFullAccess || sandbox_disabled {
                 None
             } else {
-                match check_sandbox(&helper, &scratch) {
-                    Ok(()) => sandbox::normal_policy(
-                        selected,
-                        &locations,
-                        user.normal.network,
-                        &candidates,
-                    )
-                    .map_err(StartupError::Sandbox)?,
-                    Err(error) if args.no_sandbox => {
-                        diagnostics.push(text::sandbox_disabled(&error));
-                        sandbox_disabled = true;
-                        None
-                    }
-                    Err(error) => return Err(StartupError::Sandbox(error)),
-                }
+                sandbox::normal_policy(selected, &locations, user.normal.network, &candidates)
+                    .map_err(StartupError::Sandbox)?
             };
             let policy_name = policy.as_ref().map(|_| selected.name());
             let env = child_environment(
@@ -386,6 +471,7 @@ pub(super) fn prepare(
             ScopeRoot::open(&spill).map_err(StartupError::SafeFs)?,
             exclude,
         )
+        .with_benitoite(processor.clone())
         .with_session(session.clone())
         .with_web_fetch(crate::tools::WebFetchContext {
             allowed_domains: user.web_fetch.allowed_domains.iter().cloned().collect(),
@@ -405,6 +491,9 @@ pub(super) fn prepare(
             Environment::capture(&locations.project, resolved.mode, &writable, network, now)
                 .map_err(StartupError::Context)?
                 .with_project_instructions(instructions);
+        for notice in processor_notices {
+            environment = environment.with_startup_notice(notice);
+        }
         if sandbox_disabled {
             environment = environment.with_startup_notice(text::SANDBOX_DISABLED);
         }
@@ -469,6 +558,16 @@ pub(super) fn prepare(
     result.map_err(|error| PreparationError { error, diagnostics })
 }
 
+// 解除を許すオプションと、実際に解除した状態を区別する
+// （設計書 04-01「処理系の起動」）。テスト用の直接起動への差し替えより先に選ぶ。
+fn select_query_launcher(mode: Mode, sandbox_disabled: bool) -> QueryLauncher {
+    if mode == Mode::Normal && sandbox_disabled {
+        QueryLauncher::Unsandboxed
+    } else {
+        QueryLauncher::Sandboxed
+    }
+}
+
 // 新しい領域は 700 で作り、既存のものの権限や所有者を黙って変えない。
 // 錠の差し替えを子から許さない（設計書 03-02「Linux のファイルシステムの見え方」）。
 fn private_directory(path: &Path) -> Result<PathBuf, StartupError> {
@@ -503,6 +602,7 @@ pub(super) fn run(args: ExecArgs) -> Result<u8, CliError> {
         None,
         &DataPaths::from_env().map_err(|error| CliError::Startup(StartupError::Config(error)))?,
         sandbox::check_availability,
+        QueryLauncher::Sandboxed,
         &mut |_| false,
     )
     .map_err(CliError::Preparation)?;
@@ -595,6 +695,7 @@ pub(super) fn prepare_new(
     current: &crate::agent::AgentStatus,
     paths: &DataPaths,
     check_sandbox: impl FnOnce(&Path, &Path) -> Result<(), SandboxError>,
+    query_launcher: QueryLauncher,
 ) -> Result<Prepared, PreparationError> {
     let mut args = original.clone();
     args.resume = None;
@@ -605,6 +706,7 @@ pub(super) fn prepare_new(
         Some(&SessionOverrides::from(current)),
         paths,
         check_sandbox,
+        query_launcher,
         &mut |_| false,
     )
 }

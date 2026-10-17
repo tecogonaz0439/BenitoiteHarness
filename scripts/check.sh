@@ -1,6 +1,11 @@
 #!/bin/bash
 # 完了前の検査を、失敗した段が分かる形で揃える（設計書 07-01「完了の前に通す検査」）。
 set -euo pipefail
+export CARGO_NET_OFFLINE=${CARGO_NET_OFFLINE:-true}
+# 起動する処理系はテストごとの設定か、この明示したパスだけにする。
+export BENITOITEH_TEST_BENITOITE=${BENITOITEH_TEST_BENITOITE:-}
+export BENITOITEH_TEST_BENITOITE_AARCH64=${BENITOITEH_TEST_BENITOITE_AARCH64:-}
+export BENITOITEH_TEST_BENITOITE_X86_64=${BENITOITEH_TEST_BENITOITE_X86_64:-}
 shopt -s nullglob
 
 inside_codex=false
@@ -97,7 +102,7 @@ if ! "$inside_codex"; then
         test_args=()
         for test_file in "${manifest%/Cargo.toml}"/tests/*.rs; do
             test_name=${test_file##*/}
-            if [[ "$test_name" == sandbox_linux.rs ]]; then
+            if [[ "$test_name" == sandbox_linux.rs || "$test_name" == sandbox_benitoite.rs || "$test_name" == sandbox_exec_restricted.rs ]]; then
                 aarch64_skipped+=("${test_file}: the container kernel lacks Landlock")
                 continue
             fi

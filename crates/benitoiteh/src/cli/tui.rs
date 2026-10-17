@@ -83,6 +83,7 @@ fn run_interactive(args: ExecArgs, signals: &mut Signals) -> Result<u8, CliError
             None,
             &paths,
             crate::sandbox::check_availability,
+            crate::benitoite::QueryLauncher::Sandboxed,
             &mut |change| {
                 let mut screen = Screen::new(
                     crossterm::terminal::size().unwrap_or((80, 24)),
@@ -174,8 +175,14 @@ fn run_interactive(args: ExecArgs, signals: &mut Signals) -> Result<u8, CliError
                     status,
                     diagnostics,
                     panic_record,
-                } = exec::prepare_new(&args, current, &paths, crate::sandbox::check_availability)
-                    .map_err(|error| {
+                } = exec::prepare_new(
+                    &args,
+                    current,
+                    &paths,
+                    crate::sandbox::check_availability,
+                    crate::benitoite::QueryLauncher::Sandboxed,
+                )
+                .map_err(|error| {
                     error
                         .diagnostics
                         .iter()

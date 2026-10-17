@@ -26,6 +26,8 @@ pub struct AgentStatus {
     pub sandbox: Sandbox,
     pub sandbox_disabled: bool,
     pub approval: Approval,
+    pub benitoite_path: Option<PathBuf>,
+    pub benitoite_version: Option<String>,
     pub safety: SessionSafety,
     pub estimate: u64,
     pub context_window: Option<u64>,
@@ -54,6 +56,16 @@ impl Agent {
             sandbox_disabled: !self.approval_policy.sandboxed
                 && self.approval_policy.sandbox != Sandbox::DangerFullAccess,
             approval: self.approval_policy.approval,
+            benitoite_version: self
+                .tool_context
+                .benitoite
+                .as_ref()
+                .map(|processor| processor.version.clone()),
+            benitoite_path: self
+                .tool_context
+                .benitoite
+                .as_ref()
+                .map(|processor| processor.path.clone()),
             safety: self.session_safety.clone(),
             estimate: self.context_estimate(),
             context_window: self.context_window(),

@@ -27,6 +27,11 @@ case "$machine" in
     *) printf 'Unsupported ELF machine: %s\n' "$machine" >&2; exit 2 ;;
 esac
 
+if [[ -n "${BENITOITEH_TEST_BENITOITE_AARCH64:-}" ]]; then
+    processor_dir=$(cd "$(dirname "$BENITOITEH_TEST_BENITOITE_AARCH64")" && pwd -P)
+    container_args+=(-e "BENITOITEH_TEST_BENITOITE=$BENITOITEH_TEST_BENITOITE_AARCH64"
+        -v "$processor_dir:$processor_dir:ro")
+fi
 container_args+=(-v "$repo_root:$repo_root")
 if [[ "$executable_dir" != "$repo_root" ]]; then
     container_args+=(-v "$executable_dir:$executable_dir")
