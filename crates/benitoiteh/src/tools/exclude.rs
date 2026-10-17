@@ -42,12 +42,21 @@ impl ExcludeRules {
 
     /// 開いたものの実のパスについて、除外の理由を返す。
     pub fn reason(&self, real_path: &Path) -> Option<String> {
+        self.default_reason(real_path)
+            .or_else(|| self.additional_reason(real_path))
+    }
+
+    fn default_reason(&self, real_path: &Path) -> Option<String> {
         for component in real_path.components() {
             let name = component.as_os_str().to_string_lossy();
             if secret_component(&name) {
                 return Some(format!("{} ({name})", text::DEFAULT_SECRET));
             }
         }
+        self.directory_reason(real_path)
+    }
+
+    fn directory_reason(&self, real_path: &Path) -> Option<String> {
         if !real_path.starts_with(&self.spill) {
             if real_path.starts_with(&self.config) {
                 return Some(text::CONFIG_DIRECTORY.to_owned());
@@ -56,6 +65,10 @@ impl ExcludeRules {
                 return Some(text::DATA_DIRECTORY.to_owned());
             }
         }
+        None
+    }
+
+    fn additional_reason(&self, real_path: &Path) -> Option<String> {
         for (pattern, matcher) in &self.additional {
             for ancestor in real_path.ancestors() {
                 let relative = ancestor.strip_prefix(&self.project).unwrap_or(ancestor);
@@ -70,6 +83,45 @@ impl ExcludeRules {
             }
         }
         None
+    }
+
+    /// 診断の照合量を、後ろの部分の要素数の和と設定した型の数から見積もる。
+    pub(crate) fn diagnostic_cost(&self, path: &Path) -> Option<usize> {
+        let (path, prefix) = match path.strip_prefix(&self.project) {
+            Ok(relative) => (relative, self.project.components().count()),
+            Err(_) => (path, 0),
+        };
+        let count = path.components().take(33).count();
+        if count > 32 {
+            return None;
+        }
+        Some(
+            count
+                .saturating_mul(count.saturating_add(1))
+                .checked_div(2)
+                .unwrap_or(usize::MAX)
+                .saturating_add(count.saturating_mul(prefix))
+                .saturating_mul(self.additional.len()),
+        )
+    }
+
+    /// 秘密の要素名は全体で一度だけ調べ、後ろの部分にはディレクトリと型だけを当てる。
+    pub(crate) fn diagnostic_hidden(&self, path: &Path, relative: Option<&str>) -> bool {
+        if self.default_reason(path).is_some() || self.additional_reason(path).is_some() {
+            return true;
+        }
+        relative.is_some_and(|relative| {
+            let mut candidate = self.project.to_string_lossy().into_owned();
+            candidate.push('/');
+            let prefix = candidate.len();
+            crate::benitoite::diagnostics::suffixes(relative).any(|suffix| {
+                candidate.truncate(prefix);
+                candidate.push_str(suffix);
+                let candidate = Path::new(&candidate);
+                self.directory_reason(candidate).is_some()
+                    || self.additional_reason(candidate).is_some()
+            })
+        })
     }
 
     /// 除外されていない親の直下の一要素だけを判定する。木の走査は除外した親へ降りない。

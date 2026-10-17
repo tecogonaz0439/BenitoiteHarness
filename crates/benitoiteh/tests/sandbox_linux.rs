@@ -4,6 +4,8 @@
 
 #[path = "support/bash_sandbox.rs"]
 mod bash_sandbox;
+#[path = "support/socket_directory.rs"]
+mod socket_directory;
 
 use std::collections::BTreeMap;
 use std::error::Error;
@@ -899,8 +901,9 @@ fn dynamic_loader_must_be_denied_to_confine_execution() -> TestResult {
 #[test]
 fn external_unix_ipc_is_denied_but_stream_socketpairs_work() -> TestResult {
     let f = Fixture::new()?;
-    let stream = f.root.join("s");
-    let datagram = f.root.join("d");
+    let sockets = socket_directory::SocketDirectory::new()?;
+    let stream = sockets.path().join("s");
+    let datagram = sockets.path().join("d");
     let _listener = UnixListener::bind(&stream)?;
     let _datagram = UnixDatagram::bind(&datagram)?;
     for allow_ip in [false, true] {

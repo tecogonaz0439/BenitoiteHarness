@@ -254,6 +254,8 @@ pub enum Record {
         name: String,
         result: ToolResult,
         spill: Option<SpillInfo>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        stderr_spill: Option<SpillInfo>,
     },
     /// 確認の要求または結果。追加の欄がない形式の版 1 の記録も読む。
     Approval {

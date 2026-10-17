@@ -4,11 +4,12 @@ mod interactive;
 mod text;
 pub use interactive::{ApprovalPrompt, InteractiveApprover};
 
+pub use crate::benitoite::report::{ApprovalSource, ContentHash};
 use crate::config::{Approval, Sandbox};
 pub use crate::session::ApprovalOutcome;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeSet;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 /// 確認の分類。
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -22,6 +23,8 @@ pub enum ApprovalKind {
     Escalate,
     /// ウェブのドメインの取得。
     WebFetch,
+    /// スクリプトのエフェクトの確認。
+    Effects,
 }
 
 /// ハーネスが確かめた操作の事実。LLM の説明とは別に渡す。
@@ -35,6 +38,16 @@ pub struct ApprovalFacts {
     pub cwd: Option<PathBuf>,
     pub path: Option<PathBuf>,
     pub sandbox_policy: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub targets: Vec<PathBuf>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub effects: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub added_effects: Vec<String>,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub shell_reference: bool,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub sources: Vec<ApprovalSource>,
 }
 
 /// 起動時に選んだ方針と、実際のサンドボックスの有無。
@@ -79,6 +92,10 @@ pub fn decide(
         Approval::OnRequest | Approval::Never => Decision::Allow,
     };
     match kind {
+        ApprovalKind::Effects => match policy.approval {
+            Approval::Never => Decision::Deny,
+            Approval::OnRequest | Approval::Untrusted => Decision::Ask,
+        },
         ApprovalKind::WebFetch => {
             if facts
                 .domain
@@ -115,7 +132,9 @@ pub fn decide_in_mode(
     allowed: &BTreeSet<String>,
     domains: &BTreeSet<String>,
 ) -> Decision {
-    if mode == crate::config::Mode::Restricted && kind != ApprovalKind::WebFetch {
+    if mode == crate::config::Mode::Restricted
+        && !matches!(kind, ApprovalKind::WebFetch | ApprovalKind::Effects)
+    {
         Decision::Deny
     } else {
         decide(policy, kind, facts, allowed, domains)
@@ -155,6 +174,27 @@ impl ApprovalAnswer {
             allowed.insert(command.clone());
         }
     }
+    /// 承認した今回の集合だけを広げる。記録の再開では呼ばない。
+    pub(crate) fn remember_effects(
+        &self,
+        request: &ApprovalRecord,
+        confirmed: &mut std::collections::BTreeMap<
+            crate::tools::ConfirmKey,
+            BTreeSet<crate::benitoite::Effect>,
+        >,
+    ) {
+        if self.outcome == ApprovalOutcome::Approved
+            && let Some(key) = crate::tools::ConfirmKey::from_facts(request.kind, &request.facts)
+        {
+            confirmed.entry(key).or_default().extend(
+                request
+                    .facts
+                    .effects
+                    .iter()
+                    .filter_map(|name| crate::benitoite::Effect::from_name(name)),
+            );
+        }
+    }
     /// 今回の答えだけからドメインを覚える。再開した記録は許可を復元しない。
     pub(crate) fn remember_domain(&self, request: &ApprovalRecord, domains: &mut BTreeSet<String>) {
         if self.outcome == ApprovalOutcome::ApprovedForSession
@@ -192,21 +232,33 @@ pub fn policy_denial_message(kind: ApprovalKind) -> &'static str {
         ApprovalKind::Command => text::POLICY_COMMAND_DENIED,
         ApprovalKind::Escalate => text::POLICY_ESCALATE_DENIED,
         ApprovalKind::WebFetch => text::POLICY_WEB_DENIED,
+        ApprovalKind::Effects => text::POLICY_EFFECTS_DENIED,
     }
 }
 
 /// 利用者が拒否した操作について LLM に返す文。
-pub fn user_denial_message(kind: ApprovalKind, message: Option<&str>) -> String {
+pub fn user_denial_message(
+    kind: ApprovalKind,
+    facts: &ApprovalFacts,
+    project: &Path,
+    message: Option<&str>,
+) -> String {
     let denial = match kind {
-        ApprovalKind::WriteScope => text::USER_WRITE_DENIED,
-        ApprovalKind::Command => text::USER_COMMAND_DENIED,
-        ApprovalKind::Escalate => text::USER_ESCALATE_DENIED,
-        ApprovalKind::WebFetch => text::USER_WEB_DENIED,
+        ApprovalKind::WriteScope => text::USER_WRITE_DENIED.to_owned(),
+        ApprovalKind::Command => text::USER_COMMAND_DENIED.to_owned(),
+        ApprovalKind::Escalate => text::USER_ESCALATE_DENIED.to_owned(),
+        ApprovalKind::WebFetch => text::USER_WEB_DENIED.to_owned(),
+        ApprovalKind::Effects => text::effects_denied(facts, project),
     };
     match message {
-        Some(message) => text::with_user_message(denial, message),
-        None => denial.to_owned(),
+        Some(message) => text::with_user_message(&denial, message),
+        None => denial,
     }
+}
+
+/// 確認の事実から、LLM の説明と独立した要約を作る。
+pub fn effects_summary(facts: &ApprovalFacts, project: &Path) -> String {
+    text::effects_summary(facts, project)
 }
 
 #[cfg(test)]

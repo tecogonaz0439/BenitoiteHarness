@@ -31,9 +31,11 @@ fn diagnostic() -> Value {
 #[test]
 fn renders_warning_positions_labels_notes_and_edits() {
     let parsed = parse(diagnostic().to_string().as_bytes());
-    let prepared = PreparedDiagnostics::new(parsed.diagnostics, &Sources);
+    let prepared = PreparedDiagnostics::new(parsed.diagnostics, &Sources, &AtomicBool::new(false));
     assert_eq!(
-        prepared.render(&Sources, None).text,
+        prepared
+            .render(&Sources, None, &AtomicBool::new(false))
+            .text,
         "warning[W0501] a.bnt:1:2: unused value\n  1 | \t変数 + xs\n    | \t^^ here\n  note: here (b.bnt:1:2)\n  note: a note\n  help: rename it\n    replace 1:2-1:4 with \"x\\ny\"\n    replace b.bnt:2:3-2:5 with \"z\""
     );
 }
@@ -102,17 +104,23 @@ fn classifies_status_and_requires_every_typed_field() -> Result<(), Box<dyn std:
             assert_eq!(parsed.other_lines, [text]);
         }
     }
-    let no_position =
-        PreparedDiagnostics::new(parse(usage.to_string().as_bytes()).diagnostics, &Sources)
-            .render(&Sources, None);
+    let no_position = PreparedDiagnostics::new(
+        parse(usage.to_string().as_bytes()).diagnostics,
+        &Sources,
+        &AtomicBool::new(false),
+    )
+    .render(&Sources, None, &AtomicBool::new(false));
     assert!(no_position.text.starts_with("error unused value\n"));
     let mut no_code = error;
     *no_code.get_mut("code").ok_or("field")? = Value::Null;
     *no_code.pointer_mut("/primary/label").ok_or("label")? = json!("");
-    let text =
-        PreparedDiagnostics::new(parse(no_code.to_string().as_bytes()).diagnostics, &Sources)
-            .render(&Sources, None)
-            .text;
+    let text = PreparedDiagnostics::new(
+        parse(no_code.to_string().as_bytes()).diagnostics,
+        &Sources,
+        &AtomicBool::new(false),
+    )
+    .render(&Sources, None, &AtomicBool::new(false))
+    .text;
     assert!(text.starts_with("error a.bnt:1:2: unused value\n"));
     assert!(text.contains("\n    | \t^^\n"));
     for (end_line, end_column, marker) in [(1, 2, "\t^ here"), (2, 1, "\t^^^^^^^ here")] {
@@ -121,10 +129,13 @@ fn classifies_status_and_requires_every_typed_field() -> Result<(), Box<dyn std:
         *value
             .pointer_mut("/primary/end/column")
             .ok_or("end column")? = json!(end_column);
-        let text =
-            PreparedDiagnostics::new(parse(value.to_string().as_bytes()).diagnostics, &Sources)
-                .render(&Sources, None)
-                .text;
+        let text = PreparedDiagnostics::new(
+            parse(value.to_string().as_bytes()).diagnostics,
+            &Sources,
+            &AtomicBool::new(false),
+        )
+        .render(&Sources, None, &AtomicBool::new(false))
+        .text;
         assert!(text.contains(marker), "{text}");
     }
     Ok(())
@@ -142,9 +153,12 @@ fn deduplicates_orders_errors_first_and_counts_omitted_diagnostics()
             *d.get_mut("message").ok_or("field")? = json!(format!("error {n}"));
             lines.push(d.to_string());
         }
-        let prepared =
-            PreparedDiagnostics::new(parse(lines.join("\n").as_bytes()).diagnostics, &Sources);
-        let rendered = prepared.render(&Sources, None);
+        let prepared = PreparedDiagnostics::new(
+            parse(lines.join("\n").as_bytes()).diagnostics,
+            &Sources,
+            &AtomicBool::new(false),
+        );
+        let rendered = prepared.render(&Sources, None, &AtomicBool::new(false));
         assert_eq!(rendered.selected, 20usize.saturating_add(extra));
         assert!(
             rendered
@@ -183,14 +197,17 @@ fn secondary_and_edits_are_bounded_and_share_file_resolution()
     let edit = value.pointer("/helps/0/edits/0").ok_or("edit")?.clone();
     // 置き換えの上限は一件の診断全体に掛ける。help を分けても増やせない。
     *value.get_mut("helps").ok_or("helps")? = json!(
-        (0..22)
-            .map(|_| json!({"message":"rename", "edits":[edit.clone()]}))
+        (0..2)
+            .map(|_| json!({"message":"rename", "edits":vec![edit.clone();11]}))
             .collect::<Vec<_>>()
     );
-    let output =
-        PreparedDiagnostics::new(parse(value.to_string().as_bytes()).diagnostics, &sources)
-            .render(&sources, None)
-            .text;
+    let output = PreparedDiagnostics::new(
+        parse(value.to_string().as_bytes()).diagnostics,
+        &sources,
+        &AtomicBool::new(false),
+    )
+    .render(&sources, None, &AtomicBool::new(false))
+    .text;
     assert_eq!(output.matches("  note: here (a.bnt:1:2)").count(), 20);
     assert_eq!(output.matches("    replace ").count(), 20);
     assert!(
@@ -202,5 +219,221 @@ fn secondary_and_edits_are_bounded_and_share_file_resolution()
         "{output}"
     );
     assert_eq!(sources.0.get(), 1);
+    Ok(())
+}
+
+// 関門: 読まないパスの存在だけで診断の件数が変わる情報漏れを共有の変換境界で守る。
+#[test]
+fn hidden_file_existence_does_not_change_diagnostic_counts()
+-> Result<(), Box<dyn std::error::Error>> {
+    struct Hidden(bool);
+    impl DiagnosticSources for Hidden {
+        fn resolve(&self, file: &str) -> DiagnosticFile {
+            if file == "a.bnt" {
+                Sources.resolve(file)
+            } else {
+                DiagnosticFile {
+                    path: file.into(),
+                    display: None,
+                    relative: None,
+                    exists: self.0,
+                }
+            }
+        }
+        fn line(&self, file: &Path, line: u64) -> Option<SourceLine> {
+            Sources.line(file, line)
+        }
+    }
+    let mut visible = diagnostic();
+    *visible.get_mut("secondary").ok_or("secondary")? = json!([]);
+    *visible.get_mut("helps").ok_or("helps")? = json!([]);
+    let mut hidden = visible.clone();
+    *hidden.get_mut("primary").ok_or("primary")? = span("/home/user/.ssh/id_ed25519");
+    let input = format!("{visible}\n{hidden}");
+    for exists in [false, true] {
+        let sources = Hidden(exists);
+        let rendered = PreparedDiagnostics::new(
+            parse(input.as_bytes()).diagnostics,
+            &sources,
+            &AtomicBool::new(false),
+        )
+        .render(&sources, None, &AtomicBool::new(false));
+        assert_eq!(rendered.unread, 1, "exists={exists}");
+        assert!(!rendered.text.contains("id_ed25519"));
+    }
+    Ok(())
+}
+
+// 関門: 小さな入力要素で Vec の容量が膨らむ退行を、JSON の読み取り結果で検出する。
+#[test]
+fn diagnostic_arrays_are_bounded_while_deserializing() -> Result<(), Box<dyn std::error::Error>> {
+    for field in ["secondary", "notes", "helps", "edits"] {
+        let mut value = diagnostic();
+        let pointer = if field == "edits" {
+            "/helps/0/edits".to_owned()
+        } else {
+            format!("/{field}")
+        };
+        let first = value
+            .pointer(&pointer)
+            .and_then(Value::as_array)
+            .and_then(|a| a.first())
+            .ok_or("item")?
+            .clone();
+        *value.pointer_mut(&pointer).ok_or("field")? = json!(vec![first; 1000]);
+        let parsed = parse(value.to_string().as_bytes());
+        let d = parsed.diagnostics.first().ok_or("diagnostic")?;
+        assert!(
+            d.secondary.len() <= 20
+                && d.notes.len() <= 20
+                && d.helps.len() <= 20
+                && d.helps.iter().all(|help| help.edits.len() <= 20),
+            "unbounded {field}"
+        );
+        let omitted = match field {
+            "secondary" => d.secondary.omitted,
+            "notes" => d.notes.omitted,
+            "helps" => d.helps.omitted,
+            "edits" => d.helps.first().ok_or("help")?.edits.omitted,
+            _ => return Err("unknown field".into()),
+        };
+        assert_eq!(omitted, 980, "{field}");
+        let stop = AtomicBool::new(false);
+        let rendered = PreparedDiagnostics::new(parsed.diagnostics, &Sources, &stop)
+            .render(&Sources, None, &stop);
+        assert!(rendered.text.contains("[980 "), "{}", rendered.text);
+    }
+    Ok(())
+}
+
+// 関門: 主位置だけの上限では補助位置・置き換えを使う DoS が残る。解決に入らないことを確かめる。
+#[test]
+fn path_limits_cover_primary_secondary_and_edits_before_resolution()
+-> Result<(), Box<dyn std::error::Error>> {
+    struct Count(std::cell::Cell<usize>);
+    impl DiagnosticSources for Count {
+        fn resolve(&self, file: &str) -> DiagnosticFile {
+            self.0.set(self.0.get().saturating_add(1));
+            Sources.resolve(file)
+        }
+        fn line(&self, file: &Path, line: u64) -> Option<SourceLine> {
+            Sources.line(file, line)
+        }
+    }
+    for path in ["x".repeat(4097), "a/".repeat(256) + "a"] {
+        for pointer in [
+            "/primary/file",
+            "/secondary/0/file",
+            "/helps/0/edits/0/file",
+        ] {
+            let mut value = diagnostic();
+            *value.pointer_mut(pointer).ok_or("file")? = json!(path);
+            let sources = Count(std::cell::Cell::new(0));
+            let stop = AtomicBool::new(false);
+            let rendered = PreparedDiagnostics::new(
+                parse(value.to_string().as_bytes()).diagnostics,
+                &sources,
+                &stop,
+            )
+            .render(&sources, None, &stop);
+            assert_eq!(sources.0.get(), 0, "{pointer}");
+            assert_eq!(rendered.unread, 1);
+            assert!(rendered.text.is_empty());
+        }
+    }
+    for path in ["x".repeat(4096), "a/".repeat(255) + "a"] {
+        let mut value = diagnostic();
+        *value.pointer_mut("/primary/file").ok_or("primary")? = json!(path);
+        let sources = Count(std::cell::Cell::new(0));
+        let stop = AtomicBool::new(false);
+        let _prepared = PreparedDiagnostics::new(
+            parse(value.to_string().as_bytes()).diagnostics,
+            &sources,
+            &stop,
+        );
+        assert_eq!(sources.0.get(), 1);
+    }
+    Ok(())
+}
+
+// 関門: 位置の解決は先頭千件で止め、途中の取り消しも次の解決より前に受け取る。
+#[test]
+fn resolution_limit_and_cancellation_stop_further_source_access()
+-> Result<(), Box<dyn std::error::Error>> {
+    struct Count<'a> {
+        calls: std::cell::Cell<usize>,
+        stop: Option<&'a AtomicBool>,
+    }
+    impl DiagnosticSources for Count<'_> {
+        fn resolve(&self, file: &str) -> DiagnosticFile {
+            self.calls.set(self.calls.get().saturating_add(1));
+            if let Some(stop) = self.stop {
+                stop.store(true, Ordering::Release);
+            }
+            Sources.resolve(file)
+        }
+        fn line(&self, file: &Path, line: u64) -> Option<SourceLine> {
+            Sources.line(file, line)
+        }
+    }
+    let input = (0..1005)
+        .map(|i| {
+            let mut d = diagnostic();
+            if let Some(file) = d.pointer_mut("/primary/file") {
+                *file = json!(format!("file-{i}.bnt"));
+            }
+            d.to_string()
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    let stop = AtomicBool::new(false);
+    let sources = Count {
+        calls: std::cell::Cell::new(0),
+        stop: None,
+    };
+    let prepared = PreparedDiagnostics::new(parse(input.as_bytes()).diagnostics, &sources, &stop);
+    assert_eq!(sources.calls.get(), 1000);
+    let rendered = prepared.render(&sources, None, &stop);
+    assert!(rendered.text.contains("5 diagnostics were not inspected"));
+    let stop = AtomicBool::new(false);
+    let sources = Count {
+        calls: std::cell::Cell::new(0),
+        stop: Some(&stop),
+    };
+    let prepared = PreparedDiagnostics::new(parse(input.as_bytes()).diagnostics, &sources, &stop);
+    assert_eq!(sources.calls.get(), 1);
+    let rendered = prepared.render(&sources, None, &stop);
+    assert_eq!(sources.calls.get(), 1);
+    assert!(rendered.text.contains("cancelled"));
+    struct CancelLine<'a> {
+        stop: &'a AtomicBool,
+        calls: std::cell::Cell<usize>,
+    }
+    impl DiagnosticSources for CancelLine<'_> {
+        fn resolve(&self, file: &str) -> DiagnosticFile {
+            self.calls.set(self.calls.get().saturating_add(1));
+            Sources.resolve(file)
+        }
+        fn line(&self, file: &Path, line: u64) -> Option<SourceLine> {
+            self.stop.store(true, Ordering::Release);
+            Sources.line(file, line)
+        }
+    }
+    let stop = AtomicBool::new(false);
+    let sources = CancelLine {
+        stop: &stop,
+        calls: std::cell::Cell::new(0),
+    };
+    let prepared = PreparedDiagnostics::new(
+        parse(diagnostic().to_string().as_bytes()).diagnostics,
+        &sources,
+        &stop,
+    );
+    assert_eq!(sources.calls.get(), 1);
+    let rendered = prepared.render(&sources, None, &stop);
+    assert_eq!(sources.calls.get(), 1);
+    assert!(!rendered.text.contains("  note:"));
+    assert!(!rendered.text.contains("  help:"));
+    assert!(rendered.text.contains("cancelled"));
     Ok(())
 }

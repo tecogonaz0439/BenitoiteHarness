@@ -109,6 +109,7 @@ impl Fixture {
             &call,
             ApprovalStatus::Approved,
             Invocation {
+                confirmed_effects: &std::collections::BTreeMap::new(),
                 session_domains: &Default::default(),
                 call_id: id,
                 cancelled,

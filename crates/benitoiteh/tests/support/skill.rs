@@ -17,6 +17,7 @@ pub fn skills()
             let output = std::process::Command::new(&processor).args(args).output()?;
             if !output.status.success() {
                 return Err(BenitoiteError::Exit {
+                    stdout: Vec::new(),
                     code: output.status.code(),
                     stderr: output.stderr,
                 });

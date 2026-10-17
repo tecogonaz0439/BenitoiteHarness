@@ -137,6 +137,7 @@ pub fn approval_title(kind: crate::approval::ApprovalKind) -> &'static str {
         ApprovalKind::Escalate => "╭─ Run outside the sandbox?",
         ApprovalKind::WriteScope => "╭─ Write outside the allowed scope?",
         ApprovalKind::WebFetch => "╭─ Fetch web page?",
+        ApprovalKind::Effects => "╭─ Run Benitoite script?",
     }
 }
 
@@ -149,6 +150,7 @@ pub fn answer_keys(kind: Option<crate::approval::ApprovalKind>) -> &'static str 
         Some(ApprovalKind::Escalate) => {
             "[y] run outside the sandbox once  [n] decline  [m] decline with a message"
         }
+        Some(ApprovalKind::Effects) => "[y] run  [n] decline  [m] decline with a message",
         Some(ApprovalKind::WriteScope) => "[y] write  [n] decline  [m] decline with a message",
         Some(ApprovalKind::WebFetch) => {
             "[y] fetch once  [s] allow this domain for this session  [n] decline  [m] decline with a message"
@@ -332,6 +334,7 @@ pub fn checkpoint_row(point: &crate::rewind::CheckpointInfo) -> String {
     let reason = match checkpoint.reason {
         crate::rewind::CheckpointReason::Request => "request",
         crate::rewind::CheckpointReason::Bash => "bash",
+        crate::rewind::CheckpointReason::BenitoiteRun => "benitoite_run",
         crate::rewind::CheckpointReason::Write => "write",
         crate::rewind::CheckpointReason::Edit => "edit",
         crate::rewind::CheckpointReason::BeforeRewind => "before rewind",
@@ -414,3 +417,10 @@ pub fn interpreter(path: Option<&std::path::Path>, version: Option<&str>) -> Str
         _ => "Interpreter: unavailable (Benitoite tools disabled)".into(),
     }
 }
+
+pub const TARGETS: &str = "Targets";
+pub const EFFECTS: &str = "Effects";
+pub const ADDED_EFFECTS: &str = "Added effects";
+pub const SHELL: &str = "Shell";
+pub const NO_EFFECTS: &str = "none";
+pub const SHELL_REFERENCE: &str = "The script references Process.shell; the OS sandbox blocks starting a shell in restricted mode.";

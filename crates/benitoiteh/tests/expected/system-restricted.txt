@@ -7,6 +7,7 @@ grep: Search file lines using a regular expression.
 write: Create or replace a file.
 edit: Replace matching text in a file.
 benitoite_check: Check a Benitoite script, or the main.bnt of a directory, without running it.
+benitoite_run: Run a Benitoite script in the sandbox after benitoiteh inspects the effects of `main` and asks the user to confirm them.
 benitoite_explain: Explain a Benitoite diagnostic code, such as E0405, W0501, or R0101.
 benitoite_reference: Read a document of the Benitoite Skill that comes with the installed processor.
 web_fetch: Fetch an HTTPS URL and return its text content.
@@ -20,6 +21,8 @@ write: Read an existing file before replacing it; if it has changed since that r
 edit: Read the file before editing it. Provide a nonempty old_string that occurs once, or set replace_all to true to replace every occurrence.
 benitoite_check: Set `tests` to true to check a file, or every .bnt file under a directory, without requiring `main` and without running tests (like `benitoite test --check`).
 A file passed directly resolves imports from its own directory; to check a module that imports others by names from the project root, pass the project directory with `tests` set to true.
+benitoite_run: Check the script with benitoite_check first. You do not choose the allowed effects: benitoiteh passes `--allow-effects` from the inspection report.
+Pass script arguments in `args` and standard input in `stdin` (empty otherwise). `timeout` is in seconds (default 120, max 600).
 benitoite_explain: Pass the code shown in a diagnostic; the result is that code's section of `references/diagnostics.md`.
 benitoite_reference: Pass `name` as the path under references/ without `.md`, such as `idioms`, `grammar`, `common-mistakes`, `language-comparison`, `diagnostics`, `inspection`, or `stdlib/List`; `stdlib/index` lists the standard library modules.
 Omit `name` to list the available names. Long documents are returned in parts; use `offset` and `limit` to read on.

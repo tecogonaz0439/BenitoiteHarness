@@ -48,6 +48,7 @@ fn approval_gate_and_key_table_have_no_implicit_or_modified_answer() -> TestResu
         ),
         (ApprovalKind::Escalate, 'y', ApprovalOutcome::Approved),
         (ApprovalKind::WriteScope, 'n', ApprovalOutcome::Denied),
+        (ApprovalKind::Effects, 'y', ApprovalOutcome::Approved),
         (
             ApprovalKind::WebFetch,
             's',
@@ -100,7 +101,10 @@ fn approval_gate_and_key_table_have_no_implicit_or_modified_answer() -> TestResu
             Event::Key(repeat),
             Event::Key(release),
         ];
-        if matches!(kind, ApprovalKind::Escalate | ApprovalKind::WriteScope) {
+        if matches!(
+            kind,
+            ApprovalKind::Escalate | ApprovalKind::WriteScope | ApprovalKind::Effects
+        ) {
             invalid.extend([
                 key(KeyCode::Char('a'), KeyModifiers::NONE),
                 key(KeyCode::Char('s'), KeyModifiers::NONE),
@@ -1034,5 +1038,93 @@ fn invisible_and_ambiguous_characters_cannot_hide_command_suffixes() -> TestResu
         benitoiteh::ui::terminal_text("\u{200e}\u{200f}\u{61c}", false),
         "\\u{200e}\\u{200f}\\u{61c}"
     );
+    Ok(())
+}
+
+// 関門: 記録専用の sources の漏れ、空集合の非表示、事実を隠したままの許可を画面境界で守る。
+#[test]
+fn effect_confirmation_displays_all_facts_but_not_source_hashes_and_must_fit() -> TestResult {
+    for empty in [false, true] {
+        let mut screen = Screen::new((140, 40), status());
+        let (mut prompt, receiver) = prompt(ApprovalKind::Effects, "unused");
+        prompt.request.facts = ApprovalFacts {
+            targets: vec!["/project/main.bnt".into(), "/project/other.bnt".into()],
+            effects: if empty {
+                vec![]
+            } else {
+                vec!["Console.Write".into(), "Process.Run".into()]
+            },
+            added_effects: if empty {
+                vec![]
+            } else {
+                vec!["Process.Run".into()]
+            },
+            shell_reference: !empty,
+            sources: vec![benitoiteh::approval::ApprovalSource {
+                display_path: "HIDDEN_SOURCE".into(),
+                content_hash: benitoiteh::approval::ContentHash {
+                    algorithm: "sha256".into(),
+                    value: "HIDDEN_HASH".into(),
+                },
+            }],
+            ..ApprovalFacts::default()
+        };
+        screen.open_approval(prompt);
+        let mut bytes = Vec::new();
+        screen.draw(&mut bytes, None)?;
+        let rendered = String::from_utf8(bytes)?;
+        let visible = controls()?.replace_all(&rendered, "");
+        for value in [
+            "Run Benitoite script?",
+            "Targets",
+            "/project/main.bnt",
+            "/project/other.bnt",
+            "Effects",
+            "[y] run  [n] decline  [m] decline with a message",
+        ] {
+            assert!(visible.contains(value), "{visible}");
+        }
+        assert!(!visible.contains("HIDDEN") && !visible.contains("sha256"));
+        if empty {
+            assert!(
+                visible.contains("none")
+                    && !visible.contains("Added effects")
+                    && !visible.contains("Shell")
+            );
+        } else {
+            for value in [
+                "Added effects",
+                "Shell",
+                "The script references Process.shell",
+                "OS sandbox blocks starting a shell",
+            ] {
+                assert!(visible.contains(value), "{visible}");
+            }
+        }
+        let shown = Instant::now();
+        screen.presented(shown);
+        let at = shown + Duration::from_millis(300);
+        screen.input_at(Event::Resize(30, 8), at, Duration::ZERO, true);
+        screen.draw(&mut Vec::new(), None)?;
+        screen.presented(at);
+        let at = at + Duration::from_millis(300);
+        screen.input_at(
+            key(KeyCode::Char('y'), KeyModifiers::NONE),
+            at,
+            Duration::ZERO,
+            true,
+        );
+        assert!(receiver.try_recv().is_err());
+        screen.input_at(
+            key(KeyCode::Char('n'), KeyModifiers::NONE),
+            at,
+            Duration::ZERO,
+            true,
+        );
+        assert_eq!(
+            receiver.recv_timeout(Duration::from_secs(1))?.outcome,
+            ApprovalOutcome::Denied
+        );
+    }
     Ok(())
 }

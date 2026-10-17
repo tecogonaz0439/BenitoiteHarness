@@ -402,3 +402,38 @@ pub fn other_diagnostics(count: usize) -> String {
         )
     }
 }
+
+pub const BENITOITE_RUN: (&str, &str) =
+    prompt_parts(include_str!("../../prompts/tools/benitoite_run.md"));
+pub const RUN_ARGS: &str = "Arguments passed to the Benitoite script.";
+pub const RUN_STDIN: &str = "Text written to the script's standard input; empty when omitted.";
+pub const RUN_CONTEXT: &str =
+    "The Benitoite script execution context is unavailable. Stop and report.";
+pub const RUN_PATH: &str =
+    "The script path must be a UTF-8 path ending in .bnt. Choose a readable Benitoite script.";
+pub const RUN_STDOUT: &str = "[stdout]";
+pub const RUN_STDERR: &str = "[stderr]";
+pub const RUN_CANCELLED: &str =
+    "[The script was stopped because the user cancelled the tool call.]";
+pub const RUN_LEFTOVERS: &str = "[Processes started by the script may still be running.]";
+pub fn run_timed_out(timeout: u64) -> String {
+    format!("[The script timed out after {timeout} seconds and was stopped.]")
+}
+pub fn run_failure(error: &dyn std::fmt::Display) -> String {
+    format!(
+        "Could not run the Benitoite script: {error}. Check the script and the sandbox configuration, then try again."
+    )
+}
+pub fn run_diagnostics_omitted(count: usize, error: bool) -> String {
+    let noun = if count == 1 {
+        "diagnostic line was"
+    } else {
+        "diagnostic lines were"
+    };
+    let errors = if error {
+        " At least one omitted diagnostic was an error."
+    } else {
+        ""
+    };
+    format!("[{count} {noun} not shown (limits: first 1000 diagnostics and 16 MiB).{errors}]")
+}

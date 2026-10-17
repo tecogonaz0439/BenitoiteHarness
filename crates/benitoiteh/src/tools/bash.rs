@@ -1,7 +1,6 @@
 //! 通常モードのシェルを確認後に起動し、出力の末尾と保存を管理する（設計書 01-03「bash（通常モード）」）。
 
 use std::ffi::OsString;
-use std::io::{self, Write};
 use std::os::unix::process::ExitStatusExt;
 use std::path::Path;
 
@@ -10,6 +9,7 @@ use std::time::Duration;
 
 use serde_json::Value;
 
+use super::process_output::Output;
 use super::{
     ApprovalRequest, ApprovalStatus, Invocation, ShellContext, ToolContext, ToolError, ToolOutput,
     text,
@@ -17,7 +17,6 @@ use super::{
 use crate::approval::{ApprovalFacts, ApprovalKind};
 use crate::sandbox::run::{self, Leftovers, RunCommand, RunEnd, RunLimits};
 use crate::sandbox::{SandboxCommand, SandboxStdin};
-use crate::session::SpillWriter;
 
 const MAX_BYTES: usize = 50 * 1024;
 const MAX_LINES: usize = 2000;
@@ -85,6 +84,8 @@ pub(super) fn execute(
         session
             .spill_writer(invocation.call_id)
             .map_err(|e| failure(&e))?,
+        MAX_BYTES,
+        MAX_LINES,
     )));
     context.checkpoint_before(crate::rewind::CheckpointReason::Bash, None, &invocation)?;
     let outcome = run::run(
@@ -256,139 +257,6 @@ fn sandbox_denied(
         ]
         .iter()
         .any(|needle| tail.contains(needle))
-}
-
-struct Output {
-    writer: Option<SpillWriter>,
-    bytes: Vec<u8>,
-    total_bytes: usize,
-    partial_first: bool,
-    newlines: usize,
-    ends_newline: bool,
-    closed: bool,
-}
-impl Output {
-    fn new(writer: SpillWriter) -> Self {
-        Self {
-            writer: Some(writer),
-            bytes: Vec::new(),
-            total_bytes: 0,
-            partial_first: false,
-            newlines: 0,
-            ends_newline: false,
-            closed: false,
-        }
-    }
-    fn tail(&self) -> (String, usize, usize, bool) {
-        let total = self
-            .newlines
-            .saturating_add(usize::from(self.total_bytes != 0 && !self.ends_newline));
-        let mut bytes = self.bytes.as_slice();
-        let mut truncated = self.total_bytes > bytes.len();
-        let mut cut_in_line = self.partial_first;
-        // バイト上限で最初の行が欠けたときは、最後の一行だけの場合を除き返さない。
-        // （設計書 01-03「出力の切り詰め」）。
-        if self.partial_first
-            && let Some(index) = bytes.iter().position(|b| *b == b'\n')
-            && index.saturating_add(1) < bytes.len()
-        {
-            bytes = bytes.get(index.saturating_add(1)..).unwrap_or_default();
-            cut_in_line = false;
-        }
-        let mut lines = bytes
-            .iter()
-            .filter(|b| **b == b'\n')
-            .count()
-            .saturating_add(usize::from(!bytes.is_empty() && !bytes.ends_with(b"\n")));
-        while lines > MAX_LINES {
-            let Some(index) = bytes.iter().position(|b| *b == b'\n') else {
-                break;
-            };
-            bytes = bytes.get(index.saturating_add(1)..).unwrap_or_default();
-            lines = lines.saturating_sub(1);
-            truncated = true;
-            cut_in_line = false;
-        }
-        if cut_in_line {
-            while bytes.first().is_some_and(|b| b & 0xc0 == 0x80) {
-                bytes = bytes.get(1..).unwrap_or_default();
-            }
-        }
-        let mut contents = String::from_utf8_lossy(bytes).into_owned();
-        if contents.len() > MAX_BYTES {
-            let mut start = contents.len().saturating_sub(MAX_BYTES);
-            while !contents.is_char_boundary(start) {
-                start = start.saturating_add(1);
-            }
-            if let Some(index) = contents.get(start..).and_then(|s| s.find('\n')) {
-                let next = start.saturating_add(index).saturating_add(1);
-                if next < contents.len() {
-                    start = next;
-                }
-            }
-            contents = contents.get(start..).unwrap_or_default().to_owned();
-            lines = contents.lines().count();
-            truncated = true;
-        }
-        (
-            contents,
-            total.saturating_sub(lines).saturating_add(1),
-            total,
-            truncated,
-        )
-    }
-}
-impl Write for Output {
-    fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
-        if self.closed {
-            return Ok(bytes.len());
-        }
-        if let Some(writer) = &mut self.writer
-            && writer.write_all(bytes).is_err()
-            && let Some(writer) = self.writer.take()
-        {
-            let _removed = writer.discard();
-        }
-        self.total_bytes = self.total_bytes.saturating_add(bytes.len());
-        self.newlines = self
-            .newlines
-            .saturating_add(bytes.iter().filter(|b| **b == b'\n').count());
-        if let Some(last) = bytes.last() {
-            self.ends_newline = *last == b'\n';
-        }
-        self.bytes.extend_from_slice(bytes);
-        let excess = self.bytes.len().saturating_sub(MAX_BYTES);
-        if excess != 0 {
-            self.partial_first = self.bytes.get(excess.saturating_sub(1)) != Some(&b'\n');
-            self.bytes.drain(..excess);
-        }
-        let mut lines = self
-            .bytes
-            .iter()
-            .filter(|b| **b == b'\n')
-            .count()
-            .saturating_add(usize::from(!self.ends_newline));
-        let mut start = 0;
-        while lines > MAX_LINES {
-            let Some(index) = self
-                .bytes
-                .get(start..)
-                .and_then(|rest| rest.iter().position(|b| *b == b'\n'))
-            else {
-                break;
-            };
-            start = start.saturating_add(index).saturating_add(1);
-            lines = lines.saturating_sub(1);
-        }
-        if start != 0 {
-            self.bytes.drain(..start);
-            self.partial_first = false;
-        }
-        Ok(bytes.len())
-    }
-    fn flush(&mut self) -> io::Result<()> {
-        Ok(())
-    }
 }
 
 #[cfg(test)]

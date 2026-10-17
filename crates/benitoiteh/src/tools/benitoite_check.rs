@@ -48,12 +48,16 @@ fn query(
         Err(BenitoiteError::Exit {
             code: Some(status),
             stderr,
+            ..
         }) => (status, stderr),
         Err(error) => return Err(error),
     };
     let parsed = diagnostics::parse(&stderr);
     let class = diagnostics::classify_check(status, &parsed);
-    Ok((class, PreparedDiagnostics::new(parsed.diagnostics, context)))
+    Ok((
+        class,
+        PreparedDiagnostics::new(parsed.diagnostics, context, cancelled),
+    ))
 }
 
 pub(super) fn execute(
@@ -81,7 +85,7 @@ pub(super) fn execute(
         .unwrap_or(false);
     let mut output = match query(context, &real_path, tests, invocation.cancelled) {
         Ok((class @ (CheckClass::Ok | CheckClass::Warnings | CheckClass::Failed), diagnostics)) => {
-            let rendered = diagnostics.render(context, None);
+            let rendered = diagnostics.render(context, None, invocation.cancelled);
             let mut body = rendered.text;
             if rendered.unread > 0 {
                 push_line(
@@ -148,7 +152,7 @@ pub(super) fn after_write(
     output.check_launch = Some(CheckLaunch::AfterWrite);
     match query(context, context.project.real_path(), true, cancelled) {
         Ok((CheckClass::Ok | CheckClass::Warnings | CheckClass::Failed, diagnostics)) => {
-            let rendered = diagnostics.render(context, Some(real_path));
+            let rendered = diagnostics.render(context, Some(real_path), cancelled);
             let mut body = text::after_check(path, rendered.selected == 0);
             if !rendered.text.is_empty() {
                 push_line(&mut body, &rendered.text);

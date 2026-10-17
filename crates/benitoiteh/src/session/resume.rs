@@ -183,6 +183,7 @@ impl ResumeState {
                     name,
                     result: result.clone(),
                     spill: None,
+                    stderr_spill: None,
                 });
             }
         }

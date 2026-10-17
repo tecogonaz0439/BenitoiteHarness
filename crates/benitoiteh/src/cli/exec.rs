@@ -454,9 +454,9 @@ pub(super) fn prepare(
                 writable_roots,
                 policy,
                 policy_name,
-                helper,
-                scratch,
-                placeholders,
+                helper: helper.clone(),
+                scratch: scratch.clone(),
+                placeholders: placeholders.clone(),
                 env,
                 approval,
             })
@@ -520,6 +520,25 @@ pub(super) fn prepare(
         }
         if let Some(skill) = skill {
             context = context.with_skill(skill);
+        }
+        if resolved.mode == Mode::Restricted
+            && let Some(processor) = &processor
+        {
+            context = context.with_run_context(benitoite::RunContext {
+                processor: processor.path.clone(),
+                helper: helper.clone(),
+                scratch: scratch.clone(),
+                placeholders: placeholders.clone(),
+                env: child_environment(
+                    std::env::vars_os(),
+                    &user.referenced_env_vars(),
+                    &locations.temporary,
+                    Some(("restricted", false)),
+                ),
+                locations: locations.clone(),
+                denied_candidates: candidates.clone(),
+                allowed_programs: allowed_programs.clone(),
+            });
         }
         let approval_policy = ApprovalPolicy {
             approval,

@@ -154,6 +154,7 @@ fn every_untrusted_surface_emits_only_harness_controls() -> TestResult {
                 sandbox_policy: Some(attack.into()),
                 url: Some(attack.into()),
                 domain: Some(attack.into()),
+                ..ApprovalFacts::default()
             },
             justification: Some(attack.into()),
             summary: attack.into(),

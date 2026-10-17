@@ -131,6 +131,33 @@ impl Confirmation {
                     rows.extend(fact(label, value, width, compact));
                 }
             }
+            if request.kind == ApprovalKind::Effects {
+                let targets = request
+                    .facts
+                    .targets
+                    .iter()
+                    .map(|p| p.to_string_lossy())
+                    .collect::<Vec<_>>()
+                    .join("\n");
+                rows.extend(fact(text::TARGETS, &targets, width, compact));
+                let effects = if request.facts.effects.is_empty() {
+                    text::NO_EFFECTS.into()
+                } else {
+                    request.facts.effects.join(", ")
+                };
+                rows.extend(fact(text::EFFECTS, &effects, width, compact));
+                if !request.facts.added_effects.is_empty() {
+                    rows.extend(fact(
+                        text::ADDED_EFFECTS,
+                        &request.facts.added_effects.join(", "),
+                        width,
+                        compact,
+                    ));
+                }
+                if request.facts.shell_reference {
+                    rows.extend(fact(text::SHELL, text::SHELL_REFERENCE, width, compact));
+                }
+            }
             rows
         } else {
             fact(text::WARNING, text::MODE_CHANGE_WARNING, width, compact)

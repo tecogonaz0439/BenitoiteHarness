@@ -182,6 +182,7 @@ fn records_replay_conversation_losslessly_and_finish_with_summary() -> TestResul
             name: "write".to_owned(),
             result: result.clone(),
             spill: None,
+            stderr_spill: None,
         })?;
     }
     let mut summary = Summary::default();
@@ -249,6 +250,7 @@ fn replay_ignores_only_torn_tail_and_fills_missing_tool_results_before_next_mess
         name: "write".to_owned(),
         result: result(&done, "already done"),
         spill: None,
+        stderr_spill: None,
     })?;
     let message = UserMessage {
         parts: vec![UserPart {

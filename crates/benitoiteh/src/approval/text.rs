@@ -16,3 +16,38 @@ pub fn with_user_message(denial: &str, message: &str) -> String {
 pub const POLICY_WEB_DENIED: &str = "Tool call was denied by the never approval policy: this web domain requires approval. Use a domain in web_fetch.allowed_domains or stop and report.";
 pub const USER_WEB_DENIED: &str =
     "The user denied this web fetch. No DNS lookup or HTTP request was made by this call.";
+
+pub const POLICY_EFFECTS_DENIED: &str = "Tool call was denied by the never approval policy: running a Benitoite script requires confirming its effects. Stop and report.";
+fn target(facts: &super::ApprovalFacts, project: &std::path::Path) -> String {
+    facts
+        .targets
+        .first()
+        .map(|p| {
+            p.strip_prefix(project)
+                .unwrap_or(p)
+                .to_string_lossy()
+                .into_owned()
+        })
+        .unwrap_or_default()
+}
+fn effects(facts: &super::ApprovalFacts) -> String {
+    if facts.effects.is_empty() {
+        "none".into()
+    } else {
+        facts.effects.join(", ")
+    }
+}
+pub fn effects_summary(facts: &super::ApprovalFacts, project: &std::path::Path) -> String {
+    format!(
+        "Run {} with effects: {}",
+        target(facts, project),
+        effects(facts)
+    )
+}
+pub fn effects_denied(facts: &super::ApprovalFacts, project: &std::path::Path) -> String {
+    format!(
+        "The user declined to run {} with effects: {}. Ask the user how to proceed, or change the script.",
+        target(facts, project),
+        effects(facts)
+    )
+}

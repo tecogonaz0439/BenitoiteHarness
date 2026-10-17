@@ -4,6 +4,7 @@ use std::cell::Cell;
 use std::error::Error;
 use std::fs;
 use std::sync::atomic::AtomicBool;
+use std::time::{Duration, Instant};
 
 use super::*;
 use crate::provider::UserPartKind;
@@ -18,17 +19,30 @@ fn prepare(
     args: &ExecArgs,
     overrides: Option<&SessionOverrides>,
     paths: &DataPaths,
-    check: impl FnOnce(&Path, &Path) -> Result<(), SandboxError>,
+    mut check: impl FnMut(&Path, &Path) -> Result<(), SandboxError>,
     confirm: &mut dyn FnMut(&ModeChange) -> bool,
 ) -> Result<Prepared, PreparationError> {
-    super::prepare(
-        args,
-        overrides,
-        paths,
-        check,
-        QueryLauncher::TestDirect,
-        confirm,
-    )
+    // 並行するテストの fork が継承した錠は exec まで残る。再開時の Locked だけを
+    // 短時間待ち、本当に錠を放さない退行とほかの誤りは失敗にする（設計書 07-01）。
+    let started = Instant::now();
+    loop {
+        match super::prepare(
+            args,
+            overrides,
+            paths,
+            &mut check,
+            QueryLauncher::TestDirect,
+            confirm,
+        ) {
+            Err(PreparationError {
+                error: StartupError::Session(SessionError::Locked),
+                ..
+            }) if args.resume.is_some() && started.elapsed() < Duration::from_secs(2) => {
+                thread::sleep(Duration::from_millis(20));
+            }
+            result => return result,
+        }
+    }
 }
 fn prepare_new(
     args: &ExecArgs,
@@ -219,7 +233,6 @@ fn startup_selects_policy_and_fails_closed_unless_explicitly_disabled() -> Resul
         );
         drop(agent);
         drop(session);
-        panic::install(None, None);
         assert_eq!(fs::read_dir(&paths.temporary_root)?.count(), 0);
     }
     Ok(())
@@ -288,7 +301,6 @@ fn unavailable_sandbox_keeps_write_approval_policy_and_configured_roots()
         )));
         drop(agent);
         drop(session);
-        panic::install(None, None);
         server.shutdown()?;
     }
     Ok(())
@@ -344,20 +356,34 @@ fn declined_normal_resume_preserves_record_bytes_and_releases_lock() -> Result<(
     ));
     assert!(confirmed.get());
     assert_eq!(fs::read(&record)?, before);
-    drop(Session::open(&paths, &id)?);
+    // prepare と同じく、ほかのテストの fork が継承した錠だけを短時間待つ。
+    let started = Instant::now();
+    let reopened = loop {
+        match Session::open(&paths, &id) {
+            Err(SessionError::Locked) if started.elapsed() < Duration::from_secs(2) => {
+                thread::sleep(Duration::from_millis(20));
+            }
+            result => break result?,
+        }
+    };
+    drop(reopened);
     assert_eq!(fs::read(&record)?, before);
     args.interactive = false;
     let result = prepare(&args, None, &paths, |_, _| Ok(()), &mut |_| {
         confirmed.set(false);
         true
     });
-    assert!(matches!(
-        result,
-        Err(PreparationError {
-            error: StartupError::Config(_),
-            ..
-        })
-    ));
+    let actual = result.as_ref().err().map(ToString::to_string);
+    assert!(
+        matches!(
+            result,
+            Err(PreparationError {
+                error: StartupError::Config(_),
+                ..
+            })
+        ),
+        "unexpected preparation result: {actual:?}"
+    );
     assert!(confirmed.get());
     assert_eq!(fs::read(&record)?, before);
     Ok(())
@@ -971,6 +997,7 @@ fn skill_startup_failure_stops_restricted_and_disables_normal() -> Result<(), Bo
         for mode in [Mode::Restricted, Mode::Normal] {
             let error = match failure {
                 "query" => benitoite::BenitoiteError::Exit {
+                    stdout: Vec::new(),
                     code: Some(2),
                     stderr: Vec::new(),
                 },
@@ -1081,6 +1108,7 @@ fn skill_query_failures_use_document_wording_at_startup() -> Result<(), Box<dyn 
             ),
             (
                 benitoite::BenitoiteError::Exit {
+                    stdout: Vec::new(),
                     code: Some(2),
                     stderr: b"untrusted".to_vec(),
                 },
@@ -1088,6 +1116,7 @@ fn skill_query_failures_use_document_wording_at_startup() -> Result<(), Box<dyn 
             ),
             (
                 benitoite::BenitoiteError::Exit {
+                    stdout: Vec::new(),
                     code: None,
                     stderr: Vec::new(),
                 },
