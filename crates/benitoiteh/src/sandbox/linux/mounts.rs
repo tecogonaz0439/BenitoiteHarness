@@ -9,6 +9,9 @@ use std::path::{Path, PathBuf};
 
 use super::super::{SandboxError, SandboxPolicy, policy, text};
 
+mod placeholders;
+use placeholders::{Placeholder, Store};
+
 pub(super) struct MountPlan {
     pub args: Vec<OsString>,
     pub cleanup: Cleanup,
@@ -18,30 +21,24 @@ pub(super) struct MountPlan {
 pub(super) struct Cleanup {
     pub directories: Vec<PathBuf>,
     pub cover: Option<PathBuf>,
+    placeholders: Vec<Placeholder>,
+    pub retain_locks: bool,
 }
 
 impl Cleanup {
-    pub fn finish(&mut self) -> io::Result<()> {
+    pub fn finish(&mut self) -> Result<(), SandboxError> {
         let mut failure = None;
-        // 同じ根の並行実行と強制終了の残骸の管理は BH-095 に残す。
-        // Drop では呼ばず、子の wait が成功した後か、spawn の失敗時だけに呼ぶ。
-        for path in self.directories.drain(..).rev() {
-            if let Err(error) = fs::remove_dir(path)
-                && !matches!(
-                    error.kind(),
-                    io::ErrorKind::NotFound
-                        | io::ErrorKind::DirectoryNotEmpty
-                        | io::ErrorKind::NotADirectory
-                )
-            {
-                failure.get_or_insert(error);
+        self.directories.clear();
+        for placeholder in self.placeholders.drain(..).rev() {
+            if let Err(error) = placeholder.finish() {
+                failure.get_or_insert(placeholders::failure(error));
             }
         }
         if let Some(path) = self.cover.take()
             && let Err(error) = fs::remove_file(path)
             && error.kind() != io::ErrorKind::NotFound
         {
-            failure.get_or_insert(error);
+            failure.get_or_insert(SandboxError::Io(error));
         }
         match failure {
             Some(error) => Err(error),
@@ -50,12 +47,26 @@ impl Cleanup {
     }
 }
 
+impl Drop for Cleanup {
+    fn drop(&mut self) {
+        if self.retain_locks {
+            // 回収を確認できない子の錠は、親のプロセスが終わるまで外さない。
+            // （設計書 03-02「Linux のファイルシステムの見え方」）
+            for placeholder in self.placeholders.drain(..) {
+                placeholder.retain_lock();
+            }
+        }
+    }
+}
+
 pub(super) fn build(
     policy: &SandboxPolicy,
     cwd: &Path,
     scratch: &Path,
+    placeholders: &Path,
 ) -> Result<MountPlan, SandboxError> {
     let config = policy.config();
+    let store = Store::prepare(placeholders, &config.writable)?;
     let mut plan = MountPlan {
         args: [
             "--unshare-user",
@@ -85,14 +96,21 @@ pub(super) fn build(
     let mut protected = BTreeSet::new();
     let mut gitdirs = BTreeSet::new();
     for root in &roots {
-        scan(policy, root, 1, &mut protected)?;
         for name in &config.protected_names {
             let path = root.join(name);
+            let mut placeholder = store.lock(path.clone()).map_err(placeholders::failure)?;
             check_links(&path, &roots)?;
             if metadata(&path)?.is_none() {
+                placeholder
+                    .record_missing()
+                    .map_err(placeholders::failure)?;
                 plan.cleanup.directories.push(path);
             }
+            plan.cleanup.placeholders.push(placeholder);
         }
+    }
+    for root in &roots {
+        scan(policy, root, 1, &mut protected)?;
         let git = root.join(".git");
         if metadata(&git)?.is_some_and(|metadata| metadata.is_file()) {
             let contents = fs::read_to_string(&git).map_err(SandboxError::Io)?;

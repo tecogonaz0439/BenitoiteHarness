@@ -30,6 +30,7 @@ pub struct PreparedSandbox {
 /// `Drop` は制御ソケットを閉じて停止を要求するが、子を待たず、後始末もしない。
 /// 中のプロセスが動いている間の
 /// `rmdir` はマウントを外しうるためである（設計書 03-02）。必ず wait すること。
+/// 回収せずに落とすと、場所の錠は親プロセスが終わるまで保持する。
 pub struct SandboxChild {
     child: Child,
     cleanup: Cleanup,
@@ -40,7 +41,13 @@ pub struct SandboxChild {
 impl SandboxCommand {
     /// 固定の `/usr/bin/bwrap` での起動を準備する。
     /// `scratch` は、秘密のファイルを覆う空のファイルを置く、書ける場所の外のディレクトリ。
-    pub fn prepare(&self, helper: &Path, scratch: &Path) -> Result<PreparedSandbox, SandboxError> {
+    /// `placeholders` は、書ける場所の外の、利用者だけが使える錠と記録のディレクトリ。
+    pub fn prepare(
+        &self,
+        helper: &Path,
+        scratch: &Path,
+        placeholders: &Path,
+    ) -> Result<PreparedSandbox, SandboxError> {
         policy::canonical_path(&self.program)?;
         policy::canonical_path(&self.cwd)?;
         policy::directory(&self.cwd)?;
@@ -59,7 +66,7 @@ impl SandboxCommand {
             detail: error.to_string(),
         })?;
         let (control, inherited) = UnixStream::pair().map_err(SandboxError::Io)?;
-        let plan = mounts::build(&self.policy, &self.cwd, scratch)?;
+        let plan = mounts::build(&self.policy, &self.cwd, scratch, placeholders)?;
         let mut command = Command::new("/usr/bin/bwrap");
         command
             .args(plan.args)
@@ -136,14 +143,17 @@ impl PreparedSandbox {
         let spawned = self.command.spawn();
         self.command.stdin(Stdio::null());
         match spawned {
-            Ok(child) => Ok(SandboxChild {
-                child,
-                cleanup: std::mem::take(&mut self.cleanup),
-                control,
-                stdin: self.stdin.take(),
-            }),
+            Ok(child) => {
+                self.cleanup.retain_locks = true;
+                Ok(SandboxChild {
+                    child,
+                    cleanup: std::mem::take(&mut self.cleanup),
+                    control,
+                    stdin: self.stdin.take(),
+                })
+            }
             Err(error) => {
-                self.cleanup.finish().map_err(SandboxError::Io)?;
+                self.cleanup.finish()?;
                 Err(SandboxError::Io(error))
             }
         }
@@ -170,7 +180,7 @@ impl PreparedSandbox {
 impl Drop for PreparedSandbox {
     fn drop(&mut self) {
         // まだ起動していないので、親が作った覆いだけは消せる。
-        // 起動する前のディレクトリを消すと、別の子のマウントを外しうる（BH-095）。
+        // 錠は解放し、残った記録は次の prepare の排他錠の下で片付ける。
         if let Some(path) = self.cleanup.cover.take() {
             let _cleanup = std::fs::remove_file(path);
         }
@@ -212,14 +222,14 @@ impl SandboxChild {
 
     /// 回収を確認した実行の部分からだけ呼ぶ。
     pub(crate) fn finish_cleanup(&mut self) -> Result<(), SandboxError> {
-        self.cleanup.finish().map_err(SandboxError::Io)
+        self.cleanup.finish()
     }
 
     /// 終了を確認してから後始末する。待機に失敗した場合は後始末しない。
     pub fn wait(&mut self) -> Result<ExitStatus, SandboxError> {
         drop(self.stdin.take());
         let status = self.child.wait().map_err(SandboxError::Io)?;
-        self.cleanup.finish().map_err(SandboxError::Io)?;
+        self.cleanup.finish()?;
         Ok(status)
     }
 
@@ -227,7 +237,7 @@ impl SandboxChild {
     pub fn wait_with_output(mut self) -> Result<Output, SandboxError> {
         drop(self.stdin.take());
         let output = self.child.wait_with_output().map_err(SandboxError::Io)?;
-        self.cleanup.finish().map_err(SandboxError::Io)?;
+        self.cleanup.finish()?;
         Ok(output)
     }
 }

@@ -6,7 +6,7 @@ use std::collections::BTreeMap;
 use std::error::Error;
 use std::ffi::{OsStr, OsString};
 use std::fs::{self, File};
-use std::io::{self, BufRead, BufReader};
+use std::io::{self, BufRead, BufReader, Write};
 use std::net::TcpListener;
 use std::os::fd::AsRawFd;
 use std::os::unix::fs::{MetadataExt, PermissionsExt, symlink};
@@ -18,8 +18,8 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use benitoiteh::sandbox::{
-    CapabilityStatus, PolicyConfig, PreparedSandbox, ProgramAccess, ReadAccess, SandboxCommand,
-    SandboxError, SandboxPolicy, SandboxStdin, probe_linux,
+    CapabilityStatus, PolicyConfig, PreparedSandbox, ProgramAccess, ReadAccess, SandboxChild,
+    SandboxCommand, SandboxError, SandboxPolicy, SandboxStdin, probe_linux,
 };
 
 type TestResult = Result<(), Box<dyn Error>>;
@@ -93,7 +93,7 @@ impl Fixture {
             env: BTreeMap::new(),
             stdin,
         }
-        .prepare(&self.helper, &self.root)?)
+        .prepare(&self.helper, &self.root, &self.root.join("placeholders"))?)
     }
 
     fn run(&self, config: PolicyConfig, args: &[&OsStr], expected: i32) -> TestResult {
@@ -615,7 +615,7 @@ fn cleanup_waits_for_exit_and_preserves_preexisting_empty_directories() -> TestR
         env: BTreeMap::new(),
         stdin: SandboxStdin::Null,
     }
-    .prepare(&f.helper, &f.root)?
+    .prepare(&f.helper, &f.root, &f.root.join("placeholders"))?
     .output()?;
     assert!(!output.status.success());
     assert!(String::from_utf8_lossy(&output.stderr).starts_with("bwrap:"));
@@ -632,6 +632,7 @@ fn failed_spawn_removes_the_exclusive_file_cover() -> TestResult {
     fs::write(&secret, b"secret")?;
     let mut config = f.config();
     config.denied_read.push(secret.clone());
+    drop(f.command(f.config(), &[OsStr::new("socketpair")])?);
     let before = fs::read_dir(&f.root)?.count();
     let sandbox = f.command(config, &[OsStr::new("socketpair")])?;
     assert_eq!(fs::read_dir(&f.root)?.count(), before.saturating_add(1));
@@ -677,7 +678,7 @@ fn writable_symlinks_and_writable_helper_fail_before_spawn() -> TestResult {
         stdin: SandboxStdin::Null,
     };
     assert!(matches!(
-        command.prepare(&writable_helper, &f.root),
+        command.prepare(&writable_helper, &f.root, &f.root.join("placeholders")),
         Err(SandboxError::InvalidPolicy(_))
     ));
     let mut config = f.config();
@@ -1329,5 +1330,424 @@ fn inherited_stdin_is_forwarded_from_parent_process() -> TestResult {
         let output = child.wait_with_output()?;
         check(&output, 0, "isolated parent with inherited stdin");
     }
+    Ok(())
+}
+
+// 作成時の関門: 共有錠の欠落と、既存の場所に錠を掛け忘れる退行は、単独の子のテストでは見えない。
+// 2 通りの起動順で、A の終了後にも B のマウントが拒み、最後の B が記録を片付ける契約を守る。
+fn start_waiting(sandbox: PreparedSandbox) -> Result<SandboxChild, Box<dyn Error>> {
+    let mut wrapper = Command::new(sandbox.get_program());
+    wrapper
+        .args(sandbox.get_args())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    let mut child = sandbox.spawn_wrapped(wrapper)?;
+    let stdout = child.child_mut().stdout.take().ok_or("Missing stdout")?;
+    let mut ready = String::new();
+    BufReader::new(stdout).read_line(&mut ready)?;
+    if ready.trim() != "ready" {
+        let output = child.wait_with_output()?;
+        return Err(format!("Missing readiness: {ready:?}, {output:?}").into());
+    }
+    Ok(child)
+}
+
+fn waiting_command(f: &Fixture, operation: &[&OsStr]) -> Result<PreparedSandbox, Box<dyn Error>> {
+    let mut args = vec![OsStr::new("wait-line")];
+    args.extend_from_slice(operation);
+    f.command_with_stdin(f.config(), &f.probe, &args, SandboxStdin::Piped)
+}
+
+fn release_waiting(mut child: SandboxChild) -> Result<Output, Box<dyn Error>> {
+    let mut stdin = child.take_stdin().ok_or("Missing stdin")?;
+    stdin.write_all(b"continue\n")?;
+    drop(stdin);
+    Ok(child.wait_with_output()?)
+}
+
+fn path_records(f: &Fixture) -> Result<Vec<PathBuf>, Box<dyn Error>> {
+    let mut paths = Vec::new();
+    for entry in fs::read_dir(f.root.join("placeholders"))? {
+        let path = entry?.path();
+        if path
+            .extension()
+            .is_some_and(|extension| extension == "path")
+        {
+            paths.push(path);
+        }
+    }
+    Ok(paths)
+}
+
+fn concurrent_placeholders(
+    prepare_b_after_a_starts: bool,
+    remove_without_lock: bool,
+) -> TestResult {
+    for operation in ["write", "rename"] {
+        if remove_without_lock && operation == "rename" {
+            continue;
+        }
+        let f = Fixture::new()?;
+        let protected = f.writable.join(".benitoiteh");
+        let target = protected.join("x");
+        let renamed = f.writable.join("renamed");
+        let a = waiting_command(&f, &[OsStr::new("socketpair")])?;
+        let args = if operation == "write" {
+            vec![
+                OsStr::new(if remove_without_lock {
+                    "write-with-parents"
+                } else {
+                    "write"
+                }),
+                target.as_os_str(),
+            ]
+        } else {
+            vec![
+                OsStr::new("rename"),
+                protected.as_os_str(),
+                renamed.as_os_str(),
+            ]
+        };
+        let (a, b) = if prepare_b_after_a_starts {
+            let a = start_waiting(a)?;
+            let b = start_waiting(waiting_command(&f, &args)?)?;
+            (a, b)
+        } else {
+            let b = waiting_command(&f, &args)?;
+            (start_waiting(a)?, start_waiting(b)?)
+        };
+        if remove_without_lock {
+            // 故意に錠を無視して消す。BH-095 のカーネルの挙動を確かめる。
+            fs::remove_dir(&protected)?;
+        }
+        let a_output = release_waiting(a)?;
+        check(&a_output, 0, "concurrent/A");
+        if !remove_without_lock {
+            assert!(protected.is_dir());
+            assert!(!path_records(&f)?.is_empty());
+        }
+        let b_output = release_waiting(b)?;
+        if remove_without_lock {
+            check(&b_output, 0, "unlocked/B/write");
+            assert_eq!(fs::read(target)?, b"sandbox-probe\n");
+        } else {
+            assert!(
+                !b_output.status.success(),
+                "B unexpectedly succeeded: {b_output:?}"
+            );
+            let stderr = String::from_utf8_lossy(&b_output.stderr);
+            assert!(
+                stderr.contains(if operation == "write" {
+                    "ReadOnlyFilesystem"
+                } else {
+                    "ResourceBusy"
+                }),
+                "{b_output:?}"
+            );
+            assert!(!target.exists());
+            assert!(!renamed.exists());
+            assert!(!protected.exists());
+        }
+        assert!(!f.writable.join(".git").exists());
+        assert!(path_records(&f)?.is_empty());
+    }
+    Ok(())
+}
+
+#[test]
+fn concurrent_placeholders_prepared_before_either_child_starts() -> TestResult {
+    concurrent_placeholders(false, false)
+}
+
+#[test]
+fn concurrent_placeholders_existing_mountpoint_is_locked() -> TestResult {
+    concurrent_placeholders(true, false)
+}
+
+#[test]
+#[ignore = "BH-095: deliberately removes an active mountpoint without its lock"]
+fn unlocked_placeholder_removal_detaches_other_namespace_mount() -> TestResult {
+    concurrent_placeholders(false, true)
+}
+
+fn record_for(f: &Fixture, path: &Path) -> Result<(PathBuf, PathBuf), Box<dyn Error>> {
+    use sha2::{Digest, Sha256};
+    use std::os::unix::ffi::OsStrExt;
+    let hash: String = Sha256::digest(path.as_os_str().as_bytes())
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect();
+    let directory = f.root.join("placeholders");
+    let record = directory.join(format!("{hash}.path"));
+    fs::write(&record, path.as_os_str().as_bytes())?;
+    Ok((record, directory.join(format!("{hash}.lock"))))
+}
+
+// 作成時の関門: 強制終了で残った記録を入力にし、利用者の内容と他の子の共有錠を守る。
+// 模擬の後始末を差し込まず、prepare の入口から実際のファイルと flock で確かめる。
+#[test]
+fn stale_placeholder_records_are_reaped_without_removing_user_data_or_locked_paths() -> TestResult {
+    use rustix::fs::{FlockOperation, flock};
+    let f = Fixture::new()?;
+    drop(f.command(f.config(), &[OsStr::new("socketpair")])?);
+    // 次の prepare が直ちに新しい記録を書かないよう、回収対象は別の書ける場所に置く。
+    let stale = f.root.join("stale");
+    fs::create_dir(&stale)?;
+    let empty = stale.join("empty");
+    let occupied = stale.join("occupied");
+    let regular = stale.join("file");
+    let link = stale.join("link");
+    let locked = stale.join("locked");
+    for path in [&empty, &occupied, &locked] {
+        fs::create_dir(path)?;
+    }
+    fs::write(occupied.join("keep"), b"keep")?;
+    fs::write(&regular, b"keep")?;
+    symlink(&empty, &link)?;
+    let mut records = Vec::new();
+    for path in [&empty, &occupied, &regular, &link, &stale.join("missing")] {
+        records.push(record_for(&f, path)?.0);
+    }
+    let (locked_record, lock) = record_for(&f, &locked)?;
+    let lock = fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .open(lock)?;
+    flock(&lock, FlockOperation::LockShared)?;
+    let relative_record = f
+        .root
+        .join("placeholders/d2d9e1f13413d3e07064d629ac3341a6e1d6a5eb0895e76a3c66df19307a56f0.path");
+    fs::write(&relative_record, b"relative")?;
+    let mismatch = stale.join("mismatch");
+    fs::create_dir(&mismatch)?;
+    let (mismatched_record, _) = record_for(&f, &mismatch)?;
+    fs::write(&mismatched_record, empty.as_os_str().as_encoded_bytes())?;
+    let prepared = f.command(f.config(), &[OsStr::new("socketpair")])?;
+    assert!(!empty.exists());
+    assert_eq!(fs::read(occupied.join("keep"))?, b"keep");
+    assert_eq!(fs::read(&regular)?, b"keep");
+    assert!(fs::symlink_metadata(link)?.file_type().is_symlink());
+    assert!(locked.is_dir());
+    assert!(locked_record.exists());
+    assert!(mismatch.is_dir());
+    for record in records
+        .into_iter()
+        .chain([relative_record, mismatched_record])
+    {
+        assert!(!record.exists(), "{}", record.display());
+    }
+    drop(prepared);
+    drop(lock);
+    drop(f.command(f.config(), &[OsStr::new("socketpair")])?);
+    assert!(!locked.exists());
+    assert!(!locked_record.exists());
+    Ok(())
+}
+
+// 作成時の関門: 錠の差し替えを可能にする配置と権限を、準備の入口で拒む。
+#[test]
+fn placeholders_directory_is_private_real_and_outside_writable_roots() -> TestResult {
+    let f = Fixture::new()?;
+    let command = SandboxCommand {
+        policy: SandboxPolicy::new(f.config())?,
+        program: f.probe.clone(),
+        args: vec!["socketpair".into()],
+        cwd: f.root.clone(),
+        env: BTreeMap::new(),
+        stdin: SandboxStdin::Null,
+    };
+    let directory = f.root.join("private/placeholders");
+    drop(command.prepare(&f.helper, &f.root, &directory)?);
+    assert_eq!(fs::symlink_metadata(&directory)?.mode() & 0o777, 0o700);
+    let link = f.root.join("link-placeholders");
+    symlink(&directory, &link)?;
+    let inside = f.writable.join("placeholders");
+    let regular = f.root.join("file-placeholders");
+    fs::write(&regular, b"file")?;
+    for invalid in [&link, &inside, &regular] {
+        assert!(matches!(
+            command.prepare(&f.helper, &f.root, invalid),
+            Err(SandboxError::InvalidPolicy(_))
+        ));
+    }
+    fs::set_permissions(&directory, fs::Permissions::from_mode(0o750))?;
+    assert!(matches!(
+        command.prepare(&f.helper, &f.root, &directory),
+        Err(SandboxError::InvalidPolicy(_))
+    ));
+    assert_eq!(fs::metadata(&directory)?.mode() & 0o777, 0o750);
+    Ok(())
+}
+
+// 作成時の関門: BH-095 の探索コストを本番の prepare で測り、計測用の公開口を作らない。
+#[test]
+#[ignore = "BH-095: creates a large tree and reports prepare latency"]
+fn nested_protected_scan_timing() -> TestResult {
+    use std::time::{Duration, Instant};
+    for large in [false, true] {
+        let f = Fixture::new()?;
+        if large {
+            let mut level = vec![f.writable.clone()];
+            for depth in 0..3 {
+                let mut next = Vec::new();
+                for parent in level {
+                    for number in 0..30 {
+                        let directory = parent.join(format!("d-{depth}-{number}"));
+                        fs::create_dir(&directory)?;
+                        fs::write(parent.join(format!("f-{depth}-{number}")), b"file")?;
+                        next.push(directory);
+                    }
+                }
+                level = next;
+            }
+        } else {
+            for directory in 0..10 {
+                let path = f.writable.join(format!("d-{directory}"));
+                fs::create_dir(&path)?;
+                for file in 0..10 {
+                    fs::write(path.join(format!("f-{file}")), b"file")?;
+                }
+            }
+        }
+        let mountinfo = fs::read_to_string("/proc/self/mountinfo")?;
+        // 空白などを含む一時領域でも、mountinfo のエスケープに合わせて照合する。
+        let mount_line = mountinfo
+            .lines()
+            .filter_map(|line| {
+                let encoded = line.split_whitespace().nth(4)?;
+                let decoded = encoded
+                    .replace("\\040", " ")
+                    .replace("\\011", "\t")
+                    .replace("\\012", "\n")
+                    .replace("\\134", "\\");
+                f.writable
+                    .starts_with(&decoded)
+                    .then_some((decoded.len(), line))
+            })
+            .max_by_key(|(length, _)| *length)
+            .ok_or("Missing mountinfo entry")?
+            .1;
+        let command = SandboxCommand {
+            policy: SandboxPolicy::new(f.config())?,
+            program: f.probe.clone(),
+            args: vec!["socketpair".into()],
+            cwd: f.root.clone(),
+            env: BTreeMap::new(),
+            stdin: SandboxStdin::Null,
+        };
+        let placeholders = f.root.join("placeholders");
+        let mut times = Vec::new();
+        for _ in 0..20 {
+            let start = Instant::now();
+            let prepared = command.prepare(&f.helper, &f.root, &placeholders)?;
+            let elapsed = start.elapsed();
+            drop(prepared);
+            times.push(elapsed);
+        }
+        let first = *times.first().ok_or("Missing first timing")?;
+        times.sort();
+        let median: Duration = times
+            .get(9)
+            .ok_or("Missing lower median")?
+            .checked_add(*times.get(10).ok_or("Missing upper median")?)
+            .ok_or("Timing overflow")?
+            / 2;
+        println!(
+            "tree={} directories={} files={} traversed_entries={} samples=20 first={first:?} median={median:?} root={} mountinfo={mount_line}",
+            if large { "large" } else { "small" },
+            if large { 27_930 } else { 10 },
+            if large { 27_930 } else { 100 },
+            if large { 55_860 } else { 110 },
+            f.writable.display()
+        );
+    }
+    Ok(())
+}
+
+// 作成時の関門: 回収せずに落とした子の錠を解放すると、他の prepare がマウントの場所を消せる。
+// 錠を意図的に保持するテストなので、専用の親プロセスを終了してから残りの回収も確かめる。
+#[test]
+fn dropped_unreaped_child_keeps_placeholder_locks_until_parent_exit() -> TestResult {
+    use rustix::fs::{FlockOperation, flock};
+    if let Some(root) = std::env::var_os("BH_TEST_DROPPED_PLACEHOLDERS") {
+        let root = PathBuf::from(root);
+        let f = Fixture {
+            writable: root.join("write"),
+            probe: root.join("probe"),
+            helper: fs::canonicalize(env!("CARGO_BIN_EXE_benitoiteh"))?,
+            root,
+        };
+        let mut child = start_waiting(waiting_command(&f, &[OsStr::new("socketpair")])?)?;
+        let id = i32::try_from(child.child_mut().id())?;
+        let pid = rustix::process::Pid::from_raw(id).ok_or("Invalid child PID")?;
+        let record = path_records(&f)?
+            .into_iter()
+            .find(|record| {
+                fs::read(record).ok().as_deref()
+                    == Some(
+                        f.writable
+                            .join(".benitoiteh")
+                            .as_os_str()
+                            .as_encoded_bytes(),
+                    )
+            })
+            .ok_or("Missing record")?;
+        let lock = File::open(record.with_extension("lock"))?;
+        drop(child);
+        assert_eq!(
+            flock(&lock, FlockOperation::NonBlockingLockExclusive),
+            Err(rustix::io::Errno::WOULDBLOCK)
+        );
+        // Drop の制御ソケットの閉鎖で停止する。安全の錠の保持とは別に、子は回収しておく。
+        loop {
+            match rustix::process::waitpid(Some(pid), rustix::process::WaitOptions::empty()) {
+                Ok(Some(_)) => break,
+                Err(rustix::io::Errno::INTR) => continue,
+                result => return Err(format!("Could not reap dropped child: {result:?}").into()),
+            }
+        }
+        assert!(record.exists());
+        // フィクスチャのディレクトリは、外側の親が回収するまで残す。
+        std::mem::forget(f);
+        return Ok(());
+    }
+    let f = Fixture::new()?;
+    let output = Command::new(std::env::current_exe()?)
+        .args([
+            "--exact",
+            "dropped_unreaped_child_keeps_placeholder_locks_until_parent_exit",
+            "--nocapture",
+        ])
+        .env("BH_TEST_DROPPED_PLACEHOLDERS", &f.root)
+        .current_dir(&f.root)
+        .output()?;
+    check(&output, 0, "isolated dropped-child parent");
+    assert!(!path_records(&f)?.is_empty());
+    // 専用の親が終了すると OS が錠を外し、次の prepare が残りを回収できる。
+    let prepared = f.command(f.config(), &[OsStr::new("socketpair")])?;
+    assert!(!f.writable.join(".benitoiteh").exists());
+    drop(prepared);
+    Ok(())
+}
+
+// 作成時の関門: 錠を開けないときに保護なしで続ける退行を、準備の公開の入口で拒む。
+#[test]
+fn placeholder_lock_io_failure_aborts_prepare_with_its_stage() -> TestResult {
+    let f = Fixture::new()?;
+    drop(f.command(f.config(), &[OsStr::new("socketpair")])?);
+    let record = path_records(&f)?
+        .into_iter()
+        .next()
+        .ok_or("Missing record")?;
+    let lock = record.with_extension("lock");
+    fs::remove_file(&lock)?;
+    fs::create_dir(&lock)?;
+    assert!(matches!(
+        f.command(f.config(), &[OsStr::new("socketpair")]),
+        Err(error) if matches!(error.downcast_ref::<SandboxError>(), Some(SandboxError::Setup { stage: "placeholders", .. }))
+    ));
+    assert!(record.exists());
     Ok(())
 }
