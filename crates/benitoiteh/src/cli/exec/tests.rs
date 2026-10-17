@@ -8,6 +8,37 @@ use std::sync::atomic::AtomicBool;
 use super::*;
 use crate::provider::UserPartKind;
 
+fn test_processor() -> Result<PathBuf, Box<dyn Error>> {
+    Ok(fs::canonicalize(
+        std::env::var_os("BENITOITEH_TEST_BENITOITE")
+            .ok_or("BENITOITEH_TEST_BENITOITE is required")?,
+    )?)
+}
+fn prepare(
+    args: &ExecArgs,
+    overrides: Option<&SessionOverrides>,
+    paths: &DataPaths,
+    check: impl FnOnce(&Path, &Path) -> Result<(), SandboxError>,
+    confirm: &mut dyn FnMut(&ModeChange) -> bool,
+) -> Result<Prepared, PreparationError> {
+    super::prepare(
+        args,
+        overrides,
+        paths,
+        check,
+        QueryLauncher::TestDirect,
+        confirm,
+    )
+}
+fn prepare_new(
+    args: &ExecArgs,
+    current: &crate::agent::AgentStatus,
+    paths: &DataPaths,
+    check: impl FnOnce(&Path, &Path) -> Result<(), SandboxError>,
+) -> Result<Prepared, PreparationError> {
+    super::prepare_new(args, current, paths, check, QueryLauncher::TestDirect)
+}
+
 struct Fixture(PathBuf);
 
 impl Fixture {
@@ -31,7 +62,8 @@ impl Fixture {
         fs::write(
             &paths.config_file,
             format!(
-                "default_mode = 'normal'\ndefault_provider = 'mock'\n[providers.mock]\nkind = 'openai-chat'\nmodel = 'mock'\n[normal]\n{normal}\n"
+                "default_mode = 'normal'\ndefault_provider = 'mock'\n[providers.mock]\nkind = 'openai-chat'\nmodel = 'mock'\n[benitoite]\npath = {}\n[normal]\n{normal}\n",
+                serde_json::to_string(&test_processor()?)?
             ),
         )?;
         Ok(paths)
@@ -78,10 +110,11 @@ fn startup_selects_policy_and_fails_closed_unless_explicitly_disabled() -> Resul
             vec![],
             false,
             Some("none"),
-            false,
+            true,
             false,
         ),
         ("", vec![], false, None, true, false),
+        ("sandbox = 'read-only'", vec![], false, None, true, false),
         ("", vec!["--no-sandbox"], false, Some("none"), true, true),
         (
             "",
@@ -419,7 +452,13 @@ fn interactive_preparation_uses_configured_approval_and_restricted_web_confirmat
             &args,
             None,
             &paths,
-            |_, _| Err(SandboxError::Unavailable),
+            |_, _| {
+                if mode == "restricted" {
+                    Ok(())
+                } else {
+                    Err(SandboxError::Unavailable)
+                }
+            },
             &mut |_| false,
         )
         .map_err(|error| io::Error::other(error.to_string()))?;
@@ -464,7 +503,7 @@ fn new_after_restricted_resume_preserves_mode_and_project_and_normal_preserves_p
             serde_json::to_string(&alias)?
         ))?;
         let mut config = fs::read_to_string(&paths.config_file)?;
-        config.push_str("[restricted]\nallowed_programs = ['/bin/sh']\n");
+        config.push_str("[restricted]\nallowed_programs = []\n");
         fs::write(&paths.config_file, config)?;
         let mut original = f.args(&[
             "--mode",
@@ -494,7 +533,7 @@ fn new_after_restricted_resume_preserves_mode_and_project_and_normal_preserves_p
         if mode == Mode::Normal {
             assert_eq!(old_safety.writable_roots, std::slice::from_ref(&old_root));
         } else {
-            assert_eq!(old_safety.allowed_programs, [fs::canonicalize("/bin/sh")?]);
+            assert!(old_safety.allowed_programs.is_empty());
         }
         // 元の起動の依頼を送らず、設定の変更のうち provider/model は読み直す。
         fs::write(
@@ -588,7 +627,7 @@ fn new_rejects_changed_allowed_program_path_before_creating_a_session() -> Resul
     let program = f.0.join("program-a");
     let other = f.0.join("program-b");
     for path in [&program, &other] {
-        fs::write(path, "#!/bin/sh\nexit 0\n")?;
+        fs::copy(test_processor()?, path)?;
         fs::set_permissions(path, fs::Permissions::from_mode(0o755))?;
     }
     let mut config = fs::read_to_string(&paths.config_file)?;
@@ -612,5 +651,309 @@ fn new_rejects_changed_allowed_program_path_before_creating_a_session() -> Resul
         })
     ));
     assert_eq!(fs::read_dir(&paths.sessions_dir)?.count(), count);
+    Ok(())
+}
+
+// 関門: モードごとの失敗の扱いと、プロジェクトの設定からの処理系のすり替えを起動の境界で守る。
+#[test]
+fn processor_startup_fails_closed_in_restricted_mode_and_disables_tools_in_normal_mode()
+-> Result<(), Box<dyn Error>> {
+    for (mode, failure) in [
+        ("restricted", "sandbox"),
+        ("normal", "sandbox"),
+        ("restricted", "processor"),
+        ("normal", "processor"),
+    ] {
+        let f = Fixture::new()?;
+        let paths = f.paths("sandbox = 'danger-full-access'")?;
+        let mut args = f.args(&["--mode", mode])?;
+        if failure == "processor" {
+            let config = fs::read_to_string(&paths.config_file)?.replace(
+                &serde_json::to_string(&test_processor()?)?,
+                &serde_json::to_string(&f.0.join("missing"))?,
+            );
+            fs::write(&paths.config_file, config)?;
+        }
+        let prepared = prepare(
+            &args,
+            None,
+            &paths,
+            |_, _| {
+                if failure == "sandbox" {
+                    Err(SandboxError::Unavailable)
+                } else {
+                    Ok(())
+                }
+            },
+            &mut |_| false,
+        );
+        if mode == "restricted" {
+            assert!(matches!(
+                prepared,
+                Err(PreparationError {
+                    error: StartupError::Sandbox(_) | StartupError::Benitoite(_),
+                    ..
+                })
+            ));
+        } else {
+            let prepared = prepared.map_err(|e| e.to_string())?;
+            assert!(prepared.agent.status().benitoite_path.is_none());
+            assert!(
+                prepared
+                    .diagnostics
+                    .iter()
+                    .any(|line| line.contains("Benitoite tools are disabled"))
+            );
+        }
+        // 信頼しないプロジェクトの path は使われず、利用者の処理系で起動する。
+        args.mode = Some(Mode::Restricted);
+        let config = fs::read_to_string(&paths.config_file)?.replace(
+            &serde_json::to_string(&f.0.join("missing"))?,
+            &serde_json::to_string(&test_processor()?)?,
+        );
+        fs::write(&paths.config_file, config)?;
+        fs::create_dir(f.0.join("project/.benitoiteh"))?;
+        fs::write(
+            f.0.join("project/.benitoiteh/config.toml"),
+            "[benitoite]\npath = '/missing-project-processor'\n",
+        )?;
+        let prepared = prepare(&args, None, &paths, |_, _| Ok(()), &mut |_| false)
+            .map_err(|e| e.to_string())?;
+        assert_eq!(
+            prepared.agent.status().benitoite_path,
+            Some(test_processor()?)
+        );
+        assert!(
+            prepared
+                .diagnostics
+                .iter()
+                .any(|line| line.contains("Ignoring project configuration"))
+        );
+    }
+    Ok(())
+}
+
+// 関門: ヘッダの比較に錠を使う、今のセッション自身を比較する、再開時にヘッダを上書きする退行を守る。
+#[test]
+fn changed_processor_is_reported_in_diagnostics_and_notice_without_rewriting_resume_header()
+-> Result<(), Box<dyn Error>> {
+    use std::io::Write;
+    let f = Fixture::new()?;
+    let paths = f.paths("sandbox = 'danger-full-access'")?;
+    let args = f.args(&[])?;
+    let old =
+        prepare(&args, None, &paths, |_, _| Ok(()), &mut |_| false).map_err(|e| e.to_string())?;
+    let id = old.session.id().clone();
+    let record_path = old.session.directory().join("session.jsonl");
+    let original_header = fs::read_to_string(&record_path)?
+        .lines()
+        .next()
+        .ok_or("header")?
+        .to_owned();
+    let copy = f.0.join("different-benitoite");
+    fs::copy(test_processor()?, &copy)?;
+    OpenOptions::new()
+        .append(true)
+        .open(&copy)?
+        .write_all(b"changed executable\n")?;
+    let config = fs::read_to_string(&paths.config_file)?.replace(
+        &serde_json::to_string(&test_processor()?)?,
+        &serde_json::to_string(&copy)?,
+    );
+    fs::write(&paths.config_file, config)?;
+    // 直前のセッションを開いたままでも、比較にはその錠を取らない。
+    let current =
+        prepare(&args, None, &paths, |_, _| Ok(()), &mut |_| false).map_err(|e| e.to_string())?;
+    assert!(
+        current
+            .diagnostics
+            .iter()
+            .any(|line| line.contains("executable changed"))
+    );
+    let same =
+        prepare(&args, None, &paths, |_, _| Ok(()), &mut |_| false).map_err(|e| e.to_string())?;
+    assert!(
+        !same
+            .diagnostics
+            .iter()
+            .any(|line| line.contains("executable changed"))
+    );
+    drop(old);
+    let mut resumed_args = args;
+    resumed_args.resume = Some(id.to_string());
+    let mut resumed = prepare(&resumed_args, None, &paths, |_, _| Ok(()), &mut |_| false)
+        .map_err(|e| e.to_string())?;
+    let (sender, receiver) = mpsc::sync_channel(64);
+    resumed
+        .agent
+        .run("request".into(), Arc::new(AtomicBool::new(true)), sender)?;
+    assert!(receiver.into_iter().any(|event| matches!(event, crate::agent::AgentEvent::SessionStart { notice: Some(notice), .. } if notice.contains("executable changed") && notice.contains("0.0.7"))));
+    assert_eq!(
+        fs::read_to_string(record_path)?.lines().next(),
+        Some(original_header.as_str())
+    );
+    Ok(())
+}
+
+#[test]
+fn new_pins_the_verified_processor_even_when_configuration_changes() -> Result<(), Box<dyn Error>> {
+    let f = Fixture::new()?;
+    let paths = f.paths("sandbox = 'danger-full-access'")?;
+    let args = f.args(&[])?;
+    let old =
+        prepare(&args, None, &paths, |_, _| Ok(()), &mut |_| false).map_err(|e| e.to_string())?;
+    let config = fs::read_to_string(&paths.config_file)?.replace(
+        &serde_json::to_string(&test_processor()?)?,
+        "'/missing-new-processor'",
+    );
+    fs::write(&paths.config_file, config)?;
+    let new = prepare_new(&args, &old.agent.status(), &paths, |_, _| Ok(()))
+        .map_err(|e| e.to_string())?;
+    assert_eq!(
+        new.agent.status().benitoite_path,
+        old.agent.status().benitoite_path
+    );
+    let header = crate::session::read_records(new.session.directory())?;
+    assert!(
+        matches!(header.first(), Some(Record::Header(header)) if header.benitoite.as_ref().is_some_and(|processor| processor.sha256.len() == 64))
+    );
+    Ok(())
+}
+
+// 関門: 共通の検証関数が正しくても、起動側が allowed_programs の検証を呼び忘れると制限が抜ける。
+#[test]
+fn restricted_startup_rejects_interpreter_names_after_resolving_aliases()
+-> Result<(), Box<dyn Error>> {
+    for name in ["python3.12", "bash", "tclsh8.5", "vim.basic", "alias"] {
+        let f = Fixture::new()?;
+        let paths = f.paths("")?;
+        let real = f.0.join(if name == "alias" { "python3.12" } else { name });
+        fs::copy(test_processor()?, &real)?;
+        let path = f.0.join(name);
+        if name == "alias" {
+            std::os::unix::fs::symlink(&real, &path)?;
+        }
+        let mut config = fs::read_to_string(&paths.config_file)?;
+        config.push_str(&format!(
+            "[restricted]\nallowed_programs = [{}]\n",
+            serde_json::to_string(&path)?
+        ));
+        fs::write(&paths.config_file, config)?;
+        let args = f.args(&["--mode", "restricted"])?;
+        assert!(matches!(
+            prepare(&args, None, &paths, |_, _| Ok(()), &mut |_| false),
+            Err(PreparationError {
+                error: StartupError::Benitoite(benitoite::BenitoiteError::Invalid(
+                    benitoite::text::BANNED_PROGRAM
+                )),
+                ..
+            })
+        ));
+        assert!(!paths.sessions_dir.exists());
+    }
+    Ok(())
+}
+
+// 関門: 起動時に未使用だった解除の許可を /new が復活させる退行を起動の境界で守る。
+#[test]
+fn new_does_not_reuse_unused_no_sandbox_permission() -> Result<(), Box<dyn Error>> {
+    let f = Fixture::new()?;
+    let paths = f.paths("")?;
+    let args = f.args(&["--no-sandbox"])?;
+    let old =
+        prepare(&args, None, &paths, |_, _| Ok(()), &mut |_| false).map_err(|e| e.to_string())?;
+    assert!(!old.agent.status().sandbox_disabled);
+    assert!(matches!(
+        prepare_new(&args, &old.agent.status(), &paths, |_, _| Err(
+            SandboxError::Unavailable
+        )),
+        Err(PreparationError {
+            error: StartupError::Sandbox(SandboxError::Unavailable),
+            ..
+        })
+    ));
+    Ok(())
+}
+
+// 関門: 過去の処理系の型だけが壊れていても、現在の有効な処理系で起動できる契約を守る。
+#[test]
+fn unreadable_previous_processor_only_adds_a_diagnostic() -> Result<(), Box<dyn Error>> {
+    let f = Fixture::new()?;
+    let paths = f.paths("")?;
+    let args = f.args(&[])?;
+    let old =
+        prepare(&args, None, &paths, |_, _| Ok(()), &mut |_| false).map_err(|e| e.to_string())?;
+    let record = old.session.directory().join("session.jsonl");
+    let mut header: serde_json::Value = serde_json::from_str(&fs::read_to_string(&record)?)?;
+    header.as_object_mut().ok_or("header")?.insert(
+        "benitoite".into(),
+        serde_json::json!({"path":123,"version":false}),
+    );
+    fs::write(&record, format!("{header}\n"))?;
+    let mut current =
+        prepare(&args, None, &paths, |_, _| Ok(()), &mut |_| false).map_err(|e| e.to_string())?;
+    assert_eq!(
+        current.agent.status().benitoite_path,
+        Some(test_processor()?)
+    );
+    assert_eq!(current.diagnostics.iter().filter(|line| line.contains("Could not read the previous session's benitoite identity")).count(), 1);
+    let (sender, receiver) = mpsc::sync_channel(64);
+    current
+        .agent
+        .run("request".into(), Arc::new(AtomicBool::new(true)), sender)?;
+    let notice = receiver
+        .into_iter()
+        .find_map(|event| {
+            if let crate::agent::AgentEvent::SessionStart { notice, .. } = event {
+                notice
+            } else {
+                None
+            }
+        })
+        .ok_or("notice")?;
+    assert!(
+        !notice.contains("executable changed") && !notice.contains("Could not read the previous")
+    );
+    Ok(())
+}
+
+// 関門: TestDirect に替える前の本番の選択を、実際の解除状態だけから確かめる。
+#[test]
+fn query_launcher_and_environment_follow_actual_sandbox_state() -> Result<(), Box<dyn Error>> {
+    for (mode, disabled, expected) in [
+        (Mode::Restricted, false, QueryLauncher::Sandboxed),
+        (Mode::Normal, false, QueryLauncher::Sandboxed),
+        (Mode::Normal, true, QueryLauncher::Unsandboxed),
+    ] {
+        let launcher = select_query_launcher(mode, disabled);
+        assert_eq!(launcher, expected);
+        let env = child_environment(
+            [
+                ("BENITOITEH_SANDBOX".into(), "inherited".into()),
+                ("BENITOITEH_SANDBOX_NETWORK_DISABLED".into(), "1".into()),
+                ("OPENAI_API_KEY".into(), "secret".into()),
+            ],
+            &Default::default(),
+            Path::new("/temporary"),
+            launcher.environment_policy(),
+        );
+        assert!(!env.contains_key(std::ffi::OsStr::new("OPENAI_API_KEY")));
+        for key in ["BENITOITEH_SANDBOX", "BENITOITEH_SANDBOX_NETWORK_DISABLED"] {
+            assert_eq!(env.contains_key(std::ffi::OsStr::new(key)), !disabled);
+        }
+    }
+    // --no-sandbox が指定されても、利用できる場合は解除状態にならない。
+    let f = Fixture::new()?;
+    let paths = f.paths("")?;
+    let args = f.args(&["--no-sandbox"])?;
+    let prepared =
+        prepare(&args, None, &paths, |_, _| Ok(()), &mut |_| false).map_err(|e| e.to_string())?;
+    assert_eq!(
+        select_query_launcher(
+            prepared.agent.status().mode,
+            prepared.agent.status().sandbox_disabled
+        ),
+        QueryLauncher::Sandboxed
+    );
     Ok(())
 }

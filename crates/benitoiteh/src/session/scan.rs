@@ -222,3 +222,78 @@ fn mode(value: &Value) -> Result<RecordedMode, SessionError> {
         _ => Err(SessionError::Invalid(text::INVALID_FORMAT)),
     }
 }
+
+/// 錠を取らずにヘッダの処理系だけを読む。再開では元のヘッダと比べる。
+pub fn recorded_benitoite(
+    paths: &DataPaths,
+    id: &SessionId,
+) -> Result<Option<super::RecordedBenitoite>, SessionError> {
+    let root = sessions_root(&paths.sessions_dir)?;
+    let directory = open_directory_at(&root, id.as_str())?;
+    let file = super::open_existing_file(&directory, "session.jsonl", OFlags::RDONLY)?;
+    let mut bytes = Vec::new();
+    BufReader::new(file)
+        .take(
+            u64::try_from(MAX_BYTES)
+                .unwrap_or(u64::MAX)
+                .saturating_add(1),
+        )
+        .read_until(b'\n', &mut bytes)?;
+    if bytes.len() > MAX_BYTES || bytes.last() != Some(&b'\n') {
+        return Err(SessionError::Invalid(text::INVALID_FORMAT));
+    }
+    let value: Value = serde_json::from_slice(&bytes)?;
+    super::replay::check_format(&value)?;
+    if string(&value, "type")? != "header" {
+        return Err(SessionError::Invalid(text::INVALID_FORMAT));
+    }
+    value
+        .get("benitoite")
+        .cloned()
+        .map(serde_json::from_value)
+        .transpose()
+        .map(Option::flatten)
+        .map_err(Into::into)
+}
+
+/// 今の ID を除き、同じプロジェクトの直前のヘッダを読む。候補の錠は取らない。
+pub fn previous_benitoite(
+    paths: &DataPaths,
+    project: &std::path::Path,
+    current: &SessionId,
+) -> Result<Option<super::RecordedBenitoite>, SessionError> {
+    let project = fs::canonicalize(project)?;
+    let root = sessions_root(&paths.sessions_dir)?;
+    // ID の乱数部分は同じ秒の生成順を表さないので、最後に使った記録の時刻で選ぶ。
+    let mut candidates = Vec::new();
+    for id in ids(paths)? {
+        if &id == current {
+            continue;
+        }
+        let modified = open_directory_at(&root, id.as_str())
+            .and_then(|directory| {
+                super::open_existing_file(&directory, "session.jsonl", OFlags::RDONLY)
+            })
+            .and_then(|file| Ok(file.metadata()?.modified()?));
+        if let Ok(modified) = modified {
+            candidates.push((modified, id));
+        }
+    }
+    candidates.sort_unstable_by(|left, right| right.cmp(left));
+    for (_, id) in candidates {
+        if &id == current {
+            continue;
+        }
+        let mut entry = SessionEntry::new(&id);
+        if scan(&root, &mut entry).is_ok()
+            && entry
+                .project_dir
+                .as_ref()
+                .and_then(|path| fs::canonicalize(path).ok())
+                .is_some_and(|path| path == project)
+        {
+            return recorded_benitoite(paths, &id);
+        }
+    }
+    Ok(None)
+}

@@ -24,9 +24,15 @@ pub struct RecordedProvider {
     pub adapter: AdapterKind,
 }
 
-/// P2 以降に記録する処理系の識別。
+/// 起動時に検査した処理系の実のパス、ハッシュ、版とビルドの言明。
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct RecordedBenitoite {
+    #[serde(default)]
+    pub sha256: String,
+    #[serde(default)]
+    pub build: serde_json::Value,
+    #[serde(default)]
+    pub skill_content_hash: Option<String>,
     pub path: PathBuf,
     pub version: String,
 }

@@ -313,6 +313,14 @@ impl UserConfig {
         {
             return Err(ConfigError::Invalid(text::INVALID_PROGRAM));
         }
+        if config
+            .benitoite
+            .path
+            .as_ref()
+            .is_some_and(|path| !path.is_absolute())
+        {
+            return Err(ConfigError::Invalid(text::INVALID_BENITOITE_PATH));
+        }
         for effect in &config.restricted.scratch_auto_effects {
             if !matches!(
                 effect.as_str(),

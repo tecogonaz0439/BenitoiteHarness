@@ -17,7 +17,9 @@ pub use quota::{StorageUsage, TOTAL_LIMIT, storage_usage};
 pub use record::*;
 pub use replay::{read_records, replay};
 pub use resume::{ReasoningContext, ResumeState};
-pub use scan::{SessionEntry, continue_session, list_sessions};
+pub use scan::{
+    SessionEntry, continue_session, list_sessions, previous_benitoite, recorded_benitoite,
+};
 pub use storage::{SessionWriter, SpillWriter};
 
 use std::fmt;

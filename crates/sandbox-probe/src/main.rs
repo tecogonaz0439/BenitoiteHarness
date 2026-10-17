@@ -76,6 +76,30 @@ fn run(operation: &OsStr, args: &[OsString]) -> io::Result<Option<u8>> {
                     .unwrap_or(12),
             ));
         }
+        ("query-output", [stdout_bytes, stderr_bytes, delay_ms]) => {
+            let parse = |value: &OsString| -> io::Result<u64> {
+                value
+                    .to_str()
+                    .and_then(|s| s.parse().ok())
+                    .ok_or_else(|| io::Error::from(io::ErrorKind::InvalidInput))
+            };
+            io::copy(
+                &mut io::repeat(b'x').take(parse(stdout_bytes)?),
+                &mut io::stdout(),
+            )?;
+            io::copy(
+                &mut io::repeat(b'e').take(parse(stderr_bytes)?),
+                &mut io::stderr(),
+            )?;
+            std::thread::sleep(std::time::Duration::from_millis(parse(delay_ms)?));
+            Ok(())
+        }
+        ("environment", []) => {
+            for (name, value) in std::env::vars() {
+                writeln!(io::stdout(), "{name}={value}")?;
+            }
+            Ok(())
+        }
         ("tty-open", []) => {
             return Ok(Some(match File::open("/dev/tty") {
                 Ok(_) => 0,

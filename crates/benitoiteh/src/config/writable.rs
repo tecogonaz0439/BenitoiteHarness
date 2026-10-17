@@ -54,7 +54,7 @@ impl fmt::Display for WritableError {
 impl std::error::Error for WritableError {}
 
 /// 検査に通った実のパス。サンドボックスにはこの値を渡す。
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub struct WritableLocations {
     pub project: PathBuf,
     pub temporary: PathBuf,

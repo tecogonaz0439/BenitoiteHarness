@@ -637,8 +637,10 @@ fn rewind_confirmations_reject_queued_and_early_keys_paste_and_hidden_facts() ->
 // 関門: status に URL や未検査の処理系を載せる退行を、表示の純関数で守る。
 #[test]
 fn status_prints_all_fields_and_sanitizes_values_without_a_base_url() {
-    let status = crate::agent::AgentStatus {
+    let mut status = crate::agent::AgentStatus {
         session_id: "session".into(),
+        benitoite_path: Some("/opt/benitoite".into()),
+        benitoite_version: Some("0.0.7".into()),
         mode: Mode::Normal,
         project: "/project".into(),
         provider: "mock\x1b[2J".into(),
@@ -671,7 +673,7 @@ fn status_prints_all_fields_and_sanitizes_values_without_a_base_url() {
         "Provider: mock\\x1b[2J",
         "Model: model spoof",
         "Host: host",
-        "Interpreter: not checked",
+        "Interpreter: /opt/benitoite (version 0.0.7)",
         "Sandbox: workspace-write (disabled by --no-sandbox)",
         "Approval: untrusted",
         "input 1, cache read 2, cache write 3, output 4",
@@ -684,6 +686,10 @@ fn status_prints_all_fields_and_sanitizes_values_without_a_base_url() {
     assert!(value.lines().count() > 10);
     assert!(!value.contains('\x1b'));
     assert!(!value.contains("base_url"));
+    status.benitoite_path = None;
+    status.benitoite_version = None;
+    let unavailable = text::session_status(&status, &crate::session::TokenCounts::default());
+    assert!(unavailable.contains("Interpreter: unavailable (Benitoite tools disabled)"));
 }
 
 fn visible_frame(bytes: &[u8]) -> Result<String, Box<dyn std::error::Error>> {

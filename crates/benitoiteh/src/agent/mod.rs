@@ -297,7 +297,15 @@ impl Agent {
                     model: config.destination.model.clone(),
                     adapter: config.kind,
                 },
-                benitoite: None,
+                benitoite: tool_context.benitoite.as_ref().map(|processor| {
+                    session::RecordedBenitoite {
+                        path: processor.path.clone(),
+                        version: processor.version.clone(),
+                        sha256: processor.sha256.clone(),
+                        build: processor.build.clone(),
+                        skill_content_hash: None,
+                    }
+                }),
                 skill_version: context::BENITOITE_DOCUMENT_VERSION.into(),
                 system_prompt_sha256: context::system_prompt_hash(&system.system_prompt),
                 tools_sha256: context::tool_definitions_hash(&system.tools)?,
@@ -494,7 +502,7 @@ impl Agent {
                             &self.config.destination.model,
                             &host,
                         );
-                        if let Some(startup_notice) = self.environment.startup_notice() {
+                        for startup_notice in self.environment.startup_notice() {
                             notice.push(' ');
                             notice.push_str(startup_notice);
                         }

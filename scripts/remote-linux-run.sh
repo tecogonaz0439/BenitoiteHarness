@@ -27,6 +27,11 @@ if (($# == 0)); then
     exit 2
 fi
 
+if [[ -n "${BENITOITEH_TEST_BENITOITE_X86_64:-}" && ! -f "$BENITOITEH_TEST_BENITOITE_X86_64" ]]; then
+    printf 'BENITOITEH_TEST_BENITOITE_X86_64 must be a regular file: %s\n' "$BENITOITEH_TEST_BENITOITE_X86_64" >&2
+    exit 2
+fi
+
 repo_root=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)
 # テストの実行ファイルごとに ssh をつなぎ直さないよう、接続を共有する。ソケットのパスには長さの上限がある。
 ssh_opts=(-o BatchMode=yes -o ControlMaster=auto -o "ControlPath=/tmp/benitoiteh-ssh-%C"
@@ -37,7 +42,7 @@ if [[ "$1" == --sync ]]; then
     ssh "${ssh_opts[@]}" "$host" "mkdir -p $(printf '%q' "$remote_dir$repo_root")"
     image_dir=$(printf '%q' "$remote_dir/image")
     ssh "${ssh_opts[@]}" "$host" "podman image exists $image || { mkdir -p $image_dir && printf 'FROM %s\\nRUN apk add --no-cache bubblewrap bash\\n' $base_image > $image_dir/Containerfile && podman build -q -t $image $image_dir; }"
-    rsync -a --delete --exclude=/target/ --exclude=/.git/ -e "$rsync_ssh" \
+    rsync -a --delete --exclude=/target/ --exclude=/.git/ --exclude=/work/ -e "$rsync_ssh" \
         "$repo_root/" "$host:$remote_dir$repo_root/"
     executables=()
     for file in "${CARGO_TARGET_DIR:-$repo_root/target}/$target/debug"/*; do
@@ -47,6 +52,9 @@ if [[ "$1" == --sync ]]; then
     done
     if ((${#executables[@]} != 0)); then
         rsync -aR -e "$rsync_ssh" "${executables[@]}" "$host:$remote_dir/"
+    fi
+    if [[ -n "${BENITOITEH_TEST_BENITOITE_X86_64:-}" ]]; then
+        rsync -aR -e "$rsync_ssh" "$BENITOITEH_TEST_BENITOITE_X86_64" "$host:$remote_dir/"
     fi
     exit 0
 fi
@@ -60,6 +68,11 @@ rsync -aR -e "$rsync_ssh" "$executable" "$host:$remote_dir/"
 # keep-id: root でない利用者（送り先の利用者と同じ番号）で走らせ、権限 000 の覆いなどの確かめを特権で無効にしない。
 # unmask=ALL: podman が隠す /proc の場所を開け、bubblewrap が新しい /proc をマウントできるようにする。
 podman_args=(run --rm --interactive --userns=keep-id --security-opt unmask=ALL -v "$remote_dir$repo_root:$repo_root")
+if [[ -n "${BENITOITEH_TEST_BENITOITE_X86_64:-}" ]]; then
+    processor_dir=$(cd "$(dirname "$BENITOITEH_TEST_BENITOITE_X86_64")" && pwd -P)
+    podman_args+=(-e "BENITOITEH_TEST_BENITOITE=$BENITOITEH_TEST_BENITOITE_X86_64"
+        -v "$remote_dir$processor_dir:$processor_dir:ro")
+fi
 case "$executable_dir/" in
     "$repo_root"/*) ;;
     *) podman_args+=(-v "$remote_dir$executable_dir:$executable_dir") ;;

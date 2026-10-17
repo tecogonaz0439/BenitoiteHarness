@@ -280,7 +280,10 @@ pub fn session_status(
         format!("Provider: {}", status.provider),
         format!("Model: {}", status.model),
         format!("Host: {}", status.host),
-        "Interpreter: not checked".into(),
+        interpreter(
+            status.benitoite_path.as_deref(),
+            status.benitoite_version.as_deref(),
+        ),
         format!("Sandbox: {sandbox}{disabled}"),
         format!("Approval: {approval}"),
         format!(
@@ -401,3 +404,13 @@ pub fn irreversible_count(count: usize) -> String {
 }
 
 pub const NEW_SESSION_ABORTED: &str = "Session ended before activation.";
+
+/// 検査済みの処理系か、道具を外したことを示す。
+pub fn interpreter(path: Option<&std::path::Path>, version: Option<&str>) -> String {
+    match (path, version) {
+        (Some(path), Some(version)) => {
+            format!("Interpreter: {} (version {version})", path.display())
+        }
+        _ => "Interpreter: unavailable (Benitoite tools disabled)".into(),
+    }
+}

@@ -1,3 +1,7 @@
 //! 統合テストの提供者のネットワークを置き換える（設計書 07-01「模擬の提供者」）。
 
 pub mod mock_provider;
+
+mod processor;
+#[allow(unused_imports)]
+pub use processor::benitoite;
