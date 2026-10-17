@@ -35,18 +35,18 @@ impl Request {
 /// 後の段階で有効にするオプション。現段階では指定を保持して誤りにする。
 #[derive(Clone, Debug, Default)]
 pub struct DeferredOptions {
-    pub sandbox: Option<Sandbox>,
-    pub approval: Option<Approval>,
     pub allow: Option<Vec<String>>,
     pub project_parent: Option<PathBuf>,
     pub resume: Option<String>,
     pub continue_session: bool,
-    pub no_sandbox: bool,
 }
 
 /// P1 の exec が使う明示的な指定。既定の値は config で解決する。
 #[derive(Clone, Debug)]
 pub struct ExecArgs {
+    pub sandbox: Option<Sandbox>,
+    pub approval: Option<Approval>,
+    pub no_sandbox: bool,
     pub mode: Option<Mode>,
     pub project: Option<PathBuf>,
     pub provider: Option<String>,
@@ -89,6 +89,9 @@ impl ExecArgs {
     /// `exec` の後ろだけを渡して解釈する。パスの値は非 UTF-8 でも保つ。
     pub fn parse(args: impl IntoIterator<Item = impl Into<OsString>>) -> Result<Self, ArgsError> {
         let mut result = Self {
+            sandbox: None,
+            approval: None,
+            no_sandbox: false,
             mode: None,
             project: None,
             provider: None,
@@ -191,7 +194,7 @@ impl ExecArgs {
                 "--json" => result.json = true,
                 "--output-last-message" => result.output_last_message = Some(PathBuf::from(value)),
                 "--sandbox" => {
-                    deferred.sandbox = Some(match string()? {
+                    result.sandbox = Some(match string()? {
                         "read-only" => Sandbox::ReadOnly,
                         "workspace-write" => Sandbox::WorkspaceWrite,
                         "danger-full-access" => Sandbox::DangerFullAccess,
@@ -199,7 +202,7 @@ impl ExecArgs {
                     })
                 }
                 "--approval" => {
-                    deferred.approval = Some(match string()? {
+                    result.approval = Some(match string()? {
                         "untrusted" => Approval::Untrusted,
                         "on-request" => Approval::OnRequest,
                         "never" => Approval::Never,
@@ -216,18 +219,12 @@ impl ExecArgs {
                 "--project-parent" => deferred.project_parent = Some(PathBuf::from(value)),
                 "--resume" => deferred.resume = Some(string()?.to_owned()),
                 "--continue" => deferred.continue_session = true,
-                "--no-sandbox" => deferred.no_sandbox = true,
+                "--no-sandbox" => result.no_sandbox = true,
                 _ => return Err(ArgsError::Invalid),
             }
             if matches!(
                 option,
-                "--sandbox"
-                    | "--approval"
-                    | "--allow"
-                    | "--project-parent"
-                    | "--resume"
-                    | "--continue"
-                    | "--no-sandbox"
+                "--allow" | "--project-parent" | "--resume" | "--continue"
             ) && unavailable.is_none()
             {
                 unavailable = Some(option.to_owned());

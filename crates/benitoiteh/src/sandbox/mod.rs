@@ -3,7 +3,9 @@
 #[cfg(target_os = "linux")]
 mod linux;
 mod macos;
+mod normal;
 mod policy;
+pub use normal::{check_availability, normal_policy};
 pub mod run;
 mod text;
 

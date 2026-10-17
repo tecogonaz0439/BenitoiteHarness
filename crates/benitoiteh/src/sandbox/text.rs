@@ -91,3 +91,13 @@ pub fn bubblewrap_version_failed(status: std::process::ExitStatus, stderr: &[u8]
         String::from_utf8_lossy(stderr)
     )
 }
+
+#[cfg(target_os = "linux")]
+pub fn not_checked(name: &str) -> String {
+    format!("{name}: not checked")
+}
+
+#[cfg(target_os = "linux")]
+pub const BUBBLEWRAP: &str = "bubblewrap";
+#[cfg(target_os = "linux")]
+pub const USER_NAMESPACES: &str = "user namespaces";

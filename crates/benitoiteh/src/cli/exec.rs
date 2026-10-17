@@ -1,8 +1,10 @@
 //! 設定と安全の検査を終えてからセッションとループを起動する（設計書 05-01「exec の出力」「終了状態」）。
 
 use std::fmt;
-use std::fs::OpenOptions;
+use std::fs::{DirBuilder, OpenOptions};
 use std::io;
+use std::os::unix::fs::{DirBuilderExt, MetadataExt, PermissionsExt};
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
 use std::sync::mpsc;
@@ -12,13 +14,16 @@ use std::time::SystemTime;
 use crate::agent::{Agent, AgentError, Outcome};
 use crate::config::credentials::CredentialError;
 use crate::config::paths::DataPaths;
-use crate::config::writable::{WritableError, validate_writable};
-use crate::config::{ConfigError, Mode, ProjectConfig, ReadConfig, UserConfig};
+use crate::config::writable::{WritableError, validate_writable_with_executable};
+use crate::config::{
+    Approval, ConfigError, Mode, ProjectConfig, ReadConfig, Sandbox, UserConfig, child_environment,
+};
 use crate::context::{ContextError, Environment, instructions};
 use crate::provider::{AssistantPart, Item};
 use crate::safe_fs::{self, SafeFsError, ScopeRoot};
+use crate::sandbox::{self, SandboxError};
 use crate::session::{self, Record, Session, SessionError, SessionId};
-use crate::tools::{ToolContext, ToolError, exclude::ExcludeRules};
+use crate::tools::{ShellContext, ToolContext, ToolError, exclude::ExcludeRules};
 use crate::ui::ExecOutput;
 
 use super::{CliError, args::ExecArgs, panic, signals::Signals, text};
@@ -33,6 +38,7 @@ pub(super) enum StartupError {
     Tools(ToolError),
     Agent(AgentError),
     Io(io::Error),
+    Sandbox(SandboxError),
 }
 
 impl fmt::Display for StartupError {
@@ -47,6 +53,7 @@ impl fmt::Display for StartupError {
             Self::Tools(e) => e.fmt(f),
             Self::Agent(e) => e.fmt(f),
             Self::Io(e) => e.fmt(f),
+            Self::Sandbox(e) => e.fmt(f),
         }
     }
 }
@@ -57,8 +64,11 @@ struct Prepared {
     request: String,
 }
 
-fn prepare(args: &ExecArgs) -> Result<Prepared, StartupError> {
-    let paths = DataPaths::from_env().map_err(StartupError::Config)?;
+fn prepare(
+    args: &ExecArgs,
+    paths: &DataPaths,
+    check_sandbox: impl FnOnce(&Path, &Path) -> Result<(), SandboxError>,
+) -> Result<Prepared, StartupError> {
     safe_fs::verify_platform_support(&paths.temporary_root).map_err(StartupError::SafeFs)?;
     let user = UserConfig::load(&paths.config_file).map_err(StartupError::Config)?;
     let cwd = std::env::current_dir().map_err(StartupError::Io)?;
@@ -92,11 +102,74 @@ fn prepare(args: &ExecArgs) -> Result<Prepared, StartupError> {
     } else {
         &[]
     };
-    let locations = validate_writable(&paths, root.real_path(), &temporary, additional)
-        .map_err(StartupError::Writable)?;
-    let _cleanup = session::cleanup(&paths, user.sessions.retention_days, now)
+    let helper = std::env::current_exe()
+        .and_then(std::fs::canonicalize)
+        .map_err(StartupError::Io)?;
+    let mut locations =
+        validate_writable_with_executable(paths, root.real_path(), &temporary, additional, &helper)
+            .map_err(StartupError::Writable)?;
+    let _cleanup = session::cleanup(paths, user.sessions.retention_days, now)
         .map_err(StartupError::Session)?;
-    let session = Session::create(&paths, id).map_err(StartupError::Session)?;
+    let session = Session::create(paths, id).map_err(StartupError::Session)?;
+    // macOS の TMPDIR の /var という別名を Seatbelt に渡さない（設計書 03-02）。
+    locations.temporary =
+        std::fs::canonicalize(session.temporary_dir()).map_err(StartupError::Io)?;
+    let mut sandbox_disabled = false;
+    let shell = if resolved.mode == Mode::Normal {
+        let selected = args.sandbox.unwrap_or(user.normal.sandbox);
+        let scratch = private_directory(&session.directory().join("sandbox"))?;
+        let placeholders = private_directory(&paths.data_dir.join("placeholders"))?;
+        let mut candidates = vec![paths.config_dir.clone(), paths.data_dir.clone()];
+        candidates.extend([".ssh", ".gnupg", ".aws"].map(|name| paths.home.join(name)));
+        let policy = if selected == Sandbox::DangerFullAccess {
+            None
+        } else {
+            match check_sandbox(&helper, &scratch) {
+                Ok(()) => {
+                    sandbox::normal_policy(selected, &locations, user.normal.network, &candidates)
+                        .map_err(StartupError::Sandbox)?
+                }
+                Err(error) if args.no_sandbox => {
+                    ExecOutput::diagnostic(&text::sandbox_disabled(&error))
+                        .map_err(StartupError::Io)?;
+                    sandbox_disabled = true;
+                    None
+                }
+                Err(error) => return Err(StartupError::Sandbox(error)),
+            }
+        };
+        let policy_name = policy.as_ref().map(|_| selected.name());
+        let env = child_environment(
+            std::env::vars_os(),
+            &user.referenced_env_vars(),
+            &locations.temporary,
+            policy
+                .as_ref()
+                .map(|policy| (selected.name(), policy.config().allow_ip)),
+        );
+        Some(ShellContext {
+            policy,
+            policy_name,
+            helper,
+            scratch,
+            placeholders,
+            env,
+            approval: Approval::Never,
+        })
+    } else {
+        None
+    };
+    let (writable, network) = if resolved.mode == Mode::Normal {
+        match shell.as_ref().and_then(|shell| shell.policy.as_ref()) {
+            Some(policy) => (policy.config().writable.clone(), policy.config().allow_ip),
+            None => (Vec::new(), true),
+        }
+    } else {
+        (
+            vec![locations.project.clone(), locations.temporary.clone()],
+            false,
+        )
+    };
     let panic_record = OpenOptions::new()
         .append(true)
         .open(session.directory().join("session.jsonl"))
@@ -105,7 +178,7 @@ fn prepare(args: &ExecArgs) -> Result<Prepared, StartupError> {
     let spill = session.directory().join("spill");
     let exclude = ExcludeRules::new(
         root.real_path(),
-        &paths,
+        paths,
         &spill,
         &resolved.read,
         &ReadConfig::default(),
@@ -123,23 +196,23 @@ fn prepare(args: &ExecArgs) -> Result<Prepared, StartupError> {
     } else {
         instructions::ProjectInstructions::default()
     };
-    let context = ToolContext::new(
+    let mut context = ToolContext::new(
         resolved.mode,
         root,
         ScopeRoot::open(session.temporary_dir()).map_err(StartupError::SafeFs)?,
         ScopeRoot::open(&spill).map_err(StartupError::SafeFs)?,
         exclude,
     );
-    // P1 は子プロセスを起動しない。処理系とサンドボックスの検査は P2 で加える。
-    let environment = Environment::capture(
-        &locations.project,
-        resolved.mode,
-        &[locations.project.clone(), locations.temporary],
-        false,
-        now,
-    )
-    .map_err(StartupError::Context)?
-    .with_project_instructions(instructions);
+    if let Some(shell) = shell {
+        context = context.with_shell(shell);
+    }
+    let mut environment =
+        Environment::capture(&locations.project, resolved.mode, &writable, network, now)
+            .map_err(StartupError::Context)?
+            .with_project_instructions(instructions);
+    if sandbox_disabled {
+        environment = environment.with_startup_notice(text::SANDBOX_DISABLED);
+    }
     let agent = Agent::new(
         resolved.into(),
         key.map(|key| key.expose_secret().to_owned())
@@ -160,13 +233,39 @@ fn prepare(args: &ExecArgs) -> Result<Prepared, StartupError> {
     })
 }
 
+// 新しい領域は 700 で作り、既存のものの権限や所有者を黙って変えない。
+// 錠の差し替えを子から許さない（設計書 03-02「Linux のファイルシステムの見え方」）。
+fn private_directory(path: &Path) -> Result<PathBuf, StartupError> {
+    match DirBuilder::new().mode(0o700).create(path) {
+        Ok(()) => {}
+        Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {}
+        Err(error) => return Err(StartupError::Io(error)),
+    }
+    let metadata = std::fs::symlink_metadata(path).map_err(StartupError::Io)?;
+    if !metadata.is_dir()
+        || metadata.permissions().mode() & 0o7777 != 0o700
+        || metadata.uid() != rustix::process::geteuid().as_raw()
+    {
+        return Err(StartupError::Io(io::Error::new(
+            io::ErrorKind::PermissionDenied,
+            text::PRIVATE_DIRECTORY,
+        )));
+    }
+    std::fs::canonicalize(path).map_err(StartupError::Io)
+}
+
 pub(super) fn run(args: ExecArgs) -> Result<u8, CliError> {
     let signals = Signals::new().map_err(|error| CliError::Startup(StartupError::Io(error)))?;
     let Prepared {
         mut agent,
         session,
         request,
-    } = prepare(&args).map_err(CliError::Startup)?;
+    } = prepare(
+        &args,
+        &DataPaths::from_env().map_err(|error| CliError::Startup(StartupError::Config(error)))?,
+        sandbox::check_availability,
+    )
+    .map_err(CliError::Startup)?;
     let mut output = ExecOutput::new(args.json);
     let (sender, receiver) = mpsc::sync_channel(64);
     let cancelled = Arc::clone(&signals.cancelled);
@@ -234,3 +333,6 @@ pub(super) fn run(args: ExecArgs) -> Result<u8, CliError> {
         Outcome::Cancelled => 130,
     })
 }
+
+#[cfg(test)]
+mod tests;

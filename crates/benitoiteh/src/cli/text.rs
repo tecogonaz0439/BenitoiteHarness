@@ -17,6 +17,9 @@ Exec options:
     --max-turns <n>
     --max-check-fix <n>
     --max-run-tokens <n>
+    --sandbox read-only|workspace-write|danger-full-access
+    --approval never
+    --no-sandbox
     --json
     --output-last-message <file>
     --help
@@ -24,8 +27,7 @@ Exec options:
 Use - as the request to read standard input.
 Interactive mode, doctor, sessions, and --licenses are not available yet.
 The following options are not available yet:
-    --resume, --continue, --sandbox, --approval, --allow,
-    --project-parent, --no-sandbox
+    --resume, --continue, --allow, --project-parent
 ";
 
 /// 使い方の誤りに共通の案内。
@@ -86,4 +88,15 @@ pub fn destination(destination: &crate::provider::Destination) -> String {
         "Provider: {}; model: {}",
         destination.provider, destination.model
     )
+}
+
+/// 明示した許可によってサンドボックスなしで続けるときの通知。
+pub const SANDBOX_DISABLED: &str =
+    "Sandbox unavailable; continuing without a sandbox because --no-sandbox was specified.";
+
+pub const PRIVATE_DIRECTORY: &str =
+    "sandbox directories must be owned by the current user with mode 700";
+
+pub fn sandbox_disabled(reason: &crate::sandbox::SandboxError) -> String {
+    format!("{SANDBOX_DISABLED} Reason: {reason}")
 }

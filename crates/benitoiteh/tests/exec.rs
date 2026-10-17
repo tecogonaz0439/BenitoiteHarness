@@ -301,7 +301,14 @@ fn exec_completes_tools_and_preserves_output_records_and_original_items() -> Tes
             };
             let mut command = f.command(request);
             command
-                .args(["--mode", "normal", "--max-turns", "4"])
+                .args([
+                    "--mode",
+                    "normal",
+                    "--sandbox",
+                    "danger-full-access",
+                    "--max-turns",
+                    "4",
+                ])
                 .arg("--output-last-message")
                 .arg(f.root.join("last-message.txt"));
             if json_output {
@@ -731,7 +738,13 @@ fn invalid_project_configuration_is_reported_and_noninteractive_confirmation_is_
         f.root.join("project/.benitoiteh/config.toml"),
         "model = \"discard-me\"\nprovider = \"attacker\"\n",
     )?;
-    let output = Running::start(f.command("Do it").args(["--mode", "normal"]))?.finish()?;
+    let output = Running::start(f.command("Do it").args([
+        "--mode",
+        "normal",
+        "--sandbox",
+        "danger-full-access",
+    ]))?
+    .finish()?;
     assert_eq!(output.status.code(), Some(0));
     assert!(!f.root.join("project/.benitoiteh/blocked.bnt").exists());
     let stderr = std::str::from_utf8(&output.stderr)?;
@@ -768,7 +781,7 @@ fn exec_sends_displays_and_records_instructions_and_reads_legacy_records() -> Te
         let expected_paths = json!([user_path, f.root.join("project/AGENTS.md")]);
         let mut command = f.command("Use project instructions.");
         command
-            .args(["--mode", "normal"])
+            .args(["--mode", "normal", "--sandbox", "danger-full-access"])
             .current_dir(f.root.join("project/sub"));
         if json_output {
             command.arg("--json");
@@ -892,7 +905,13 @@ fn exec_does_not_wait_for_instruction_fifo() -> TestResult {
             .success()
     );
     let mut command = f.command("Report skipped instructions.");
-    command.args(["--mode", "normal", "--json"]);
+    command.args([
+        "--mode",
+        "normal",
+        "--sandbox",
+        "danger-full-access",
+        "--json",
+    ]);
     let output = Running::start(&mut command)?.finish()?;
     assert!(output.status.success());
     let events = lines(&output.stdout)?;
@@ -912,5 +931,61 @@ fn exec_does_not_wait_for_instruction_fifo() -> TestResult {
             .is_some_and(|reason| reason.contains("regular file"))
     );
     server.shutdown()?;
+    Ok(())
+}
+
+// 作成時の関門: 解釈だけでは分からない既定モードと利用者設定を含め、API を呼ぶ前の拒否を守る。
+#[test]
+fn exec_rejects_normal_options_in_restricted_mode_and_interactive_approval() -> TestResult {
+    for (normal_default, options, diagnostic) in [
+        (false, vec!["--sandbox", "read-only"], "require normal mode"),
+        (false, vec!["--approval", "never"], "require normal mode"),
+        (false, vec!["--no-sandbox"], "require normal mode"),
+        (
+            true,
+            vec!["--mode", "restricted", "--sandbox", "workspace-write"],
+            "require normal mode",
+        ),
+        (
+            true,
+            vec!["--mode", "restricted", "--approval", "never"],
+            "require normal mode",
+        ),
+        (
+            true,
+            vec!["--mode", "restricted", "--no-sandbox"],
+            "require normal mode",
+        ),
+        (
+            true,
+            vec!["--approval", "untrusted"],
+            "exec only supports --approval never",
+        ),
+        (
+            true,
+            vec!["--approval", "on-request"],
+            "exec only supports --approval never",
+        ),
+    ] {
+        let mut server = MockProvider::start(vec![])?;
+        let f = Fixture::new(Protocol::Chat, &server)?;
+        if normal_default {
+            let file = f.root.join("config/benitoiteh/config.toml");
+            fs::write(
+                &file,
+                format!("default_mode = 'normal'\n{}", fs::read_to_string(&file)?),
+            )?;
+        }
+        let output = Running::start(f.command("request").args(options).arg("--json"))?.finish()?;
+        assert_eq!(output.status.code(), Some(2));
+        assert!(output.stdout.is_empty());
+        assert!(
+            String::from_utf8_lossy(&output.stderr).contains(diagnostic),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert!(server.requests()?.is_empty());
+        server.shutdown()?;
+    }
     Ok(())
 }

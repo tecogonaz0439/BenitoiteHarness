@@ -263,11 +263,18 @@ impl Agent {
                         .map(|file| file.path.clone())
                         .collect(),
                     skipped_instructions: self.environment.skipped_instructions().to_vec(),
-                    notice: Some(context::transmission_notice(
-                        &self.config.destination.provider,
-                        &self.config.destination.model,
-                        &host,
-                    )),
+                    notice: Some({
+                        let mut notice = context::transmission_notice(
+                            &self.config.destination.provider,
+                            &self.config.destination.model,
+                            &host,
+                        );
+                        if let Some(startup_notice) = self.environment.startup_notice() {
+                            notice.push(' ');
+                            notice.push_str(startup_notice);
+                        }
+                        notice
+                    }),
                 },
             )?;
         }

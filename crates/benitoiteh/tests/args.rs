@@ -7,7 +7,7 @@ use std::os::unix::ffi::OsStringExt;
 use std::path::PathBuf;
 
 use benitoiteh::cli::args::{ArgsError, ExecArgs, Request};
-use benitoiteh::config::Mode;
+use benitoiteh::config::{Approval, Mode, Sandbox};
 
 // 作成時の関門: 引数の落とし込み、stdin とフラグ、非 UTF-8 のパスを失う退行を捕まえる。
 #[test]
@@ -28,6 +28,11 @@ fn exec_arguments_preserve_explicit_values_and_the_request_source() -> Result<()
         "3",
         "--max-run-tokens",
         "400",
+        "--sandbox",
+        "read-only",
+        "--approval",
+        "never",
+        "--no-sandbox",
         "--json",
         "--output-last-message",
         "answer.txt",
@@ -41,6 +46,9 @@ fn exec_arguments_preserve_explicit_values_and_the_request_source() -> Result<()
     assert_eq!(args.max_turns, Some(12));
     assert_eq!(args.max_check_fix, Some(3));
     assert_eq!(args.max_run_tokens, Some(400));
+    assert_eq!(args.sandbox, Some(Sandbox::ReadOnly));
+    assert_eq!(args.approval, Some(Approval::Never));
+    assert!(args.no_sandbox);
     assert!(args.json);
     assert_eq!(args.output_last_message, Some(PathBuf::from("answer.txt")));
     assert_eq!(args.request, Request::Stdin);
@@ -74,9 +82,13 @@ fn exec_arguments_reject_duplicates_invalid_values_and_unavailable_options() {
         "--max-check-fix",
         "--max-run-tokens",
         "--output-last-message",
+        "--sandbox",
+        "--approval",
     ] {
         let value = match option {
             "--mode" => "restricted",
+            "--sandbox" => "workspace-write",
+            "--approval" => "never",
             "--max-turns" | "--max-check-fix" | "--max-run-tokens" => "1",
             _ => "value",
         };
@@ -97,6 +109,9 @@ fn exec_arguments_reject_duplicates_invalid_values_and_unavailable_options() {
         vec![],
         vec!["--unknown", "request"],
         vec!["--mode", "invalid", "request"],
+        vec!["--sandbox", "invalid", "request"],
+        vec!["--approval", "invalid", "request"],
+        vec!["--no-sandbox=true", "request"],
         vec!["--max-turns", "-1", "request"],
         vec!["--max-turns", "18446744073709551616", "request"],
         vec!["--max-check-fix", "abc", "request"],
@@ -106,13 +121,10 @@ fn exec_arguments_reject_duplicates_invalid_values_and_unavailable_options() {
         assert!(ExecArgs::parse(args.clone()).is_err(), "{args:?}");
     }
     for (option, value) in [
-        ("--sandbox", Some("workspace-write")),
-        ("--approval", Some("never")),
         ("--allow", Some("File.Read,File.Write")),
         ("--project-parent", Some("/project")),
         ("--resume", Some("id")),
         ("--continue", None),
-        ("--no-sandbox", None),
     ] {
         let mut args = vec![option];
         args.extend(value);
