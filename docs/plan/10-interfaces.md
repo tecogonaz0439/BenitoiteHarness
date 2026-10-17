@@ -215,6 +215,14 @@ P0-04 で作った型: 方針の入力 `PolicyConfig`（`readable: ReadAccess`�
 - 道具 `benitoite_reference`（`read.rs` の `LineStyle::Reference` で区切る）と `benitoite_explain`。`tools::text::SKILL_UNAVAILABLE`・`skill_failure`。
 - `assets/benitoite/v0.0.6/` は消した。`assets/benitoite/v0.0.7/` はテストが比べる元である。
 
+### 診断と検査（P2-07）
+
+- `benitoite::diagnostics`（新）: 診断の行の読み取り、終了状態による分類、重なりのまとめ（表示のパスの後ろの部分も調べる）、読まないファイルの診断を件数だけにする規則、文の形。添える行は `ToolContext` の `read` と同じ規則で読む（`tools/paths.rs`）。
+- `benitoite::CheckQuery`（`dyn Fn(&[OsString], QueryLimits, &AtomicBool) -> Result<QueryOutput, BenitoiteError> + Send + Sync`）、`ToolContext::with_check_query`。`exec` が `Processor::query` を包んで渡す。口がないことを「処理系を持たない」とする。
+- `QueryLimits` に `stderr: StderrLimit`（既定は先頭 64 KiB。検査は 16 MiB で止める）、`BenitoiteError::DiagnosticsLimit`。
+- `ToolOutput` に `check_launch: Option<CheckLaunch>`・`check: Option<CheckOutcome { key, failed, diagnostics }>`。回数は `agent/execution.rs` の `Agent::result` で数え、`AgentError::CheckFixLimit` で止める。`Summary.checks`・`after_write_checks`・`fixes`。
+- 道具 `benitoite_check`（`bash` の後、`benitoite_explain` の前。`without_benitoite` は除く）。書いた後の検査は `write`・`edit` の結果の `text` にだけ加える。
+
 ### `provider`（P1-01、P1-02）
 
 - 共通の形（`provider::types`、`provider` から再公開）: `Destination { provider, base_url, model }`、`AdapterKind`、`Conversation { items }`、`Item::{UserMessage, AssistantTurn, ToolResult}`、`UserMessage { parts: Vec<UserPart> }`（`UserPartKind::{Environment, Request, Steering}`）、`AssistantTurn { parts, raw_items, finish_reason, usage }`、`AssistantPart::{Text, Reasoning, ToolCall}`、`RawItems { destination, adapter, items }`、`ToolCall { id, provider_id, provider_item_id, name, arguments, raw_arguments }`、`ToolResult { id, provider_id, text, is_error }`、`Usage`（各項目 `Option<u64>` と `raw`）、`FinishReason::{Completed, ToolCalls, OutputLimit, Refusal(String), Error, Cancelled, Disconnected}`、`StreamEvent`、`ProviderError`、`Capabilities`。
