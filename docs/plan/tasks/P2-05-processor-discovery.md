@@ -1,0 +1,101 @@
+# P2-05 処理系の見つけ方と確かめ、問い合わせの起動
+
+## 目的
+
+Benitoite の処理系（`benitoite`）を見つけ、`--version=json` で要る機能を持つことを確かめ、利用者のスクリプトを実行しない問い合わせ（版、Skill の一覧と文書、検査）を OS のサンドボックスの中で起動する部品を作る（設計書 04-01 の「処理系の見つけ方と版の確かめ」「処理系の起動」）。制限モードは、処理系を使えなければ起動を止め、通常モードは Benitoite の道具を外して続ける。処理系の実行ファイルの SHA-256 をセッションの記録のヘッダに書き、直前のセッションと違えば示す。
+
+この作業は、group B（Benitoite `v0.0.7` の公開の後に始めた、処理系との連携の作業。2026-10-18 から）の最初の作業である。Benitoite の道具そのもの（`benitoite_*`）は作らない（P2-06〜P2-09）。
+
+## 読む設計書
+
+- [Benitoite の処理系との連携](../../design/04-benitoite/04-01-benitoite-integration.md)の「前提」「処理系の見つけ方と版の確かめ」「処理系の起動」（表の「版と機能の確かめ」の行、環境変数、標準入力、16 MiB の上限、問い合わせの時間の上限 10 秒、絶対の実のパス、新しいプロセスグループ、書ける場所を一時ディレクトリだけにしてネットワークを使えない方針で起動すること）
+- [OS のサンドボックス](../../design/03-safety/03-02-sandbox.md)の「制限モードの方針」（表と、利用者のスクリプトを実行しない起動の方針）「制限モードで実行を許すプログラム」（OS の実行ファイルの形式、`#!`、書ける場所の外、名前の一覧、Linux の静的リンク）「端末からの切り離し」「子プロセスの後始末」「サンドボックスを掛けられないとき」
+- [セキュリティモデル](../../design/03-safety/03-01-security-model.md)の「信頼の境界」の 2（処理系の言明として扱う出力）、「保証しないこと」（処理系の実行ファイルが本物であること）
+- [セッション](../../design/01-agent/01-05-sessions.md)の「セッションの記録」（ヘッダの欄）
+- [CLI と設定ファイル](../../design/05-interface/05-01-cli.md)の「設定ファイル」の `benitoite.path`・`restricted.allowed_programs`、「プロジェクトの設定ファイル」（`benitoite.path` はプロジェクトの設定で書けない）
+- [テスト](../../design/07-quality/07-01-testing.md)の「処理系の用意」
+- 既存のもの: `src/config/mod.rs`（`BenitoiteConfig.path`、`RestrictedConfig.allowed_programs` と絶対パスの検査）、`src/config/writable.rs`（`WritableLocations`）、`src/config/environment.rs`（`child_environment`）、`src/sandbox/`（`PolicyConfig`・`SandboxPolicy`・`ReadAccess`・`ProgramAccess`、`SandboxCommand`、`run.rs` の `run`・`RunLimits`・`RunOutcome`、P4-07 で加えた `__session` の起動、Linux の `prepare`）、`src/cli/exec.rs`（`prepare` の流れと、通常モードの `check_sandbox` の差し込み）、`src/session/record.rs`（`SessionHeader`・`RecordedBenitoite`）、`src/session/scan.rs`（同じプロジェクトの直前のセッションを探す口。P4-02）、`src/tools/bash.rs` のテストの `busybox` などの名前の扱い
+
+## 前提（オーケストレータが用意する）
+
+- テストに使う処理系は、Benitoite の `v0.0.7` のタグのソースからビルドしたものとする。macOS の実行ファイルは `/Users/tecogonaz/src/BenitoiteHarness/work/benitoite-v0.0.7/target/release/benitoite` にある。
+- Linux のテスト（aarch64 の `container` と x86_64 の機械）に使う、`x86_64-unknown-linux-musl` と `aarch64-unknown-linux-musl` の静的リンクの処理系は、オーケストレータがこの作業の前にビルドして置き、パスを示す。用意できないときは、Linux で処理系を要するテストが失敗する（飛ばさない。07-01 の「処理系の用意」）ことを報告に書く。
+
+## この作業が認める型の変更
+
+00-common の「止まるとき」に当たる次の変更は、この作業で行ってよい。10-interfaces はオーケストレータが更新する。
+
+- 新しいモジュール `benitoite`（`src/benitoite/`。設計書 06-01 の「モジュール」の表にある）を作る。持ち主はこの作業とする。依存の向き（06-01）を守り、`benitoite` は `sandbox`・`config` だけに依存し、`tools`・`session`・`agent` に依存しない。直前のセッションの記録を読むのは `cli` の側で行う。
+- `SessionHeader` の処理系の欄を、04-01 と 01-05 の欄（実のパス、実行ファイルの SHA-256、`--version=json` の `version` と `build`、`SKILL.md` の `contentHash`（P2-06 が埋める。この作業では `None`））を持つ形に改める。既存の記録を読めるように、加える欄は `#[serde(default)]` とする。`skill_version` は P2-06 で除くので、この作業では残す。
+- `cli::exec::prepare` に、処理系の問い合わせの起動を差し替える口を加える（`check_sandbox` と同じく、テストだけが差し替える。後述の 4）。
+- `ToolSet::new` に、処理系を使えるかを渡す形を用意する（例: `ToolSet::new(mode, benitoite: Option<&Processor>)`）。Benitoite の道具はまだないので、この作業では一覧は変わらない。
+
+## 作るもの
+
+### 1. 処理系を探す
+
+- 04-01 の順（利用者の設定の `benitoite.path`、なければ `PATH`）で探し、シンボリックリンクを解いた実のパスにする。`PATH` の要素のうち、相対のパスと、プロジェクトのディレクトリとその下を指すもの（実のパスで比べる）は飛ばす。
+- 実のパスのファイルを、次の規則で確かめる。規則は、利用者の設定の `restricted.allowed_programs` にも同じ関数で当てる（03-02 の「制限モードで実行を許すプログラム」）。
+  - 通常のファイルで、先頭のバイト列が Mach-O（32・64 ビットとユニバーサル）か ELF の印であること。`#!` で始まらないこと。
+  - 書ける場所（プロジェクトのディレクトリ、セッションの一時ディレクトリ）の外にあること。
+  - Linux では、ELF のプログラムヘッダに `PT_INTERP` がないこと（静的リンク）。読むのは先頭の固定の長さ（例: 64 KiB）までとし、ヘッダが範囲の外を指せば満たさないとする。
+  - `allowed_programs` の各項目は、実のパスのファイルの名前が 03-02 の名前の一覧に当たらないこと（`python*` のような `*` は前方一致）。当たれば、制限モードの起動を止める。
+- 満たさないときの扱い: 制限モードは起動を止める。通常モードは Benitoite の道具を外して続ける（理由を診断に積む）。`allowed_programs` は制限モードのときだけ確かめる。
+
+### 2. 問い合わせの起動
+
+- `src/benitoite/` に、利用者のスクリプトを実行しない処理系の起動（`--version=json`、`skill list --format=json`、`skill show --format=json <名前>`、のちの `check`・`test --check`）を一つの関数にまとめる。例: `Processor::query(&self, args: &[OsString], limits: QueryLimits, cancelled: &AtomicBool) -> Result<QueryOutput, BenitoiteError>`。
+- 方針は 03-02 の「制限モードの方針」の、利用者のスクリプトを実行しない起動のもの（読める範囲は既定、書ける場所は一時ディレクトリだけ、IP の通信なし、起動できるプログラムは処理系の実のパスだけ、書ける場所での実行の拒否）とする。方針を作る関数は、P2-08 が実行の方針を作る関数と同じ場所（例: `sandbox::restricted_policy(access: &RestrictedAccess, locations: &WritableLocations, denied_candidates: &[PathBuf]) -> Result<SandboxPolicy, SandboxError>`。`RestrictedAccess` はプロジェクトに書けるか、IP の通信の可否、起動できるプログラムの実のパスの一覧、読める範囲を限るか（P2-09）を持つ。エフェクトの名前から `RestrictedAccess` を作るのは `benitoite` の側で行い、`sandbox` は `benitoite` に依存しない）に置き、この作業ではエフェクトのない場合だけを使う。
+- 起動は `sandbox::run` を通し、作業ディレクトリはプロジェクトのディレクトリ、環境は `child_environment`（提供者のキーを除く）、標準入力は空、時間の上限は問い合わせの既定 10 秒（検査は P2-07 で 30 秒を渡す）、止める合図は `SIGINT`、10 秒で終わらなければ `SIGKILL` とする。macOS とサンドボックスを掛けない起動は、P4-07 の `__session` を通る（03-02 の「端末からの切り離し」）。
+- 標準出力は 16 MiB を上限に受け取り、超えたら読むのをやめて子プロセスを止め、04-01 の英文（`The inspection report from benitoite exceeded 16 MiB and was not read. Pass fewer or narrower paths.`）の誤りを返す。英文は `benitoite/text.rs` に置く。標準エラー出力も同じ上限で受け取る。
+- JSON の読み方は、標準出力の全体を一つの JSON のオブジェクトとして読み（前後の空白は許し、二つ目のオブジェクトと末尾のほかの文字は誤り）、欄を名前で読む部品として共有する。`schemaVersion` と `kind` の照合もこの部品で行う。
+- 処理系の誤り（終了状態が 0 でない、読めない、時間切れ、上限超え）は、モジュールの誤りの型 `BenitoiteError` で表す。
+
+### 3. 版と機能の確かめ、ハッシュ
+
+- 処理系が見つからないとき、使えないとき、制限モードでサンドボックスを掛けられないときの `exec` の終了状態は 2 とする（05-01 の「終了状態」）。
+- 起動のときに一度だけ、`--version=json` を問い合わせ、04-01 の条件（終了状態 0、一つの完全な JSON、`schemaVersion` 1、`kind` が `"version"`、`formats` の 7 つのキーの配列がどれも 1 を含む）を確かめる。結果は `Processor`（実のパス、`version`、`build` の JSON の値、実行ファイルの SHA-256）として保つ。
+- `version` が `0.0.7`（システムプロンプトの対応の説明を確かめた版。定数として `benitoite` のモジュールに置く）と違えば、警告を診断に積み、セッションの記録にも書く（英文は `benitoite/text.rs`）。
+- 実行ファイルの SHA-256 は、確かめた実のパスのファイルを開いた記述子から読んで求める（読む間にパスが差し替えられても、確かめたファイルの値になるように、一度開いた記述子で形の確かめとハッシュを行う）。
+- 同じプロジェクトのディレクトリの直前のセッションの記録のヘッダの値と違えば、前と今の版とともに、変わったことを診断に積んで続ける（英文は `benitoite/text.rs`）。直前の記録がないか、処理系の欄がないときは何も示さない。
+- ヘッダに、実のパス、SHA-256、`version`、`build` を書く。
+
+### 4. 起動の流れへの組み込み
+
+- `cli::exec::prepare` で、書ける場所を決めた後、セッションの一時ディレクトリを作った後に処理系を確かめる（問い合わせの方針は一時ディレクトリを要する）。
+- 制限モードでは、OS のサンドボックスを掛けられることを、通常モードと同じ `check_sandbox` で確かめ、掛けられなければ起動を止める（制限モードには `--no-sandbox` がない）。
+- 問い合わせの起動は、`prepare` の引数で差し替えられる形にする。本番は OS のサンドボックスを掛けて起動する。テスト（`src/cli/exec/tests.rs` などのモジュールの中のテスト）だけが、サンドボックスを掛けずに本物の処理系を起動する差し替えを渡せる。本番の経路に、サンドボックスを掛けずに処理系を起動する設定やオプションを作らない。
+- 実行ファイルを起動して制限モードを動かす統合テスト（`tests/` の下）は、OS のサンドボックスを要するので `tests/sandbox_*.rs` に置く。既存の、制限モードを `exec` で起動する統合テストのうち、サンドボックスの中で動かせないものは、この規則に合わせて移すか、差し替えの口を使うモジュールの中のテストに改める。移したものの一覧を報告に書く。
+
+### 5. テストの処理系の用意
+
+- `scripts/check.sh` は、環境変数 `BENITOITEH_TEST_BENITOITE`（手元の macOS の処理系）を受け取り、テストに渡す。Linux の段には、`BENITOITEH_TEST_BENITOITE_X86_64` と `BENITOITEH_TEST_BENITOITE_AARCH64`（静的リンクの処理系）を、送り先の同じパスに置いてから、テストの中では `BENITOITEH_TEST_BENITOITE` として見せる（`scripts/remote-linux-run.sh` と `container` の段）。
+- 処理系を要するテストは、環境変数がなければ、理由を示して失敗する（飛ばさない）。テストの共通の部品（`tests/support/`）に、処理系のパスを得る関数を一つ置く。
+- Codex の中では、`BENITOITEH_TEST_BENITOITE=/Users/tecogonaz/src/BenitoiteHarness/work/benitoite-v0.0.7/target/release/benitoite` を設定して `scripts/check.sh --inside-codex` を走らせる。
+
+## 触るファイル
+
+- `crates/benitoiteh/src/benitoite/`（新。`mod.rs`、`text.rs`、版の確かめ、問い合わせ、実行ファイルの形の確かめ）
+- `crates/benitoiteh/src/lib.rs`（モジュールの宣言）
+- `crates/benitoiteh/src/sandbox/`（制限モードの方針を作る関数）
+- `crates/benitoiteh/src/config/`（`allowed_programs` の確かめを呼ぶ箇所）
+- `crates/benitoiteh/src/cli/exec.rs` と `src/cli/exec/tests.rs`、`src/cli/tui.rs`（`prepare` の引数）
+- `crates/benitoiteh/src/session/`（ヘッダの欄、直前のセッションの処理系の欄を読む口）
+- `crates/benitoiteh/src/tools/mod.rs`（`ToolSet::new` の引数）
+- `crates/benitoiteh/tests/`（`support/`、移す統合テスト、新しい `tests/sandbox_benitoite.rs`）
+- `scripts/check.sh`、`scripts/remote-linux-run.sh`（処理系のパスの受け渡し）
+
+## テスト
+
+- 探し方: `benitoite.path` が優先されること。`PATH` の相対の要素、プロジェクトの下を指す要素（シンボリックリンクで指すものを含む）が飛ばされること。見つからないときの扱い（制限モードは止まり、通常モードは続く）。
+- 実行ファイルの形: `#!` のスクリプト、テキストのファイル、ディレクトリ、書ける場所の中のファイルを拒むこと。Mach-O と ELF の印を受けること。Linux で、`PT_INTERP` を持つ ELF（動的リンク）を拒み、静的リンクを受けること（ELF は小さなバイト列のファイルを作って確かめてよい。本物の処理系でも確かめる）。`allowed_programs` の名前の一覧に当たる名前（`python3.12`、`bash`、シンボリックリンクで名前を変えたものは実のパスの名前で判定）で起動が止まること（安全の性質のテスト。07-01）。
+- 版の確かめ: 本物の `v0.0.7` で通ること。`formats` のキーが欠けたもの、1 を含まないもの、`kind` が違うもの、JSON が二つ続くもの、末尾に文字があるもの、終了状態が 0 でないもの、16 MiB を超える出力、10 秒を超えるもの（処理系の代わりに、決まった出力を返す小さなプログラムを使う。`sandbox-probe` に操作を足してよい）を、使えないと判定すること。`v0.0.6` 相当（`--version=json` を使い方の誤りとして終わる）を使えないと判定すること。
+- 版の数が `0.0.7` でないときに警告が出て、続くこと。
+- ハッシュ: 直前のセッションと違う処理系で起動すると、変わったことが示されること。同じなら示されないこと。
+- 問い合わせの方針: サンドボックスの中の問い合わせが、プロジェクトに書けず、ネットワークに接続できず、処理系のほかのプログラムを起動できないこと（`tests/sandbox_benitoite.rs`。macOS と Linux）。子プロセスの環境に提供者のキーがないこと。
+- 制限モードで、サンドボックスを掛けられない（差し替えで失敗させる）ときに起動が止まること。
+
+## 完了条件
+
+- `scripts/check.sh --inside-codex` が通る（`BENITOITEH_TEST_BENITOITE` を設定して）。
+- 完了の報告に、加えた公開の関数と型のシグネチャ、`benitoite/text.rs` に足した英文の全文、移した統合テストの一覧、ヘッダの例（一行）、実行ファイルの大きさの変化を書く。
