@@ -321,7 +321,10 @@ impl Agent {
                 summary: result.text.lines().next().unwrap_or_default().to_owned(),
             },
         )?;
-        self.conversation.items.push(Item::ToolResult(result));
+        if !result.is_error {
+            self.files.add_call(call);
+        }
+        self.push_item(Item::ToolResult(result));
         Ok(())
     }
 }

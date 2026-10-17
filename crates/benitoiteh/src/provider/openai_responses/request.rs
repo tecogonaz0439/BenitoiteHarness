@@ -53,7 +53,7 @@ impl OpenAiResponsesAdapter {
         if options
             .previous_last_item
             .is_some_and(|i| i >= conversation.items.len())
-            || (options.disable_tools && !self.capabilities.tool_choice_none)
+            || (!tools.is_empty() && options.disable_tools && !self.capabilities.tool_choice_none)
         {
             return Err(OpenAiResponsesError::InvalidRequest);
         }
@@ -96,6 +96,14 @@ impl OpenAiResponsesAdapter {
         }
         if let Some(key) = options.prompt_cache_key {
             fields.insert("prompt_cache_key".into(), json!(key));
+        }
+        if tools.is_empty() {
+            let fields = body
+                .as_object_mut()
+                .ok_or(OpenAiResponsesError::InvalidRequest)?;
+            fields.remove("tools");
+            fields.remove("tool_choice");
+            fields.remove("parallel_tool_calls");
         }
         Ok(OpenAiResponsesRequest {
             uri,

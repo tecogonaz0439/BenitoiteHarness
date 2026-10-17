@@ -1069,3 +1069,84 @@ fn exec_bash_connects_session_and_preserves_spill_metadata_without_provider_keys
     server.shutdown()?;
     Ok(())
 }
+
+// 作成時の関門: ループの圧縮イベントを、exec の出力が捨てたり別の形にする退行を捕まえる。
+#[test]
+fn exec_outputs_compaction_events_and_counts_on_json_and_terminal() -> TestResult {
+    for json_output in [true, false] {
+        let protocol = Protocol::Chat;
+        let mut server = MockProvider::start(vec![
+            ResponseScript::sse(protocol.response(
+                Some(("read", "read", json!({"path":"a.bnt"}))),
+                "Working.",
+                false,
+            )),
+            ResponseScript::sse(protocol.response(None, "summary", false)),
+            ResponseScript::sse(protocol.response(None, "Done.", false)),
+        ])?;
+        let f = Fixture::new(protocol, &server)?;
+        // 大きい JSON の差分を出力せず、道具の結果で閾値を超える。
+        // 親が出力を読む前の終了待ちを、OS ごとのパイプ容量に依存させない。
+        fs::write(
+            f.root.join("project/a.bnt"),
+            "line-data-long-enough-to-exceed-the-budget\n".repeat(1_200),
+        )?;
+        let config_file = f.root.join("config/benitoiteh/config.toml");
+        fs::write(&config_file, fs::read_to_string(&config_file)?.replace(
+            "capabilities = { reasoning_replay = \"same-destination\" }",
+            "capabilities = { reasoning_replay = \"same-destination\", tool_choice_none = true, context_window = 30000 }",
+        ))?;
+        let mut command = f.command("Read the project.");
+        command.args(["--mode", "normal", "--sandbox", "danger-full-access"]);
+        if json_output {
+            command.arg("--json");
+        }
+        let output = Running::start(&mut command)?.finish()?;
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        if json_output {
+            let values = lines(&output.stdout)?;
+            let event = values
+                .iter()
+                .find(|value| value.get("type") == Some(&json!("compaction")))
+                .ok_or("missing compaction event")?;
+            assert_eq!(event.get("reason"), Some(&json!("threshold")));
+            assert_eq!(event.get("summarized_items"), Some(&json!(3)));
+            assert_eq!(event.get("kept_items"), Some(&json!(0)));
+            assert!(
+                event
+                    .get("estimate_before")
+                    .and_then(Value::as_u64)
+                    .is_some_and(|n| n > 15_000)
+            );
+            assert_eq!(
+                values.last().and_then(|value| value.get("compactions")),
+                Some(&json!(1))
+            );
+            assert_eq!(
+                values.last().and_then(|value| value.get("turns")),
+                Some(&json!(2))
+            );
+        } else {
+            assert!(
+                std::str::from_utf8(&output.stderr)?.contains(
+                    "Compacted the conversation (threshold): 3 items summarized, 0 kept."
+                )
+            );
+            assert_eq!(std::str::from_utf8(&output.stdout)?, "Done.\n");
+        }
+        let (directory, records) = f.records()?;
+        assert_eq!(
+            records.last().and_then(|value| value.get("compactions")),
+            Some(&json!(1))
+        );
+        let replayed = benitoiteh::session::replay(&directory)?;
+        assert!(serde_json::to_string(&replayed)?.contains("<compacted_summary>"));
+        assert_eq!(server.requests()?.len(), 3);
+        server.shutdown()?;
+    }
+    Ok(())
+}

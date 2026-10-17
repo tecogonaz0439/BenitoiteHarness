@@ -7,7 +7,7 @@ use serde_json::Value;
 
 use crate::approval::{ApprovalFacts, ApprovalKind, ApprovalOutcome};
 use crate::provider::{FinishReason, ProviderError, Usage};
-use crate::session::{ApprovalPhase, Record, RecordedMode, SkippedInstruction};
+use crate::session::{ApprovalPhase, CompactionReason, Record, RecordedMode, SkippedInstruction};
 
 /// 一連の処理の終了状態。
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -96,8 +96,14 @@ pub enum AgentEvent {
         finish_reason: FinishReason,
         usage: Usage,
     },
-    /// 圧縮。P4 で欄と実行を加える。
-    Compaction,
+    /// 圧縮による会話の置き換え。
+    Compaction {
+        reason: CompactionReason,
+        summarized_items: usize,
+        kept_items: usize,
+        estimate_before: u64,
+        estimate_after: u64,
+    },
     /// 同じ要求のやり直し。
     Retry {
         attempt: u64,
@@ -202,7 +208,7 @@ impl AgentEvent {
             | Self::ReasoningDelta { .. }
             | Self::ToolCall { .. }
             | Self::ToolResult { .. }
-            | Self::Compaction => return None,
+            | Self::Compaction { .. } => return None,
         })
     }
 }

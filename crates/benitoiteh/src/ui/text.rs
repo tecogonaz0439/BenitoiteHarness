@@ -39,3 +39,15 @@ pub fn instruction_loaded(path: &std::path::Path) -> String {
 pub fn instruction_skipped(path: &std::path::Path, reason: &str) -> String {
     format!("Instruction file skipped: {}: {reason}", path.display())
 }
+
+/// 圧縮で置き換えた項目と残した項目を示す。
+pub fn compaction(
+    reason: crate::session::CompactionReason,
+    summarized: usize,
+    kept: usize,
+) -> String {
+    format!(
+        "Compacted the conversation ({}): {summarized} items summarized, {kept} kept.",
+        reason.as_str()
+    )
+}

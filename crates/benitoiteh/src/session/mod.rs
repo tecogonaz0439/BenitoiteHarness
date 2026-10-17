@@ -1,11 +1,13 @@
 //! セッションの記録、ロック、一時領域、保持期間の掃除（設計書 01-05、05-01「データの置き場所」）。
 
+mod files;
 mod id;
 mod record;
 mod replay;
 mod storage;
 mod text;
 
+pub use files::FileHistory;
 pub use id::SessionId;
 pub use record::*;
 pub use replay::{read_records, replay};

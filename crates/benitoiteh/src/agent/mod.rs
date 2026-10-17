@@ -1,11 +1,14 @@
 //! 要求、応答、道具、記録を順序付けるループ（設計書 01-01、01-04、01-05）。
 
+mod compaction;
 mod events;
 mod execution;
 mod retry;
 mod text;
 mod transport;
 
+pub use crate::session::CompactionReason;
+pub use compaction::{CompactOptions, CompactOutcome, CompactReport};
 pub use events::{AgentEvent, Outcome};
 
 use std::collections::BTreeSet;
@@ -22,7 +25,7 @@ use crate::context::{self, ContextError, Environment, SystemContext};
 use crate::http::{HttpClient, HttpTimeouts, Uri};
 use crate::provider::{
     AdapterKind, AssistantPart, AssistantTurn, Capabilities, Conversation, Destination,
-    FinishReason, Item, ProviderError, StreamEvent, UserMessage, UserPart, UserPartKind,
+    FinishReason, Item, ProviderError, StreamEvent, Usage, UserMessage, UserPart, UserPartKind,
 };
 use crate::session::{
     self, Header, Record, RecordedProvider, Session, SessionError, SessionWriter, Summary, UserKind,
@@ -89,6 +92,8 @@ pub enum AgentError {
     Context(ContextError),
     /// 分類済みの提供者の失敗。
     Provider(ProviderError),
+    /// 要約の要求または結果の失敗。
+    Compaction,
     /// 提供者の拒否の分類。
     Refusal(String),
     /// 番数またはトークンの上限。
@@ -108,6 +113,7 @@ impl fmt::Display for AgentError {
         match self {
             Self::Session(error) => error.fmt(f),
             Self::Context(error) => error.fmt(f),
+            Self::Compaction => f.write_str(text::COMPACTION_FAILED),
             Self::Provider(ProviderError::ContextOverflow) => f.write_str(text::CONTEXT_OVERFLOW),
             Self::Provider(error) => error.fmt(f),
             Self::Refusal(category) => f.write_str(&text::refusal(category)),
@@ -142,6 +148,7 @@ impl AgentError {
         match self {
             Self::Session(_) => "session",
             Self::Context(_) => "context",
+            Self::Compaction => "compaction",
             Self::Provider(ProviderError::ContextOverflow) => "context_overflow",
             Self::Provider(_) => "provider",
             Self::Refusal(_) => "refusal",
@@ -168,6 +175,11 @@ pub struct Agent {
     writer: SessionWriter,
     conversation: Conversation,
     previous_last_item: Option<usize>,
+    last_usage: Option<Usage>,
+    added_bytes: u64,
+    largest_input: Option<u64>,
+    suppress_deltas: bool,
+    files: session::FileHistory,
     detached: Vec<Stream>,
     approver: Box<dyn Approver>,
     approval_policy: ApprovalPolicy,
@@ -237,6 +249,11 @@ impl Agent {
             writer,
             conversation: Conversation::default(),
             previous_last_item: None,
+            last_usage: None,
+            added_bytes: 0,
+            largest_input: None,
+            suppress_deltas: false,
+            files: session::FileHistory::default(),
             detached: Vec::new(),
             approver: Box::new(NonInteractiveApprover),
             approval_policy,
@@ -322,7 +339,7 @@ impl Agent {
             kind: UserKind::Request,
             message: message.clone(),
         })?;
-        self.conversation.items.push(Item::UserMessage(message));
+        self.push_item(Item::UserMessage(message));
         self.started = true;
         self.repeated = None;
         let (outcome, reason) = match self.run_inner(&cancelled, &events, &mut summary) {
@@ -363,9 +380,26 @@ impl Agent {
             if self.token_limit_reached(summary) {
                 return Err(AgentError::Limit(text::TOKEN_LIMIT));
             }
+            // 道具の呼び出しは前の番で全て結果と対応済みなので、実行途中では圧縮しない
+            // （設計書 01-04「圧縮」）。一つの番の前では一度だけ判定する。
+            if self.threshold_reached() {
+                let report = self.perform_compaction(
+                    CompactOptions::for_reason(CompactionReason::Threshold),
+                    cancelled,
+                    events,
+                    summary,
+                    &mut Usage::default(),
+                )?;
+                if report.outcome == CompactOutcome::Cancelled {
+                    return Ok(Outcome::Cancelled);
+                }
+                if self.token_limit_reached(summary) {
+                    return Err(AgentError::Limit(text::TOKEN_LIMIT));
+                }
+            }
             self.turn = self.turn.saturating_add(1);
             self.emit(events, AgentEvent::TurnStart { turn: self.turn })?;
-            // 要求は番ごとに一度だけ作る。Retry-After と切断のどちらでも本文は変えない。
+            // 通信のやり直しでは本文を保ち、文脈の超過のときだけ圧縮後の要求に作り直す
             // （設計書 01-01「やり直し」）。
             let request = self.adapter.request(
                 &self.conversation,
@@ -374,7 +408,36 @@ impl Agent {
                 self.previous_last_item,
                 &self.session.id().to_string(),
             )?;
-            let Some(mut response) = self.receive_with_retry(&request, cancelled, events)? else {
+            let received = match self.receive_with_retry(&request, cancelled, events) {
+                Err(AgentError::Provider(ProviderError::ContextOverflow)) => {
+                    let report = self.perform_compaction(
+                        CompactOptions::for_reason(CompactionReason::Overflow),
+                        cancelled,
+                        events,
+                        summary,
+                        &mut Usage::default(),
+                    )?;
+                    if report.outcome == CompactOutcome::Cancelled {
+                        return Ok(Outcome::Cancelled);
+                    }
+                    if report.outcome == CompactOutcome::NothingToCompact {
+                        return Err(ProviderError::ContextOverflow.into());
+                    }
+                    if self.token_limit_reached(summary) {
+                        return Err(AgentError::Limit(text::TOKEN_LIMIT));
+                    }
+                    let request = self.adapter.request(
+                        &self.conversation,
+                        &self.system,
+                        &self.config.effort,
+                        self.previous_last_item,
+                        &self.session.id().to_string(),
+                    )?;
+                    self.receive_with_retry(&request, cancelled, events)?
+                }
+                result => result?,
+            };
+            let Some(mut response) = received else {
                 return Ok(Outcome::Cancelled);
             };
             self.previous_last_item = self.conversation.items.len().checked_sub(1);
@@ -385,13 +448,12 @@ impl Agent {
                 }
             }
             summary.add_turn(&response.usage);
+            self.note_usage(&response.usage);
             self.writer.append(&Record::Assistant {
                 turn: self.turn,
                 response: response.clone(),
             })?;
-            self.conversation
-                .items
-                .push(Item::AssistantTurn(response.clone()));
+            self.push_item(Item::AssistantTurn(response.clone()));
             let calls = response
                 .parts
                 .iter()
@@ -554,6 +616,8 @@ impl Agent {
             }
             for event in polled? {
                 match event {
+                    StreamEvent::TextDelta { .. } | StreamEvent::ReasoningDelta { .. }
+                        if self.suppress_deltas => {}
                     StreamEvent::TextDelta { text, .. } => self.delta(
                         events,
                         AgentEvent::TextDelta {

@@ -62,6 +62,18 @@ impl Adapter {
         previous: Option<usize>,
         session_id: &str,
     ) -> Result<Request, ProviderError> {
+        self.request_with(conversation, system, effort, previous, session_id, false)
+    }
+
+    pub(super) fn request_with(
+        &self,
+        conversation: &Conversation,
+        system: &SystemContext,
+        effort: &str,
+        previous: Option<usize>,
+        session_id: &str,
+        disable_tools: bool,
+    ) -> Result<Request, ProviderError> {
         match self {
             Self::Anthropic(adapter) => adapter
                 .build_request(
@@ -71,7 +83,7 @@ impl Adapter {
                     crate::provider::anthropic::RequestOptions {
                         effort: Some(effort),
                         previous_last_item: previous,
-                        disable_tools: false,
+                        disable_tools,
                     },
                 )
                 .map(Request::Anthropic)
@@ -84,7 +96,7 @@ impl Adapter {
                     crate::provider::openai_chat::RequestOptions {
                         effort: Some(effort),
                         previous_last_item: previous,
-                        disable_tools: false,
+                        disable_tools,
                     },
                 )
                 .map(Request::Chat)
@@ -97,7 +109,7 @@ impl Adapter {
                     crate::provider::openai_responses::RequestOptions {
                         effort: Some(effort),
                         previous_last_item: previous,
-                        disable_tools: false,
+                        disable_tools,
                         prompt_cache_key: Some(session_id),
                     },
                 )

@@ -52,7 +52,7 @@ impl OpenAiChatAdapter {
         if options
             .previous_last_item
             .is_some_and(|i| i >= conversation.items.len())
-            || (options.disable_tools && !self.capabilities.tool_choice_none)
+            || (!tools.is_empty() && options.disable_tools && !self.capabilities.tool_choice_none)
         {
             return Err(OpenAiChatError::InvalidRequest);
         }
@@ -85,11 +85,19 @@ impl OpenAiChatAdapter {
         if let Some(max_tokens) = self.capabilities.max_output_tokens {
             insert(&mut body, "max_tokens", json!(max_tokens))?;
         }
-        if self.capabilities.parallel_tool_calls {
+        if !tools.is_empty() && self.capabilities.parallel_tool_calls {
             insert(&mut body, "parallel_tool_calls", json!(true))?;
         }
-        if options.disable_tools {
+        if !tools.is_empty() && options.disable_tools {
             insert(&mut body, "tool_choice", json!("none"))?;
+        }
+        if tools.is_empty() {
+            let fields = body
+                .as_object_mut()
+                .ok_or(OpenAiChatError::InvalidRequest)?;
+            fields.remove("tools");
+            fields.remove("tool_choice");
+            fields.remove("parallel_tool_calls");
         }
         Ok(OpenAiChatRequest {
             uri,

@@ -218,7 +218,7 @@ fn records_replay_conversation_losslessly_and_finish_with_summary() -> TestResul
     )?;
     assert_eq!(
         last,
-        json!({"type":"summary", "turns":1, "tool_calls":{"write":2}, "checks":2, "fixes":1, "approvals":{"approved":2,"denied":2,"cancelled":1,"policy_denied":0}, "tokens":{"input":100,"cache_read":20,"cache_write":3,"output":9}, "elapsed_ms":123,"reason":"completed"})
+        json!({"type":"summary", "turns":1, "compactions":0, "tool_calls":{"write":2}, "checks":2, "fixes":1, "approvals":{"approved":2,"denied":2,"cancelled":1,"policy_denied":0}, "tokens":{"input":100,"cache_read":20,"cache_write":3,"output":9}, "elapsed_ms":123,"reason":"completed"})
     );
     Ok(())
 }
@@ -319,13 +319,25 @@ fn replay_uses_last_compaction_as_its_conversation_base() -> TestResult {
     })?;
     writer.append(&Record::Compaction {
         conversation: Conversation::default(),
+        reason: Default::default(),
+        summarized_items: 0,
+        kept_items: 0,
     })?;
     let base = Conversation {
         items: vec![Item::AssistantTurn(response(&[call("retained")]))],
     };
-    writer.append(&Record::Compaction {
-        conversation: base.clone(),
-    })?;
+    // 欄を加える前の形式の行を、JSON Lines の読み手で確かめる。
+    writeln!(
+        OpenOptions::new()
+            .append(true)
+            .open(session.directory().join("session.jsonl"))?,
+        "{}",
+        json!({"type":"compaction", "conversation":base})
+    )?;
+    assert!(read_records(session.directory())?.iter().any(|record| matches!(record,
+        Record::Compaction { reason: benitoiteh::session::CompactionReason::Threshold, summarized_items: 0, kept_items: 0, conversation }
+            if *conversation == base)));
+
     let conversation = replay(session.directory())?;
     assert_eq!(conversation.items.first(), base.items.first());
     let mut cancelled = result(&call("retained"), "Tool call was cancelled by the user.");
