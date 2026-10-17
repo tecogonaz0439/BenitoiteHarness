@@ -186,7 +186,8 @@ impl Agent {
         let Some(request) = output.approval else {
             return Ok(output);
         };
-        match approval::decide(
+        match approval::decide_in_mode(
+            self.config.mode,
             &self.approval_policy,
             request.kind,
             &request.facts,

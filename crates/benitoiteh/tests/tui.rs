@@ -1,7 +1,14 @@
 //! 画面の芯に模擬の端末と提供者をつなぐ（設計書 07-01、実装プラン P4-06）。
 
+#[path = "tui/interaction.rs"]
+mod interaction;
+#[path = "tui/pty.rs"]
+mod pty;
 #[allow(dead_code)]
 mod support;
+#[path = "support/tty.rs"]
+#[allow(dead_code)]
+mod tty;
 
 use std::error::Error;
 use std::fs;

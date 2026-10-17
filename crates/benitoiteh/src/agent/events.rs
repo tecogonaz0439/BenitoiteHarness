@@ -58,6 +58,8 @@ pub enum AgentEvent {
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         skipped_instructions: Vec<SkippedInstruction>,
     },
+    /// 操縦を会話に加えた。
+    Steered { text: String },
     /// 番の開始。
     TurnStart { turn: u64 },
     /// 応答の文の差分。
@@ -233,7 +235,8 @@ impl AgentEvent {
                 outcome: outcome.as_str().into(),
                 reason: reason.clone(),
             },
-            Self::TextDelta { .. }
+            Self::Steered { .. }
+            | Self::TextDelta { .. }
             | Self::ReasoningDelta { .. }
             | Self::ToolCall { .. }
             | Self::ToolResult { .. }

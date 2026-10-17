@@ -1830,3 +1830,37 @@ fn doctor_verifies_restricted_and_normal_sandboxes() -> TestResult {
     assert_eq!(fs::read_dir(fixture.root.join("tmp"))?.count(), 0);
     Ok(())
 }
+
+#[path = "support/tty.rs"]
+#[allow(dead_code)]
+mod tty;
+
+// 作成時の関門: --new-session が制御端末を切り離すことを実行で確かめる。
+#[test]
+fn normal_sandbox_has_no_controlling_terminal() -> TestResult {
+    let f = Fixture::new()?;
+    let mut pty = tty::Pty::new()?;
+    pty.control(&f.probe)?;
+    for operation in ["tty-open", "tty-write", "tty-ioctl"] {
+        let command = f.command(f.config(), &[OsStr::new(operation)])?;
+        let mut wrapper = pty.wrapper(&f.probe);
+        wrapper.arg(command.get_program()).args(command.get_args());
+        let mut child = command.spawn_wrapped(wrapper)?;
+        let (output, terminal) = pty.capture(child.child_mut())?;
+        child.wait()?;
+        if operation == "tty-open" {
+            check(&output, 15, operation);
+        } else {
+            // Landlock が先に open を拒む場合と、端末がない場合をともに認める。
+            assert!(
+                matches!(output.status.code(), Some(10 | 11)),
+                "{operation}: {output:?}"
+            );
+        }
+        assert!(
+            terminal.is_empty(),
+            "sandbox child wrote to the controlling terminal"
+        );
+    }
+    Ok(())
+}

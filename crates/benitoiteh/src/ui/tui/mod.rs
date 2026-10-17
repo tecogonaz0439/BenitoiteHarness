@@ -1,21 +1,26 @@
 //! 端末から独立した対話の画面と、入力・イベントの接続（設計書 05-02）。
 
+mod confirmation;
 mod control;
+pub mod history;
+pub use confirmation::ConfirmationGuard;
 mod format;
 mod input;
 mod runtime;
 mod terminal;
 mod text;
+mod unicode;
 mod worker;
 
 pub use control::restoration;
 pub use input::Action;
-pub use runtime::{InputSource, TuiError, run};
+pub use runtime::{InputSource, TuiError, confirm, run};
 pub use terminal::{TerminalGuard, TerminalOutput, TerminalRestore};
 pub use worker::{RunControl, Worker};
 
+use std::collections::{BTreeSet, VecDeque};
 use std::io::{self, Write};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use crossterm::event::Event;
 
@@ -48,8 +53,15 @@ pub struct Screen {
     reasoning_omitted: bool,
     markdown: format::Markdown,
     history: Vec<Line>,
+    explicit_history: BTreeSet<usize>,
     rows_above: u16,
     rows_below: u16,
+    confirmation: Option<confirmation::Confirmation>,
+    confirmation_result: Option<bool>,
+    followups: VecDeque<String>,
+    history_file: Option<history::History>,
+    active_tools: BTreeSet<String>,
+    cancellation_notice_shown: bool,
 }
 
 impl Screen {
@@ -66,8 +78,15 @@ impl Screen {
             reasoning_omitted: false,
             markdown: format::Markdown::default(),
             history: Vec::new(),
+            explicit_history: BTreeSet::new(),
             rows_above: 0,
             rows_below: 0,
+            confirmation: None,
+            confirmation_result: None,
+            followups: VecDeque::new(),
+            history_file: None,
+            active_tools: BTreeSet::new(),
+            cancellation_notice_shown: false,
         }
     }
 
@@ -86,16 +105,40 @@ impl Screen {
 
     /// 生の入力は送信のために保ち、描画するときだけ安全な文へ変える。
     pub fn input(&mut self, event: Event, now: Duration, running: bool) -> Action {
+        self.input_at(event, Instant::now(), now, running)
+    }
+
+    /// 端末で読んだ時刻を保ち、確認前のキーを後から答えにしない。
+    pub fn input_at(
+        &mut self,
+        event: Event,
+        read_at: Instant,
+        now: Duration,
+        running: bool,
+    ) -> Action {
         if let Event::Resize(width, height) = event {
+            if self.size != (width, height)
+                && let Some(confirmation) = &mut self.confirmation
+            {
+                confirmation.guard = ConfirmationGuard::default();
+            }
             self.size = (width, height);
             return Action::None;
+        }
+        if self.confirming() {
+            return self.confirmation_input(event, read_at, now, running);
         }
         self.input.event(event, now, running)
     }
 
     /// 外から指定した最初の依頼も、同じ履歴と画面の経路を通す。
     pub fn request(&mut self, request: &str) {
-        self.input.remember(request);
+        self.remember(request);
+        self.show_request(request);
+    }
+
+    /// 保存済みの後続を、履歴へ重ねて入れずに示す。
+    pub fn show_request(&mut self, request: &str) {
         self.flush_pending();
         for line in SafeText::new(request, true).as_str().split('\n') {
             self.history
@@ -117,15 +160,27 @@ impl Screen {
     /// イベント内の信頼しない値は、すべて SafeText の境界を通す。
     pub fn event(&mut self, event: &AgentEvent) {
         match event {
+            AgentEvent::Steered { text } => {
+                self.flush_pending();
+                for line in SafeText::new(text, true).as_str().split('\n') {
+                    self.history
+                        .push(plain(&format!("{}{line}", text::PROMPT), Decoration::Bold));
+                }
+            }
             AgentEvent::TextDelta { text, .. } => self.delta(text, false),
             AgentEvent::ReasoningDelta { text, .. } => self.delta(text, true),
             AgentEvent::TurnStart { .. } => {
+                self.cancellation_notice_shown = false;
                 self.flush_pending();
                 self.reset_reasoning();
             }
             AgentEvent::ToolCall {
-                name, arguments, ..
+                name,
+                arguments,
+                call_id,
+                ..
             } => {
+                self.active_tools.insert(call_id.clone());
                 self.flush_pending();
                 self.reset_reasoning();
                 self.history
@@ -136,8 +191,10 @@ impl Screen {
                 is_error,
                 screen,
                 display,
+                call_id,
                 ..
             } => {
+                self.active_tools.remove(call_id);
                 self.flush_pending();
                 let fallback =
                     text::event_detail(if *is_error { text::ERROR } else { text::OK }, summary);
@@ -177,26 +234,17 @@ impl Screen {
                     self.notice(&text::instruction_skipped(&skipped.path, &skipped.reason));
                 }
             }
-            AgentEvent::ApprovalRequest {
+            AgentEvent::ApprovalRequest { .. } => self.flush_pending(),
+            AgentEvent::ApprovalResult {
                 summary,
                 facts,
                 justification,
                 user_message,
-                ..
-            }
-            | AgentEvent::ApprovalResult {
-                summary,
-                facts,
-                justification,
-                user_message,
+                decision,
                 ..
             } => {
                 self.flush_pending();
-                let summary = if let AgentEvent::ApprovalResult { decision, .. } = event {
-                    super::text::approval(summary, *decision)
-                } else {
-                    summary.clone()
-                };
+                let summary = super::text::approval(summary, *decision);
                 let detail = text::approval(
                     &summary,
                     facts,
@@ -288,6 +336,108 @@ impl Screen {
         self.reasoning_omitted = false;
     }
 
+    /// 履歴の読み込みの失敗は一行で示して続ける。
+    pub fn load_history(
+        &mut self,
+        paths: &crate::config::paths::DataPaths,
+        project: &std::path::Path,
+    ) {
+        match history::History::open(paths, project) {
+            Ok((file, entries)) => {
+                for entry in entries {
+                    self.input.remember(&entry);
+                }
+                self.history_file = Some(file);
+            }
+            Err(error) => self.notice(&text::history_failed(&error)),
+        }
+    }
+
+    fn remember(&mut self, value: &str) {
+        self.input.remember(value);
+        if let Some(file) = &mut self.history_file
+            && let Err(error) = file.append(value)
+        {
+            self.history_file = None;
+            self.notice(&text::history_failed(&error));
+        }
+    }
+
+    /// 操縦と後続は送った時点で履歴に保存する。
+    pub fn remember_input(&mut self, value: &str) {
+        self.remember(value);
+    }
+
+    /// 後続を画面側で保つ。Agent は一連の処理の中では受け取らない。
+    pub fn queue_followup(&mut self, value: String) {
+        self.remember(&value);
+        self.followups.push_back(value);
+    }
+
+    /// 依頼の完了後だけ、次の後続を取り出す。
+    pub fn next_followup(&mut self) -> Option<String> {
+        self.followups.pop_front()
+    }
+
+    /// 取り消しでは後続も入力欄へ戻す。加えられなかった操縦は結果によらず戻す。
+    pub fn finished(&mut self, cancelled: bool, mut steering: Vec<String>) {
+        if cancelled {
+            steering.extend(self.followups.drain(..));
+        }
+        self.input.restore(steering);
+        self.active_tools.clear();
+    }
+
+    /// 送り手が先に閉じた操縦も失わない。
+    pub fn restore_input(&mut self, value: String) {
+        self.input.restore([value]);
+    }
+
+    /// 道具の結果がない間に止める場合だけ、不可逆の操作を知らせる。
+    pub fn cancellation_notice(&mut self) -> bool {
+        if !self.active_tools.is_empty() && !self.cancellation_notice_shown {
+            self.cancellation_notice_shown = true;
+            self.notice(text::CANCEL_EFFECTS);
+            true
+        } else {
+            false
+        }
+    }
+
+    /// 再開した会話の最後の三組から依頼・操縦と応答だけを示す。
+    pub fn resume_preview(&mut self, conversation: &crate::provider::Conversation) {
+        use crate::provider::{AssistantPart, Item, UserPartKind};
+        let start = conversation.items.iter().enumerate().rev().filter_map(|(index, item)| {
+            matches!(item, Item::UserMessage(message) if message.parts.iter().any(|part| matches!(part.kind, UserPartKind::Request | UserPartKind::Steering))).then_some(index)
+        }).nth(2).unwrap_or(0);
+        if conversation.items.iter().any(|item| matches!(item, Item::UserMessage(message) if message.parts.iter().any(|part| part.kind == UserPartKind::Summary))) {
+            self.notice(text::COMPACTED_HISTORY);
+        }
+        for item in conversation.items.iter().skip(start) {
+            match item {
+                Item::UserMessage(message) => {
+                    for part in &message.parts {
+                        if matches!(part.kind, UserPartKind::Request | UserPartKind::Steering) {
+                            for line in SafeText::new(&part.text, true).as_str().split('\n') {
+                                self.notice(&format!("{}{line}", text::PROMPT));
+                            }
+                        }
+                    }
+                }
+                Item::AssistantTurn(turn) => {
+                    for part in &turn.parts {
+                        if let AssistantPart::Text(value) = part {
+                            for line in SafeText::new(value, true).as_str().split('\n') {
+                                self.notice(line);
+                            }
+                        }
+                    }
+                }
+                Item::ToolResult(_) => {}
+            }
+        }
+    }
+
     /// 入力位置から下の行数。panic hook も同じ復元の列を組み立てる。
     pub fn rows_below_cursor(&self) -> u16 {
         self.rows_below
@@ -304,20 +454,26 @@ impl Screen {
         let cursor = text::PROMPT
             .len()
             .saturating_add(SafeText::new(prefix, true).as_str().len());
-        let (inputs, (cursor_row, cursor_column)) = format::wrapped(&value, width, cursor);
+        let (inputs, (mut cursor_row, mut cursor_column)) = format::wrapped(&value, width, cursor);
         let input_count = inputs
             .len()
             .min((height / 2).max(1))
             .min(maximum.saturating_sub(status_rows));
-        let start = cursor_row
+        let mut start = cursor_row
             .saturating_sub(input_count / 2)
             .min(inputs.len().saturating_sub(input_count));
-        let inputs: Vec<_> = inputs
+        let mut inputs: Vec<_> = inputs
             .iter()
             .skip(start)
             .take(input_count)
             .map(|line| plain(line, Decoration::Plain))
             .collect();
+        if let Some(confirmation) = &self.confirmation {
+            let (rows, cursor) = confirmation.bottom(self.size);
+            inputs = rows;
+            (cursor_row, cursor_column) = cursor;
+            start = 0;
+        }
         let capacity = maximum
             .saturating_sub(inputs.len())
             .saturating_sub(status_rows);
@@ -379,7 +535,11 @@ impl Screen {
             let status = if self.input.quit_hint {
                 text::QUIT_HINT.to_owned()
             } else {
-                text::status(&self.status, elapsed)
+                format!(
+                    "{}{}",
+                    text::status(&self.status, elapsed),
+                    text::queued(self.followups.len())
+                )
             };
             bottom.push(vec![(format::clipped(&status, width), Decoration::Dim)]);
         }
@@ -387,7 +547,8 @@ impl Screen {
         frame.begin()?;
         frame.clear(self.rows_above)?;
         frame.wrap(true)?;
-        for line in &self.history {
+        for (index, line) in self.history.iter().enumerate() {
+            frame.wrap(!self.explicit_history.contains(&index))?;
             frame.line(line)?;
             frame.newline();
         }
@@ -406,7 +567,9 @@ impl Screen {
         frame.column(cursor_column.min(width.saturating_sub(1)))?;
         frame.finish(writer)?;
         self.history.clear();
-        self.rows_above = u16::try_from(target).unwrap_or(u16::MAX);
+        self.explicit_history.clear();
+        self.rows_above =
+            u16::try_from(target.min(maximum.saturating_sub(below))).unwrap_or(u16::MAX);
         self.rows_below = u16::try_from(below).unwrap_or(u16::MAX);
         Ok(())
     }

@@ -20,7 +20,7 @@ use std::collections::BTreeSet;
 use std::fmt;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::mpsc::{SyncSender, TrySendError};
+use std::sync::mpsc::{self, Receiver, SyncSender, TrySendError};
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -81,11 +81,32 @@ pub enum AgentInput {
     FollowUp(String),
 }
 
+/// 一連の処理ごとの取り消しと操縦。全体を止める側は両方の印を立てる。
+pub struct RunControl {
+    pub cancel_step: Arc<AtomicBool>,
+    pub cancel_run: Arc<AtomicBool>,
+    pub steering: Receiver<String>,
+}
+
+impl RunControl {
+    /// 操縦の送り手を持たない呼び出しに使う。
+    pub fn without_steering(cancel_step: Arc<AtomicBool>, cancel_run: Arc<AtomicBool>) -> Self {
+        let (_, steering) = mpsc::channel();
+        Self {
+            cancel_step,
+            cancel_run,
+            steering,
+        }
+    }
+}
+
 /// 一連の処理の結果。exec は summary を最後の行として記録する。
 #[derive(Clone, Debug, PartialEq)]
 pub struct RunReport {
     pub outcome: Outcome,
     pub summary: Summary,
+    /// 会話に加えられなかった操縦。
+    pub remaining_steering: Vec<String>,
 }
 
 /// ループの失敗。提供者の本文と認証情報は持たない。
@@ -394,6 +415,17 @@ impl Agent {
         self
     }
 
+    /// 準備で決めた方針を保ち、対話の確認の受け手だけを接続する。
+    pub fn with_approver(mut self, approver: Box<dyn Approver>) -> Self {
+        self.approver = approver;
+        self
+    }
+
+    /// 履歴の保存先を分けるための、実のプロジェクトのディレクトリ。
+    pub fn project_dir(&self) -> &std::path::Path {
+        self.tool_context.project.real_path()
+    }
+
     /// 画面や後続の処理が読む会話。途中で切れた応答は含まない。
     pub fn conversation(&self) -> &Conversation {
         &self.conversation
@@ -405,6 +437,21 @@ impl Agent {
         &mut self,
         request: String,
         cancelled: Arc<AtomicBool>,
+        events: SyncSender<AgentEvent>,
+    ) -> Result<RunReport, AgentError> {
+        // 古い入口の印は一連の処理全体の取り消しを表す。
+        self.run_controlled(
+            request,
+            RunControl::without_steering(Arc::clone(&cancelled), cancelled),
+            events,
+        )
+    }
+
+    /// 道具の段階だけの取り消しと操縦を受けながら依頼を処理する。
+    pub fn run_controlled(
+        &mut self,
+        request: String,
+        control: RunControl,
         events: SyncSender<AgentEvent>,
     ) -> Result<RunReport, AgentError> {
         let started = Instant::now();
@@ -451,7 +498,7 @@ impl Agent {
                 },
             )?;
         }
-        let (outcome, reason) = match self.run_request(request, &cancelled, &events, &mut summary) {
+        let (outcome, reason) = match self.run_request(request, &control, &events, &mut summary) {
             Ok(Outcome::Completed) => (Outcome::Completed, text::COMPLETED.into()),
             Ok(Outcome::Cancelled) => (Outcome::Cancelled, text::RUN_CANCELLED.into()),
             Ok(Outcome::Failed) => return Err(AgentError::Worker),
@@ -479,16 +526,21 @@ impl Agent {
         summary.elapsed_ms = u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX);
         summary.reason = reason.clone();
         self.emit(&events, AgentEvent::SessionEnd { outcome, reason })?;
-        Ok(RunReport { outcome, summary })
+        Ok(RunReport {
+            outcome,
+            summary,
+            remaining_steering: control.steering.try_iter().collect(),
+        })
     }
 
     fn run_request(
         &mut self,
         request: String,
-        cancelled: &AtomicBool,
+        control: &RunControl,
         events: &SyncSender<AgentEvent>,
         summary: &mut Summary,
     ) -> Result<Outcome, AgentError> {
+        let cancelled = &*control.cancel_step;
         self.resuming = false;
         if self.resume_compaction {
             let report = self.perform_compaction(
@@ -506,9 +558,10 @@ impl Agent {
             match report.outcome {
                 CompactOutcome::Compacted => {}
                 CompactOutcome::NothingToCompact if !self.resume_has_reasoning => {}
-                CompactOutcome::NothingToCompact
-                | CompactOutcome::Failed
-                | CompactOutcome::Cancelled => return Err(AgentError::Compaction),
+                CompactOutcome::Cancelled => return Ok(Outcome::Cancelled),
+                CompactOutcome::NothingToCompact | CompactOutcome::Failed => {
+                    return Err(AgentError::Compaction);
+                }
             }
             self.resume_compaction = false;
         }
@@ -547,17 +600,18 @@ impl Agent {
         self.push_item(Item::UserMessage(message));
         self.started = true;
         self.repeated = None;
-        self.run_inner(cancelled, events, summary)
+        self.run_inner(control, events, summary)
     }
 
     fn run_inner(
         &mut self,
-        cancelled: &AtomicBool,
+        control: &RunControl,
         events: &SyncSender<AgentEvent>,
         summary: &mut Summary,
     ) -> Result<Outcome, AgentError> {
+        let cancelled = &*control.cancel_step;
         loop {
-            if cancelled.load(Ordering::Acquire) {
+            if cancelled.load(Ordering::Acquire) || control.cancel_run.load(Ordering::Acquire) {
                 return Ok(Outcome::Cancelled);
             }
             if summary.turns >= self.config.limits.max_turns {
@@ -661,7 +715,12 @@ impl Agent {
                 | FinishReason::Disconnected => None,
             };
             self.execute_calls(&calls, &response.finish_reason, cancelled, events, summary)?;
-            let was_cancelled = cancelled.load(Ordering::Acquire);
+            // 全体の印には書かない。旧入口の同一の印だけは全体の取り消しとして保つ。
+            if !calls.is_empty() && !Arc::ptr_eq(&control.cancel_step, &control.cancel_run) {
+                control.cancel_step.swap(false, Ordering::AcqRel);
+            }
+            let was_cancelled =
+                control.cancel_run.load(Ordering::Acquire) || cancelled.load(Ordering::Acquire);
             self.emit(
                 events,
                 AgentEvent::TurnEnd {
@@ -674,7 +733,10 @@ impl Agent {
                     usage: response.usage,
                 },
             )?;
-            if was_cancelled {
+            if was_cancelled
+                || control.cancel_run.load(Ordering::Acquire)
+                || cancelled.load(Ordering::Acquire)
+            {
                 return Ok(Outcome::Cancelled);
             }
             if self.token_limit_reached(summary) {
@@ -683,10 +745,39 @@ impl Agent {
             if let Some(category) = refusal {
                 return Err(AgentError::Refusal(category));
             }
-            if calls.is_empty() && response.finish_reason != FinishReason::OutputLimit {
+            let steered = self.apply_steering(control, events)?;
+            if calls.is_empty() && response.finish_reason != FinishReason::OutputLimit && !steered {
                 return Ok(Outcome::Completed);
             }
         }
+    }
+
+    fn apply_steering(
+        &mut self,
+        control: &RunControl,
+        events: &SyncSender<AgentEvent>,
+    ) -> Result<bool, AgentError> {
+        let parts: Vec<_> = control
+            .steering
+            .try_iter()
+            .map(|text| UserPart {
+                kind: UserPartKind::Steering,
+                text,
+            })
+            .collect();
+        if parts.is_empty() {
+            return Ok(false);
+        }
+        let message = UserMessage { parts };
+        self.writer.append(&Record::User {
+            kind: UserKind::Steer,
+            message: message.clone(),
+        })?;
+        self.push_item(Item::UserMessage(message.clone()));
+        for part in message.parts {
+            self.emit(events, AgentEvent::Steered { text: part.text })?;
+        }
+        Ok(true)
     }
 
     fn token_limit_reached(&self, summary: &Summary) -> bool {

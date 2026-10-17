@@ -19,14 +19,33 @@ impl InputSource for TerminalInput<'_> {
         self.signals.termination_count()
     }
     fn poll(&mut self, wait: std::time::Duration) -> io::Result<Vec<crossterm::event::Event>> {
+        Ok(self
+            .poll_timed(wait)?
+            .into_iter()
+            .map(|(event, _)| event)
+            .collect())
+    }
+    fn poll_timed(
+        &mut self,
+        wait: std::time::Duration,
+    ) -> io::Result<Vec<(crossterm::event::Event, std::time::Instant)>> {
         let mut events = Vec::new();
         if crossterm::event::poll(wait)? {
-            events.push(crossterm::event::read()?);
+            events.push((crossterm::event::read()?, std::time::Instant::now()));
             while crossterm::event::poll(std::time::Duration::ZERO)? {
-                events.push(crossterm::event::read()?);
+                events.push((crossterm::event::read()?, std::time::Instant::now()));
             }
         }
         Ok(events)
+    }
+    fn discard_pending(
+        &mut self,
+    ) -> io::Result<Vec<(crossterm::event::Event, std::time::Instant)>> {
+        // OS の待ち行列を先に捨て、次に crossterm の読み込み済みの列を空にする。
+        rustix::termios::tcflush(io::stdin(), rustix::termios::QueueSelector::IFlush)?;
+        Ok(self.poll_timed(std::time::Duration::ZERO)?.into_iter().filter(|(event, _)| {
+            matches!(event, crossterm::event::Event::Resize(_, _)) || matches!(event, crossterm::event::Event::Key(key) if key.kind == crossterm::event::KeyEventKind::Press && key.modifiers.contains(crossterm::event::KeyModifiers::CONTROL) && matches!(key.code, crossterm::event::KeyCode::Char('c' | 'C')))
+        }).collect())
     }
 }
 
@@ -50,33 +69,87 @@ pub(super) fn run(args: ExecArgs) -> Result<u8, CliError> {
 fn run_interactive(args: ExecArgs, signals: &mut Signals) -> Result<u8, CliError> {
     let paths = DataPaths::from_env()
         .map_err(|error| CliError::Startup(exec::StartupError::Config(error)))?;
-    let exec::Prepared {
-        mut status,
-        diagnostics,
-        agent,
-        session,
-        panic_record,
-    } = exec::prepare(&args, &paths, crate::sandbox::check_availability)
-        .map_err(CliError::Preparation)?;
-    status.estimate = agent.context_estimate();
-    let mut screen = Screen::new(
-        crossterm::terminal::size().map_err(CliError::Output)?,
-        status,
-    );
-    screen.startup(
-        diagnostics
-            .into_iter()
-            .chain([text::APPROVAL_NEVER.to_owned()]),
-    );
     let restore = TerminalRestore::capture().map_err(CliError::Output)?;
-    panic::install(Some(panic_record), Some(Arc::clone(&restore)));
+    panic::install(None, Some(Arc::clone(&restore)));
+    let mut mode_declined = false;
     let result = (|| {
         let _terminal = TerminalGuard::enter(Arc::clone(&restore)).map_err(CliError::Output)?;
         let mut output = restore.output().map_err(CliError::Output)?;
-        // 最初の要求が通信を始める前に、送る内容を実際の端末へ出す（設計書 01-04）。
+        let terminated = Arc::clone(&signals.cancelled);
+        let mut confirmation_error = None;
+        let prepared = exec::prepare(
+            &args,
+            &paths,
+            crate::sandbox::check_availability,
+            &mut |change| {
+                let mut screen = Screen::new(
+                    crossterm::terminal::size().unwrap_or((80, 24)),
+                    crate::ui::tui::Status {
+                        mode: crate::config::Mode::Normal,
+                        provider: String::new(),
+                        model: String::new(),
+                        host: String::new(),
+                        sandbox: String::new(),
+                        sandbox_disabled: false,
+                        context_window: None,
+                        estimate: 0,
+                    },
+                );
+                screen.notice(change.session_id.as_str());
+                screen.open_mode_change();
+                match crate::ui::tui::confirm(
+                    &mut screen,
+                    &mut TerminalInput { signals },
+                    &mut output,
+                    &terminated,
+                    |rows| restore.set_rows_below(rows),
+                ) {
+                    Ok(answer) => answer,
+                    Err(error) => {
+                        confirmation_error = Some(error);
+                        false
+                    }
+                }
+            },
+        );
+        if let Some(error) = confirmation_error {
+            return Err(CliError::Output(error));
+        }
+        let exec::Prepared {
+            mut status,
+            diagnostics,
+            agent,
+            session,
+            panic_record,
+        } = match prepared {
+            Ok(prepared) => prepared,
+            Err(exec::PreparationError {
+                error: exec::StartupError::Declined,
+                ..
+            }) => {
+                mode_declined = !terminated.load(std::sync::atomic::Ordering::Acquire);
+                return Ok(if mode_declined { 0 } else { 130 });
+            }
+            Err(error) => return Err(CliError::Preparation(error)),
+        };
+        panic::install(Some(panic_record), Some(Arc::clone(&restore)));
+        status.estimate = agent.context_estimate();
+        let mut screen = Screen::new(
+            crossterm::terminal::size().map_err(CliError::Output)?,
+            status,
+        );
+        screen.startup(diagnostics);
+        // 再開でも記録したプロジェクトを使う。Agent の環境は prepare が実のパスで作る。
+        screen.load_history(&paths, agent.project_dir());
+        if args.resume.is_some() || args.continue_session {
+            screen.resume_preview(agent.conversation());
+        }
         screen.draw(&mut output, None).map_err(CliError::Output)?;
         restore.set_rows_below(screen.rows_below_cursor());
-        let mut worker = Worker::start(agent, session).map_err(CliError::Output)?;
+        let (approver, approvals) = crate::approval::InteractiveApprover::channel();
+        let mut worker = Worker::start(agent.with_approver(Box::new(approver)), session)
+            .map_err(CliError::Output)?
+            .with_approval_requests(approvals);
         if let super::args::Request::Text(request) = &args.request
             && !request.trim().is_empty()
         {
@@ -85,7 +158,6 @@ fn run_interactive(args: ExecArgs, signals: &mut Signals) -> Result<u8, CliError
                 .submit(request.clone(), RunControl::default())
                 .map_err(CliError::Agent)?;
         }
-        let terminated = Arc::clone(&signals.cancelled);
         crate::ui::tui::run(
             &mut screen,
             worker,
@@ -99,7 +171,10 @@ fn run_interactive(args: ExecArgs, signals: &mut Signals) -> Result<u8, CliError
             TuiError::Agent(error) => CliError::Agent(error),
         })
     })();
-    // prepare は hook を設定しないので、/new の間も端末の復元を失わない。
     panic::install(None, None);
+    // raw のモードを戻した後でだけ、断った旨を通常の診断の書き先へ出す。
+    if mode_declined {
+        crate::ui::ExecOutput::diagnostic(text::MODE_CHANGE_DECLINED).map_err(CliError::Output)?;
+    }
     result
 }

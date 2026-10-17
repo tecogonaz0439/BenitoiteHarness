@@ -30,6 +30,9 @@ pub fn main() -> ExitCode {
     if argument.as_deref() == Some(std::ffi::OsStr::new("__sandbox")) {
         return crate::sandbox::run_helper(args);
     }
+    if argument.as_deref() == Some(std::ffi::OsStr::new("__session")) {
+        return crate::sandbox::session::run_helper(args);
+    }
     panic::install(None, None);
     match run(argument, args) {
         Ok(status) => ExitCode::from(status),

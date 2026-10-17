@@ -137,7 +137,7 @@ impl Fixture {
             env: BTreeMap::new(),
             stdin: SandboxStdin::Null,
         }
-        .to_command(&self.probe)
+        .to_command(Path::new(env!("CARGO_BIN_EXE_benitoiteh")))
         .map_err(|error| {
             format!(
                 "SandboxCommand::to_command for {} in {}: {error}",
@@ -667,7 +667,7 @@ fn sandboxed_groups_are_cleaned_and_escaped_pipe_holders_are_reported() -> TestR
             env: BTreeMap::new(),
             stdin: SandboxStdin::Null,
         }
-        .to_command(&f.probe)?;
+        .to_command(Path::new(env!("CARGO_BIN_EXE_benitoiteh")))?;
         let limits = RunLimits {
             timeout: Duration::from_secs(5),
             pipe_close_wait: Duration::from_millis(100),
@@ -719,7 +719,7 @@ fn sandboxed_timeout_delivers_the_requested_signal() -> TestResult {
             env: BTreeMap::new(),
             stdin: SandboxStdin::Null,
         }
-        .to_command(&f.probe)?;
+        .to_command(Path::new(env!("CARGO_BIN_EXE_benitoiteh")))?;
         let limits = RunLimits {
             timeout: Duration::from_secs(2),
             stop_signal: signal,
@@ -791,5 +791,53 @@ fn doctor_verifies_restricted_and_normal_sandboxes() -> TestResult {
     assert_eq!(fs::read_dir(&fixture.project)?.count(), 0);
     assert_eq!(fs::read_dir(fixture.root.join("state"))?.count(), 0);
     assert_eq!(fs::read_dir(fixture.root.join("tmp"))?.count(), 0);
+    Ok(())
+}
+
+#[path = "support/tty.rs"]
+#[allow(dead_code)]
+mod tty;
+
+// 作成時の関門: 方針で ioctl を塞ぐと仮定せず、本物の起動の切り離しを対照付きで守る。
+#[test]
+fn sandboxes_detach_the_controlling_terminal_for_both_modes() -> TestResult {
+    let f = Fixture::new(false)?;
+    let mut pty = tty::Pty::new()?;
+    pty.control(&f.probe)?;
+    for restricted in [false, true] {
+        for operation in ["tty-open", "tty-write", "tty-ioctl"] {
+            let mut config = f.config();
+            if restricted {
+                config.programs = ProgramAccess::Only(vec![f.probe.clone()]);
+            }
+            let command = f.command(config, &[OsStr::new(operation)])?;
+            let mut child = pty
+                .wrapper(&f.probe)
+                .arg(command.get_program())
+                .args(command.get_args())
+                .current_dir(command.get_current_dir().ok_or("missing cwd")?)
+                .envs(
+                    command
+                        .get_envs()
+                        .filter_map(|(key, value)| value.map(|value| (key, value))),
+                )
+                .spawn()?;
+            let (output, terminal) = pty.capture(&mut child)?;
+            if operation == "tty-open" {
+                // 15 は ENXIO、16 は別の open の誤り。Seatbelt の EPERM も区別して報告する。
+                assert!(
+                    matches!(output.status.code(), Some(15 | 16)),
+                    "{restricted} {output:?}"
+                );
+                eprintln!("restricted={restricted} tty-open: {output:?}");
+            } else {
+                assert!(matches!(output.status.code(), Some(10 | 11)), "{output:?}");
+            }
+            assert!(
+                terminal.is_empty(),
+                "sandbox child wrote to the controlling terminal"
+            );
+        }
+    }
     Ok(())
 }

@@ -7,6 +7,7 @@ mod normal;
 mod policy;
 pub use normal::{check_availability, normal_policy};
 pub mod run;
+pub mod session;
 mod text;
 
 #[cfg(test)]
@@ -17,11 +18,13 @@ use std::error::Error;
 use std::ffi::OsString;
 use std::fmt;
 use std::io;
+#[cfg(target_os = "linux")]
+use std::os::unix::process::CommandExt;
 #[cfg(not(target_os = "linux"))]
 use std::path::Path;
 use std::path::PathBuf;
 use std::process::Command;
-use std::{os::unix::process::CommandExt, process::Stdio};
+use std::process::Stdio;
 
 #[cfg(target_os = "linux")]
 pub use linux::{
@@ -30,6 +33,9 @@ pub use linux::{
 };
 pub use macos::SeatbeltProfile;
 pub use policy::{PolicyConfig, ProgramAccess, ReadAccess, SandboxPolicy};
+
+/// 補助の準備に失敗したときの共通の終了状態。目的のプログラムも同じ値を返せる。
+pub(crate) const SETUP_FAILURE: u8 = 125;
 
 /// 方針の検証、利用可能性、OS の準備の誤り。
 #[derive(Debug)]
@@ -93,9 +99,9 @@ pub struct SandboxCommand {
 }
 
 impl SandboxCommand {
-    /// macOS の `sandbox-exec` の `Command` を作る。`helper` は使わない。
+    /// 補助を経て macOS の `sandbox-exec` を新しいセッションで起動する。
     #[cfg(not(target_os = "linux"))]
-    pub fn to_command(&self, _helper: &Path) -> Result<Command, SandboxError> {
+    pub fn to_command(&self, helper: &Path) -> Result<Command, SandboxError> {
         self.policy.validate()?;
         policy::canonical_path(&self.program)?;
         policy::canonical_path(&self.cwd)?;
@@ -106,7 +112,7 @@ impl SandboxCommand {
                 return Err(SandboxError::Unavailable);
             }
             let profile = self.policy.seatbelt_profile();
-            let mut command = Command::new("/usr/bin/sandbox-exec");
+            let mut command = session::command(helper, Path::new("/usr/bin/sandbox-exec"));
             command.arg("-p").arg(profile.source);
             for (name, value) in profile.parameters {
                 let mut argument = OsString::from(format!("-D{name}="));
@@ -124,7 +130,9 @@ impl SandboxCommand {
 
     fn configure(&self, mut command: Command) -> Result<Command, SandboxError> {
         command.current_dir(&self.cwd).env_clear().envs(&self.env);
-        command.process_group(0).stdin(match self.stdin {
+        #[cfg(target_os = "linux")]
+        command.process_group(0);
+        command.stdin(match self.stdin {
             SandboxStdin::Null => Stdio::null(),
             SandboxStdin::Inherit => Stdio::inherit(),
             SandboxStdin::Piped => Stdio::piped(),

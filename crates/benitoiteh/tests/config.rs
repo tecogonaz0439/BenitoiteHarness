@@ -255,10 +255,10 @@ fn exec_resolution_applies_options_project_user_and_defaults_in_order() -> TestR
     assert_eq!(resolved.limits.max_turns, 8);
     assert_eq!(resolved.limits.max_check_fix, 2);
     assert_eq!(resolved.limits.max_run_tokens, Some(100));
-    // 対話の確認がまだない間、利用者の承認の設定を黙って never に下げない。
+    // 対話は確認できるので、三つの承認の設定とオプションを受ける。
     for (approval, options, accepted) in [
-        ("on-request", vec![], false),
-        ("untrusted", vec![], false),
+        ("on-request", vec![], true),
+        ("untrusted", vec![], true),
         ("never", vec![], true),
         ("on-request", vec!["--approval", "never"], true),
     ] {
@@ -268,9 +268,6 @@ fn exec_resolution_applies_options_project_user_and_defaults_in_order() -> TestR
         let args = ExecArgs::parse_interactive(options)?;
         let resolved = config.resolve_exec(&args, &ProjectConfig::default(), &fixture.0);
         assert_eq!(resolved.is_ok(), accepted);
-        if let Err(error) = resolved {
-            assert!(error.to_string().contains("P4-07"));
-        }
     }
     Ok(())
 }

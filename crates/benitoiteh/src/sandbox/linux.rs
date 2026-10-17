@@ -22,10 +22,7 @@ use std::process::{Command, ExitCode};
 use rustix::fs::RawDir;
 use rustix::thread::{CapabilitySet, CapabilitySets};
 
-use super::{PolicyConfig, SandboxError, SandboxPolicy, policy, text};
-
-/// 補助の準備に失敗したときの終了状態。目的のプログラムも同じ値を返せる。
-pub const SETUP_FAILURE: u8 = 125;
+use super::{PolicyConfig, SETUP_FAILURE, SandboxError, SandboxPolicy, policy, text};
 
 fn failure(stage: &'static str, error: impl std::fmt::Display) -> SandboxError {
     SandboxError::Setup {

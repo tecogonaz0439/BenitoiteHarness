@@ -4,7 +4,7 @@ use std::ffi::OsString;
 use std::io::{self, Write};
 use std::os::unix::process::ExitStatusExt;
 use std::path::Path;
-use std::process::Command;
+
 use std::sync::{Arc, Mutex, PoisonError};
 use std::time::Duration;
 
@@ -225,7 +225,7 @@ fn prepare(
         let mut env = shell.env.clone();
         env.remove(std::ffi::OsStr::new("BENITOITEH_SANDBOX"));
         env.remove(std::ffi::OsStr::new("BENITOITEH_SANDBOX_NETWORK_DISABLED"));
-        let mut launch = Command::new(path);
+        let mut launch = crate::sandbox::session::command(&shell.helper, path);
         launch
             .arg("-c")
             .arg(command)

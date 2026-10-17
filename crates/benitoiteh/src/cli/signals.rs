@@ -10,6 +10,7 @@ use signal_hook::consts::signal::{SIGHUP, SIGINT, SIGTERM};
 
 pub(super) struct Signals {
     pub cancelled: Arc<AtomicBool>,
+    pub cancel_step: Arc<AtomicBool>,
     registrations: Vec<SigId>,
     received: Option<UnixStream>,
     received_count: usize,
@@ -36,6 +37,7 @@ impl Signals {
         };
         let mut signals = Self {
             cancelled: Arc::new(AtomicBool::new(false)),
+            cancel_step: Arc::new(AtomicBool::new(false)),
             registrations: Vec::new(),
             received: None,
             received_count: 0,
@@ -48,6 +50,10 @@ impl Signals {
             signals.registrations.push(signal_hook::flag::register(
                 signal,
                 Arc::clone(&signals.cancelled),
+            )?);
+            signals.registrations.push(signal_hook::flag::register(
+                signal,
+                Arc::clone(&signals.cancel_step),
             )?);
             // 同じ真偽値への二度目の通知を失わないよう、通知ごとに一バイトも残す。
             // flag を先に立てる順序は signal-hook 0.4.5 の self-pipe の規則に従う。

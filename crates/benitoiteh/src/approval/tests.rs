@@ -196,3 +196,87 @@ fn only_command_answers_remember_exact_strings_and_escalations_still_require_app
         );
     }
 }
+
+// 関門: 制限モードで誤って確認を許す退行を、通常モードの同じ方針と比較して検出する。
+#[test]
+fn restricted_mode_denies_every_non_web_approval_even_with_full_access_policy() {
+    let policy = ApprovalPolicy {
+        approval: Approval::OnRequest,
+        sandbox: Sandbox::DangerFullAccess,
+        sandboxed: false,
+    };
+    for kind in [
+        ApprovalKind::WriteScope,
+        ApprovalKind::Command,
+        ApprovalKind::Escalate,
+        ApprovalKind::WebFetch,
+    ] {
+        let decision = decide_in_mode(
+            crate::config::Mode::Restricted,
+            &policy,
+            kind,
+            &ApprovalFacts::default(),
+            &BTreeSet::new(),
+            &BTreeSet::new(),
+        );
+        assert_eq!(
+            decision,
+            if kind == ApprovalKind::WebFetch {
+                Decision::Ask
+            } else {
+                Decision::Deny
+            }
+        );
+    }
+}
+
+#[test]
+fn interactive_replies_belong_to_one_request_and_disconnection_cancels()
+-> Result<(), Box<dyn std::error::Error>> {
+    let (mut approver, requests) = InteractiveApprover::channel();
+    let record = ApprovalRecord {
+        call_id: "one".into(),
+        kind: ApprovalKind::Command,
+        facts: ApprovalFacts::default(),
+        justification: None,
+        summary: "command".into(),
+        decision: None,
+        user_message: None,
+    };
+    std::thread::scope(|scope| -> Result<(), Box<dyn std::error::Error>> {
+        let worker = scope.spawn(|| {
+            let first = approver.approve(&record);
+            let mut second = record.clone();
+            second.call_id = "two".into();
+            let second = approver.approve(&second);
+            let third = approver.approve(&record);
+            (first, second, third)
+        });
+        let first = requests.recv()?;
+        first.reply.send(ApprovalAnswer {
+            outcome: ApprovalOutcome::Approved,
+            message: None,
+        })?;
+        let second = requests.recv()?;
+        assert_eq!(second.request.call_id, "two");
+        assert!(
+            first
+                .reply
+                .send(ApprovalAnswer {
+                    outcome: ApprovalOutcome::Approved,
+                    message: None
+                })
+                .is_err()
+        );
+        second.reply.send(ApprovalAnswer {
+            outcome: ApprovalOutcome::Denied,
+            message: None,
+        })?;
+        drop(requests);
+        let (first, second, third) = worker.join().map_err(|_| "approver panicked")?;
+        assert_eq!(first.outcome, ApprovalOutcome::Approved);
+        assert_eq!(second.outcome, ApprovalOutcome::Denied);
+        assert_eq!(third.outcome, ApprovalOutcome::Cancelled);
+        Ok(())
+    })
+}

@@ -57,6 +57,46 @@ fn run(operation: &OsStr, args: &[OsString]) -> io::Result<Option<u8>> {
         return Ok(None);
     };
     match (operation, args) {
+        ("with-ctty", [pts, separator, program, rest @ ..]) if separator == "--" => {
+            rustix::process::setsid()?;
+            let terminal = File::options().read(true).write(true).open(pts)?;
+            rustix::process::ioctl_tiocsctty(&terminal)?;
+            // 対照では同じ制御端末を保つ。本番の起動を包む場合は __session が
+            // さらに setsid して切り離す（設計書 03-02「端末からの切り離し」）。
+            let status = Command::new(program)
+                .args(rest)
+                .env_clear()
+                .envs(std::env::vars_os())
+                .status()?;
+            drop(terminal);
+            return Ok(Some(
+                status
+                    .code()
+                    .and_then(|code| u8::try_from(code).ok())
+                    .unwrap_or(12),
+            ));
+        }
+        ("tty-open", []) => {
+            return Ok(Some(match File::open("/dev/tty") {
+                Ok(_) => 0,
+                Err(error)
+                    if error.raw_os_error() == Some(rustix::io::Errno::NXIO.raw_os_error()) =>
+                {
+                    15
+                }
+                Err(error) => {
+                    eprintln!("tty-open: {:?}: {error}", error.kind());
+                    16
+                }
+            }));
+        }
+        ("tty-write", []) => File::options()
+            .write(true)
+            .open("/dev/tty")?
+            .write_all(b"sandbox-probe-tty\n"),
+        ("tty-ioctl", []) => rustix::termios::tcgetattr(File::open("/dev/tty")?)
+            .map(|_| ())
+            .map_err(Into::into),
         ("read", [path]) => fs::read(path).map(|_| ()),
         ("read-dir", [path]) => fs::read_dir(path).map(|_| ()),
         ("wait-line", [next, rest @ ..]) => {

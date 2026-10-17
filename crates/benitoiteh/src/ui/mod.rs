@@ -18,7 +18,11 @@ pub fn terminal_text(input: &str, multiline: bool) -> String {
             '\u{00}'..='\u{1f}' | '\u{7f}'..='\u{9f}' => {
                 output.push_str(&format!("\\x{:02x}", u32::from(ch)));
             }
-            '\u{202a}'..='\u{202e}' | '\u{2066}'..='\u{2069}' => {
+            '\u{202a}'..='\u{202e}'
+            | '\u{2066}'..='\u{2069}'
+            | '\u{200e}'
+            | '\u{200f}'
+            | '\u{61c}' => {
                 output.push_str(&format!("\\u{{{:x}}}", u32::from(ch)));
             }
             _ => output.push(ch),
@@ -115,7 +119,8 @@ impl ExecOutput {
             {
                 Some(reason.clone())
             }
-            AgentEvent::TurnStart { .. }
+            AgentEvent::Steered { .. }
+            | AgentEvent::TurnStart { .. }
             | AgentEvent::TextDelta { .. }
             | AgentEvent::ReasoningDelta { .. }
             | AgentEvent::ApprovalRequest { .. }

@@ -11,6 +11,12 @@ pub enum Action {
     None,
     /// 新しい依頼。
     Submit(String),
+    /// 処理中に加える操縦。
+    Steer(String),
+    /// 処理の後に送る依頼。
+    FollowUp(String),
+    /// 道具の段階だけを取り消す。
+    CancelStep,
     /// 今の依頼の取り消し。
     Cancel,
     /// 取り消して終える。
@@ -27,6 +33,7 @@ pub(super) struct Input {
     draft: String,
     last_interrupt: Option<Duration>,
     cancelling: bool,
+    last_escape: Option<Duration>,
 }
 
 impl Input {
@@ -46,6 +53,9 @@ impl Input {
             }
             Event::Key(key) if key.kind == KeyEventKind::Press => {
                 let control = key.modifiers.contains(KeyModifiers::CONTROL);
+                if key.code == KeyCode::Esc {
+                    return self.escape(now, running, key.modifiers.contains(KeyModifiers::ALT));
+                }
                 if control && key.code == KeyCode::Char('c') {
                     if running {
                         if self.cancelling {
@@ -73,7 +83,7 @@ impl Input {
                 if control && key.code == KeyCode::Char('d') && self.text.is_empty() {
                     return Action::Quit;
                 }
-                if key.modifiers.contains(KeyModifiers::ALT) {
+                if key.modifiers.contains(KeyModifiers::ALT) && key.code != KeyCode::Enter {
                     return Action::None;
                 }
                 match key.code {
@@ -81,12 +91,18 @@ impl Input {
                         self.insert("\n")
                     }
                     KeyCode::Char('j') if control => self.insert("\n"),
-                    KeyCode::Enter if !running && !self.text.trim().is_empty() => {
+                    KeyCode::Enter if !self.text.trim().is_empty() => {
                         let request = std::mem::take(&mut self.text);
                         self.cursor = 0;
                         self.history_index = None;
                         self.draft.clear();
-                        return Action::Submit(request);
+                        return if !running {
+                            Action::Submit(request)
+                        } else if key.modifiers.contains(KeyModifiers::ALT) {
+                            Action::FollowUp(request)
+                        } else {
+                            Action::Steer(request)
+                        };
                     }
                     KeyCode::Char(ch) if !control => self.insert(&ch.to_string()),
                     KeyCode::Left => self.cursor = self.previous(),
@@ -147,6 +163,31 @@ impl Input {
             | Event::Resize(_, _) => {}
         }
         Action::None
+    }
+
+    pub fn escape(&mut self, now: Duration, running: bool, doubled: bool) -> Action {
+        let twice = doubled
+            || self
+                .last_escape
+                .is_some_and(|prior| now.saturating_sub(prior) <= Duration::from_secs(1));
+        self.last_escape = Some(now);
+        if running && twice {
+            self.cancelling = true;
+            Action::Cancel
+        } else if running {
+            Action::CancelStep
+        } else {
+            Action::None
+        }
+    }
+
+    pub fn restore(&mut self, values: impl IntoIterator<Item = String>) {
+        let mut values: Vec<_> = values.into_iter().collect();
+        if !self.text.is_empty() {
+            values.push(std::mem::take(&mut self.text));
+        }
+        self.text = values.join("\n");
+        self.cursor = self.text.len();
     }
 
     fn reset_interrupt(&mut self) {

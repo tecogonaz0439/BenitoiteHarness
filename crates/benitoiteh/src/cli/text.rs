@@ -18,7 +18,7 @@ Options (interactive and exec):
     --max-check-fix <n>
     --max-run-tokens <n>
     --sandbox read-only|workspace-write|danger-full-access
-    --approval never
+    --approval untrusted|on-request|never
     --no-sandbox
     --resume <ID>
     --continue
@@ -28,7 +28,7 @@ Options (interactive and exec):
 
 Use - as the exec request to read standard input.
 --json and --output-last-message are exec-only.
-Interactive --resume and --continue require P4-07.
+exec only supports --approval never.
 --licenses is not available yet.
 The following options are not available yet:
     --allow, --project-parent
@@ -115,8 +115,5 @@ pub fn resuming(id: &crate::session::SessionId, project: &std::path::Path) -> St
 /// 端末以外からの対話の起動を拒む。
 pub const TERMINAL_REQUIRED: &str =
     "Interactive mode requires terminal input and output; use benitoiteh exec instead.";
-/// 対話の確認は次の作業に委ねる。
-pub const INTERACTIVE_APPROVAL: &str =
-    "benitoiteh: interactive approval requires P4-07; use --approval never";
-/// 一時的な承認の方針を起動で明示する。
-pub const APPROVAL_NEVER: &str = "Approval is never; operations requiring approval will be denied (interactive approval requires P4-07).";
+/// モードの変更を拒否した通常終了。
+pub const MODE_CHANGE_DECLINED: &str = "Resume in normal mode was declined.";

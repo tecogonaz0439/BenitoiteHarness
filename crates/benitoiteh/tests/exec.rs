@@ -1202,3 +1202,49 @@ fn exec_outputs_compaction_events_and_counts_on_json_and_terminal() -> TestResul
     }
     Ok(())
 }
+
+// 関門: exec の二つの印の配線を落として、SIGINT で bash だけが残る退行を守る。
+#[test]
+fn sigint_stops_a_running_bash_and_records_run_cancellation() -> TestResult {
+    let mut server = MockProvider::start(vec![ResponseScript::sse(Protocol::Chat.response(
+        Some((
+            "bash",
+            "bash",
+            json!({"command":"printf ready > started; exec sleep 30"}),
+        )),
+        "",
+        false,
+    ))])?;
+    let f = Fixture::new(Protocol::Chat, &server)?;
+    let child = Running::start(f.command("Wait for bash").args([
+        "--json",
+        "--mode",
+        "normal",
+        "--sandbox",
+        "danger-full-access",
+    ]))?;
+    let started = Instant::now();
+    while !f.root.join("project/started").exists() {
+        if started.elapsed() > Duration::from_secs(5) {
+            return Err("bash did not start".into());
+        }
+        thread::sleep(Duration::from_millis(5));
+    }
+    let pid = rustix::process::Pid::from_raw(i32::try_from(
+        child.0.as_ref().ok_or("missing child")?.id(),
+    )?)
+    .ok_or("invalid pid")?;
+    rustix::process::kill_process(pid, rustix::process::Signal::INT)?;
+    let output = child.finish()?;
+    assert_eq!(output.status.code(), Some(130));
+    let (_, records) = f.records()?;
+    assert!(
+        records
+            .iter()
+            .any(|record| record.get("type") == Some(&json!("session_end"))
+                && record.get("outcome") == Some(&json!("cancelled")))
+    );
+    assert_eq!(server.requests()?.len(), 1);
+    server.shutdown()?;
+    Ok(())
+}
