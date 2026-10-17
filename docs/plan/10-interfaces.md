@@ -106,6 +106,11 @@ P0-04 で作った型: 方針の入力 `PolicyConfig`（`readable: ReadAccess`�
   - 方針の検査は、`protected_names` に綴りどおりの `.git` と `.benitoiteh` を含むことを求める。
 - `SandboxPolicy` の中のパスは正規の形（`std::fs::canonicalize` の結果。macOS の `/var` は `/private/var`）とし、作るときに確かめる。理由: Seatbelt は正規の形のパスで照合するので、`/var/folders` の形では規則が当たらない。
 - `SandboxError`: 方針の誤り、掛けられない、補助のプロセスの段階ごとの失敗。
+- P2-01 で、子プロセスの実行の部分 `benitoiteh::sandbox::run` を加えた。道具が子プロセスを動かすときは、この部分を通す。
+  - `run(command: impl Into<RunCommand>, input: Vec<u8>, stdout: Arc<Mutex<O>>, stderr: Arc<Mutex<E>>, limits: RunLimits, cancelled: &AtomicBool) -> Result<RunOutcome, RunError>`（`O`・`E` は `Write + Send + 'static`）。`RunCommand` は `Command`（macOS の `sandbox-exec` で包んだもの、またはサンドボックスなし）か、Linux の `PreparedSandbox`。
+  - `RunLimits { timeout, stop_signal: StopSignal（Interrupt・Terminate）, grace（既定 10 秒）, pipe_close_wait（既定 2 秒） }`、`RunOutcome { status, end: RunEnd（Exited・TimedOut・Cancelled）, leftovers: Leftovers（None・PossiblyRemaining） }`、`RunError`（`Io`・`Sandbox`）。
+  - `run` に `PreparedSandbox` を渡すときは、入力があれば `SandboxStdin::Piped`、なければ `Null` で準備する。Linux の bubblewrap の標準入力は、補助のプロセスへの制御のソケットである。
+  - Linux の `SandboxChild` に `take_stdin`・`stop(StopSignal)`・`terminate` を加えた。補助のプロセスは bubblewrap の名前空間の pid 1 として動く（`--as-pid-1`）。
 
 ### `provider`（P1-01、P1-02）
 

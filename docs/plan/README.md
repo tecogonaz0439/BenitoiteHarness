@@ -30,7 +30,7 @@
 | [P1-09](tasks/P1-09-agent-loop.md) | エージェントのループ | P1-03、P1-08 | 完了 |
 | [P1-10](tasks/P1-10-exec.md) | `exec` の入口と P1 の完了の確かめ | P1-09 | 完了 |
 | [P1-11](tasks/P1-11-skill-comment.md) | 埋め込んだ SKILL.md の先頭の注釈を除く | P1-08 | 完了 |
-| [P2-01](tasks/P2-01-process-run.md) | 子プロセスの実行と後始末（BH-090） | P0-07 | 作業中 |
+| [P2-01](tasks/P2-01-process-run.md) | 子プロセスの実行と後始末（BH-090） | P0-07 | 完了 |
 | [P2-02](tasks/P2-02-hardlinks.md) | サンドボックスの中のハードリンクの作成（BH-092） | P0-07 | 未着手 |
 | [P2-03](tasks/P2-03-linux-placeholders.md) | Linux の塞ぐ場所の錠と記録、入れ子の探索の時間（BH-095） | P2-01 | 未着手 |
 | [P2-04](tasks/P2-04-bwrap-checks.md) | bubblewrap の版と setuid の確かめ、特権の除去（BH-094 の一部） | P2-01 | 未着手 |
