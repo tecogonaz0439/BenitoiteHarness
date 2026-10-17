@@ -196,16 +196,17 @@ fn editing_history_and_interrupts_follow_input_events() {
     assert_eq!(screen.input.text, "a\nb\nc\n\n");
     assert_eq!(
         screen.input(key(KeyCode::Enter, KeyModifiers::ALT), at, false),
-        Action::None
+        Action::Submit("a\nb\nc\n\n".into())
     );
+    screen.input(Event::Paste("steer".into()), at, true);
     assert_eq!(
         screen.input(key(KeyCode::Enter, KeyModifiers::NONE), at, true),
-        Action::None
+        Action::Steer("steer".into())
     );
     let mut released = KeyEvent::new(KeyCode::Char('x'), KeyModifiers::NONE);
     released.kind = KeyEventKind::Release;
     screen.input(Event::Key(released), at, false);
-    assert_eq!(screen.input.text, "a\nb\nc\n\n");
+    assert!(screen.input.text.is_empty());
     assert_eq!(
         screen.input(key(KeyCode::Char('c'), KeyModifiers::CONTROL), at, true),
         Action::Cancel
@@ -215,6 +216,7 @@ fn editing_history_and_interrupts_follow_input_events() {
         Action::Quit
     );
     screen.complete(101);
+    screen.input(Event::Paste("draft".into()), at, false);
     screen.input(key(KeyCode::Char('c'), KeyModifiers::CONTROL), at, false);
     assert!(screen.input.text.is_empty());
     screen.input(key(KeyCode::Char('c'), KeyModifiers::CONTROL), at, false);

@@ -41,6 +41,7 @@ pub(super) enum StartupError {
     Io(io::Error),
     Sandbox(SandboxError),
     Invalid(&'static str),
+    Declined,
 }
 
 impl fmt::Display for StartupError {
@@ -57,6 +58,7 @@ impl fmt::Display for StartupError {
             Self::Io(e) => e.fmt(f),
             Self::Sandbox(e) => e.fmt(f),
             Self::Invalid(message) => f.write_str(message),
+            Self::Declined => f.write_str(text::MODE_CHANGE_DECLINED),
         }
     }
 }
@@ -82,11 +84,17 @@ pub(super) struct Prepared {
     pub panic_record: std::fs::File,
 }
 
+/// 記録した制限モードから通常モードへの変更。
+pub(super) struct ModeChange {
+    pub session_id: SessionId,
+}
+
 /// 依頼を読まず、診断と panic 用の記述子を呼び出す側へ返す。
 pub(super) fn prepare(
     args: &ExecArgs,
     paths: &DataPaths,
     check_sandbox: impl FnOnce(&Path, &Path) -> Result<(), SandboxError>,
+    confirm_mode_change: &mut dyn FnMut(&ModeChange) -> bool,
 ) -> Result<Prepared, PreparationError> {
     let mut diagnostics = Vec::new();
     let result = (|| {
@@ -130,10 +138,34 @@ pub(super) fn prepare(
             diagnostics.push(text::project_ignored(error));
         }
         let resolved = match &resume {
-            Some(state) => user.resolve_resume(args, &project.config, &cwd, state),
+            Some(state) => {
+                user.resolve_resume(args, &project.config, &cwd, state, args.interactive)
+            }
             None => user.resolve_exec(args, &project.config, &cwd),
         }
         .map_err(StartupError::Config)?;
+        if let Some(state) = &resume
+            && state.mode == crate::session::RecordedMode::Restricted
+            && resolved.mode == Mode::Normal
+            && !confirm_mode_change(&ModeChange {
+                session_id: opened
+                    .as_ref()
+                    .ok_or(StartupError::Invalid(text::RESUME_PROJECT))?
+                    .id()
+                    .clone(),
+            })
+        {
+            return Err(StartupError::Declined);
+        }
+        let approval = if args.interactive {
+            if resolved.mode == Mode::Restricted {
+                Approval::OnRequest
+            } else {
+                args.approval.unwrap_or(user.normal.approval)
+            }
+        } else {
+            Approval::Never
+        };
         diagnostics.push(text::destination(&resolved.destination));
         let key = resolved
             .api_key
@@ -238,7 +270,7 @@ pub(super) fn prepare(
                 scratch,
                 placeholders,
                 env,
-                approval: Approval::Never,
+                approval,
             })
         } else {
             None
@@ -291,11 +323,13 @@ pub(super) fn prepare(
             allowed_domains: user.web_fetch.allowed_domains.iter().cloned().collect(),
             client: crate::http::HttpClient::default(),
         });
-        let approval_policy = shell.as_ref().map(|shell| ApprovalPolicy {
-            approval: shell.approval,
-            sandbox: shell.sandbox,
-            sandboxed: shell.sandboxed,
-        });
+        let approval_policy = ApprovalPolicy {
+            approval,
+            sandbox: shell
+                .as_ref()
+                .map_or(Sandbox::WorkspaceWrite, |shell| shell.sandbox),
+            sandboxed: shell.as_ref().is_none_or(|shell| shell.sandboxed),
+        };
         if let Some(shell) = shell {
             context = context.with_shell(shell);
         }
@@ -348,9 +382,7 @@ pub(super) fn prepare(
             ),
         }
         .map_err(StartupError::Agent)?;
-        if let Some(policy) = approval_policy {
-            agent = agent.with_approvals(Box::new(NonInteractiveApprover), policy);
-        }
+        agent = agent.with_approvals(Box::new(NonInteractiveApprover), approval_policy);
         Ok(Prepared {
             agent,
             session,
@@ -395,6 +427,7 @@ pub(super) fn run(args: ExecArgs) -> Result<u8, CliError> {
         &args,
         &DataPaths::from_env().map_err(|error| CliError::Startup(StartupError::Config(error)))?,
         sandbox::check_availability,
+        &mut |_| false,
     )
     .map_err(CliError::Preparation)?;
     panic::install(Some(panic_record), None);
@@ -407,11 +440,14 @@ pub(super) fn run(args: ExecArgs) -> Result<u8, CliError> {
         .map_err(CliError::Output)?;
     let mut output = ExecOutput::new(args.json);
     let (sender, receiver) = mpsc::sync_channel(64);
-    let cancelled = Arc::clone(&signals.cancelled);
+    let control = crate::agent::RunControl::without_steering(
+        Arc::clone(&signals.cancel_step),
+        Arc::clone(&signals.cancelled),
+    );
     let (report, output_error) = thread::scope(|scope| {
         let worker = thread::Builder::new()
             .name("agent".into())
-            .spawn_scoped(scope, || agent.run(request, cancelled, sender))
+            .spawn_scoped(scope, || agent.run_controlled(request, control, sender))
             .map_err(CliError::Output)?;
         let mut output_error = None;
         for event in receiver {
@@ -419,6 +455,7 @@ pub(super) fn run(args: ExecArgs) -> Result<u8, CliError> {
                 && let Err(error) = output.event(&event)
             {
                 signals.cancelled.store(true, Ordering::Release);
+                signals.cancel_step.store(true, Ordering::Release);
                 output_error = Some(error);
             }
             // 出力が閉じても受信を続け、ループが session_end を記録できるようにする。

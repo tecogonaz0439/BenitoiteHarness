@@ -13,6 +13,24 @@ use crate::agent::AgentError;
 pub trait InputSource {
     /// 指定時間以内に届いた入力をまとめて返す。連続する Resize は一回の描画にまとまる。
     fn poll(&mut self, wait: Duration) -> io::Result<Vec<Event>>;
+    /// 読み取った時刻を保つ入力。端末は一件ずつ読み取った直後の時計を添える。
+    fn poll_timed(&mut self, wait: Duration) -> io::Result<Vec<(Event, Instant)>> {
+        Ok(self
+            .poll(wait)?
+            .into_iter()
+            .map(|event| (event, Instant::now()))
+            .collect())
+    }
+    /// 表示直後のキーと貼り付けを捨て、Resize と Ctrl+C は受ける。
+    fn discard_pending(&mut self) -> io::Result<Vec<(Event, Instant)>> {
+        Ok(self
+            .poll_timed(Duration::ZERO)?
+            .into_iter()
+            .filter(|(event, _)| {
+                matches!(event, Event::Resize(_, _)) || super::confirmation::is_interrupt(event)
+            })
+            .collect())
+    }
     /// 終了シグナルの累計。キーだけを持つ入力元ではゼロとする。
     fn termination_count(&mut self) -> io::Result<usize> {
         Ok(0)
@@ -56,6 +74,7 @@ pub fn run(
     let mut output_failed = false;
     let mut input_failed = false;
     let mut redraw = true;
+    let mut pending_input = Vec::new();
     loop {
         match input.termination_count() {
             // Worker の Drop は受信先を閉じるだけで join しない。二度目は記録を待たない。
@@ -68,6 +87,7 @@ pub fn run(
             }
         }
         if terminated.load(Ordering::Acquire) {
+            redraw |= screen.cancellation_notice();
             exiting = true;
             status = 130;
             worker.cancel();
@@ -86,6 +106,23 @@ pub fn run(
         if was_running && !worker.is_running() {
             processing_since = None;
         }
+        if exiting {
+            redraw |= screen.cancellation_notice();
+            screen.cancel_confirmation();
+        }
+        if !exiting
+            && !worker.is_running()
+            && !screen.confirming()
+            && let Some(request) = screen.next_followup()
+        {
+            screen.show_request(&request);
+            if let Err(failure) = worker.submit(request, RunControl::default()) {
+                error = Some(TuiError::Agent(failure));
+                exiting = true;
+            }
+            processing_since = Some(Instant::now());
+            redraw = true;
+        }
         let now = Instant::now();
         if redraw || (worker.is_running() && now >= next_tick) {
             if !output_failed {
@@ -96,6 +133,17 @@ pub fn run(
                     output_failed = true;
                     exiting = true;
                     worker.cancel();
+                }
+                if !output_failed && screen.presented(Instant::now()) {
+                    match input.discard_pending() {
+                        Ok(events) => pending_input.extend(events),
+                        Err(failure) => {
+                            error = Some(TuiError::Io(failure));
+                            exiting = true;
+                            worker.cancel();
+                            screen.cancel_confirmation();
+                        }
+                    }
                 }
                 cursor_position(screen.rows_below_cursor());
             }
@@ -111,11 +159,13 @@ pub fn run(
         } else {
             interval
         };
-        let events = if input_failed {
+        let events = if !pending_input.is_empty() {
+            std::mem::take(&mut pending_input)
+        } else if input_failed {
             std::thread::park_timeout(wait);
             Vec::new()
         } else {
-            match input.poll(wait) {
+            match input.poll_timed(wait) {
                 Ok(events) => events,
                 Err(failure) => {
                     error = Some(TuiError::Io(failure));
@@ -128,11 +178,12 @@ pub fn run(
         };
         // 外からの INT はキーの Ctrl+C と区別し、次の依頼を始める前にも調べる。
         if terminated.load(Ordering::Acquire) {
+            redraw |= screen.cancellation_notice();
             exiting = true;
             status = 130;
             worker.cancel();
         }
-        for event in events {
+        for (event, read_at) in events {
             if exiting {
                 match event {
                     Event::Resize(_, _) => {
@@ -156,7 +207,12 @@ pub fn run(
                 }
                 continue;
             }
-            match screen.input(event, started.elapsed(), worker.is_running()) {
+            match screen.input_at(
+                event,
+                read_at,
+                read_at.saturating_duration_since(started),
+                worker.is_running(),
+            ) {
                 Action::None => {}
                 Action::Submit(request) => {
                     screen.request(&request);
@@ -166,10 +222,27 @@ pub fn run(
                     }
                     processing_since = Some(Instant::now());
                 }
-                Action::Cancel => worker.cancel(),
+                Action::Steer(value) => {
+                    screen.remember_input(&value);
+                    if let Err(value) = worker.steer(value) {
+                        screen.restore_input(value);
+                    }
+                }
+                Action::FollowUp(value) => screen.queue_followup(value),
+                Action::CancelStep => {
+                    screen.cancellation_notice();
+                    worker.cancel_step();
+                }
+                Action::Cancel => {
+                    screen.cancellation_notice();
+                    worker.cancel();
+                    screen.cancel_confirmation();
+                }
                 Action::Quit => {
+                    screen.cancellation_notice();
                     exiting = true;
                     worker.cancel();
+                    screen.cancel_confirmation();
                 }
             }
             redraw = true;
@@ -185,5 +258,57 @@ pub fn run(
     match error {
         Some(error) => Err(error),
         None => Ok(status),
+    }
+}
+
+/// 再開と巻き戻しに共通の確認の待ち方。端末の待ち行列も同じ順序で捨てる。
+pub fn confirm(
+    screen: &mut Screen,
+    input: &mut impl InputSource,
+    output: &mut impl Write,
+    terminated: &AtomicBool,
+    mut cursor_position: impl FnMut(u16),
+) -> io::Result<bool> {
+    let started = Instant::now();
+    let mut pending = Vec::new();
+    loop {
+        if terminated.load(Ordering::Acquire) || input.termination_count()? > 0 {
+            terminated.store(true, Ordering::Release);
+            screen.cancel_confirmation();
+            return Ok(false);
+        }
+        screen.draw(output, None)?;
+        let shown = Instant::now();
+        cursor_position(screen.rows_below_cursor());
+        if screen.presented(shown) {
+            pending.extend(input.discard_pending()?);
+        }
+        if let Some(result) = screen.take_confirmation_result() {
+            return Ok(result);
+        }
+        let events = if pending.is_empty() {
+            input.poll_timed(Duration::from_millis(33))?
+        } else {
+            std::mem::take(&mut pending)
+        };
+        for (event, read_at) in events {
+            match screen.input_at(
+                event,
+                read_at,
+                read_at.saturating_duration_since(started),
+                false,
+            ) {
+                Action::Cancel | Action::Quit => {
+                    terminated.store(true, Ordering::Release);
+                    screen.cancel_confirmation();
+                    return Ok(false);
+                }
+                Action::None
+                | Action::Submit(_)
+                | Action::Steer(_)
+                | Action::FollowUp(_)
+                | Action::CancelStep => {}
+            }
+        }
     }
 }

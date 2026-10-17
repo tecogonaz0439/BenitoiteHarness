@@ -1,6 +1,8 @@
 //! 道具から独立した承認の判定と確認の受け手（設計書 03-03「通常モードの承認の方針」）。
 
+mod interactive;
 mod text;
+pub use interactive::{ApprovalPrompt, InteractiveApprover};
 
 use crate::config::{Approval, Sandbox};
 pub use crate::session::ApprovalOutcome;
@@ -101,6 +103,22 @@ pub fn decide(
             Approval::Untrusted | Approval::OnRequest => Decision::Ask,
             Approval::Never => Decision::Deny,
         },
+    }
+}
+
+/// 制限モードの多重の守り。既存の通常モードの判定と同じ入口を共有する。
+pub fn decide_in_mode(
+    mode: crate::config::Mode,
+    policy: &ApprovalPolicy,
+    kind: ApprovalKind,
+    facts: &ApprovalFacts,
+    allowed: &BTreeSet<String>,
+    domains: &BTreeSet<String>,
+) -> Decision {
+    if mode == crate::config::Mode::Restricted && kind != ApprovalKind::WebFetch {
+        Decision::Deny
+    } else {
+        decide(policy, kind, facts, allowed, domains)
     }
 }
 

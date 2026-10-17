@@ -77,7 +77,7 @@ fn help_lists_command_forms() -> Result<(), Box<dyn Error>> {
         "--max-check-fix <n>",
         "--max-run-tokens <n>",
         "--sandbox read-only|workspace-write|danger-full-access",
-        "--approval never",
+        "--approval untrusted|on-request|never",
         "--no-sandbox",
         "--resume <ID>",
         "--continue",
@@ -126,6 +126,8 @@ fn interactive_requires_terminals_before_creating_data_and_rejects_exec_options(
         vec!["--output-last-message", "result"],
         vec!["-"],
         vec!["--approval", "on-request"],
+        vec!["--resume", "session-id"],
+        vec!["--continue"],
     ] {
         let directory = TestDirectory::new("interactive")?;
         let output = Command::new(env!("CARGO_BIN_EXE_benitoiteh"))
@@ -139,14 +141,68 @@ fn interactive_requires_terminals_before_creating_data_and_rejects_exec_options(
         assert!(output.stdout.is_empty());
         let message = String::from_utf8(output.stderr)?;
         assert_eq!(message.lines().count(), 1);
-        if args.is_empty() || args == ["request"] {
+        if args.is_empty()
+            || args == ["request"]
+            || args == ["--approval", "on-request"]
+            || args == ["--resume", "session-id"]
+            || args == ["--continue"]
+        {
             assert!(message.contains("use benitoiteh exec"), "{message}");
-        } else if args == ["--approval", "on-request"] {
-            assert!(message.contains("P4-07"), "{message}");
         } else {
             assert!(message.contains("invalid arguments"), "{message}");
         }
         assert_eq!(fs::read_dir(&directory.0)?.count(), 0);
     }
+    Ok(())
+}
+
+// 関門: 補助の失敗後の exec、設定の読み込み、環境や標準入出力の解釈を実行ファイルの口で守る。
+#[test]
+fn session_helper_executes_only_after_setsid_and_failures_exit_125() -> Result<(), Box<dyn Error>> {
+    use std::os::unix::process::CommandExt;
+    let directory = TestDirectory::new("session-helper")?;
+    for arguments in [
+        vec!["__session", "--", "true"],
+        vec!["__session", "--", "./true"],
+        vec!["__session", "--", ""],
+        vec!["__session", "--"],
+        vec!["__session"],
+        vec!["__session", "wrong", "/usr/bin/true"],
+        vec!["__session", "--", "/missing-program"],
+    ] {
+        let output = Command::new(env!("CARGO_BIN_EXE_benitoiteh"))
+            .args(arguments)
+            .current_dir(&directory.0)
+            .output()?;
+        assert_eq!(output.status.code(), Some(125), "{output:?}");
+        assert!(output.stdout.is_empty());
+        let diagnostic = String::from_utf8(output.stderr)?;
+        assert_eq!(diagnostic.lines().count(), 1, "{diagnostic:?}");
+        assert!(diagnostic.ends_with('\n'));
+    }
+    let marker = directory.0.join("must-not-exec");
+    let output = benitoiteh::sandbox::session::command(
+        std::path::Path::new(env!("CARGO_BIN_EXE_benitoiteh")),
+        std::path::Path::new("/usr/bin/touch"),
+    )
+    .arg(&marker)
+    .process_group(0)
+    .output()?;
+    assert_eq!(output.status.code(), Some(125));
+    assert!(!marker.exists());
+    assert!(String::from_utf8(output.stderr)?.contains("Could not create a new session:"));
+    let output = benitoiteh::sandbox::session::command(
+        std::path::Path::new(env!("CARGO_BIN_EXE_benitoiteh")),
+        std::path::Path::new("/bin/sh"),
+    )
+    .args(["-c", "printf '%s' \"$SESSION_HELPER_VALUE\"; exit 17"])
+    .env_clear()
+    .env("SESSION_HELPER_VALUE", "passed unchanged")
+    .env("HOME", "/missing-home")
+    .current_dir(&directory.0)
+    .output()?;
+    assert_eq!(output.status.code(), Some(17));
+    assert_eq!(output.stdout, b"passed unchanged");
+    assert!(output.stderr.is_empty());
     Ok(())
 }

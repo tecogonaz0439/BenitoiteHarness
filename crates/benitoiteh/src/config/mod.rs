@@ -357,17 +357,10 @@ impl UserConfig {
         cwd: &Path,
     ) -> Result<ResolvedExec, ConfigError> {
         let mode = args.mode.unwrap_or(self.default_mode);
-        if args.interactive
-            && (args.approval.is_some_and(|value| value != Approval::Never)
-                || (mode == Mode::Normal
-                    && args.approval.is_none()
-                    && self.normal.approval != Approval::Never))
-        {
-            return Err(ConfigError::Invalid(text::INTERACTIVE_APPROVAL));
-        }
-        if args
-            .approval
-            .is_some_and(|approval| approval != Approval::Never)
+        if !args.interactive
+            && args
+                .approval
+                .is_some_and(|approval| approval != Approval::Never)
         {
             return Err(ConfigError::Invalid(text::EXEC_APPROVAL));
         }
@@ -427,6 +420,7 @@ impl UserConfig {
         project: &ProjectConfig,
         cwd: &Path,
         state: &crate::session::ResumeState,
+        allow_mode_change: bool,
     ) -> Result<ResolvedExec, ConfigError> {
         let mut args = args.clone();
         let recorded_mode = match state.mode {
@@ -434,7 +428,10 @@ impl UserConfig {
             crate::session::RecordedMode::Normal => Mode::Normal,
         };
         args.mode = Some(args.mode.unwrap_or(recorded_mode));
-        if recorded_mode == Mode::Restricted && args.mode == Some(Mode::Normal) {
+        if recorded_mode == Mode::Restricted
+            && args.mode == Some(Mode::Normal)
+            && !allow_mode_change
+        {
             return Err(ConfigError::Invalid(text::RESUME_MODE));
         }
         let different_provider = args

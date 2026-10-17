@@ -1,20 +1,19 @@
 //! 安全にした文へ行ごとの装飾を加える（設計書 05-02「出力の示し方」）。
 
 use serde_json::Value;
-use unicode_width::UnicodeWidthChar;
 
 use super::control::{Decoration, Line, SafeText, plain};
 use super::text;
 
 pub(super) fn clipped(value: &str, width: u16) -> SafeText {
-    let value = SafeText::new(value, false);
+    let value = SafeText::strict(value, false);
     let mut columns = 0usize;
     SafeText::new(
         &value
             .as_str()
             .chars()
             .take_while(|ch| {
-                columns = columns.saturating_add(ch.width().unwrap_or(0));
+                columns = columns.saturating_add(super::unicode::cells(*ch));
                 columns <= usize::from(width)
             })
             .collect::<String>(),
@@ -24,13 +23,17 @@ pub(super) fn clipped(value: &str, width: u16) -> SafeText {
 
 /// 折り返し位置とカーソルは、制御文字の可視化とタブの展開の後の幅で数える。
 pub(super) fn wrapped(value: &SafeText, width: u16, cursor: usize) -> (Vec<String>, (usize, u16)) {
+    let cursor = value.as_str().get(..cursor).map_or(usize::MAX, |prefix| {
+        SafeText::strict(prefix, true).as_str().len()
+    });
+    let value = SafeText::strict(value.as_str(), true);
     let width = usize::from(width.max(1));
     let mut rows = vec![String::new()];
     let mut row = 0usize;
     let mut column = 0usize;
     let mut position = (0, 0);
     for (index, ch) in value.as_str().char_indices() {
-        let cells = ch.width().unwrap_or(0).min(width);
+        let cells = super::unicode::cells(ch).min(width);
         if ch != '\n' && column.saturating_add(cells) > width {
             rows.push(String::new());
             row = row.saturating_add(1);
@@ -46,7 +49,7 @@ pub(super) fn wrapped(value: &SafeText, width: u16, cursor: usize) -> (Vec<Strin
         } else {
             if let Some(line) = rows.last_mut() {
                 // 幅が一列しかない端末では二列の文字を空白にして、端末任せの折り返しを防ぐ。
-                if ch.width().unwrap_or(0) > width {
+                if super::unicode::cells(ch) > width {
                     line.push(' ');
                 } else {
                     line.push(ch);

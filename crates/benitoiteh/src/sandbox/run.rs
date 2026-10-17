@@ -3,7 +3,6 @@
 use std::error::Error;
 use std::fmt;
 use std::io::{self, Read, Write};
-use std::os::unix::process::CommandExt;
 use std::process::{Child, Command, ExitStatus, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, PoisonError, mpsc};
@@ -125,7 +124,7 @@ impl From<SandboxError> for RunError {
 
 /// 実行する起動の形。
 pub enum RunCommand {
-    /// サンドボックスなし、または macOS の sandbox-exec。
+    /// __session で包んだサンドボックスなし、または macOS の sandbox-exec。
     Command(Command),
     /// 制御ソケットを持つ Linux の bubblewrap。
     #[cfg(target_os = "linux")]
@@ -158,7 +157,7 @@ impl Running {
     }
     fn stop(&mut self, pid: Pid, signal: StopSignal) -> Result<(), RunError> {
         match self {
-            Self::Command(_) => group_signal(pid, signal.signal()).map_err(Into::into),
+            Self::Command(_) => session_signal(pid, signal.signal()).map_err(Into::into),
             #[cfg(target_os = "linux")]
             Self::Sandbox(child) => child.stop(signal).map_err(Into::into),
         }
@@ -166,7 +165,7 @@ impl Running {
     fn force(&mut self, pid: Pid) -> Result<bool, RunError> {
         match self {
             Self::Command(_) => {
-                group_signal(pid, Signal::KILL)?;
+                session_signal(pid, Signal::KILL)?;
                 Ok(false)
             }
             #[cfg(target_os = "linux")]
@@ -191,6 +190,22 @@ impl Running {
 pub(crate) fn group_signal(pid: Pid, signal: Signal) -> io::Result<()> {
     match kill_process_group(pid, signal) {
         Ok(()) | Err(rustix::io::Errno::SRCH) => Ok(()),
+        Err(error) => Err(io::Error::new(
+            io::Error::from(error).kind(),
+            format!("{} {pid}: {error}", text::GROUP_SIGNAL),
+        )),
+    }
+}
+
+fn session_signal(pid: Pid, signal: Signal) -> io::Result<()> {
+    // setsid 前の ESRCH に限り子自身へ送る。既存のグループの頭へ
+    // 同じ合図を二度送らない（設計書 03-02「端末からの切り離し」）。
+    match kill_process_group(pid, signal) {
+        Ok(()) => Ok(()),
+        Err(rustix::io::Errno::SRCH) => match rustix::process::kill_process(pid, signal) {
+            Ok(()) | Err(rustix::io::Errno::SRCH) => Ok(()),
+            Err(error) => Err(io::Error::from(error)),
+        },
         Err(error) => Err(io::Error::new(
             io::Error::from(error).kind(),
             format!("{} {pid}: {error}", text::GROUP_SIGNAL),
@@ -230,10 +245,7 @@ where
 {
     let mut child = match command.into() {
         RunCommand::Command(mut command) => {
-            command
-                .process_group(0)
-                .stdout(Stdio::piped())
-                .stderr(Stdio::piped());
+            command.stdout(Stdio::piped()).stderr(Stdio::piped());
             command.stdin(if input.is_empty() {
                 Stdio::null()
             } else {

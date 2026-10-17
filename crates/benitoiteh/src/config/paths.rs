@@ -19,6 +19,8 @@ pub struct DataPaths {
     pub data_dir: PathBuf,
     /// セッションの根。
     pub sessions_dir: PathBuf,
+    /// プロジェクトごとの入力の履歴。
+    pub history_dir: PathBuf,
     /// 一時ディレクトリを作る親。
     pub temporary_root: PathBuf,
 }
@@ -70,6 +72,7 @@ impl DataPaths {
             config_file: config_dir.join("config.toml"),
             instructions_file: config_dir.join("AGENTS.md"),
             sessions_dir: data_dir.join("sessions"),
+            history_dir: data_dir.join("history"),
             config_dir,
             data_dir,
             temporary_root,

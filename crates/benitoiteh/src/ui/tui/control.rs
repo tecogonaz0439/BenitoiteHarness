@@ -13,6 +13,13 @@ impl SafeText {
         Self(super::super::terminal_text(value, multiline).replace('\t', "    "))
     }
 
+    pub fn strict(value: &str, multiline: bool) -> Self {
+        Self(
+            super::unicode::visible(&super::super::terminal_text(value, multiline))
+                .replace('\t', "    "),
+        )
+    }
+
     pub fn as_str(&self) -> &str {
         &self.0
     }

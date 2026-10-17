@@ -13,7 +13,10 @@ use std::time::{Duration, Instant};
 use support::{ProcessFixture, TestResult};
 
 fn command(f: &ProcessFixture, args: &[&str]) -> std::process::Command {
-    let mut command = std::process::Command::new(&f.probe);
+    let mut command = benitoiteh::sandbox::session::command(
+        std::path::Path::new(env!("CARGO_BIN_EXE_benitoiteh")),
+        &f.probe,
+    );
     command.args(args).current_dir(&f.root);
     command
 }
@@ -270,6 +273,54 @@ fn measure_noop_overhead() -> TestResult {
         "20-run medians: Command::output={:?}, run={:?}",
         median(&direct)?,
         median(&managed)?
+    );
+    Ok(())
+}
+
+// 端末を切り離す補助一回の増分を、同じ probe・環境・作業場所で測る。
+#[test]
+#[ignore = "manual session startup measurement; run release with --ignored --nocapture"]
+fn measure_session_startup_overhead() -> TestResult {
+    let f = ProcessFixture::new()?;
+    let mut direct = Vec::new();
+    let mut detached = Vec::new();
+    for index in 0..110 {
+        for wrapped in if index % 2 == 0 {
+            [false, true]
+        } else {
+            [true, false]
+        } {
+            let mut launch = if wrapped {
+                command(&f, &["noop"])
+            } else {
+                let mut launch = std::process::Command::new(&f.probe);
+                launch.arg("noop").current_dir(&f.root);
+                launch
+            };
+            launch.env_clear();
+            let started = Instant::now();
+            assert!(launch.output()?.status.success());
+            if index >= 10 {
+                if wrapped {
+                    detached.push(started.elapsed());
+                } else {
+                    direct.push(started.elapsed());
+                }
+            }
+        }
+    }
+    direct.sort();
+    detached.sort();
+    let median = |samples: &[Duration]| -> Result<Duration, Box<dyn std::error::Error>> {
+        Ok(*samples.get(49).ok_or("missing median")?)
+    };
+    let plain = median(&direct)?;
+    let session = median(&detached)?;
+    eprintln!(
+        "100 runs after 10 warmups: direct median={plain:?}, __session median={session:?}, increase={:?}; p90 direct={:?}, __session={:?}",
+        session.saturating_sub(plain),
+        direct.get(89),
+        detached.get(89)
     );
     Ok(())
 }

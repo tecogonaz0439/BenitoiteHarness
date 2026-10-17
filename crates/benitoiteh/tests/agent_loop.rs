@@ -2,6 +2,8 @@
 
 #[path = "agent_loop/compaction.rs"]
 mod compaction;
+#[path = "agent_loop/interaction.rs"]
+mod interaction;
 mod support;
 
 use std::error::Error;

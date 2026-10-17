@@ -5,7 +5,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, mpsc};
 use std::thread::{self, JoinHandle};
 
-use crate::agent::{Agent, AgentError, AgentEvent};
+use crate::agent::{Agent, AgentError, AgentEvent, Outcome, RunReport};
 use crate::session::{Record, Session};
 
 use super::Screen;
@@ -15,24 +15,26 @@ use super::Screen;
 enum Job {
     Run {
         request: String,
-        control: RunControl,
+        control: crate::agent::RunControl,
     },
 }
 
 struct Completion {
-    result: Result<(), AgentError>,
+    result: Result<RunReport, AgentError>,
     estimate: u64,
 }
 
 /// 仕事ごとの制御。終える印とは別に作り、後の二段階の取り消しもここへ加える。
 #[derive(Clone, Default)]
 pub struct RunControl {
-    cancelled: Arc<AtomicBool>,
+    cancel_step: Arc<AtomicBool>,
+    cancel_run: Arc<AtomicBool>,
 }
 impl RunControl {
     /// 現在の仕事だけを止める。
     pub fn cancel(&self) {
-        self.cancelled.store(true, Ordering::Release);
+        self.cancel_run.store(true, Ordering::Release);
+        self.cancel_step.store(true, Ordering::Release);
     }
 }
 
@@ -42,7 +44,10 @@ pub struct Worker {
     events: mpsc::Receiver<AgentEvent>,
     completions: mpsc::Receiver<Completion>,
     control: Option<RunControl>,
+    steering: Option<mpsc::Sender<String>>,
+    pending_steering: std::collections::VecDeque<String>,
     thread: Option<JoinHandle<()>>,
+    approvals: Option<mpsc::Receiver<crate::approval::ApprovalPrompt>>,
 }
 
 impl Worker {
@@ -55,12 +60,12 @@ impl Worker {
             while let Ok(job) = requests.recv() {
                 let result = match job {
                     Job::Run { request, control } => agent
-                        .run(request, Arc::clone(&control.cancelled), events.clone())
+                        .run_controlled(request, control, events.clone())
                         .and_then(|report| {
                             session.writer()?.append(&Record::Summary {
-                                summary: report.summary,
+                                summary: report.summary.clone(),
                             })?;
-                            Ok(())
+                            Ok(report)
                         }),
                 };
                 let completion = Completion {
@@ -77,8 +82,20 @@ impl Worker {
             events: receiver,
             completions,
             control: None,
+            steering: None,
+            pending_steering: std::collections::VecDeque::new(),
             thread: Some(thread),
+            approvals: None,
         })
+    }
+
+    /// Agent に設定した確認の受け口を画面側へ渡す。
+    pub fn with_approval_requests(
+        mut self,
+        requests: mpsc::Receiver<crate::approval::ApprovalPrompt>,
+    ) -> Self {
+        self.approvals = Some(requests);
+        self
     }
 
     /// 各依頼に新しい取り消しの印を作る。実行中に二つ目を送らない。
@@ -86,15 +103,21 @@ impl Worker {
         if self.is_running() {
             return Err(AgentError::Worker);
         }
+        let (steering, receiver) = mpsc::channel();
         self.jobs
             .as_ref()
             .ok_or(AgentError::Worker)?
             .send(Job::Run {
                 request,
-                control: control.clone(),
+                control: crate::agent::RunControl {
+                    cancel_step: Arc::clone(&control.cancel_step),
+                    cancel_run: Arc::clone(&control.cancel_run),
+                    steering: receiver,
+                },
             })
             .map_err(|_| AgentError::Worker)?;
         self.control = Some(control);
+        self.steering = Some(steering);
         Ok(())
     }
 
@@ -103,6 +126,30 @@ impl Worker {
         if let Some(control) = &self.control {
             control.cancel();
         }
+    }
+
+    /// 一度の ESC は、道具の段階だけに印を渡す。
+    pub fn cancel_step(&self) {
+        if let Some(control) = &self.control {
+            control.cancel_step.store(true, Ordering::Release);
+        }
+    }
+
+    /// 会話へ加えた通知は Agent が返す。
+    pub fn steer(&mut self, text: String) -> Result<(), String> {
+        let Some(sender) = &self.steering else {
+            return Err(text);
+        };
+        sender.send(text.clone()).map_err(|error| error.0)?;
+        self.pending_steering.push_back(text);
+        Ok(())
+    }
+
+    fn event(&mut self, screen: &mut Screen, event: AgentEvent) {
+        if matches!(event, AgentEvent::Steered { .. }) {
+            self.pending_steering.pop_front();
+        }
+        screen.event(&event);
     }
 
     /// 処理中かどうか。
@@ -114,18 +161,25 @@ impl Worker {
     pub fn drain(&mut self, screen: &mut Screen) -> Result<bool, AgentError> {
         let mut changed = false;
         while let Ok(event) = self.events.try_recv() {
-            screen.event(&event);
+            self.event(screen, event);
             changed = true;
         }
         match self.completions.try_recv() {
             Ok(completion) => {
                 // 別のチャネルの完了が、最後のイベントの受信より先に見える場合を処理する。
                 while let Ok(event) = self.events.try_recv() {
-                    screen.event(&event);
+                    self.event(screen, event);
                 }
                 screen.complete(completion.estimate);
                 self.control = None;
-                completion.result?;
+                // 受け口が閉じる前に UI の送り手を外す。
+                self.steering = None;
+                let report = completion.result?;
+                // 受け口を閉じる直前に送れた文も、加えた通知がなければ入力へ戻す。
+                screen.finished(
+                    report.outcome == Outcome::Cancelled,
+                    self.pending_steering.drain(..).collect(),
+                );
                 changed = true;
             }
             Err(mpsc::TryRecvError::Empty) => {}
@@ -134,6 +188,17 @@ impl Worker {
                 return Err(AgentError::Worker);
             }
             Err(mpsc::TryRecvError::Disconnected) => {}
+        }
+        if !screen.confirming()
+            && let Some(requests) = &self.approvals
+            && let Ok(prompt) = requests.try_recv()
+        {
+            // 確認の要求より先に送られたイベントを必ず表示へ反映する。
+            while let Ok(event) = self.events.try_recv() {
+                self.event(screen, event);
+            }
+            screen.open_approval(prompt);
+            changed = true;
         }
         Ok(changed)
     }

@@ -8,7 +8,7 @@ use std::collections::BTreeSet;
 
 // 作成時の関門: 圧縮の退行は、送信本文、道具の効果、番数、記録の起点に現れる。
 // 模擬に圧縮の判断をさせず、HTTP の台本と公開入口だけで確かめる。
-fn response(
+pub(super) fn response(
     kind: AdapterKind,
     text: &str,
     call: Option<(&str, Value)>,
