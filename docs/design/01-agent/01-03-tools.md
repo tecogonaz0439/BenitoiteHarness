@@ -1,7 +1,7 @@
 # 道具
 
 - 状態: 草稿
-- 未決事項: BH-003, BH-004, BH-005, BH-006, BH-007, BH-008, BH-009
+- 未決事項: BH-003, BH-004, BH-005, BH-006, BH-007, BH-008, BH-009, BH-028
 
 ## 目的と範囲
 
@@ -152,9 +152,9 @@ Benitoite の事前検討は、LLM に見せる道具の形を、サーバモー
 
 ### 書いた後の検査（制限モード）
 
-【方針】制限モードでは、`write` と `edit` で `.bnt` のファイルを書いた後に、`benitoiteh` が検査を行い、その結果を道具の結果に添える。書いたファイルが `function main` を含めば、そのファイルを `check` で検査する。含まなければ（テストのファイルや、取り込まれるモジュール）、そのファイルを `test --check` で検査する（`main` を要さず、テストを実行しない。[Benitoite の処理系との連携](../04-benitoite/04-01-benitoite-integration.md)の「処理系の起動」）。理由: Benitoite の Skill の手順では、書くたびに LLM が `check` を呼ぶので、書くことと検査することが別の往復になる。書いた後に検査して返せば、往復を一回減らせる。効果は評価で確かめる（BH-004）。`v0.0.6` までは `main` のないファイルを検査する手段がなく、プロジェクトの根の `main.bnt` を代わりに検査したが、`main.bnt` が書いたファイルを取り込んでいなければ、書いたファイルは検査されなかった。
+【方針】制限モードでは、`write` と `edit` で `.bnt` のファイルを書いた後に、`benitoiteh` が `benitoite test --check --diagnostics=json <プロジェクトのディレクトリ>` で検査を行い、その結果を道具の結果に添える（[Benitoite の処理系との連携](../04-benitoite/04-01-benitoite-integration.md)の「処理系の起動」）。`test --check` は、ディレクトリの下の入口を `main` を要さずに、テストを実行せずに検査し、`main` を持つ入口には `main` の規則も当てる（2026-10-18 に、`v0.0.7` で、`main` に `Assert.Check` を書いた `main.bnt` が `E0415` になることを確かめた）。理由: Benitoite の Skill の手順では、書くたびに LLM が `check` を呼ぶので、書くことと検査することが別の往復になる。書いた後に検査して返せば、往復を一回減らせる。効果は評価で確かめる（BH-004）。書いたファイルを直接指定しないのは、処理系が直接指定したファイルの親のディレクトリを根として取り込みを解く（Inspecting before execution）ので、プロジェクトの根からの名前で別のモジュールを取り込む下のディレクトリのファイルが、正しくても `E0318` になるからである（2026-10-18 に、`v0.0.7` で、`Lib.Other` を取り込む `Lib/Text.bnt` を直接指定すると `E0318` になり、プロジェクトのディレクトリを指定すると誤りがないことを確かめた）。プロジェクト全体を検査する時間が、検査の時間の上限（30 秒）に比べて大きなプロジェクトで足りるかは、測って確かめる（【要検証】BH-028）。
 
-【方針】結果は `Check of <path> after this change: ok` か、診断（[Benitoite の処理系との連携](../04-benitoite/04-01-benitoite-integration.md)の「終了状態と診断の受け渡し」の形）とする。`test --check` で検査したときは、`Check of <path> (without main) after this change: ok` とする。検査の結果が誤りでも、書くことは成功しているので、道具の結果に誤りの印を付けない。理由: 誤りの印を付けると、LLM が同じ書き込みをやり直すことがある。`main` のないファイルを検査したことを示せば、そのファイルを取り込む `main` の側の検査が済んだと LLM が誤って受け取ることを減らせる。
+【方針】結果は、書いたファイルの診断（[Benitoite の処理系との連携](../04-benitoite/04-01-benitoite-integration.md)の「終了状態と診断の受け渡し」の形）と、ほかのファイルの診断の件数とする。書いたファイルに診断がなければ `Check of <path> after this change: ok` とし、ほかのファイルに診断があれば `<n> diagnostics in other files. Use benitoite_check with tests=true on the project directory to see them.` を添える。書いたファイルが下位のパッケージ（プロジェクトの根より下で `package.bnt` を持つディレクトリ）の中にあるときは、処理系が対象から外すので、`Not checked automatically: <path> is in a nested package.` とする。検査の結果が誤りでも、書くことは成功しているので、道具の結果に誤りの印を付けない。理由: 誤りの印を付けると、LLM が同じ書き込みをやり直すことがある。ほかのファイルの診断を件数だけにするのは、書いた変更と関係のない誤りで道具の結果を長くしないためである。書いたファイルを取り込むファイルに生じた誤りも件数に現れるので、LLM は調べる手がかりを得られる。
 
 ### bash（通常モード）
 
@@ -178,7 +178,7 @@ Benitoite の事前検討は、LLM に見せる道具の形を、サーバモー
 ```
 
 - `benitoite check --diagnostics=json <path>` を実行し、誤りも警告もなければ `ok`、あれば診断を返す。ディレクトリを指定したときは、その中の `main.bnt` を検査する（処理系の規則）。
-- `tests` が真のときは、`benitoite test --check --diagnostics=json <path>` を実行する。`main` を要さず、テストを実行せずに、`test` と同じ選び方の対象（ファイルか、ディレクトリの下のテストのファイル）を検査する。理由: 同梱の Skill は、テストのファイルを `benitoite test --check` で検査するよう求めている（[文脈の管理](01-04-context.md)の「Benitoite の Skill の置き方」）。
+- `tests` が真のときは、`benitoite test --check --diagnostics=json <path>` を実行する。`main` を要さず、テストを実行せずに、`test` と同じ選び方の対象（ファイルか、ディレクトリの下の入口）を検査する。理由: 同梱の Skill は、テストのファイルを `benitoite test --check` で検査するよう求めている（[文脈の管理](01-04-context.md)の「Benitoite の Skill の置き方」）。直接指定したファイルは、その親のディレクトリを根として取り込みを解く（処理系の規則）ので、道具の説明の文に、下のディレクトリのモジュールを検査するときはプロジェクトのディレクトリを指定するよう書く。
 - 制限モードの検査と修正の回数の数え方は、[エージェントのループ](01-01-agent-loop.md)の「上限」で定める。
 
 ### benitoite_run（制限モード）
@@ -218,10 +218,11 @@ Benitoite の事前検討は、LLM に見せる道具の形を、サーバモー
 
 ```json
 { "code": "string" }
-{ "name": "string", "offset": "integer (optional)", "limit": "integer (optional)" }
+{ "name": "string (optional)", "offset": "integer (optional)", "limit": "integer (optional)" }
 ```
 
-- 中身は [Benitoite の処理系との連携](../04-benitoite/04-01-benitoite-integration.md)の「参照の文書と診断の説明」で定める。`benitoite_reference` の説明の文に、引ける名前の一覧（`stdlib/` のモジュールの名前を除く）と、`stdlib/index` でモジュールの一覧を得られることを書く。
+- 中身は [Benitoite の処理系との連携](../04-benitoite/04-01-benitoite-integration.md)の「参照の文書と診断の説明」で定める。
+- 【方針】`benitoite_reference` の道具の定義（説明の文と引数）は、処理系から得た一覧に依らない固定の文とする。説明の文には、`v0.0.7` の主な名前（`idioms`・`grammar`・`common-mistakes`・`language-comparison`・`diagnostics`・`inspection`）を例として挙げ、`stdlib/index` でモジュールの一覧を得られることと、`name` を省くと引ける名前の一覧を返すことを書く。`name` を省いたときと、一覧にない名前を指定したときは、処理系の `skill list` から作った引ける名前の一覧を返す（一覧にない名前は誤りの印を付ける）。理由: 道具の定義をモードだけで決まる形に保てば、プロンプトのキャッシュが処理系の版に依らず効き、道具の定義の全文をテストで固定できる（[文脈の管理](01-04-context.md)の「文脈の構成」、[テスト](../07-quality/07-01-testing.md)の「LLM に見せる文の固定」）。
 - 通常モードでは、`name` に `SKILL` を指定すると同梱の Skill の `SKILL.md` を返す（[文脈の管理](01-04-context.md)の「Benitoite の Skill の置き方」）。
 - `read` と同じく、2,000 行か 50 KiB で区切り、続きの読み方を示す。
 
