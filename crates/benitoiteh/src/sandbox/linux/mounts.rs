@@ -60,6 +60,7 @@ pub(super) fn build(
         args: [
             "--unshare-user",
             "--unshare-pid",
+            "--as-pid-1",
             "--unshare-ipc",
             "--disable-userns",
             "--new-session",

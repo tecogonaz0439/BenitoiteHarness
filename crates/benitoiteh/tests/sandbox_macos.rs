@@ -191,6 +191,28 @@ fn reading_excludes_denied_paths() -> TestResult {
     )
 }
 
+// 作成時の関門: /dev/null の書き込み権の欠落と、例外を全体へ広げる退行を
+// 本物の子で区別する。プロジェクトに書ける場合も、一時の場所だけの場合も同じ契約。
+#[test]
+fn dev_null_accepts_writes_without_allowing_other_outside_files() -> TestResult {
+    let f = Fixture::new(false)?;
+    let temporary = f.root.join("temporary-only");
+    fs::create_dir(&temporary)?;
+    let outside = f.root.join("outside");
+    fs::write(&outside, b"unchanged")?;
+    for writable in [&f.writable, &temporary] {
+        let config = PolicyConfig::new(vec![writable.clone()]);
+        f.run(
+            config.clone(),
+            &[OsStr::new("write"), OsStr::new("/dev/null")],
+            0,
+        )?;
+        f.run(config, &[OsStr::new("write"), outside.as_os_str()], 10)?;
+        assert_eq!(fs::read(&outside)?, b"unchanged");
+    }
+    Ok(())
+}
+
 // 作成時の関門: 作成・上書き・付け替えの許可漏れを、FS の変化を伴う同じ境界で捕まえる。
 #[test]
 fn writing_is_confined_and_protected_names_cannot_be_created_or_replaced() -> TestResult {
@@ -545,6 +567,106 @@ fn dyld_cannot_map_libraries_from_writable_directories() -> TestResult {
             );
             assert!(stderr.contains("untrusted.dylib"), "{stderr}");
         }
+    }
+    Ok(())
+}
+
+#[path = "support/process.rs"]
+mod process_support;
+
+// 作成時の関門: sandbox-exec に包んだ場合も、新しいグループの後始末と
+// setsid で逃げてパイプを保持する子の検出が働くことを、本物の Seatbelt で試す。
+#[test]
+fn sandboxed_groups_are_cleaned_and_escaped_pipe_holders_are_reported() -> TestResult {
+    use benitoiteh::sandbox::run::{Leftovers, RunEnd, RunLimits, run};
+    use std::sync::atomic::AtomicBool;
+    use std::sync::{Arc, Mutex};
+    use std::time::Duration;
+    for session in ["group", "session"] {
+        let f = process_support::ProcessFixture::new()?;
+        let sandbox = SandboxCommand {
+            policy: SandboxPolicy::new(PolicyConfig::new(vec![f.root.clone()]))?,
+            program: fs::canonicalize(&f.probe)?,
+            args: vec![
+                "descendant".into(),
+                session.into(),
+                "open".into(),
+                f.marker.as_os_str().to_owned(),
+            ],
+            cwd: f.root.clone(),
+            env: BTreeMap::new(),
+            stdin: SandboxStdin::Null,
+        }
+        .to_command(&f.probe)?;
+        let limits = RunLimits {
+            timeout: Duration::from_secs(5),
+            pipe_close_wait: Duration::from_millis(100),
+            ..RunLimits::default()
+        };
+        let result = run(
+            sandbox,
+            vec![],
+            Arc::new(Mutex::new(Vec::new())),
+            Arc::new(Mutex::new(Vec::new())),
+            limits,
+            &AtomicBool::new(false),
+        )?;
+        assert!(result.status.success());
+        assert_eq!(result.end, RunEnd::Exited);
+        let pid = f.pid()?;
+        if session == "group" {
+            assert_eq!(result.leftovers, Leftovers::None);
+            f.wait_until(|| f.stopped(pid))?;
+        } else {
+            assert_eq!(result.leftovers, Leftovers::PossiblyRemaining);
+            assert!(!f.stopped(pid));
+        }
+    }
+    Ok(())
+}
+
+// 作成時の関門: sandbox-exec へ送った合図が、目的のプログラムへ実際に届く契約。
+#[test]
+fn sandboxed_timeout_delivers_the_requested_signal() -> TestResult {
+    use benitoiteh::sandbox::run::{Leftovers, RunEnd, RunLimits, StopSignal, run};
+    use std::sync::atomic::AtomicBool;
+    use std::sync::{Arc, Mutex};
+    use std::time::Duration;
+    for (signal, expected) in [
+        (StopSignal::Interrupt, "SIGINT"),
+        (StopSignal::Terminate, "SIGTERM"),
+    ] {
+        let f = process_support::ProcessFixture::new()?;
+        let sandbox = SandboxCommand {
+            policy: SandboxPolicy::new(PolicyConfig::new(vec![f.root.clone()]))?,
+            program: fs::canonicalize(&f.probe)?,
+            args: vec![
+                "signal".into(),
+                "handle".into(),
+                f.marker.as_os_str().to_owned(),
+            ],
+            cwd: f.root.clone(),
+            env: BTreeMap::new(),
+            stdin: SandboxStdin::Null,
+        }
+        .to_command(&f.probe)?;
+        let limits = RunLimits {
+            timeout: Duration::from_secs(2),
+            stop_signal: signal,
+            ..RunLimits::default()
+        };
+        let result = run(
+            sandbox,
+            vec![],
+            Arc::new(Mutex::new(Vec::new())),
+            Arc::new(Mutex::new(Vec::new())),
+            limits,
+            &AtomicBool::new(false),
+        )?;
+        assert!(result.status.success());
+        assert_eq!(result.end, RunEnd::TimedOut);
+        assert_eq!(result.leftovers, Leftovers::None);
+        assert_eq!(fs::read_to_string(f.marker.clone())?, expected);
     }
     Ok(())
 }

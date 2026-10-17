@@ -707,6 +707,7 @@ name = "sandbox-probe"
 version = "0.0.1"
 dependencies = [
  "rustix",
+ "signal-hook 0.4.5",
 ]
 
 [[package]]

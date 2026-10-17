@@ -52,3 +52,9 @@ pub const INVALID_ABI: &str = "required_landlock_abi must be an unsigned integer
 
 #[cfg(target_os = "linux")]
 pub const INVALID_PROGRAM: &str = "An executable allowlist entry must be a regular file.";
+
+#[cfg(target_os = "linux")]
+pub const CONTROL: &str =
+    "Expected a Unix stream control socket and exactly one standard input descriptor.";
+#[cfg(target_os = "linux")]
+pub const DUMPABLE: &str = "dumpable";

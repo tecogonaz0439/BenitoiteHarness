@@ -1,5 +1,6 @@
 //! OS の拒否を終了状態で返すテスト用の探査（設計書 07-01「安全の性質のテスト」、実装プラン P0-04）。
 
+mod process;
 mod text;
 
 use std::ffi::{OsStr, OsString};
@@ -99,6 +100,7 @@ fn run(operation: &OsStr, args: &[OsString]) -> io::Result<Option<u8>> {
             fcntl_setfd(&file, flags & !FdFlags::CLOEXEC)?;
             let status = Command::new(program)
                 .args(rest)
+                .stdin(std::process::Stdio::inherit())
                 .env("PROBE_FD", file.as_raw_fd().to_string())
                 .status()?;
             // file は子の終了まで保持する。
@@ -117,7 +119,7 @@ fn run(operation: &OsStr, args: &[OsString]) -> io::Result<Option<u8>> {
             );
             return Ok(Some(code));
         }
-        _ => return Ok(None),
+        _ => return process::run(operation, args),
     }?;
     eprintln!("{operation}: {}", text::OK);
     Ok(Some(0))
