@@ -12,15 +12,6 @@ pub(super) struct OpenedFile {
 }
 
 impl ToolContext {
-    pub(super) fn open_walk_file(
-        &self,
-        root: &ScopeRoot,
-        path: &Path,
-    ) -> Result<OpenedFile, ToolError> {
-        let relative = root.resolve_path(root.real_path(), path)?;
-        self.check_file(root.open_read(&relative)?, Some(root))
-    }
-
     pub(super) fn requested_path(&self, requested: &Path) -> PathBuf {
         if requested.is_absolute() {
             requested.to_path_buf()
@@ -66,10 +57,24 @@ impl ToolContext {
         if !std::fs::metadata(&real_path)?.is_file() {
             return Err(ToolError::InvalidArguments(text::REGULAR_FILE.to_owned()));
         }
-        self.check_file(File::open(real_path)?, None)
+        let file = File::from(
+            rustix::fs::open(
+                real_path,
+                rustix::fs::OFlags::RDONLY
+                    | rustix::fs::OFlags::NONBLOCK
+                    | rustix::fs::OFlags::CLOEXEC,
+                rustix::fs::Mode::empty(),
+            )
+            .map_err(std::io::Error::from)?,
+        );
+        self.check_file(file, None)
     }
 
-    fn check_file(&self, file: File, scope: Option<&ScopeRoot>) -> Result<OpenedFile, ToolError> {
+    pub(super) fn check_file(
+        &self,
+        file: File,
+        scope: Option<&ScopeRoot>,
+    ) -> Result<OpenedFile, ToolError> {
         let real_path = resolved_path(&file)?;
         if scope.is_some_and(|root| !real_path.starts_with(root.real_path())) {
             return Err(ToolError::OutsideScope);
@@ -95,16 +100,13 @@ impl ToolContext {
             {
                 return Ok(real_path);
             }
-            let relative = self
+            // 起点を開く処理は検索側で行うが、従来の相対パスの構文と範囲の
+            // 検査は残す（設計書 01-03「道具の定義の共通の規則」）。
+            let _relative = self
                 .project
                 .resolve_path(self.project.real_path(), requested)?;
-            if std::fs::metadata(&absolute)?.is_dir() {
-                let opened = self.project.open_dir(&relative)?;
-                if !opened.real_path().starts_with(self.project.real_path()) {
-                    return Err(ToolError::OutsideScope);
-                }
-            } else {
-                self.open_file(requested, true)?;
+            if !real_path.starts_with(self.project.real_path()) {
+                return Err(ToolError::OutsideScope);
             }
         }
         Ok(real_path)

@@ -20,3 +20,5 @@ pub const TEMPORARY_COLLISIONS: &str =
 
 pub const NOFOLLOW_UNSUPPORTED: &str =
     "The operating system does not enforce no-symlink resolution.";
+pub const IGNORE_INVALID: &str = "The .gitignore is not a regular file of an allowed size.";
+pub const IGNORE_STOPPED: &str = "Reading .gitignore was interrupted.";

@@ -1,5 +1,6 @@
 //! 根の記述子から相対にファイルを操作する（設計書 01-03「道具の定義の共通の規則」「書く道具のパスの規則」、01-05「巻き戻し」）。
 
+pub(crate) mod gitignore;
 #[cfg(target_os = "linux")]
 #[path = "linux.rs"]
 mod os;

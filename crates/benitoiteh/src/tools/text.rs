@@ -45,6 +45,14 @@ pub const EMPTY_OLD: &str = "old_string must not be empty. Use write to create a
 pub const REGULAR_FILE: &str = "Expected a regular file. Use glob to list directories.";
 pub const NO_FILES: &str = "No matching files.";
 pub const NO_MATCHES: &str = "No matches.";
+pub const READ_TOO_LARGE: &str =
+    "File exceeds the 64 MiB read limit. Use grep to find text in this file.";
+pub const STOP_ENTRY: &str = "entry limit";
+pub const STOP_TIME: &str = "time limit";
+pub const STOP_CANCELLED: &str = "cancelled";
+pub const SKIP_LARGE: &str = "too large";
+pub const SKIP_SPECIAL: &str = "non-regular";
+pub const SKIP_UNREADABLE: &str = "unreadable";
 pub const SEARCH_TRUNCATED: &str =
     "[Results truncated. Narrow path, glob, or pattern to continue.]";
 pub const DEFAULT_SECRET: &str = "default secret-file rule";
@@ -154,6 +162,44 @@ pub fn long_line(line: usize, chars: usize) -> String {
 }
 pub fn glob_truncated(total: usize) -> String {
     format!("[Showing 500 of {total} files. Narrow path or pattern to continue.]")
+}
+pub fn glob_partial(total: usize) -> String {
+    format!("[Showing 500 of at least {total} files. Narrow path or pattern to continue.]")
+}
+pub fn skipped_ignores(count: usize, paths: &str) -> String {
+    format!(
+        "[Skipped .gitignore files: {count}; first 5 paths: {paths}. Only readable UTF-8 regular files up to 1 MiB are used.]"
+    )
+}
+pub fn skipped_directories(count: usize, paths: &str) -> String {
+    format!("[Skipped unreadable directories: {count}; first 5 paths: {paths}.]")
+}
+pub fn skipped_files(count: usize, paths: &str) -> String {
+    format!("[Skipped files: {count}; first 5 paths: {paths}.]")
+}
+pub fn stopped_search(reasons: &str, count: usize, paths: &str) -> String {
+    format!(
+        "[Search stopped ({reasons}): {count} path(s); first 5 paths: {paths}. Narrow path, glob, or pattern to continue.]"
+    )
+}
+
+// tools から UI の層へ依存させず、ui::terminal_text(input, false) と同じ
+// 規則で名前を一行にする（設計書 01-03「出力の切り詰め」）。
+pub fn visible_path(input: &str) -> String {
+    let mut output = String::with_capacity(input.len());
+    for ch in input.chars() {
+        match ch {
+            '\n' | '\t' => output.push(' '),
+            '\u{00}'..='\u{1f}' | '\u{7f}'..='\u{9f}' => {
+                output.push_str(&format!("\\x{:02x}", u32::from(ch)));
+            }
+            '\u{202a}'..='\u{202e}' | '\u{2066}'..='\u{2069}' => {
+                output.push_str(&format!("\\u{{{:x}}}", u32::from(ch)));
+            }
+            _ => output.push(ch),
+        }
+    }
+    output
 }
 pub fn middle_removed(bytes: usize) -> String {
     format!("\n[Output truncated: {bytes} bytes omitted from the middle.]\n")
