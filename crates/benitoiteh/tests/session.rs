@@ -187,7 +187,9 @@ fn records_replay_conversation_losslessly_and_finish_with_summary() -> TestResul
     summary.add_tool_call("write");
     summary.add_tool_call("write");
     summary.add_approval(ApprovalOutcome::Approved);
+    summary.add_approval(ApprovalOutcome::ApprovedForSession);
     summary.add_approval(ApprovalOutcome::Denied);
+    summary.add_approval(ApprovalOutcome::DeniedWithMessage);
     summary.add_approval(ApprovalOutcome::Cancelled);
     summary.checks = 2;
     summary.fixes = 1;
@@ -216,7 +218,7 @@ fn records_replay_conversation_losslessly_and_finish_with_summary() -> TestResul
     )?;
     assert_eq!(
         last,
-        json!({"type":"summary", "turns":1, "tool_calls":{"write":2}, "checks":2, "fixes":1, "approvals":{"approved":1,"denied":1,"cancelled":1}, "tokens":{"input":100,"cache_read":20,"cache_write":3,"output":9}, "elapsed_ms":123,"reason":"completed"})
+        json!({"type":"summary", "turns":1, "tool_calls":{"write":2}, "checks":2, "fixes":1, "approvals":{"approved":2,"denied":2,"cancelled":1,"policy_denied":0}, "tokens":{"input":100,"cache_read":20,"cache_write":3,"output":9}, "elapsed_ms":123,"reason":"completed"})
     );
     Ok(())
 }
@@ -256,6 +258,16 @@ fn replay_ignores_only_torn_tail_and_fills_missing_tool_results_before_next_mess
         kind: UserKind::Steer,
         message: message.clone(),
     })?;
+    // P3-04 より前の確認と集計の行を、そのまま再開できることを確かめる。
+    OpenOptions::new().append(true).open(session.directory().join("session.jsonl"))?.write_all(
+        br#"{"type":"approval","phase":"request","id":"old","tool_id":"started","request":"outside write","outcome":null}
+{"type":"approval","phase":"result","id":"old","tool_id":"started","request":"outside write","outcome":"approved"}
+{"type":"summary","turns":1,"tool_calls":{},"checks":0,"fixes":0,"approvals":{"approved":1,"denied":0,"cancelled":0},"tokens":{"input":0,"cache_read":0,"cache_write":0,"output":0},"elapsed_ms":0,"reason":"completed"}
+"#,
+    )?;
+    let records = read_records(session.directory())?;
+    assert!(records.iter().any(|record| matches!(record, Record::Approval { kind: None, facts, justification: None, user_message: None, outcome: Some(ApprovalOutcome::Approved), .. } if *facts == Default::default())));
+    assert!(records.iter().any(|record| matches!(record, Record::Summary { summary } if summary.approvals.policy_denied == 0)));
     let file = session.directory().join("session.jsonl");
     OpenOptions::new()
         .append(true)

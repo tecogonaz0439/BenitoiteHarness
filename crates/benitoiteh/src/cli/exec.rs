@@ -12,6 +12,7 @@ use std::thread;
 use std::time::SystemTime;
 
 use crate::agent::{Agent, AgentError, Outcome};
+use crate::approval::{ApprovalPolicy, NonInteractiveApprover};
 use crate::config::credentials::CredentialError;
 use crate::config::paths::DataPaths;
 use crate::config::writable::{WritableError, validate_writable_with_executable};
@@ -147,7 +148,21 @@ fn prepare(
                 .as_ref()
                 .map(|policy| (selected.name(), policy.config().allow_ip)),
         );
+        // OS の制限が使えなくても、書く道具の確認には選んだ方針を使う。
+        // （設計書 03-03「通常モードの承認の方針」）。
+        let writable_roots = match selected {
+            Sandbox::ReadOnly => vec![locations.temporary.clone()],
+            Sandbox::WorkspaceWrite => {
+                let mut roots = vec![locations.project.clone(), locations.temporary.clone()];
+                roots.extend(locations.additional.iter().cloned());
+                roots
+            }
+            Sandbox::DangerFullAccess => Vec::new(),
+        };
         Some(ShellContext {
+            sandbox: selected,
+            sandboxed: policy.is_some(),
+            writable_roots,
             policy,
             policy_name,
             helper,
@@ -203,6 +218,11 @@ fn prepare(
         ScopeRoot::open(&spill).map_err(StartupError::SafeFs)?,
         exclude,
     );
+    let approval_policy = shell.as_ref().map(|shell| ApprovalPolicy {
+        approval: shell.approval,
+        sandbox: shell.sandbox,
+        sandboxed: shell.sandboxed,
+    });
     if let Some(shell) = shell {
         context = context.with_shell(shell);
     }
@@ -213,7 +233,7 @@ fn prepare(
     if sandbox_disabled {
         environment = environment.with_startup_notice(text::SANDBOX_DISABLED);
     }
-    let agent = Agent::new(
+    let mut agent = Agent::new(
         resolved.into(),
         key.map(|key| key.expose_secret().to_owned())
             .unwrap_or_default(),
@@ -222,6 +242,9 @@ fn prepare(
         session.clone(),
     )
     .map_err(StartupError::Agent)?;
+    if let Some(policy) = approval_policy {
+        agent = agent.with_approvals(Box::new(NonInteractiveApprover), policy);
+    }
     let request = args
         .request
         .read(&mut io::stdin().lock())

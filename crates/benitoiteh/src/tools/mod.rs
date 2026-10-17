@@ -22,7 +22,8 @@ use std::sync::Mutex;
 
 use serde_json::Value;
 
-use crate::config::{Approval, Mode};
+use crate::approval::{ApprovalFacts, ApprovalKind};
+use crate::config::{Approval, Mode, Sandbox};
 use crate::provider::ToolSpec;
 use crate::safe_fs::{SafeFsError, ScopeRoot};
 use crate::sandbox::SandboxPolicy;
@@ -56,15 +57,6 @@ impl ToolId {
     }
 }
 
-/// 道具が実行前に行う確認の分類。
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum ApprovalRequirement {
-    /// 読み取りには確認を求めない。
-    Never,
-    /// 書く先とモードによって確認を求める。
-    WriteScope,
-}
-
 /// JSON の引数から独立した、ループが渡す確認の状態。
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ApprovalStatus {
@@ -84,7 +76,6 @@ pub struct ToolDefinition {
     pub summary: &'static str,
     pub rules: &'static [&'static str],
     pub parallel: bool,
-    pub approval: ApprovalRequirement,
 }
 
 /// 修復と検証を終えた呼び出し。未検証の引数では作れない。
@@ -226,7 +217,13 @@ pub struct ShellContext {
     pub placeholders: PathBuf,
     /// 秘密を除いた、子に渡す環境の全体。
     pub env: BTreeMap<OsString, OsString>,
-    /// P3-04 で使う承認の方針。
+    /// 選んだ方針の書ける場所。サンドボックスを掛けられなくても変えない。
+    pub writable_roots: Vec<PathBuf>,
+    /// 起動時に選んだサンドボックスの方針。
+    pub sandbox: Sandbox,
+    /// 実際に OS のサンドボックスを掛けるか。
+    pub sandboxed: bool,
+    /// 承認の方針。
     pub approval: Approval,
 }
 
@@ -295,6 +292,9 @@ impl ToolContext {
 /// 確認を受ける側へ渡す、実行前の操作の要約。
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ApprovalRequest {
+    pub kind: ApprovalKind,
+    pub facts: ApprovalFacts,
+    pub justification: Option<String>,
     pub summary: String,
 }
 
@@ -327,13 +327,12 @@ impl ToolOutput {
     }
 
     /// 実行せずに確認の要求を返す。許可後に同じ呼び出しを再実行する。
-    pub fn needs_approval(summary: impl Into<String>) -> Self {
-        let summary = summary.into();
+    pub fn needs_approval(request: ApprovalRequest) -> Self {
         Self {
-            approval: Some(ApprovalRequest {
-                summary: summary.clone(),
-            }),
-            ..Self::success(summary)
+            text: truncate::cap_middle(&request.summary),
+            approval: Some(request),
+            is_error: false,
+            display: None,
         }
     }
 }

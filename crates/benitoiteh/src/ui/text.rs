@@ -17,6 +17,8 @@ pub fn tool_result(name: &str, is_error: bool, summary: &str) -> String {
 pub fn approval(summary: &str, decision: ApprovalOutcome) -> String {
     let decision = match decision {
         ApprovalOutcome::Approved => "approved",
+        ApprovalOutcome::ApprovedForSession => "approved for this session",
+        ApprovalOutcome::DeniedWithMessage => "denied with a message",
         ApprovalOutcome::Denied => "denied",
         ApprovalOutcome::Cancelled => "cancelled",
     };

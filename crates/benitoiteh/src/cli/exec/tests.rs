@@ -184,3 +184,68 @@ fn startup_selects_policy_and_fails_closed_unless_explicitly_disabled() -> Resul
     }
     Ok(())
 }
+
+// 統合テストと同じ模擬の提供者を使う。この起動の検査では SSE の一括送信だけを使う。
+#[allow(dead_code)]
+#[path = "../../../tests/support/mock_provider.rs"]
+mod mock_provider;
+
+// 作成時の関門: --no-sandbox の起動で選んだ方針を落とす退行を捕まえる。
+// P3-04 の指示に従い、OS の機能が使えないことだけを差し替える。
+#[test]
+fn unavailable_sandbox_keeps_write_approval_policy_and_configured_roots()
+-> Result<(), Box<dyn Error>> {
+    use mock_provider::{MockProvider, ResponseScript};
+    use serde_json::json;
+    for (sandbox, location, denied) in [
+        ("workspace-write", "project/.benitoiteh/blocked", true),
+        ("read-only", "project/blocked", true),
+        ("workspace-write", "additional/allowed", false),
+    ] {
+        let f = Fixture::new()?;
+        let path = f.0.join(location);
+        let body = format!(
+            "data: {}\n\ndata: {}\n\ndata: [DONE]\n\n",
+            json!({"choices":[{"delta":{"tool_calls":[{"index":0,"id":"write","type":"function","function":{"name":"write","arguments":json!({"path":path,"content":"changed"}).to_string()}}]},"finish_reason":null}]}),
+            json!({"choices":[{"delta":{},"finish_reason":"tool_calls"}]})
+        );
+        let mut server = MockProvider::start(vec![
+            ResponseScript::sse(body),
+            ResponseScript::sse(
+                "data: {\"choices\":[{\"delta\":{\"content\":\"Done\"},\"finish_reason\":\"stop\"}]}\n\ndata: [DONE]\n\n",
+            ),
+        ])?;
+        fs::create_dir(f.0.join("additional"))?;
+        let paths = f.paths(&format!(
+            "writable_roots = ['{}']",
+            f.0.join("additional").display()
+        ))?;
+        let config = fs::read_to_string(&paths.config_file)?.replace(
+            "model = 'mock'",
+            &format!("model = 'mock'\nbase_url = '{}'", server.base_url()),
+        );
+        fs::write(&paths.config_file, config)?;
+        let args = f.args(&["--sandbox", sandbox, "--no-sandbox"])?;
+        let Prepared {
+            mut agent,
+            session,
+            request,
+        } = prepare(&args, &paths, |_, _| Err(SandboxError::Unavailable))
+            .map_err(|e| io::Error::other(e.to_string()))?;
+        let (sender, receiver) = mpsc::sync_channel(64);
+        let report = agent.run(request, Arc::new(AtomicBool::new(false)), sender)?;
+        assert_eq!(report.outcome, Outcome::Completed);
+        assert_eq!(report.summary.approvals.policy_denied, u64::from(denied));
+        assert_eq!(path.exists(), !denied);
+        assert!(!receiver.into_iter().any(|e| matches!(
+            e,
+            crate::agent::AgentEvent::ApprovalRequest { .. }
+                | crate::agent::AgentEvent::ApprovalResult { .. }
+        )));
+        drop(agent);
+        drop(session);
+        panic::install(None);
+        server.shutdown()?;
+    }
+    Ok(())
+}
