@@ -64,7 +64,11 @@ pub const CONVERSATION_REWIND_UNAVAILABLE: &str =
 
 /// 戻せない操作の一覧には、書いた中身を繰り返さず、コマンドかパスを短く示す。
 pub fn rewind_operation(name: &str, arguments: &serde_json::Value) -> String {
-    let key = if name == "bash" { "command" } else { "path" };
+    let key = match name {
+        "bash" => "command",
+        "web_fetch" => "url",
+        _ => "path",
+    };
     let detail = arguments
         .get(key)
         .and_then(serde_json::Value::as_str)

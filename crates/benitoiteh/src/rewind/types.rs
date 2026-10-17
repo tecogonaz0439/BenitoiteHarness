@@ -142,7 +142,7 @@ pub struct RewindFailure {
     pub reason: String,
 }
 
-/// プロジェクトの記録だけでは効果を戻せない実行。
+/// プロジェクトの記録だけでは効果を戻せない実行（bash・web_fetch など）。
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct IrreversibleOperation {
     pub call_id: String,

@@ -9,10 +9,11 @@ mod read;
 mod search;
 mod text;
 pub mod truncate;
+mod web_fetch;
 mod write;
 mod write_path;
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::ffi::OsString;
 use std::fmt;
 use std::fs::Metadata;
@@ -47,6 +48,8 @@ pub enum ToolId {
     Edit,
     /// 通常モードのシェルのコマンド。
     Bash,
+    /// HTTPS の本文の取得。
+    WebFetch,
 }
 
 impl ToolId {
@@ -59,6 +62,7 @@ impl ToolId {
             Self::Write => "write",
             Self::Edit => "edit",
             Self::Bash => "bash",
+            Self::WebFetch => "web_fetch",
         }
     }
 }
@@ -115,6 +119,8 @@ pub struct ToolSet {
 pub struct Invocation<'a> {
     pub call_id: &'a str,
     pub cancelled: &'a AtomicBool,
+    /// 信頼するループがこのセッションで許したドメイン。
+    pub session_domains: &'a BTreeSet<String>,
 }
 
 impl ToolSet {
@@ -171,6 +177,7 @@ impl ToolSet {
                 Invocation {
                     call_id: &format!("direct-{}", self.direct_id.fetch_add(1, Ordering::Relaxed)),
                     cancelled: &AtomicBool::new(false),
+                    session_domains: &BTreeSet::new(),
                 },
             ),
             Err(error) => ToolOutput::error(error.to_string()),
@@ -195,6 +202,7 @@ impl ToolSet {
             ToolId::Write => write::execute(context, &call.arguments, approval, invocation),
             ToolId::Edit => edit::execute(context, &call.arguments, approval, invocation),
             ToolId::Bash => bash::execute(context, &call.arguments, approval, invocation),
+            ToolId::WebFetch => web_fetch::execute(context, &call.arguments, approval, invocation),
         };
         match result {
             Ok(output) => output,
@@ -253,6 +261,15 @@ pub struct ShellContext {
     pub approval: Approval,
 }
 
+/// 起動時に固定したウェブの取得の設定（設計書 01-03「web_fetch」）。
+#[derive(Clone, Debug, Default)]
+pub struct WebFetchContext {
+    /// 設定で検証し正規化したドメインの完全一致の集合。
+    pub allowed_domains: BTreeSet<String>,
+    /// 提供者の認証情報を含まない HTTP クライアント。
+    pub client: crate::http::HttpClient,
+}
+
 /// 最大八つの道具が共有する文脈。変わる版の記録だけを Mutex で守る。
 #[derive(Debug)]
 pub struct ToolContext {
@@ -262,6 +279,7 @@ pub struct ToolContext {
     pub spill: ScopeRoot,
     pub exclude: ExcludeRules,
     pub shell: Option<ShellContext>,
+    pub web_fetch: WebFetchContext,
     pub session: Option<Session>,
     read_versions: Mutex<BTreeMap<PathBuf, FileVersion>>,
     pub checkpoints: Option<crate::rewind::CheckpointRecorder>,
@@ -283,6 +301,7 @@ impl ToolContext {
             spill,
             exclude,
             shell: None,
+            web_fetch: WebFetchContext::default(),
             session: None,
             read_versions: Mutex::new(BTreeMap::new()),
             checkpoints: None,
@@ -292,6 +311,12 @@ impl ToolContext {
     /// 通常モードの起動時に検査した子プロセスの情報を追加する。
     pub fn with_shell(mut self, shell: ShellContext) -> Self {
         self.shell = Some(shell);
+        self
+    }
+
+    /// 利用者の設定で検査したドメインと HTTP クライアントを渡す。
+    pub fn with_web_fetch(mut self, web_fetch: WebFetchContext) -> Self {
+        self.web_fetch = web_fetch;
         self
     }
 

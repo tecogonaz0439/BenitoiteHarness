@@ -9,36 +9,37 @@ fn policy_table_covers_every_kind_approval_and_sandbox_state() {
     use Decision::{Allow, Ask, Deny};
     let facts = ApprovalFacts {
         command: Some("cargo test".into()),
+        domain: Some("mock.invalid".into()),
         ..ApprovalFacts::default()
     };
     // 行は read-only、workspace-write、danger-full-access、--no-sandbox。
-    // 各行は WriteScope、Command、Escalate の順。
+    // 各行は WriteScope、Command、Escalate、WebFetch の順。
     for (approval, expected) in [
         (
             Approval::Untrusted,
             [
-                [Ask, Ask, Ask],
-                [Ask, Ask, Ask],
-                [Allow, Ask, Ask],
-                [Ask, Ask, Ask],
+                [Ask, Ask, Ask, Ask],
+                [Ask, Ask, Ask, Ask],
+                [Allow, Ask, Ask, Ask],
+                [Ask, Ask, Ask, Ask],
             ],
         ),
         (
             Approval::OnRequest,
             [
-                [Ask, Allow, Ask],
-                [Ask, Allow, Ask],
-                [Allow, Allow, Allow],
-                [Ask, Allow, Allow],
+                [Ask, Allow, Ask, Ask],
+                [Ask, Allow, Ask, Ask],
+                [Allow, Allow, Allow, Ask],
+                [Ask, Allow, Allow, Ask],
             ],
         ),
         (
             Approval::Never,
             [
-                [Deny, Allow, Deny],
-                [Deny, Allow, Deny],
-                [Allow, Allow, Allow],
-                [Deny, Allow, Allow],
+                [Deny, Allow, Deny, Deny],
+                [Deny, Allow, Deny, Deny],
+                [Allow, Allow, Allow, Deny],
+                [Deny, Allow, Allow, Deny],
             ],
         ),
     ] {
@@ -60,14 +61,32 @@ fn policy_table_covers_every_kind_approval_and_sandbox_state() {
                 ApprovalKind::WriteScope,
                 ApprovalKind::Command,
                 ApprovalKind::Escalate,
+                ApprovalKind::WebFetch,
             ]
             .into_iter()
             .zip(row)
             {
                 assert_eq!(
-                    decide(&policy, kind, &facts, &BTreeSet::new()),
+                    decide(&policy, kind, &facts, &BTreeSet::new(), &BTreeSet::new()),
                     expected,
                     "{policy:?} {kind:?}"
+                );
+            }
+            for (domain, expected) in [
+                ("mock.invalid", Allow),
+                ("sub.mock.invalid", row.get(3).copied().unwrap_or(Deny)),
+            ] {
+                let domains = BTreeSet::from([domain.to_owned()]);
+                assert_eq!(
+                    decide(
+                        &policy,
+                        ApprovalKind::WebFetch,
+                        &facts,
+                        &BTreeSet::new(),
+                        &domains
+                    ),
+                    expected,
+                    "{policy:?} {domains:?}"
                 );
             }
         }
@@ -105,7 +124,7 @@ fn only_command_answers_remember_exact_strings_and_escalations_still_require_app
         let mut allowed = BTreeSet::new();
         answer.remember_command(&request, &mut allowed);
         assert_eq!(
-            decide(&policy, kind, &request.facts, &allowed),
+            decide(&policy, kind, &request.facts, &allowed, &BTreeSet::new()),
             if kind == ApprovalKind::Command {
                 Decision::Allow
             } else {
@@ -117,7 +136,13 @@ fn only_command_answers_remember_exact_strings_and_escalations_still_require_app
             ..ApprovalFacts::default()
         };
         assert_eq!(
-            decide(&policy, ApprovalKind::Command, &changed, &allowed),
+            decide(
+                &policy,
+                ApprovalKind::Command,
+                &changed,
+                &allowed,
+                &BTreeSet::new()
+            ),
             Decision::Ask
         );
         assert_eq!(
@@ -125,12 +150,19 @@ fn only_command_answers_remember_exact_strings_and_escalations_still_require_app
                 &policy,
                 ApprovalKind::Command,
                 &ApprovalFacts::default(),
-                &allowed
+                &allowed,
+                &BTreeSet::new()
             ),
             Decision::Ask
         );
         assert_eq!(
-            decide(&policy, ApprovalKind::Escalate, &request.facts, &allowed),
+            decide(
+                &policy,
+                ApprovalKind::Escalate,
+                &request.facts,
+                &allowed,
+                &BTreeSet::new()
+            ),
             Decision::Ask
         );
         let no_sandbox = ApprovalPolicy {
@@ -142,7 +174,8 @@ fn only_command_answers_remember_exact_strings_and_escalations_still_require_app
                 &no_sandbox,
                 ApprovalKind::Escalate,
                 &request.facts,
-                &allowed
+                &allowed,
+                &BTreeSet::new()
             ),
             if kind == ApprovalKind::Command {
                 Decision::Allow
@@ -156,6 +189,7 @@ fn only_command_answers_remember_exact_strings_and_escalations_still_require_app
                 &policy,
                 ApprovalKind::Command,
                 &request.facts,
+                &BTreeSet::new(),
                 &BTreeSet::new()
             ),
             Decision::Ask

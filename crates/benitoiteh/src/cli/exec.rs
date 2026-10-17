@@ -264,7 +264,11 @@ fn prepare(
         ScopeRoot::open(&spill).map_err(StartupError::SafeFs)?,
         exclude,
     )
-    .with_session(session.clone());
+    .with_session(session.clone())
+    .with_web_fetch(crate::tools::WebFetchContext {
+        allowed_domains: user.web_fetch.allowed_domains.iter().cloned().collect(),
+        client: crate::http::HttpClient::default(),
+    });
     let approval_policy = shell.as_ref().map(|shell| ApprovalPolicy {
         approval: shell.approval,
         sandbox: shell.sandbox,
