@@ -328,3 +328,37 @@ pub fn screen_exit(code: i32) -> String {
 pub fn screen_diff(added: usize, deleted: usize) -> String {
     format!("+{added} -{deleted}")
 }
+
+pub const BENITOITE_REFERENCE: (&str, &str) =
+    prompt_parts(include_str!("../../prompts/tools/benitoite_reference.md"));
+pub const BENITOITE_REFERENCE_NORMAL: &str =
+    include_str!("../../prompts/tools/benitoite_reference-normal.md").trim_ascii();
+pub const BENITOITE_EXPLAIN: (&str, &str) =
+    prompt_parts(include_str!("../../prompts/tools/benitoite_explain.md"));
+pub const SKILL_NAME: &str =
+    "Skill document name, such as idioms or stdlib/List; omit to list names.";
+pub const SKILL_CODE: &str = "Diagnostic code, such as E0405.";
+pub const SKILL_LIST: &str = "Available Benitoite Skill documents (pass one as `name`):";
+pub const SKILL_LIST_QUERY: &str = "the Skill document list";
+pub const SKILL_UNAVAILABLE: &str = "the processor is not available in this session";
+pub const INVALID_CODE: &str =
+    "Code must be one uppercase letter followed by four digits, such as E0405.";
+
+pub fn unknown_skill(name: &str, names: &str) -> String {
+    format!("Unknown Skill document \"{name}\".\n{names}")
+}
+pub fn skill_failure(name: &str, reason: &str) -> String {
+    format!(
+        "Could not read {name} from the Benitoite processor: {}.",
+        reason.trim_end_matches('.')
+    )
+}
+pub fn missing_code(code: &str) -> String {
+    format!(
+        "No section for {code} in the diagnostics reference. Check the code, or read `diagnostics` with benitoite_reference."
+    )
+}
+
+pub fn reference_line_truncated(line: usize) -> String {
+    format!("\n[Line {line} truncated to fit the 50 KiB output limit.]\n")
+}

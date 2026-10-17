@@ -1,6 +1,7 @@
 //! 道具の検証と実行をまとめ、範囲と結果の上限を守る（設計書 01-03「道具の定義の共通の規則」）。
 
 mod bash;
+mod benitoite_reference;
 mod definitions;
 mod edit;
 pub mod exclude;
@@ -49,6 +50,10 @@ pub enum ToolId {
     Edit,
     /// 通常モードのシェルのコマンド。
     Bash,
+    /// 診断のコードの説明。
+    BenitoiteExplain,
+    /// 処理系の Skill の文書。
+    BenitoiteReference,
     /// HTTPS の本文の取得。
     WebFetch,
 }
@@ -63,6 +68,8 @@ impl ToolId {
             Self::Write => "write",
             Self::Edit => "edit",
             Self::Bash => "bash",
+            Self::BenitoiteExplain => "benitoite_explain",
+            Self::BenitoiteReference => "benitoite_reference",
             Self::WebFetch => "web_fetch",
         }
     }
@@ -132,6 +139,25 @@ impl ToolSet {
             definitions: definitions::definitions(mode),
             direct_id: AtomicU64::new(0),
         }
+    }
+
+    /// 処理系を使えない通常モードで Benitoite の道具を外す。
+    pub fn without_benitoite(mode: Mode) -> Self {
+        let mut tools = Self::new(mode);
+        tools.definitions.retain(|tool| {
+            !matches!(
+                tool.id,
+                ToolId::BenitoiteExplain | ToolId::BenitoiteReference
+            )
+        });
+        tools
+    }
+
+    /// 道具と Skill の有無を揃えるための判定。
+    pub fn has_benitoite(&self) -> bool {
+        self.definitions
+            .iter()
+            .any(|tool| tool.id == ToolId::BenitoiteReference)
     }
 
     /// セッションの開始時に固定したモード。
@@ -205,6 +231,12 @@ impl ToolSet {
             ToolId::Write => write::execute(context, &call.arguments, approval, invocation),
             ToolId::Edit => edit::execute(context, &call.arguments, approval, invocation),
             ToolId::Bash => bash::execute(context, &call.arguments, approval, invocation),
+            ToolId::BenitoiteExplain => {
+                benitoite_reference::explain(context, &call.arguments, invocation.cancelled)
+            }
+            ToolId::BenitoiteReference => {
+                benitoite_reference::reference(context, &call.arguments, invocation.cancelled)
+            }
             ToolId::WebFetch => web_fetch::execute(context, &call.arguments, approval, invocation),
         };
         match result {
@@ -282,6 +314,7 @@ pub struct ToolContext {
     pub spill: ScopeRoot,
     pub exclude: ExcludeRules,
     pub benitoite: Option<Arc<crate::benitoite::Processor>>,
+    pub skill: Option<Arc<crate::benitoite::skill::SkillDocuments>>,
     pub shell: Option<ShellContext>,
     pub web_fetch: WebFetchContext,
     pub session: Option<Session>,
@@ -324,6 +357,7 @@ impl ToolContext {
             spill,
             exclude,
             benitoite: None,
+            skill: None,
             shell: None,
             web_fetch: WebFetchContext::default(),
             session: None,
@@ -336,6 +370,12 @@ impl ToolContext {
     /// 起動時に確かめた処理系を、ヘッダと Benitoite の道具で共有する。
     pub fn with_benitoite(mut self, processor: Option<Arc<crate::benitoite::Processor>>) -> Self {
         self.benitoite = processor;
+        self
+    }
+
+    /// セッションの間共有する Skill の問い合わせとキャッシュを追加する。
+    pub fn with_skill(mut self, skill: Arc<crate::benitoite::skill::SkillDocuments>) -> Self {
+        self.skill = Some(skill);
         self
     }
 

@@ -4,30 +4,25 @@ mod environment;
 pub mod instructions;
 mod text;
 
-#[cfg(test)]
-mod tests;
-
 use std::fmt;
 
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 
+use crate::benitoite::skill::{SkillDocument, skill_parts};
 use crate::config::Mode;
 use crate::provider::{SchemaKind, ToolSpec, Usage};
 use crate::tools::ToolSet;
 
 pub use environment::Environment;
 
-/// 実行ファイルに埋め込んだ Benitoite の文書の版。
-pub const BENITOITE_DOCUMENT_VERSION: &str = "0.0.6";
-
-const SKILL: &str = include_str!("../../../../assets/benitoite/v0.0.6/skill/SKILL.md");
-
 /// 文脈の組み立てで起きた誤り。
 #[derive(Debug)]
 pub enum ContextError {
-    /// 埋め込んだ Skill の属性が欠けているか、先頭の注釈が閉じていない。
+    /// 処理系の Skill の属性が欠けているか、先頭の注釈が閉じていない。
     InvalidSkill,
+    /// 道具と Skill の有無が一致しない。
+    SkillMismatch,
     /// 環境のパスが UTF-8 の絶対パスでない。
     InvalidPath,
     /// UTC の日付を 1970〜9999 年で表せない。
@@ -40,6 +35,7 @@ impl fmt::Display for ContextError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::InvalidSkill => f.write_str(text::INVALID_SKILL),
+            Self::SkillMismatch => f.write_str(text::SKILL_MISMATCH),
             Self::InvalidPath => f.write_str(text::INVALID_PATH),
             Self::InvalidDate => f.write_str(text::INVALID_DATE),
             Self::Json(error) => write!(f, "{}: {error}", text::JSON_ERROR),
@@ -51,7 +47,9 @@ impl std::error::Error for ContextError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
             Self::Json(error) => Some(error),
-            Self::InvalidSkill | Self::InvalidPath | Self::InvalidDate => None,
+            Self::SkillMismatch | Self::InvalidSkill | Self::InvalidPath | Self::InvalidDate => {
+                None
+            }
         }
     }
 }
@@ -67,7 +65,12 @@ pub struct SystemContext {
 
 impl SystemContext {
     /// 同じ ToolSet から、モード、道具の説明、引数の定義を揃えて作る。
-    pub fn new(tools: &ToolSet) -> Result<Self, ContextError> {
+    pub fn new(tools: &ToolSet, skill: Option<&SkillDocument>) -> Result<Self, ContextError> {
+        if tools.has_benitoite() != skill.is_some()
+            || (tools.mode() == Mode::Restricted && skill.is_none())
+        {
+            return Err(ContextError::SkillMismatch);
+        }
         let (preamble, mode) = match tools.mode() {
             Mode::Restricted => (
                 include_str!("../../prompts/preamble-restricted.md"),
@@ -99,77 +102,29 @@ impl SystemContext {
         append_section(&mut system, "tools", &summaries);
         append_section(&mut system, "rules", &rules.join("\n"));
         append_section(&mut system, "mode", mode.trim_end());
-        let benitoite = match tools.mode() {
-            Mode::Restricted => format!(
-                "{}\n\n{}",
-                include_str!("../../prompts/benitoite-mapping.md").trim_end(),
-                skill_body()?
-            ),
-            Mode::Normal => {
-                let (attributes, _) = skill_parts(SKILL)?;
-                let attribute = |key: &str| {
-                    attributes
-                        .lines()
-                        .find_map(|line| {
-                            line.strip_prefix(key)
-                                .map(str::trim)
-                                .filter(|value| !value.is_empty())
-                        })
-                        .ok_or(ContextError::InvalidSkill)
-                };
-                format!(
+        if let Some(skill) = skill {
+            let parts = skill_parts(skill.text()).map_err(|_| ContextError::InvalidSkill)?;
+            let benitoite = match tools.mode() {
+                Mode::Restricted => format!(
+                    "{}\n\n{}",
+                    include_str!("../../prompts/benitoite-mapping.md").trim_end(),
+                    parts.body
+                ),
+                Mode::Normal => format!(
                     "{}: {}\n{}",
-                    attribute("name:")?,
-                    attribute("description:")?,
+                    parts.name,
+                    parts.description,
                     include_str!("../../prompts/benitoite-index.md").trim_end()
-                )
-            }
-        };
-        append_section(&mut system, "benitoite", &benitoite);
+                ),
+            };
+            append_section(&mut system, "benitoite", &benitoite);
+        }
         system.push('\n');
         Ok(Self {
             system_prompt: system,
             tools: tools.specs(),
         })
     }
-}
-
-/// 埋め込んだ Skill の本文から属性、先頭の注釈、前後の空白を除き、版を置き換える。
-///
-/// 制限モードと通常モードの benitoite_reference で同じ本文を使うための入口である
-/// （設計書 01-04「Benitoite の Skill の置き方」）。
-pub fn skill_body() -> Result<String, ContextError> {
-    let (_, body) = skill_parts(SKILL)?;
-    Ok(body
-        .trim()
-        .replace("{{benitoite-version}}", BENITOITE_DOCUMENT_VERSION))
-}
-
-fn skill_parts(skill: &str) -> Result<(&str, &str), ContextError> {
-    let (attributes, body) = skill
-        .strip_prefix("---\n")
-        .and_then(|skill| skill.split_once("\n---\n"))
-        .ok_or(ContextError::InvalidSkill)?;
-    let mut start = body;
-    while let Some((line, rest)) = start.split_once('\n') {
-        if !line.trim().is_empty() {
-            break;
-        }
-        start = rest;
-    }
-    // 処理系のテスト用の説明だけを除き、本文の途中の注釈は変えない
-    // （設計書 01-04「Benitoite の Skill の置き方」）。
-    let Some(comment) = start.strip_prefix("<!--") else {
-        return Ok((attributes, body));
-    };
-    let (_, rest) = comment
-        .split_once("-->")
-        .ok_or(ContextError::InvalidSkill)?;
-    let body = rest
-        .strip_prefix("\r\n")
-        .or_else(|| rest.strip_prefix('\n'))
-        .unwrap_or(rest);
-    Ok((attributes, body))
 }
 
 fn append_section(output: &mut String, tag: &str, contents: &str) {

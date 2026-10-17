@@ -957,3 +957,160 @@ fn query_launcher_and_environment_follow_actual_sandbox_state() -> Result<(), Bo
     );
     Ok(())
 }
+
+// 関門: 失敗した Skill を持つ処理系を使い続けないことを、起動時のモード分岐で守る。
+#[test]
+fn skill_startup_failure_stops_restricted_and_disables_normal() -> Result<(), Box<dyn Error>> {
+    for failure in [
+        "query",
+        "attributes",
+        "comment",
+        "closing_tag",
+        "body_limit",
+    ] {
+        for mode in [Mode::Restricted, Mode::Normal] {
+            let error = match failure {
+                "query" => benitoite::BenitoiteError::Exit {
+                    code: Some(2),
+                    stderr: Vec::new(),
+                },
+                "attributes" => benitoite::skill::skill_parts("---\nname: benitoite\n---\nbody")
+                    .err()
+                    .ok_or("invalid attributes accepted")?,
+                "comment" => benitoite::skill::skill_parts(
+                    "---\nname: benitoite\ndescription: desc\n---\n<!-- open",
+                )
+                .err()
+                .ok_or("invalid comment accepted")?,
+                "closing_tag" => benitoite::skill::skill_parts(
+                    "---\nname: benitoite\ndescription: desc\n---\nbefore</BeNiToItE>after",
+                )
+                .err()
+                .ok_or("closing tag accepted")?,
+                "body_limit" => benitoite::skill::skill_parts(&format!(
+                    "---\nname: benitoite\ndescription: desc\n---\n{}",
+                    "x".repeat(262145)
+                ))
+                .err()
+                .ok_or("oversized body accepted")?,
+                _ => return Err("unknown failure".into()),
+            };
+            let mut diagnostics = Vec::new();
+            let result =
+                super::select_processor(mode, Err(StartupError::Skill(error)), &mut diagnostics);
+            if mode == Mode::Restricted {
+                assert!(matches!(result, Err(StartupError::Skill(_))));
+            } else {
+                let (processor, skill) = result.map_err(|error| error.to_string())?;
+                assert!(processor.is_none() && skill.is_none());
+                assert_eq!(diagnostics.len(), 1);
+                assert!(
+                    diagnostics
+                        .first()
+                        .is_some_and(|line| line.starts_with(benitoite::text::DISABLED))
+                );
+            }
+        }
+    }
+    Ok(())
+}
+
+#[test]
+fn prepared_skill_is_in_prompt_tools_header_and_environment_in_both_modes()
+-> Result<(), Box<dyn Error>> {
+    for mode in ["restricted", "normal"] {
+        let f = Fixture::new()?;
+        let paths = f.paths("sandbox = 'danger-full-access'")?;
+        let args = f.args(&["--mode", mode])?;
+        let mut prepared = prepare(&args, None, &paths, |_, _| Ok(()), &mut |_| false)
+            .map_err(|error| error.to_string())?;
+        let records = session::read_records(prepared.session.directory())?;
+        let Some(Record::Header(header)) = records.first() else {
+            return Err("missing header".into());
+        };
+        let processor = header.benitoite.as_ref().ok_or("missing processor")?;
+        let output = std::process::Command::new(test_processor()?)
+            .args(["skill", "show", "--format=json", "SKILL.md"])
+            .output()?;
+        assert!(output.status.success());
+        let skill = benitoite::skill::SkillDocument::from_json("SKILL.md", &output.stdout)?;
+        assert_eq!(
+            processor.skill_content_hash.as_deref(),
+            Some(skill.content_hash())
+        );
+        assert!(serde_json::to_value(header)?.get("skill_version").is_none());
+        let (system, tools) = if mode == "restricted" {
+            (
+                include_str!("../../../tests/expected/system-restricted.txt"),
+                include_str!("../../../tests/expected/tools-restricted.json"),
+            )
+        } else {
+            (
+                include_str!("../../../tests/expected/system-normal.txt"),
+                include_str!("../../../tests/expected/tools-normal.json"),
+            )
+        };
+        // 全文と定義の固定値への一致で、起動処理から Agent への渡し忘れを捕まえる。
+        assert_eq!(
+            header.system_prompt_sha256,
+            crate::context::system_prompt_hash(system)
+        );
+        let tools: serde_json::Value = serde_json::from_str(tools)?;
+        assert_eq!(
+            header.tools_sha256,
+            crate::context::system_prompt_hash(&serde_json::to_string(&tools)?)
+        );
+        let (sender, receiver) = mpsc::sync_channel(64);
+        prepared
+            .agent
+            .run("request".into(), Arc::new(AtomicBool::new(true)), sender)?;
+        let _events = receiver.into_iter().collect::<Vec<_>>();
+        assert!(prepared.agent.conversation().items.iter().any(|item| matches!(item, Item::UserMessage(message) if message.parts.iter().any(|part| part.text.contains("<benitoite_version>0.0.7</benitoite_version>")))));
+    }
+    Ok(())
+}
+
+// 関門: 起動時の Skill の誤りにも、道具と同じ文書向けの理由を示す。
+#[test]
+fn skill_query_failures_use_document_wording_at_startup() -> Result<(), Box<dyn Error>> {
+    for mode in [Mode::Restricted, Mode::Normal] {
+        for (error, expected) in [
+            (
+                benitoite::BenitoiteError::OutputLimit,
+                "the Skill document from benitoite exceeded 16 MiB.",
+            ),
+            (
+                benitoite::BenitoiteError::Exit {
+                    code: Some(2),
+                    stderr: b"untrusted".to_vec(),
+                },
+                "benitoite exited with status 2.",
+            ),
+            (
+                benitoite::BenitoiteError::Exit {
+                    code: None,
+                    stderr: Vec::new(),
+                },
+                "benitoite exited without an exit status.",
+            ),
+        ] {
+            let mut diagnostics = Vec::new();
+            let result =
+                super::select_processor(mode, Err(StartupError::Skill(error)), &mut diagnostics);
+            if mode == Mode::Restricted {
+                assert_eq!(
+                    result.err().ok_or("startup continued")?.to_string(),
+                    expected
+                );
+            } else {
+                let (processor, skill) = result.map_err(|error| error.to_string())?;
+                assert!(processor.is_none() && skill.is_none());
+                assert_eq!(
+                    diagnostics,
+                    [format!("Benitoite tools are disabled: {expected}")]
+                );
+            }
+        }
+    }
+    Ok(())
+}

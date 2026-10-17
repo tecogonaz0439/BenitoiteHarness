@@ -18,7 +18,7 @@ pub struct Environment {
     mode: Mode,
     writable_roots: Vec<String>,
     network_allowed: bool,
-    benitoite_version: &'static str,
+    benitoite_version: String,
     instructions: ProjectInstructions,
     startup_notice: Vec<String>,
 }
@@ -26,7 +26,7 @@ pub struct Environment {
 impl Environment {
     /// 方針を決めた呼び出し元から、書ける場所と子プロセスの IP 通信の可否を受け取る。
     ///
-    /// now は UTC の日付に変換する。P1 の処理系の版は常に not configured とする。
+    /// now は UTC の日付に変換する。処理系の版は起動時の検証後に設定する。
     pub fn capture(
         project: &Path,
         mode: Mode,
@@ -44,10 +44,16 @@ impl Environment {
                 .map(|path| absolute_path(path))
                 .collect::<Result<_, _>>()?,
             network_allowed,
-            benitoite_version: text::NOT_CONFIGURED,
+            benitoite_version: text::NOT_CONFIGURED.into(),
             instructions: ProjectInstructions::default(),
             startup_notice: Vec::new(),
         })
+    }
+
+    /// 起動時に確かめた処理系の版を環境の情報に加える。
+    pub fn with_benitoite_version(mut self, version: &str) -> Self {
+        self.benitoite_version = version.into();
+        self
     }
 
     /// 起動時に集めた指示と除外理由を環境の情報に加える。
@@ -151,7 +157,7 @@ impl Environment {
                 serde_json::json!(self.writable_roots).to_string(),
             ),
             ("network", text::network(self.network_allowed).into()),
-            ("benitoite_version", self.benitoite_version.into()),
+            ("benitoite_version", self.benitoite_version.clone()),
         ];
         fields.extend(self.instructions.files.iter().map(|file| {
             (

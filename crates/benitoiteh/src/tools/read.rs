@@ -1,6 +1,6 @@
 //! 行番号と続きの位置を付けてテキストを読む（設計書 01-03「read」）。
 
-use super::{FileVersion, ToolContext, ToolError, ToolOutput, text};
+use super::{FileVersion, ToolContext, ToolError, ToolOutput, text, truncate};
 use serde_json::Value;
 use std::io::Read;
 use std::path::Path;
@@ -21,17 +21,7 @@ pub(super) fn execute(context: &ToolContext, arguments: &Value) -> Result<ToolOu
         return Err(ToolError::NotText);
     }
     let version = FileVersion::from_metadata(&metadata);
-    let mut lines = ReadLines {
-        offset,
-        limit,
-        total: 0,
-        count: 0,
-        prefix: String::new(),
-        last_cr: false,
-        records: Vec::new(),
-        bytes: 0,
-        collecting: true,
-    };
+    let mut lines = ReadLines::new(offset, limit, LineStyle::Numbered);
     let mut buffer = [0; 8192];
     let mut pending = Vec::new();
     let mut bytes_read = 0u64;
@@ -85,58 +75,40 @@ pub(super) fn execute(context: &ToolContext, arguments: &Value) -> Result<ToolOu
     for ch in String::from_utf8_lossy(&pending).chars() {
         lines.character(ch);
     }
-    if lines.count > 0 {
-        lines.finish(false);
-    }
-    if offset > u64::try_from(lines.total).unwrap_or(u64::MAX) && !(lines.total == 0 && offset == 1)
-    {
-        return Err(ToolError::Offset {
-            offset,
-            total: lines.total,
-        });
-    }
-    let start = usize::try_from(offset.saturating_sub(1)).map_err(|_| ToolError::Offset {
-        offset,
-        total: lines.total,
-    })?;
-    let mut output = String::new();
-    let mut last = start;
-    for (number, record) in lines.records {
-        let footer = if number < lines.total {
-            text::read_continuation(start.saturating_add(1), number, lines.total)
-        } else {
-            String::new()
-        };
-        if output
-            .len()
-            .saturating_add(record.len())
-            .saturating_add(footer.len())
-            > MAX_BYTES
-        {
-            break;
-        }
-        output.push_str(&record);
-        last = number;
-    }
-    if last < lines.total {
-        output.push_str(&text::read_continuation(
-            start.saturating_add(1),
-            last,
-            lines.total,
-        ));
-    }
+    let (output, count) = lines.output()?;
     if version != FileVersion::from_metadata(&opened.file.metadata()?) {
         return Err(ToolError::Changed);
     }
     context.record_read_version(opened.real_path, version)?;
-    let screen = text::screen_lines(last.saturating_sub(start));
+    let screen = text::screen_lines(count);
     Ok(ToolOutput {
         screen: Some(screen),
         ..ToolOutput::success(output)
     })
 }
 
+#[derive(Clone, Copy)]
+pub(super) enum LineStyle {
+    Numbered,
+    Reference,
+}
+
+/// ファイルからの逐次入力と参照文書を同じ行・バイトの規則で区切る。
+pub(super) fn split_text(
+    text: &str,
+    offset: u64,
+    limit: u64,
+    style: LineStyle,
+) -> Result<String, ToolError> {
+    let mut lines = ReadLines::new(offset, limit, style);
+    for ch in text.chars() {
+        lines.character(ch);
+    }
+    lines.output().map(|(output, _)| output)
+}
+
 struct ReadLines {
+    style: LineStyle,
     offset: u64,
     limit: u64,
     total: usize,
@@ -148,6 +120,77 @@ struct ReadLines {
     collecting: bool,
 }
 impl ReadLines {
+    fn new(offset: u64, limit: u64, style: LineStyle) -> Self {
+        Self {
+            style,
+            offset,
+            limit,
+            total: 0,
+            count: 0,
+            prefix: String::new(),
+            last_cr: false,
+            records: Vec::new(),
+            bytes: 0,
+            collecting: true,
+        }
+    }
+    fn output(mut self) -> Result<(String, usize), ToolError> {
+        if self.count > 0 {
+            self.finish(false);
+        }
+        if self.offset > u64::try_from(self.total).unwrap_or(u64::MAX)
+            && !(self.total == 0 && self.offset == 1)
+        {
+            return Err(ToolError::Offset {
+                offset: self.offset,
+                total: self.total,
+            });
+        }
+        let start =
+            usize::try_from(self.offset.saturating_sub(1)).map_err(|_| ToolError::Offset {
+                offset: self.offset,
+                total: self.total,
+            })?;
+        let mut output = String::new();
+        let mut last = start;
+        for (number, record) in self.records {
+            let footer = if number < self.total {
+                text::read_continuation(start.saturating_add(1), number, self.total)
+            } else {
+                String::new()
+            };
+            if output
+                .len()
+                .saturating_add(record.len())
+                .saturating_add(footer.len())
+                > MAX_BYTES
+            {
+                if matches!(self.style, LineStyle::Reference) && output.is_empty() {
+                    // 最初の行だけで上限に達しても、同じ offset を返し続けない。
+                    // 印と続きの案内も上限に含める（設計書 01-03「出力の切り詰め」）。
+                    let marker = text::reference_line_truncated(number);
+                    let budget = MAX_BYTES
+                        .saturating_sub(marker.len())
+                        .saturating_sub(footer.len());
+                    output.push_str(truncate::prefix(&record, budget));
+                    output.push_str(&marker);
+                    last = number;
+                }
+                break;
+            }
+            output.push_str(&record);
+            last = number;
+        }
+        if last < self.total {
+            output.push_str(&text::read_continuation(
+                start.saturating_add(1),
+                last,
+                self.total,
+            ));
+        }
+        Ok((output, last.saturating_sub(start)))
+    }
+
     fn selected(&self) -> bool {
         let number = u64::try_from(self.total)
             .unwrap_or(u64::MAX)
@@ -160,29 +203,35 @@ impl ReadLines {
             return;
         }
         self.count = self.count.saturating_add(1);
-        if self.selected() && self.count <= 2000 {
+        if self.selected() && (matches!(self.style, LineStyle::Reference) || self.count <= 2000) {
             self.prefix.push(ch);
         }
         self.last_cr = ch == '\r';
     }
     fn finish(&mut self, newline: bool) {
         if newline && self.last_cr {
-            if self.count <= 2000 {
+            if matches!(self.style, LineStyle::Reference) || self.count <= 2000 {
                 self.prefix.pop();
             }
             self.count = self.count.saturating_sub(1);
         }
         if self.selected() {
             let number = self.total.saturating_add(1);
-            let mut record = text::numbered(number, &self.prefix);
-            if self.count > 2000 {
+            let mut record = match self.style {
+                LineStyle::Numbered => text::numbered(number, &self.prefix),
+                LineStyle::Reference => self.prefix.clone(),
+            };
+            if matches!(self.style, LineStyle::Numbered) && self.count > 2000 {
                 record.push_str(&text::long_line(number, self.count));
             }
             record.push('\n');
             self.bytes = self.bytes.saturating_add(record.len());
-            if self.bytes <= MAX_BYTES {
+            if self.bytes <= MAX_BYTES
+                || (matches!(self.style, LineStyle::Reference) && self.records.is_empty())
+            {
                 self.records.push((number, record));
-            } else {
+            }
+            if self.bytes > MAX_BYTES {
                 self.collecting = false;
             }
         }

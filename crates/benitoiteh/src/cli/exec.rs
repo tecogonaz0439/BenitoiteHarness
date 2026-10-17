@@ -6,7 +6,7 @@ use std::io;
 use std::os::unix::fs::{DirBuilderExt, MetadataExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::sync::atomic::Ordering;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc;
 use std::thread;
 use std::time::SystemTime;
@@ -32,6 +32,7 @@ use super::{CliError, args::ExecArgs, panic, signals::Signals, text};
 
 pub(super) enum StartupError {
     Benitoite(benitoite::BenitoiteError),
+    Skill(benitoite::BenitoiteError),
     Config(ConfigError),
     Credentials(CredentialError),
     Writable(WritableError),
@@ -50,6 +51,11 @@ impl fmt::Display for StartupError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Benitoite(e) => e.fmt(f),
+            Self::Skill(e) => write!(
+                f,
+                "{}.",
+                benitoite::skill::query_reason(e).trim_end_matches('.')
+            ),
             Self::Config(e) => e.fmt(f),
             Self::Credentials(e) => e.fmt(f),
             Self::Writable(e) => e.fmt(f),
@@ -115,6 +121,39 @@ impl From<&crate::agent::AgentStatus> for SessionOverrides {
             safety: current.safety.clone(),
             benitoite_path: current.benitoite_path.clone(),
         }
+    }
+}
+
+type InitializedProcessor = (Arc<Processor>, Arc<benitoite::skill::SkillDocuments>);
+type OptionalProcessor = (
+    Option<Arc<Processor>>,
+    Option<Arc<benitoite::skill::SkillDocuments>>,
+);
+
+fn initialize_skill(processor: Processor) -> Result<InitializedProcessor, StartupError> {
+    let processor = Arc::new(processor);
+    let documents = Arc::new(benitoite::skill::SkillDocuments::from_processor(
+        Arc::clone(&processor),
+    ));
+    let skill = documents
+        .document("SKILL.md", &AtomicBool::new(false))
+        .map_err(StartupError::Skill)?;
+    benitoite::skill::skill_parts(skill.text()).map_err(StartupError::Skill)?;
+    Ok((processor, documents))
+}
+
+fn select_processor(
+    mode: Mode,
+    result: Result<InitializedProcessor, StartupError>,
+    diagnostics: &mut Vec<String>,
+) -> Result<OptionalProcessor, StartupError> {
+    match result {
+        Ok((processor, skill)) => Ok((Some(processor), Some(skill))),
+        Err(error) if mode == Mode::Normal => {
+            diagnostics.push(format!("{} {error}", benitoite::text::DISABLED));
+            Ok((None, None))
+        }
+        Err(error) => Err(error),
     }
 }
 
@@ -350,41 +389,37 @@ pub(super) fn prepare(
                 },
             )
         };
-        let processor = match processor_result {
-            Ok(processor) => {
-                if let Some(notice) = processor.version_warning() {
-                    processor_notices.push(notice);
-                }
-                let previous = if resume.is_some() {
-                    session::recorded_benitoite(paths, session.id())
-                } else {
-                    session::previous_benitoite(paths, &locations.project, session.id())
-                };
-                let previous = match previous {
-                    Ok(previous) => previous,
-                    Err(SessionError::Json(_)) => {
-                        diagnostics.push(benitoite::text::PREVIOUS_UNREADABLE.into());
-                        None
-                    }
-                    Err(error) => return Err(StartupError::Session(error)),
-                };
-                if let Some(previous) = previous
-                    && !previous.sha256.is_empty()
-                    && previous.sha256 != processor.sha256
-                {
-                    processor_notices.push(benitoite::text::changed(
-                        &previous.version,
-                        &processor.version,
-                    ));
-                }
-                Some(Arc::new(processor))
+        let initialized = processor_result
+            .map_err(StartupError::Benitoite)
+            .and_then(initialize_skill);
+        let (processor, skill) = select_processor(resolved.mode, initialized, &mut diagnostics)?;
+        if let Some(processor) = &processor {
+            if let Some(notice) = processor.version_warning() {
+                processor_notices.push(notice);
             }
-            Err(error) if resolved.mode == Mode::Normal => {
-                diagnostics.push(format!("{} {error}", benitoite::text::DISABLED));
-                None
+            let previous = if resume.is_some() {
+                session::recorded_benitoite(paths, session.id())
+            } else {
+                session::previous_benitoite(paths, &locations.project, session.id())
+            };
+            let previous = match previous {
+                Ok(previous) => previous,
+                Err(SessionError::Json(_)) => {
+                    diagnostics.push(benitoite::text::PREVIOUS_UNREADABLE.into());
+                    None
+                }
+                Err(error) => return Err(StartupError::Session(error)),
+            };
+            if let Some(previous) = previous
+                && !previous.sha256.is_empty()
+                && previous.sha256 != processor.sha256
+            {
+                processor_notices.push(benitoite::text::changed(
+                    &previous.version,
+                    &processor.version,
+                ));
             }
-            Err(error) => return Err(StartupError::Benitoite(error)),
-        };
+        }
         diagnostics.extend(processor_notices.iter().cloned());
         let shell = if resolved.mode == Mode::Normal {
             let policy = if selected == Sandbox::DangerFullAccess || sandbox_disabled {
@@ -477,6 +512,9 @@ pub(super) fn prepare(
             allowed_domains: user.web_fetch.allowed_domains.iter().cloned().collect(),
             client: crate::http::HttpClient::default(),
         });
+        if let Some(skill) = skill {
+            context = context.with_skill(skill);
+        }
         let approval_policy = ApprovalPolicy {
             approval,
             sandbox: shell
@@ -491,6 +529,9 @@ pub(super) fn prepare(
             Environment::capture(&locations.project, resolved.mode, &writable, network, now)
                 .map_err(StartupError::Context)?
                 .with_project_instructions(instructions);
+        if let Some(processor) = &processor {
+            environment = environment.with_benitoite_version(&processor.version);
+        }
         for notice in processor_notices {
             environment = environment.with_startup_notice(notice);
         }

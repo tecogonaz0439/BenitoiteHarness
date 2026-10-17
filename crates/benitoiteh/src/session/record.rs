@@ -65,7 +65,6 @@ pub struct Header {
     pub project_dir: PathBuf,
     pub provider: RecordedProvider,
     pub benitoite: Option<RecordedBenitoite>,
-    pub skill_version: String,
     pub system_prompt_sha256: String,
     pub tools_sha256: String,
 }

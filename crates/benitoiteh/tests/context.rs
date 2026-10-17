@@ -1,5 +1,10 @@
 //! LLM に見せる全文、環境の追記、見積もりの契約（設計書 01-04、07-01「LLM に見せる文の固定」）。
 
+#[path = "support/processor.rs"]
+mod processor;
+#[path = "support/skill.rs"]
+mod skill;
+
 use std::error::Error;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, UNIX_EPOCH};
@@ -16,20 +21,34 @@ use benitoiteh::tools::ToolSet;
 fn llm_context_matches_reviewed_files_in_both_modes() -> Result<(), Box<dyn Error>> {
     // 更新は examples/update_context_expected.rs を明示的に実行し、全文を確認する。
     // このテストでは期待ファイルを一切書き換えない（設計書 07-01「LLM に見せる文の固定」）。
+    let documents = skill::skills()?;
+    let skill = documents.document("SKILL.md", &std::sync::atomic::AtomicBool::new(false))?;
     let cases = [
         (
             Mode::Restricted,
+            true,
             include_str!("expected/system-restricted.txt"),
             include_str!("expected/tools-restricted.json"),
         ),
         (
             Mode::Normal,
+            true,
             include_str!("expected/system-normal.txt"),
             include_str!("expected/tools-normal.json"),
         ),
     ];
-    for (mode, expected_system, expected_tools) in cases {
-        let context = SystemContext::new(&ToolSet::new(mode))?;
+    for (mode, enabled, expected_system, expected_tools) in cases.into_iter().chain([(
+        Mode::Normal,
+        false,
+        include_str!("expected/system-normal-without-benitoite.txt"),
+        include_str!("expected/tools-normal-without-benitoite.json"),
+    )]) {
+        let tools = if enabled {
+            ToolSet::new(mode)
+        } else {
+            ToolSet::without_benitoite(mode)
+        };
+        let context = SystemContext::new(&tools, enabled.then_some(skill.as_ref()))?;
         if mode == Mode::Restricted {
             assert!(!context.system_prompt.contains("<!--"));
             assert!(
@@ -546,5 +565,34 @@ fn instruction_environment_escapes_content_and_compares_paths() -> Result<(), Bo
             .changes_since(&with)
             .is_some_and(|value| value.contains("path=\"/changed\""))
     );
+    Ok(())
+}
+
+// 関門: プロンプトの本文の検証と独立に、起動した処理系の文書が確認済みの版かを照合する。
+#[test]
+fn processor_skill_matches_archived_release_and_context_requires_matching_tools()
+-> Result<(), Box<dyn Error>> {
+    let documents = skill::skills()?;
+    let document = documents.document("SKILL.md", &std::sync::atomic::AtomicBool::new(false))?;
+    assert_eq!(
+        document.text().as_bytes(),
+        include_str!("../../../assets/benitoite/v0.0.7/skill/SKILL.md")
+            .replace("{{benitoite-version}}", "0.0.7")
+            .as_bytes()
+    );
+    for (tools, skill) in [
+        (ToolSet::new(Mode::Restricted), None),
+        (ToolSet::without_benitoite(Mode::Restricted), None),
+        (ToolSet::new(Mode::Normal), None),
+        (
+            ToolSet::without_benitoite(Mode::Normal),
+            Some(document.as_ref()),
+        ),
+    ] {
+        assert!(matches!(
+            SystemContext::new(&tools, skill),
+            Err(ContextError::SkillMismatch)
+        ));
+    }
     Ok(())
 }

@@ -5,3 +5,6 @@ pub mod mock_provider;
 mod processor;
 #[allow(unused_imports)]
 pub use processor::benitoite;
+mod skill;
+#[allow(unused_imports)]
+pub use skill::skills;

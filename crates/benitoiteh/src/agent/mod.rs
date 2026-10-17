@@ -278,8 +278,18 @@ impl Agent {
             return Err(AgentError::InvalidConfiguration);
         }
         provider_host(&config.destination)?;
-        let tools = ToolSet::new(config.mode);
-        let system = SystemContext::new(&tools)?;
+        let tools = if tool_context.skill.is_some() {
+            ToolSet::new(config.mode)
+        } else {
+            ToolSet::without_benitoite(config.mode)
+        };
+        let skill = tool_context
+            .skill
+            .as_ref()
+            .map(|documents| documents.document("SKILL.md", &AtomicBool::new(false)))
+            .transpose()
+            .map_err(|_| AgentError::Context(context::ContextError::InvalidSkill))?;
+        let system = SystemContext::new(&tools, skill.as_deref())?;
         let adapter = Adapter::new(&config, api_key)?;
         let client = HttpClient::new(config.http_timeouts);
         let mut writer = session.writer()?;
@@ -303,10 +313,9 @@ impl Agent {
                         version: processor.version.clone(),
                         sha256: processor.sha256.clone(),
                         build: processor.build.clone(),
-                        skill_content_hash: None,
+                        skill_content_hash: skill.as_ref().map(|skill| skill.content_hash().into()),
                     }
                 }),
-                skill_version: context::BENITOITE_DOCUMENT_VERSION.into(),
                 system_prompt_sha256: context::system_prompt_hash(&system.system_prompt),
                 tools_sha256: context::tool_definitions_hash(&system.tools)?,
             }))?;

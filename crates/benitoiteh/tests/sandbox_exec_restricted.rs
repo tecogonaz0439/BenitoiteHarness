@@ -518,10 +518,15 @@ fn normal_query_inspects_real_processor_and_records_its_identity() -> TestResult
             .pointer("/benitoite/build")
             .is_some_and(Value::is_object)
     );
-    assert_eq!(
-        header.pointer("/benitoite/skill_content_hash"),
-        Some(&Value::Null)
+    assert!(
+        header
+            .pointer("/benitoite/skill_content_hash")
+            .and_then(Value::as_str)
+            .is_some_and(
+                |hash| hash.len() == 64 && hash.bytes().all(|byte| byte.is_ascii_hexdigit())
+            )
     );
+    assert!(header.get("skill_version").is_none());
     server.shutdown()?;
     Ok(())
 }

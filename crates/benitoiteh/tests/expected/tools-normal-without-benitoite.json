@@ -1,0 +1,177 @@
+[
+  {
+    "description": "Read a text file with line numbers.",
+    "input_schema": {
+      "properties": {
+        "limit": {
+          "description": "Maximum number of lines to read (up to 2000).",
+          "type": "integer"
+        },
+        "offset": {
+          "description": "First line to read (1-based).",
+          "type": "integer"
+        },
+        "path": {
+          "description": "Project-relative or absolute path.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "path"
+      ],
+      "type": "object"
+    },
+    "name": "read"
+  },
+  {
+    "description": "Find files by glob pattern, newest first.",
+    "input_schema": {
+      "properties": {
+        "path": {
+          "description": "Project-relative or absolute path.",
+          "type": "string"
+        },
+        "pattern": {
+          "description": "Pattern to match.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "pattern"
+      ],
+      "type": "object"
+    },
+    "name": "glob"
+  },
+  {
+    "description": "Search file lines using a regular expression.",
+    "input_schema": {
+      "properties": {
+        "context": {
+          "description": "Number of surrounding lines to show.",
+          "type": "integer"
+        },
+        "files_only": {
+          "description": "Return only paths of matching files.",
+          "type": "boolean"
+        },
+        "glob": {
+          "description": "Only search paths matching this glob.",
+          "type": "string"
+        },
+        "ignore_case": {
+          "description": "Match without case sensitivity.",
+          "type": "boolean"
+        },
+        "path": {
+          "description": "Project-relative or absolute path.",
+          "type": "string"
+        },
+        "pattern": {
+          "description": "Pattern to match.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "pattern"
+      ],
+      "type": "object"
+    },
+    "name": "grep"
+  },
+  {
+    "description": "Create or replace a file.",
+    "input_schema": {
+      "properties": {
+        "content": {
+          "description": "Complete file contents.",
+          "type": "string"
+        },
+        "path": {
+          "description": "Project-relative or absolute path.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "path",
+        "content"
+      ],
+      "type": "object"
+    },
+    "name": "write"
+  },
+  {
+    "description": "Replace matching text in a file.",
+    "input_schema": {
+      "properties": {
+        "new_string": {
+          "description": "Replacement text.",
+          "type": "string"
+        },
+        "old_string": {
+          "description": "Text to replace.",
+          "type": "string"
+        },
+        "path": {
+          "description": "Project-relative or absolute path.",
+          "type": "string"
+        },
+        "replace_all": {
+          "description": "Replace every occurrence.",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "path",
+        "old_string",
+        "new_string"
+      ],
+      "type": "object"
+    },
+    "name": "edit"
+  },
+  {
+    "description": "Run a shell command in the project directory.",
+    "input_schema": {
+      "properties": {
+        "command": {
+          "description": "Shell command to run in the project directory.",
+          "type": "string"
+        },
+        "escalate": {
+          "description": "Request execution outside the sandbox for this call.",
+          "type": "boolean"
+        },
+        "justification": {
+          "description": "Reason for requesting execution outside the sandbox.",
+          "type": "string"
+        },
+        "timeout": {
+          "description": "Time limit in seconds (1-600; default 120).",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "command"
+      ],
+      "type": "object"
+    },
+    "name": "bash"
+  },
+  {
+    "description": "Fetch an HTTPS URL and return its text content.",
+    "input_schema": {
+      "properties": {
+        "url": {
+          "description": "Absolute HTTPS URL to fetch.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "url"
+      ],
+      "type": "object"
+    },
+    "name": "web_fetch"
+  }
+]

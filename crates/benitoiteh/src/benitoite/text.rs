@@ -31,3 +31,14 @@ pub fn changed(previous: &str, current: &str) -> String {
 
 pub const LEFTOVERS: &str = "The benitoite query may have left child processes running.";
 pub const PREVIOUS_UNREADABLE: &str = "Could not read the previous session's benitoite identity; the executable change comparison was skipped.";
+
+pub const INVALID_SKILL: &str = "The Benitoite Skill from the processor has an invalid format.";
+
+// Skill の取得と、検査の報告の取得では、出力の上限に達した後の案内が異なる。
+pub const SKILL_OUTPUT_LIMIT: &str = "the Skill document from benitoite exceeded 16 MiB";
+pub fn skill_exit(code: Option<i32>) -> String {
+    match code {
+        Some(code) => format!("benitoite exited with status {code}"),
+        None => "benitoite exited without an exit status".into(),
+    }
+}

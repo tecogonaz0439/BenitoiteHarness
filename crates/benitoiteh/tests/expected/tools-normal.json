@@ -159,6 +159,44 @@
     "name": "bash"
   },
   {
+    "description": "Explain a Benitoite diagnostic code, such as E0405, W0501, or R0101.",
+    "input_schema": {
+      "properties": {
+        "code": {
+          "description": "Diagnostic code, such as E0405.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "code"
+      ],
+      "type": "object"
+    },
+    "name": "benitoite_explain"
+  },
+  {
+    "description": "Read a document of the Benitoite Skill that comes with the installed processor.",
+    "input_schema": {
+      "properties": {
+        "limit": {
+          "description": "Maximum number of lines to read (up to 2000).",
+          "type": "integer"
+        },
+        "name": {
+          "description": "Skill document name, such as idioms or stdlib/List; omit to list names.",
+          "type": "string"
+        },
+        "offset": {
+          "description": "First line to read (1-based).",
+          "type": "integer"
+        }
+      },
+      "required": [],
+      "type": "object"
+    },
+    "name": "benitoite_reference"
+  },
+  {
     "description": "Fetch an HTTPS URL and return its text content.",
     "input_schema": {
       "properties": {

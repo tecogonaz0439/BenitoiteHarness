@@ -77,7 +77,6 @@ fn header(session: &Session) -> Record {
             adapter: AdapterKind::OpenAiResponses,
         },
         benitoite: None,
-        skill_version: "v0.0.6".to_owned(),
         system_prompt_sha256: "a".repeat(64),
         tools_sha256: "b".repeat(64),
     })
@@ -729,5 +728,26 @@ fn storage_skips_unreadable_entries_in_other_sessions() -> TestResult {
     assert_eq!(error.kind(), io::ErrorKind::PermissionDenied);
     let usage = benitoiteh::session::storage_usage(&fixture.paths, Some(current.id()))?;
     assert_eq!(usage.total, 7);
+    Ok(())
+}
+
+// 関門: 廃止した欄を含む保存済みの記録を読めることは記録の互換性の契約である。
+#[test]
+fn legacy_skill_version_is_ignored_and_not_written() -> TestResult {
+    let f = Fixture::new()?;
+    let session = f.session()?;
+    let mut value = serde_json::to_value(header(&session))?;
+    value
+        .as_object_mut()
+        .ok_or("header object")?
+        .insert("skill_version".into(), json!("0.0.6"));
+    let decoded: Record = serde_json::from_value(value)?;
+    session.writer()?.append(&decoded)?;
+    assert_eq!(read_records(session.directory())?.len(), 1);
+    assert!(
+        serde_json::to_value(decoded)?
+            .get("skill_version")
+            .is_none()
+    );
     Ok(())
 }
