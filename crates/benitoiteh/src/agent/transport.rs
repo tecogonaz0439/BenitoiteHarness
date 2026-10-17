@@ -6,6 +6,9 @@ use crate::context::SystemContext;
 use crate::http::{HttpClient, HttpError};
 use crate::provider::anthropic::{AnthropicAdapter, AnthropicRequest, AnthropicStream};
 use crate::provider::openai_chat::{OpenAiChatAdapter, OpenAiChatRequest, OpenAiChatStream};
+use crate::provider::openai_responses::{
+    OpenAiResponsesAdapter, OpenAiResponsesRequest, OpenAiResponsesStream,
+};
 use crate::provider::{
     AdapterKind, AssistantTurn, Conversation, NonRetryableKind, ProviderError, StreamEvent,
 };
@@ -15,22 +18,19 @@ use super::AgentConfig;
 pub(super) enum Adapter {
     Anthropic(AnthropicAdapter),
     Chat(OpenAiChatAdapter),
+    Responses(OpenAiResponsesAdapter),
 }
 
 pub(super) enum Request {
     Anthropic(AnthropicRequest),
     Chat(OpenAiChatRequest),
+    Responses(OpenAiResponsesRequest),
 }
 
 pub(super) enum Stream {
     Anthropic(AnthropicStream),
     Chat(OpenAiChatStream),
-}
-
-fn invalid() -> ProviderError {
-    ProviderError::NonRetryable {
-        reason: NonRetryableKind::InvalidRequest,
-    }
+    Responses(OpenAiResponsesStream),
 }
 
 impl Adapter {
@@ -46,7 +46,11 @@ impl Adapter {
                 config.capabilities.clone(),
                 key,
             )),
-            AdapterKind::OpenAiResponses => return Err(invalid()),
+            AdapterKind::OpenAiResponses => Self::Responses(OpenAiResponsesAdapter::new(
+                config.destination.clone(),
+                config.capabilities.clone(),
+                key,
+            )),
         })
     }
 
@@ -56,6 +60,7 @@ impl Adapter {
         system: &SystemContext,
         effort: &str,
         previous: Option<usize>,
+        session_id: &str,
     ) -> Result<Request, ProviderError> {
         match self {
             Self::Anthropic(adapter) => adapter
@@ -84,6 +89,20 @@ impl Adapter {
                 )
                 .map(Request::Chat)
                 .map_err(|e| e.classification()),
+            Self::Responses(adapter) => adapter
+                .build_request(
+                    conversation,
+                    &system.system_prompt,
+                    &system.tools,
+                    crate::provider::openai_responses::RequestOptions {
+                        effort: Some(effort),
+                        previous_last_item: previous,
+                        disable_tools: false,
+                        prompt_cache_key: Some(session_id),
+                    },
+                )
+                .map(Request::Responses)
+                .map_err(|e| e.classification()),
         }
     }
 
@@ -101,8 +120,16 @@ impl Adapter {
                 .stream(client, request)
                 .map(Stream::Chat)
                 .map_err(|e| e.classification()),
-            (Self::Anthropic(_), Request::Chat(_)) | (Self::Chat(_), Request::Anthropic(_)) => {
-                Err(invalid())
+            (Self::Responses(adapter), Request::Responses(request)) => adapter
+                .stream(client, request)
+                .map(Stream::Responses)
+                .map_err(|e| e.classification()),
+            (Self::Anthropic(_), Request::Chat(_) | Request::Responses(_))
+            | (Self::Chat(_), Request::Anthropic(_) | Request::Responses(_))
+            | (Self::Responses(_), Request::Anthropic(_) | Request::Chat(_)) => {
+                Err(ProviderError::NonRetryable {
+                    reason: NonRetryableKind::InvalidRequest,
+                })
             }
         }
     }
@@ -113,6 +140,7 @@ impl Stream {
         match self {
             Self::Anthropic(stream) => stream.cancellation().cancel(),
             Self::Chat(stream) => stream.cancellation().cancel(),
+            Self::Responses(stream) => stream.cancellation().cancel(),
         }
     }
 
@@ -120,6 +148,7 @@ impl Stream {
         match self {
             Self::Anthropic(stream) => stream.is_finished(),
             Self::Chat(stream) => stream.is_finished(),
+            Self::Responses(stream) => stream.is_finished(),
         }
     }
 
@@ -127,6 +156,7 @@ impl Stream {
         match self {
             Self::Anthropic(stream) => stream.join(),
             Self::Chat(stream) => stream.join(),
+            Self::Responses(stream) => stream.join(),
         }
     }
 
@@ -134,6 +164,7 @@ impl Stream {
         match self {
             Self::Anthropic(stream) => stream.poll(wait).map_err(|e| e.classification()),
             Self::Chat(stream) => stream.poll(wait).map_err(|e| e.classification()),
+            Self::Responses(stream) => stream.poll(wait).map_err(|e| e.classification()),
         }
     }
 
@@ -141,6 +172,7 @@ impl Stream {
         match self {
             Self::Anthropic(stream) => stream.finish().map_err(|e| e.classification()),
             Self::Chat(stream) => stream.finish().map_err(|e| e.classification()),
+            Self::Responses(stream) => stream.finish().map_err(|e| e.classification()),
         }
     }
 }

@@ -337,6 +337,7 @@ impl Agent {
                 &self.system,
                 &self.config.effort,
                 self.previous_last_item,
+                &self.session.id().to_string(),
             )?;
             let Some(mut response) = self.receive_with_retry(&request, cancelled, events)? else {
                 return Ok(Outcome::Cancelled);

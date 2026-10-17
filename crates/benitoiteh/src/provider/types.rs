@@ -27,7 +27,7 @@ pub enum AdapterKind {
     /// OpenAI Chat Completions API。
     #[serde(rename = "openai-chat")]
     OpenAiChat,
-    /// OpenAI Responses API。実装は P3。
+    /// OpenAI Responses API。
     #[serde(rename = "openai-responses")]
     OpenAiResponses,
 }
@@ -305,7 +305,7 @@ impl AdapterKind {
         Capabilities::default()
     }
 
-    /// 本家の口の値。Responses は P3 で決めるため None。
+    /// 本家の口で対応する機能の値。
     pub fn official_capabilities(self) -> Option<Capabilities> {
         match self {
             Self::AnthropicMessages => Some(Capabilities {
@@ -323,7 +323,13 @@ impl AdapterKind {
                 parallel_tool_calls: true,
                 ..Capabilities::default()
             }),
-            Self::OpenAiResponses => None,
+            Self::OpenAiResponses => Some(Capabilities {
+                strict_tools: true,
+                tool_choice_none: true,
+                parallel_tool_calls: true,
+                reasoning_replay: ReasoningReplay::SameDestination,
+                ..Capabilities::default()
+            }),
         }
     }
 }

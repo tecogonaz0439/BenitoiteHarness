@@ -25,12 +25,14 @@ const DISPLAY: &str =
 enum Protocol {
     Chat,
     Anthropic,
+    Responses,
 }
 
 impl Protocol {
     fn kind(self) -> &'static str {
         match self {
             Self::Chat => "openai-chat",
+            Self::Responses => "openai-responses",
             Self::Anthropic => "anthropic-messages",
         }
     }
@@ -57,6 +59,37 @@ impl Protocol {
                     json!({"choices":[{"delta":{},"finish_reason":reason}]}),
                     json!({"choices":[],"usage":{"prompt_tokens":10,"completion_tokens":2,"prompt_tokens_details":{"cached_tokens":3}}})
                 ).into_bytes()
+            }
+            Self::Responses => {
+                let mut data = vec![
+                    json!({"type":"response.output_item.added","output_index":0,"item":{"type":"message","id":"msg_original","role":"assistant","content":[],"status":"in_progress"}}),
+                    json!({"type":"response.output_text.delta","output_index":0,"content_index":0,"item_id":"msg_original","delta":text}),
+                    json!({"type":"response.output_item.done","output_index":0,"item":{"type":"message","id":"msg_original","role":"assistant","content":[{"type":"output_text","text":text,"annotations":[]}],"status":"completed"}}),
+                ];
+                if let Some((id, name, arguments)) = call {
+                    data.extend([
+                        json!({"type":"response.output_item.added","output_index":1,"item":{"type":"reasoning","id":"rs_original","summary":[]}}),
+                        json!({"type":"response.reasoning_summary_text.delta","output_index":1,"summary_index":0,"item_id":"rs_original","delta":"Plan"}),
+                        json!({"type":"response.output_item.done","output_index":1,"item":{"type":"reasoning","id":"rs_original","summary":[{"type":"summary_text","text":"Plan"}],"encrypted_content":"encrypted+/="}}),
+                        json!({"type":"response.output_item.added","output_index":2,"item":{"type":"function_call","id":"fc_original","call_id":id,"name":name,"arguments":"","status":"in_progress"}}),
+                        json!({"type":"response.function_call_arguments.delta","output_index":2,"item_id":"fc_original","delta":arguments.to_string()}),
+                        json!({"type":"response.output_item.done","output_index":2,"item":{"type":"function_call","id":"fc_original","call_id":id,"name":name,"arguments":arguments.to_string(),"status":"completed"}}),
+                    ]);
+                }
+                data.push(json!({"type":if limit {"response.incomplete"} else {"response.completed"},"response":{"status":if limit {"incomplete"} else {"completed"},"incomplete_details":if limit {json!({"reason":"max_output_tokens"})} else {Value::Null},"usage":{"input_tokens":10,"output_tokens":2,"input_tokens_details":{"cached_tokens":3}}}}));
+                data.into_iter()
+                    .enumerate()
+                    .map(|(sequence, mut data)| {
+                        if let Some(fields) = data.as_object_mut() {
+                            fields.insert("sequence_number".into(), json!(sequence));
+                        }
+                        format!(
+                            "event: {}\ndata: {data}\n\n",
+                            data.get("type").and_then(Value::as_str).unwrap_or_default()
+                        )
+                    })
+                    .collect::<String>()
+                    .into_bytes()
             }
             Self::Anthropic => {
                 let has_call = call.is_some();
@@ -222,7 +255,7 @@ fn no_secret(output: &Output, records: &[Value]) {
 
 #[test]
 fn exec_completes_tools_and_preserves_output_records_and_original_items() -> TestResult {
-    for protocol in [Protocol::Chat, Protocol::Anthropic] {
+    for protocol in [Protocol::Chat, Protocol::Anthropic, Protocol::Responses] {
         for json_output in [false, true] {
             let mut final_response = ResponseScript::sse(protocol.response(None, FINAL, false));
             final_response.delivery = Delivery::Chunks {
@@ -404,6 +437,7 @@ fn exec_completes_tools_and_preserves_output_records_and_original_items() -> Tes
                 first.path,
                 match protocol {
                     Protocol::Chat => "/chat/completions",
+                    Protocol::Responses => "/responses",
                     Protocol::Anthropic => "/v1/messages",
                 }
             );
@@ -411,18 +445,21 @@ fn exec_completes_tools_and_preserves_output_records_and_original_items() -> Tes
                 first
                     .headers
                     .get(match protocol {
-                        Protocol::Chat => "authorization",
+                        Protocol::Chat | Protocol::Responses => "authorization",
                         Protocol::Anthropic => "x-api-key",
                     })
                     .map(String::as_str),
                 Some(match protocol {
-                    Protocol::Chat => "Bearer synthetic-exec-key-never-log",
+                    Protocol::Chat | Protocol::Responses => "Bearer synthetic-exec-key-never-log",
                     Protocol::Anthropic => KEY,
                 })
             );
             let expected = match protocol {
                 Protocol::Chat => {
                     json!({"role":"assistant","content":"Working.","reasoning_content":"Plan","tool_calls":[{"id":"read/original","type":"function","function":{"name":"read","arguments":"{\"path\":\"a.bnt\"}"}}]})
+                }
+                Protocol::Responses => {
+                    json!({"type":"message","id":"msg_original","role":"assistant","content":[{"type":"output_text","text":"Working.","annotations":[]}],"status":"completed"})
                 }
                 Protocol::Anthropic => json!([
                     {"type":"text","text":"Working."},
@@ -434,9 +471,32 @@ fn exec_completes_tools_and_preserves_output_records_and_original_items() -> Tes
             for request in requests.iter().skip(1) {
                 let pointer = match protocol {
                     Protocol::Chat => "/messages/2",
+                    Protocol::Responses => "/input/1",
                     Protocol::Anthropic => "/messages/1/content",
                 };
                 assert_eq!(request.body.pointer(pointer), Some(&expected));
+                if matches!(protocol, Protocol::Responses) {
+                    assert_eq!(
+                        request.body.get("prompt_cache_key"),
+                        records.first().and_then(|r| r.get("session_id"))
+                    );
+                    assert_eq!(
+                        request.body.pointer("/input/3/call_id"),
+                        Some(&json!("read/original"))
+                    );
+                    assert_eq!(
+                        request.body.pointer("/input/4/type"),
+                        Some(&json!("function_call_output"))
+                    );
+                    assert_eq!(
+                        request.body.pointer("/input/4/call_id"),
+                        Some(&json!("read/original"))
+                    );
+                    assert_eq!(
+                        request.body.pointer("/input/2/encrypted_content"),
+                        Some(&json!("encrypted+/="))
+                    );
+                }
                 assert_eq!(request.body.get("model"), Some(&json!("project-model")));
             }
             server.shutdown()?;
@@ -462,6 +522,7 @@ fn unfinished_and_output_limited_turns_do_not_execute_tools() -> TestResult {
             if disconnect {
                 let marker = match protocol {
                     Protocol::Chat => "data: [DONE]",
+                    Protocol::Responses => "event: response.completed",
                     Protocol::Anthropic => "event: message_stop",
                 };
                 let after = std::str::from_utf8(&script.body)?
