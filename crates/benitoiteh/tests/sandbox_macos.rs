@@ -9,6 +9,7 @@ use std::fs::{self, File};
 use std::io;
 use std::net::TcpListener;
 use std::os::fd::AsRawFd;
+use std::os::unix::fs::MetadataExt;
 use std::os::unix::net::{UnixDatagram, UnixListener};
 use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
@@ -189,6 +190,72 @@ fn reading_excludes_denied_paths() -> TestResult {
         &[OsStr::new("read"), secret.join("key").as_os_str()],
         10,
     )
+}
+
+// 作成時の関門: 書ける場所の外・秘密・守る場所からのリンクの拒否漏れを、
+// 本物の子の終了状態と外から見たリンク数で捕まえる。既存の書き込み検査はリンクを作らない。
+// （設計書 01-03「書く道具のパスの規則」、03-01「保証しないこと」、BH-092）
+#[test]
+fn hardlinks_stay_within_unprotected_writable_paths() -> TestResult {
+    let f = Fixture::new(false)?;
+    let secret = f.root.join("secret");
+    let secret_key = secret.join("key");
+    let secret_file = f.root.join("secret-file");
+    let outside = f.root.join("outside");
+    let protected = f.writable.join(".git/config");
+    let source = f.writable.join("a/f");
+    let destination = f.writable.join("b/g");
+    fs::create_dir(&secret)?;
+    for directory in [".git", "a", "b"] {
+        fs::create_dir(f.writable.join(directory))?;
+    }
+    for path in [&secret_key, &secret_file, &outside, &protected, &source] {
+        fs::write(path, b"hardlink fixture")?;
+    }
+    let mut config = f.config();
+    config.denied_read.extend([secret, secret_file.clone()]);
+
+    // 同じディレクトリ内だけでは、Linux の Landlock の REFER の許可漏れを見落とす。
+    f.run(
+        config.clone(),
+        &[
+            OsStr::new("hardlink"),
+            source.as_os_str(),
+            destination.as_os_str(),
+        ],
+        0,
+    )?;
+    let source_metadata = fs::metadata(&source)?;
+    let destination_metadata = fs::metadata(&destination)?;
+    assert_eq!(source_metadata.nlink(), 2);
+    assert_eq!(destination_metadata.nlink(), 2);
+    assert_eq!(source_metadata.dev(), destination_metadata.dev());
+    assert_eq!(source_metadata.ino(), destination_metadata.ino());
+
+    for (name, source) in [
+        ("outside", outside),
+        ("secret-key", secret_key),
+        ("secret-file", secret_file),
+        ("protected", protected),
+    ] {
+        let destination = f.writable.join(format!("link-{name}"));
+        f.run(
+            config.clone(),
+            &[
+                OsStr::new("hardlink"),
+                source.as_os_str(),
+                destination.as_os_str(),
+            ],
+            10,
+        )?;
+        let metadata = fs::symlink_metadata(&destination);
+        assert!(
+            matches!(&metadata, Err(error) if error.kind() == io::ErrorKind::NotFound),
+            "{name}: destination must be absent: {metadata:?}"
+        );
+        assert_eq!(fs::metadata(&source)?.nlink(), 1, "{name}");
+    }
+    Ok(())
 }
 
 // 作成時の関門: /dev/null の書き込み権の欠落と、例外を全体へ広げる退行を

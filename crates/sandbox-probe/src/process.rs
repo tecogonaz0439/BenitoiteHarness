@@ -19,7 +19,9 @@ pub(super) fn run(operation: &str, args: &[OsString]) -> io::Result<Option<u8>> 
         ("exit", [code]) => Ok(code.to_str().and_then(|code| code.parse::<u8>().ok())),
         ("echo-stdin", []) => {
             io::copy(&mut io::stdin().lock(), &mut io::stdout().lock())?;
-            writeln!(io::stderr(), "{}", text::ECHO_STDERR)?;
+            // 共有の受け取り先で stdout が本文と改行の間に入らないよう、まとめて渡す。
+            // （設計書 03-02「子プロセスの後始末」、実装プラン P2-01）
+            io::stderr().write_all(text::ECHO_STDERR.as_bytes())?;
             Ok(Some(0))
         }
         ("sleep", [millis, ..]) => {

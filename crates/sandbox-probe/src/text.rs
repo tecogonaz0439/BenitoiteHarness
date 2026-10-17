@@ -7,7 +7,7 @@ pub const FD_CLOSED: &str = "descriptor closed";
 pub const READY: &str = "ready";
 
 // P2-01 のプロセスの探査に使う英文。
-pub const ECHO_STDERR: &str = "echo stderr";
+pub const ECHO_STDERR: &str = "echo stderr\n";
 #[cfg(target_os = "linux")]
 pub const EXTRA_DESCRIPTOR: &str = "Unexpected inherited descriptor.";
 #[cfg(target_os = "linux")]
