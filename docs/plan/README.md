@@ -38,7 +38,7 @@
 | [P3-02](tasks/P3-02-normal-setup.md) | 通常モードの起動の準備（サンドボックスの方針と子プロセスの環境） | P2-04 | 完了 |
 | [P3-03](tasks/P3-03-openai-responses.md) | `openai-responses` のアダプタ（BH-030） | P1-10 | 完了 |
 | [P3-04](tasks/P3-04-approval-policies.md) | 通常モードの承認の方針 | P3-02 | 完了 |
-| [P3-05](tasks/P3-05-bash.md) | 通常モードの道具 `bash` | P3-02、P3-04 | 未着手 |
+| [P3-05](tasks/P3-05-bash.md) | 通常モードの道具 `bash` | P3-02、P3-04 | 完了 |
 
 P1 の作業は P0-04・P0-05（OS のサンドボックス）の結果に依らないので、P0-04・P0-05 が設計者の判断を待つ間に先に進めてよい。
 
