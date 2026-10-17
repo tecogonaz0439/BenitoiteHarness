@@ -155,6 +155,13 @@ P0-04 で作った型: 方針の入力 `PolicyConfig`（`readable: ReadAccess`�
 - 書ける量: `Session::reserve(bytes) -> bool`・`release(bytes)`（`spill/` と `objects/` で共有）。`session::storage_usage`。
 - `benitoiteh sessions [--project <dir>] [--json]`。期間は記録の更新の時刻で判定する。
 
+### 巻き戻し（P4-03）
+
+- `safe_fs` のリンクを一切辿らない口（Linux は `openat2` の `RESOLVE_NO_SYMLINKS|BENEATH`、macOS は `O_NOFOLLOW_ANY`（`0x20000000`。`O_NOFOLLOW` と同時に使わない））。起動のときの自己の確かめ。
+- `rewind` のモジュール: 時点の記録（`CheckpointLimits`、`CheckpointStats`）と戻す処理。`Record::Checkpoint(Checkpoint { id, reason: CheckpointReason, turn, call_id, created_at, items, generation, manifest, incomplete })`、`Record::WriteTarget { call_id, real_path }`。
+- `Agent::checkpoints()`、`set_checkpoint_limits`、`checkpoint_stats`、`rewind(checkpoint, scope: RewindScope, allow_incomplete, events) -> RewindReport { restored, removed, created, failures, irreversible, before_rewind, conversation_rewound, changed_paths }`。
+- 中身と一覧は `objects/` に SHA-256 を名前として置き、書ける量に数える。一覧は中身だけで、変わらなければ重ねて保存しない。
+
 ### `provider`（P1-01、P1-02）
 
 - 共通の形（`provider::types`、`provider` から再公開）: `Destination { provider, base_url, model }`、`AdapterKind`、`Conversation { items }`、`Item::{UserMessage, AssistantTurn, ToolResult}`、`UserMessage { parts: Vec<UserPart> }`（`UserPartKind::{Environment, Request, Steering}`）、`AssistantTurn { parts, raw_items, finish_reason, usage }`、`AssistantPart::{Text, Reasoning, ToolCall}`、`RawItems { destination, adapter, items }`、`ToolCall { id, provider_id, provider_item_id, name, arguments, raw_arguments }`、`ToolResult { id, provider_id, text, is_error }`、`Usage`（各項目 `Option<u64>` と `raw`）、`FinishReason::{Completed, ToolCalls, OutputLimit, Refusal(String), Error, Cancelled, Disconnected}`、`StreamEvent`、`ProviderError`、`Capabilities`。
