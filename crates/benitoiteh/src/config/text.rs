@@ -28,3 +28,7 @@ pub fn unknown_field(field: &str) -> String {
 pub fn unknown_provider(name: &str) -> String {
     format!("unknown provider `{}`", name.escape_debug())
 }
+
+pub const EXEC_APPROVAL: &str = "exec only supports --approval never";
+pub const NORMAL_OPTIONS: &str = "--sandbox, --approval, and --no-sandbox require normal mode";
+pub const WRITABLE_EXECUTABLE: &str = "writable root contains the benitoiteh executable";

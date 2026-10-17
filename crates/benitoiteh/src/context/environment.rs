@@ -20,6 +20,7 @@ pub struct Environment {
     network_allowed: bool,
     benitoite_version: &'static str,
     instructions: ProjectInstructions,
+    startup_notice: Option<&'static str>,
 }
 
 impl Environment {
@@ -45,6 +46,7 @@ impl Environment {
             network_allowed,
             benitoite_version: text::NOT_CONFIGURED,
             instructions: ProjectInstructions::default(),
+            startup_notice: None,
         })
     }
 
@@ -52,6 +54,17 @@ impl Environment {
     pub fn with_project_instructions(mut self, instructions: ProjectInstructions) -> Self {
         self.instructions = instructions;
         self
+    }
+
+    /// 起動の安全に関する通知を session_start に添える。
+    pub fn with_startup_notice(mut self, notice: &'static str) -> Self {
+        self.startup_notice = Some(notice);
+        self
+    }
+
+    /// 送信の案内に加える起動時の通知。
+    pub fn startup_notice(&self) -> Option<&'static str> {
+        self.startup_notice
     }
 
     /// 開始の通知に使う、読んだ指示の一覧。

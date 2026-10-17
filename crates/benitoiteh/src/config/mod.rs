@@ -1,6 +1,8 @@
 //! 利用者設定と信頼しないプロジェクト設定を分けて検証する（設計書 05-01「設定ファイル」「プロジェクトの設定ファイル」）。
 
 pub mod credentials;
+mod environment;
+pub use environment::child_environment;
 pub mod paths;
 mod text;
 pub mod writable;
@@ -16,6 +18,14 @@ use crate::cli::args::ExecArgs;
 use crate::provider::{AdapterKind, Capabilities, Destination, ReasoningReplay};
 use crate::safe_fs::{SafeFsError, ScopeRelPath, ScopeRoot};
 use credentials::ApiKeyRef;
+
+/// 子プロセスに渡さない提供者のキーの変数（設計書 04-01「処理系の起動」）。
+pub const PROVIDER_KEY_ENV_VARS: &[&str] = &[
+    "OPENAI_API_KEY",
+    "ANTHROPIC_API_KEY",
+    "GEMINI_API_KEY",
+    "DEEPSEEK_API_KEY",
+];
 
 /// 設定の読み取り・検証の誤り。TOML の入力本文やキーは保持しない。
 #[derive(Debug)]
@@ -75,6 +85,17 @@ pub enum Sandbox {
     WorkspaceWrite,
     /// OS のサンドボックスを掛けない。
     DangerFullAccess,
+}
+
+impl Sandbox {
+    /// 子プロセスの環境と方針の表示に使う名前。
+    pub const fn name(self) -> &'static str {
+        match self {
+            Self::ReadOnly => "read-only",
+            Self::WorkspaceWrite => "workspace-write",
+            Self::DangerFullAccess => "danger-full-access",
+        }
+    }
 }
 
 /// 通常モードの承認の方針。
@@ -330,6 +351,18 @@ impl UserConfig {
         project: &ProjectConfig,
         cwd: &Path,
     ) -> Result<ResolvedExec, ConfigError> {
+        let mode = args.mode.unwrap_or(self.default_mode);
+        if args
+            .approval
+            .is_some_and(|approval| approval != Approval::Never)
+        {
+            return Err(ConfigError::Invalid(text::EXEC_APPROVAL));
+        }
+        if mode == Mode::Restricted
+            && (args.sandbox.is_some() || args.approval.is_some() || args.no_sandbox)
+        {
+            return Err(ConfigError::Invalid(text::NORMAL_OPTIONS));
+        }
         let name = args
             .provider
             .as_ref()
@@ -354,7 +387,7 @@ impl UserConfig {
             cwd.join(requested)
         };
         Ok(ResolvedExec {
-            mode: args.mode.unwrap_or(self.default_mode),
+            mode,
             project: project_dir,
             destination: Destination {
                 provider: name.clone(),

@@ -76,6 +76,9 @@ fn help_lists_command_forms() -> Result<(), Box<dyn Error>> {
         "--max-turns <n>",
         "--max-check-fix <n>",
         "--max-run-tokens <n>",
+        "--sandbox read-only|workspace-write|danger-full-access",
+        "--approval never",
+        "--no-sandbox",
         "--json",
         "--output-last-message <file>",
     ] {
@@ -99,7 +102,6 @@ fn other_arguments_are_usage_errors() -> Result<(), Box<dyn Error>> {
         &["--licenses"],
         &["--help", "--unknown"],
         &["--version", "--help"],
-        &["exec", "--no-sandbox", "request"],
     ];
     for args in cases {
         let output = run("usage", args)?;
@@ -109,12 +111,6 @@ fn other_arguments_are_usage_errors() -> Result<(), Box<dyn Error>> {
         assert_eq!(error.lines().count(), 1, "{args:?}: {error}");
         assert!(error.starts_with("benitoiteh: "), "{error}");
         assert!(error.ends_with('\n'), "{error}");
-        if args.contains(&"--no-sandbox") {
-            assert!(
-                error.contains("--no-sandbox is not available yet"),
-                "{error}"
-            );
-        }
     }
     Ok(())
 }

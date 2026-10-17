@@ -12,6 +12,7 @@ mod write;
 mod write_path;
 
 use std::collections::BTreeMap;
+use std::ffi::OsString;
 use std::fmt;
 use std::fs::Metadata;
 use std::io;
@@ -21,9 +22,10 @@ use std::sync::Mutex;
 
 use serde_json::Value;
 
-use crate::config::Mode;
+use crate::config::{Approval, Mode};
 use crate::provider::ToolSpec;
 use crate::safe_fs::{SafeFsError, ScopeRoot};
+use crate::sandbox::SandboxPolicy;
 use exclude::ExcludeRules;
 
 /// セッション中に順序を変えない道具の識別子。
@@ -209,6 +211,25 @@ impl FileVersion {
     }
 }
 
+/// 通常モードの子プロセスに渡す、起動時に固定した値（設計書 03-02）。
+#[derive(Clone, Debug)]
+pub struct ShellContext {
+    /// なしはサンドボックスの外での起動。
+    pub policy: Option<SandboxPolicy>,
+    /// サンドボックスを掛けるときだけ方針の名前を持つ。
+    pub policy_name: Option<&'static str>,
+    /// Linux の補助として起動する benitoiteh の実のパス。
+    pub helper: PathBuf,
+    /// Linux の覆いのファイルと探査に使う、セッションの sandbox/。
+    pub scratch: PathBuf,
+    /// Linux の塞ぐ場所の錠を置く、データの placeholders/。
+    pub placeholders: PathBuf,
+    /// 秘密を除いた、子に渡す環境の全体。
+    pub env: BTreeMap<OsString, OsString>,
+    /// P3-04 で使う承認の方針。
+    pub approval: Approval,
+}
+
 /// 最大八つの道具が共有する文脈。変わる版の記録だけを Mutex で守る。
 #[derive(Debug)]
 pub struct ToolContext {
@@ -217,6 +238,7 @@ pub struct ToolContext {
     pub temporary: ScopeRoot,
     pub spill: ScopeRoot,
     pub exclude: ExcludeRules,
+    pub shell: Option<ShellContext>,
     read_versions: Mutex<BTreeMap<PathBuf, FileVersion>>,
 }
 
@@ -235,8 +257,15 @@ impl ToolContext {
             temporary,
             spill,
             exclude,
+            shell: None,
             read_versions: Mutex::new(BTreeMap::new()),
         }
+    }
+
+    /// 通常モードの起動時に検査した子プロセスの情報を追加する。
+    pub fn with_shell(mut self, shell: ShellContext) -> Self {
+        self.shell = Some(shell);
+        self
     }
 
     /// read または書き込みを終えた実のパスの版を記録する。

@@ -1,4 +1,4 @@
-//! 実のパスで書ける場所の四つの規則を検査する（設計書 03-02「書ける場所の検査」）。
+//! 実のパスで書ける場所の規則を検査する（設計書 03-02「書ける場所の検査」）。
 
 use std::fmt;
 use std::io;
@@ -17,6 +17,8 @@ pub enum WritableRule {
     ConfigOrData,
     /// プロジェクトと一時領域が重なる。
     ProjectTemporary,
+    /// 自身の実行ファイルを含む。
+    Executable,
 }
 
 /// 実パスへの変換の失敗、または拒否した規則と場所。
@@ -42,6 +44,7 @@ impl fmt::Display for WritableError {
                     WritableRule::HomePrivate => text::HOME_PRIVATE,
                     WritableRule::ConfigOrData => text::CONFIG_OR_DATA,
                     WritableRule::ProjectTemporary => text::PROJECT_TEMP,
+                    WritableRule::Executable => text::WRITABLE_EXECUTABLE,
                 };
                 write!(f, "{message}: {} ({})", path.display(), other.display())
             }
@@ -65,6 +68,26 @@ pub fn validate_writable(
     temporary: &Path,
     additional: &[PathBuf],
 ) -> Result<WritableLocations, WritableError> {
+    let executable = std::env::current_exe().map_err(|source| WritableError::Resolve {
+        path: PathBuf::new(),
+        source,
+    })?;
+    validate_writable_with_executable(paths, project, temporary, additional, &executable)
+}
+
+/// 起動する実行ファイルを明示し、同じ実パスの検査を行う。
+pub fn validate_writable_with_executable(
+    paths: &DataPaths,
+    project: &Path,
+    temporary: &Path,
+    additional: &[PathBuf],
+    executable: &Path,
+) -> Result<WritableLocations, WritableError> {
+    let executable =
+        std::fs::canonicalize(executable).map_err(|source| WritableError::Resolve {
+            path: executable.to_path_buf(),
+            source,
+        })?;
     let home = real_existing(&paths.home)?;
     let config = real_future(&paths.config_dir)?;
     let data = real_future(&paths.data_dir)?;
@@ -98,6 +121,14 @@ pub fn validate_writable(
             if overlaps(path, protected) {
                 return Err(reject(WritableRule::ConfigOrData, path, protected));
             }
+        }
+    }
+    for path in std::iter::once(&locations.project)
+        .chain(std::iter::once(&locations.temporary))
+        .chain(&locations.additional)
+    {
+        if executable.starts_with(path) {
+            return Err(reject(WritableRule::Executable, path, &executable));
         }
     }
     if overlaps(&locations.project, &locations.temporary) {

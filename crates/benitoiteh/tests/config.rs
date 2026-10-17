@@ -11,7 +11,9 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use benitoiteh::cli::args::ExecArgs;
 use benitoiteh::config::credentials::ApiKeyRef;
 use benitoiteh::config::paths::DataPaths;
-use benitoiteh::config::writable::{WritableError, WritableRule, validate_writable};
+use benitoiteh::config::writable::{
+    WritableError, WritableRule, validate_writable, validate_writable_with_executable,
+};
 use benitoiteh::config::{Mode, ProjectConfig, UserConfig};
 use benitoiteh::provider::{AdapterKind, ReasoningReplay};
 
@@ -433,6 +435,126 @@ fn writable_locations_reject_each_rule_and_resolve_aliases_before_checking() -> 
                 ..
             })
         ));
+    }
+    Ok(())
+}
+
+// 作成時の関門: 自身の書き換えとキーの漏れを、設定の持ち主の境界で確かめる（P3-02）。
+#[test]
+fn writable_locations_reject_the_real_executable_in_any_root() -> TestResult {
+    let fixture = Fixture::new()?;
+    let paths = fixture.paths()?;
+    let project = fixture.dir("project")?;
+    let temporary = fixture.dir("tmp/session")?;
+    let additional = fixture.dir("additional")?;
+    let outside = fixture.dir("outside")?;
+    for root in [&project, &temporary, &additional, &outside] {
+        let executable = root.join("benitoiteh");
+        fs::write(&executable, "executable")?;
+        let alias = fixture.0.join("executable-alias");
+        symlink(&executable, &alias)?;
+        let result = validate_writable_with_executable(
+            &paths,
+            &project,
+            &temporary,
+            std::slice::from_ref(&additional),
+            &alias,
+        );
+        if root == &outside {
+            assert!(result.is_ok(), "{result:?}");
+        } else {
+            assert!(
+                matches!(result, Err(WritableError::Rejected { rule: WritableRule::Executable, ref path, ref other })
+                if path == root && other == &executable),
+                "{result:?}"
+            );
+        }
+        fs::remove_file(alias)?;
+    }
+    Ok(())
+}
+
+#[test]
+fn child_process_environment_removes_all_provider_keys_and_replaces_inherited_markers() -> TestResult
+{
+    use benitoiteh::config::child_environment;
+    use std::collections::BTreeMap;
+    use std::ffi::OsString;
+    use std::process::Command;
+    let f = Fixture::new()?;
+    let temporary = f.dir("tmp")?;
+    let user = UserConfig::parse(
+        "[providers.p]\nkind='openai-chat'\nmodel='m'\napi_key={env='CUSTOM_PROVIDER_KEY'}",
+    )?;
+    // 固定の一覧は実装の定数から写さず、仕様のキーを全て渡す。
+    let inherited: BTreeMap<OsString, OsString> = [
+        ("OPENAI_API_KEY", "secret-openai"),
+        ("ANTHROPIC_API_KEY", "secret-anthropic"),
+        ("GEMINI_API_KEY", "secret-gemini"),
+        ("DEEPSEEK_API_KEY", "secret-deepseek"),
+        ("CUSTOM_PROVIDER_KEY", "secret-custom"),
+        ("BENITOITEH_SANDBOX", "outer"),
+        ("BENITOITEH_SANDBOX_NETWORK_DISABLED", "outer"),
+        ("TMPDIR", "/outer/tmp"),
+        ("TERM", "xterm"),
+        ("PAGER", "less"),
+        ("GIT_PAGER", "less"),
+        ("KEEP_ME", "inherited"),
+    ]
+    .into_iter()
+    .map(|(k, v)| (k.into(), v.into()))
+    .collect();
+    for sandbox in [
+        Some(("workspace-write", false)),
+        Some(("workspace-write", true)),
+        Some(("read-only", false)),
+        None,
+    ] {
+        let env = child_environment(
+            inherited.clone(),
+            &user.referenced_env_vars(),
+            &temporary,
+            sandbox,
+        );
+        // 実際の子に渡し、外での起動でも秘密を除外する安全の契約を守る。
+        let output = Command::new("/usr/bin/env")
+            .env_clear()
+            .envs(env)
+            .current_dir(&f.0)
+            .output()?;
+        assert!(output.status.success());
+        let output = String::from_utf8(output.stdout)?;
+        assert!(!output.contains("secret-"), "{output}");
+        assert!(!output.contains("outer"), "{output}");
+        for expected in [
+            format!("TMPDIR={}", temporary.display()),
+            "NO_COLOR=1".into(),
+            "TERM=dumb".into(),
+            "PAGER=cat".into(),
+            "GIT_PAGER=cat".into(),
+            "KEEP_ME=inherited".into(),
+        ] {
+            assert!(output.lines().any(|line| line == expected), "{output}");
+        }
+        assert_eq!(
+            output
+                .lines()
+                .any(|line| line.starts_with("BENITOITEH_SANDBOX=")),
+            sandbox.is_some()
+        );
+        if let Some((name, _)) = sandbox {
+            assert!(
+                output
+                    .lines()
+                    .any(|line| line == format!("BENITOITEH_SANDBOX={name}"))
+            );
+        }
+        assert_eq!(
+            output
+                .lines()
+                .any(|line| line == "BENITOITEH_SANDBOX_NETWORK_DISABLED=1"),
+            sandbox.is_some_and(|(_, ip)| !ip)
+        );
     }
     Ok(())
 }
