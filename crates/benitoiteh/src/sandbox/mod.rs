@@ -25,7 +25,8 @@ use std::{os::unix::process::CommandExt, process::Stdio};
 
 #[cfg(target_os = "linux")]
 pub use linux::{
-    CapabilityStatus, LinuxAvailability, PreparedSandbox, SandboxChild, probe_linux, run_helper,
+    CapabilityStatus, LinuxAvailability, PreparedSandbox, SandboxChild, bubblewrap_version,
+    probe_linux, run_helper,
 };
 pub use macos::SeatbeltProfile;
 pub use policy::{PolicyConfig, ProgramAccess, ReadAccess, SandboxPolicy};

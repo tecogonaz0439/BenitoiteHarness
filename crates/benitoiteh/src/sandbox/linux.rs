@@ -7,7 +7,7 @@ mod filter;
 mod mounts;
 mod process;
 
-pub use availability::{CapabilityStatus, LinuxAvailability, probe_linux};
+pub use availability::{CapabilityStatus, LinuxAvailability, bubblewrap_version, probe_linux};
 pub use process::{PreparedSandbox, SandboxChild};
 
 use std::ffi::{OsStr, OsString};

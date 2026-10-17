@@ -1,6 +1,7 @@
 //! 引数を解釈し、出力と終了状態を決める（設計書 05-01「コマンドラインの形」「終了状態」）。
 
 pub mod args;
+mod doctor;
 mod exec;
 mod panic;
 mod sessions;
@@ -53,6 +54,9 @@ fn run(
 ) -> Result<u8, CliError> {
     // 非 UTF-8 の引数も panic させず、使い方の誤りとして扱う（設計書 05-01「終了状態」）。
     let argument = argument.ok_or(CliError::Usage)?;
+    if argument == "doctor" {
+        return doctor::run(args);
+    }
     if argument == "sessions" {
         return sessions::run(args);
     }
@@ -81,4 +85,11 @@ fn run(
         .write_all(output.as_bytes())
         .map_err(CliError::Output)?;
     Ok(0)
+}
+
+// exec と doctor が同じ秘密の場所を方針から除く（設計書 03-02「通常モードの方針」）。
+fn denied_candidates(paths: &crate::config::paths::DataPaths) -> Vec<std::path::PathBuf> {
+    let mut candidates = vec![paths.config_dir.clone(), paths.data_dir.clone()];
+    candidates.extend([".ssh", ".gnupg", ".aws"].map(|name| paths.home.join(name)));
+    candidates
 }

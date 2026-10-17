@@ -740,3 +740,56 @@ fn sandboxed_timeout_delivers_the_requested_signal() -> TestResult {
     }
     Ok(())
 }
+
+#[path = "support/doctor.rs"]
+mod doctor_support;
+
+// 作成時の関門: 正負の本物の起動を CLI につなぎ、機能の一覧だけから
+// 制限モードを使えると表示する退行を捕まえる。Codex 内では走らせない。
+#[test]
+fn doctor_verifies_restricted_and_normal_sandboxes() -> TestResult {
+    let fixture = doctor_support::Fixture::new()?;
+    fixture.write_config("default_provider = 'local'\n[providers.local]\nkind = 'openai-chat'\nbase_url = 'http://127.0.0.1:1/v1'\nmodel = 'local'\ncontext_window = 4096\n")?;
+    let output = fixture.command().arg("--json").output()?;
+    assert_eq!(output.status.code(), Some(0), "{output:?}");
+    assert!(output.stderr.is_empty(), "{output:?}");
+    let rows = String::from_utf8(output.stdout)?
+        .lines()
+        .map(serde_json::from_str::<serde_json::Value>)
+        .collect::<Result<Vec<_>, _>>()?;
+    let (summary, items) = rows.split_last().ok_or("Missing doctor summary")?;
+    assert_eq!(
+        summary.get("restricted_sandbox"),
+        Some(&serde_json::Value::from(true))
+    );
+    assert_eq!(
+        summary.get("normal_sandbox"),
+        Some(&serde_json::Value::from("enabled"))
+    );
+    assert_eq!(
+        summary.get("exit_status"),
+        Some(&serde_json::Value::from(0))
+    );
+    for item in items {
+        let name = item
+            .get("name")
+            .and_then(serde_json::Value::as_str)
+            .ok_or("Missing doctor item name")?;
+        let expected = if name == "benitoite" {
+            "unchecked"
+        } else if name == "sandbox.linux_scope" {
+            "warning"
+        } else {
+            "ok"
+        };
+        assert_eq!(
+            item.get("status"),
+            Some(&serde_json::Value::from(expected)),
+            "{item}"
+        );
+    }
+    assert_eq!(fs::read_dir(&fixture.project)?.count(), 0);
+    assert_eq!(fs::read_dir(fixture.root.join("state"))?.count(), 0);
+    assert_eq!(fs::read_dir(fixture.root.join("tmp"))?.count(), 0);
+    Ok(())
+}

@@ -57,6 +57,7 @@ pub fn check_availability(helper: &Path, scratch: &Path) -> Result<(), SandboxEr
             (super::text::USER_NAMESPACES, availability.user_namespaces),
             (super::text::LANDLOCK, availability.landlock_v3),
             (super::text::SECCOMP, availability.seccomp),
+            (super::text::CAPABILITIES, availability.capabilities),
         ]
         .into_iter()
         .filter_map(|(name, status)| match status {

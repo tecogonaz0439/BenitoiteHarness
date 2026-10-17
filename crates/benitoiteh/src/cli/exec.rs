@@ -166,8 +166,7 @@ fn prepare(
         let selected = args.sandbox.unwrap_or(user.normal.sandbox);
         let scratch = private_directory(&session.directory().join("sandbox"))?;
         let placeholders = private_directory(&paths.data_dir.join("placeholders"))?;
-        let mut candidates = vec![paths.config_dir.clone(), paths.data_dir.clone()];
-        candidates.extend([".ssh", ".gnupg", ".aws"].map(|name| paths.home.join(name)));
+        let candidates = super::denied_candidates(paths);
         let policy = if selected == Sandbox::DangerFullAccess {
             None
         } else {
