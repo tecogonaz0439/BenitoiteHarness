@@ -4,7 +4,7 @@
 
 ## 目的と範囲
 
-本章は、本設計書で使う術語を定義する。Benitoite の設計書の用語集（[00-04「用語集」](https://github.com/tecogonaz0439/Benitoite/blob/v0.0.6/docs/design/00-overview/00-04-glossary.md)）にある語（エフェクト、処理系、根のディレクトリなど）は、同じ意味で使い、ここでは本設計書に固有の語と、意味を限って使う語だけを挙げる。
+本章は、本設計書で使う術語を定義する。Benitoite の設計書の用語集（[00-04「用語集」](https://github.com/tecogonaz0439/Benitoite/blob/v0.0.7/docs/design/00-overview/00-04-glossary.md)）にある語（エフェクト、処理系、根のディレクトリなど）は、同じ意味で使い、ここでは本設計書に固有の語と、意味を限って使う語だけを挙げる。
 
 ## 前提
 
@@ -42,7 +42,8 @@
 | 書ける場所の検査 | writable-root check | 起動のときと `create_project` のときに、書ける場所がホームディレクトリや `benitoiteh` の設定・データのディレクトリと重ならないかを確かめること | 03-02 |
 | 外部の Unix IPC | external Unix IPC | サンドボックスの外のプロセスとの、Unix ドメインのソケットによる通信 | 03-02 |
 | 補助のプロセス | sandbox helper | Linux で、`benitoiteh` が bubblewrap の中で自分を `__sandbox` で起動し直し、サンドボックスを自分に掛けてから目的のプログラムを `exec` するプロセス | 03-02 |
-| 実行の前の確認 | pre-run confirmation | 制限モードで、スクリプトを実行する前に、`main` のエフェクトを利用者に示して承認を受けること | 03-03 |
+| 実行の前の確認 | pre-run confirmation | 制限モードで、スクリプトを実行する前に、`main` の宣言したエフェクト（テストでは選んだテストの関数の和）を利用者に示して承認を受けること | 03-03 |
+| 実行の前の検査の報告 | inspection report | 処理系が、スクリプトを実行せずに検査し、宣言したエフェクトの上限、読み込んだソースとそのハッシュ、診断を一つの JSON で返したもの（`check --report=json`・`test --check --report=json`）。確認とサンドボックスに使うエフェクトをここから得る | 04-01 |
 | 確認なしの範囲 | auto-run effects | 一時的なスクリプトを確認なしで実行してよいエフェクトの集合 | 03-03 |
 | 承認の方針 | approval policy | 通常モードで、どの操作に利用者の承認を求めるかの規則 | 03-03 |
 | 書いた後の検査 | check after write | 制限モードで、`.bnt` のファイルを書いた後に `benitoiteh` が行う検査 | 01-03 |

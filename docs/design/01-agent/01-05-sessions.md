@@ -9,7 +9,7 @@
 
 ## 前提
 
-- Benitoite の事前検討は、巻き戻しをプロジェクトのディレクトリの状態をまるごと記録して戻す形（型 2）と定め、会話の保存と再開は初めは設けないとした（[ADR 0348](https://github.com/tecogonaz0439/Benitoite/blob/v0.0.6/docs/archive/2026-10-09-design-first-release/decisions/0348-agent-harness-rewind-and-git.md)、Benitoite の docs/todo の TODO-134・TODO-140）。
+- Benitoite の事前検討は、巻き戻しをプロジェクトのディレクトリの状態をまるごと記録して戻す形（型 2）と定め、会話の保存と再開は初めは設けないとした（[ADR 0348](https://github.com/tecogonaz0439/Benitoite/blob/v0.0.7/docs/archive/2026-10-09-design-first-release/decisions/0348-agent-harness-rewind-and-git.md)、Benitoite の docs/todo の TODO-134・TODO-140）。
 - LLM を使ったテストの用途では、提供者・モデル・処理系の版、検査と修正の回数、LLM とのやり取りの全体、トークンの量を記録する見立てがある（Benitoite の docs/todo の TODO-126）。
 - Codex CLI、Pi、DeepSeek Harness は、どれもセッションを追記だけの JSON Lines のファイルに記録し、再開できる（[先行事例](../08-appendix/08-01-prior-art.md)）。
 
@@ -19,7 +19,7 @@
 
 【方針】セッションごとに一つの JSON Lines のファイル（`session.jsonl`）を、セッションのディレクトリに置く。ファイルには追記だけを行い、書いた行を書き換えない。理由: 途中で `benitoiteh` が異常に終わっても、それまでの記録が残る。
 
-- 1 行目はヘッダの行とし、記録の形式の版、セッションの ID、開始の時刻（UTC）、`benitoiteh` の版、モード、プロジェクトのディレクトリ、提供者の設定の名前とベースの URL とモデル、処理系のパスと版、埋め込んだ Skill の版、システムプロンプトと道具の定義の SHA-256 の値を書く。
+- 1 行目はヘッダの行とし、記録の形式の版、セッションの ID、開始の時刻（UTC）、`benitoiteh` の版、モード、プロジェクトのディレクトリ、提供者の設定の名前とベースの URL とモデル、処理系のパスと、`--version=json` の版とビルドの情報、処理系から得た `SKILL.md` の SHA-256 の値（制限モード）、システムプロンプトと道具の定義の SHA-256 の値を書く。
 - 2 行目以降は、[エージェントのループ](01-01-agent-loop.md)の「イベント」を、ストリーミングの途中の差分（`text_delta`・`reasoning_delta`）を除いて書く。応答は、一つの応答を受け取り終えた時点で一行にまとめる。
 - 応答は、共通の形に変えたものに加えて、提供者が返した項目を、順序と識別子を変えずに記録する（[提供者の層](../02-providers/02-01-provider-layer.md)の「共通の形」）。推論の内容のうち暗号化された項目と署名（再開のときに送り返すのに要る）も含む。
 - 確認の要求と結果、圧縮の要約、巻き戻し、プロジェクトのディレクトリの変更、利用者の入力を記録する。

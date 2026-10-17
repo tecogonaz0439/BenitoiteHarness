@@ -9,8 +9,8 @@
 
 ## 前提
 
-- Benitoite の処理系は、Rust の 1.98.1（`rust-toolchain.toml`）、edition 2024 で書き、`[workspace.lints]` で `unwrap_used`・`expect_used`・`panic`・`indexing_slicing`・`arithmetic_side_effects` などを禁じている（[Benitoite の Cargo.toml](https://github.com/tecogonaz0439/Benitoite/blob/v0.0.6/Cargo.toml)）。依存のクレートの版は `=` で固定し、ライセンスを `cargo-deny` で確かめる（[Benitoite の deny.toml](https://github.com/tecogonaz0439/Benitoite/blob/v0.0.6/deny.toml)）。
-- Benitoite の処理系は、HTTP に `ureq`、TLS に `rustls` と `rustls-graviola`、ファイルの操作に `rustix`、JSON に `serde_json`、正規表現に `regex`、SHA-256 に `sha2` を使う（[Benitoite のクレートの Cargo.toml](https://github.com/tecogonaz0439/Benitoite/blob/v0.0.6/crates/benitoite/Cargo.toml)）。
+- Benitoite の処理系は、Rust の 1.98.1（`rust-toolchain.toml`）、edition 2024 で書き、`[workspace.lints]` で `unwrap_used`・`expect_used`・`panic`・`indexing_slicing`・`arithmetic_side_effects` などを禁じている（[Benitoite の Cargo.toml](https://github.com/tecogonaz0439/Benitoite/blob/v0.0.7/Cargo.toml)）。依存のクレートの版は `=` で固定し、ライセンスを `cargo-deny` で確かめる（[Benitoite の deny.toml](https://github.com/tecogonaz0439/Benitoite/blob/v0.0.7/deny.toml)）。
+- Benitoite の処理系は、HTTP に `ureq`、TLS に `rustls` と `rustls-graviola`、ファイルの操作に `rustix`、JSON に `serde_json`、正規表現に `regex`、SHA-256 に `sha2` を使う（[Benitoite のクレートの Cargo.toml](https://github.com/tecogonaz0439/Benitoite/blob/v0.0.7/crates/benitoite/Cargo.toml)）。
 - Codex CLI は約 150 のクレートと約 208 万行の Rust から成り、V8・SQLite・Starlark を含む。aarch64 の macOS 向けのリリースの zstd で圧縮した配布物は 71 MB である（[先行事例](../08-appendix/08-01-prior-art.md)）。試作はこの規模を目指さない。
 
 ## 仕様
@@ -31,7 +31,7 @@
 | `context` | システムプロンプトと道具の定義の組み立て、環境の情報、指示のファイル、見積もり、圧縮 | 01-04 |
 | `provider` | 共通の形、SSE の読み取り、HTTP、三つのアダプタ | 02-01 |
 | `tools` | 道具の定義と実行、パスの判定、読まないファイル、出力の切り詰め | 01-03 |
-| `benitoite` | 処理系の発見と起動、診断の変換、エフェクトの読み取り、埋め込んだ Skill | 04-01 |
+| `benitoite` | 処理系の発見と機能の確かめ、起動、診断の変換、実行の前の検査の報告の読み取り、処理系から得た Skill の文書 | 04-01 |
 | `sandbox` | 方針、macOS の Seatbelt、Linux の Landlock と seccomp、拒否の検出 | 03-02 |
 | `approval` | 確認の規則と記録 | 03-03 |
 | `session` | 記録、再開、巻き戻しの記録、一時ディレクトリ | 01-05 |

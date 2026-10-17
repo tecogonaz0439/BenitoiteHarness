@@ -9,7 +9,7 @@
 
 ## 前提
 
-- Benitoite の事前検討は、初めの指示に `SKILL.md` に当たる内容を入れ、参照の文書は必要なときに読ませる形を見立てとし、圧縮と会話の保存・再開は初めは設けないとした（Benitoite の docs/todo の TODO-134。[検討メモ](https://github.com/tecogonaz0439/Benitoite/blob/v0.0.6/docs/archive/2026-10-09-design-first-release/sources/post-first-release/post-first-release-agent-harness.md)の「文脈の管理」）。
+- Benitoite の事前検討は、初めの指示に `SKILL.md` に当たる内容を入れ、参照の文書は必要なときに読ませる形を見立てとし、圧縮と会話の保存・再開は初めは設けないとした（Benitoite の docs/todo の TODO-134。[検討メモ](https://github.com/tecogonaz0439/Benitoite/blob/v0.0.7/docs/archive/2026-10-09-design-first-release/sources/post-first-release/post-first-release-agent-harness.md)の「文脈の管理」）。
 - Pi のシステムプロンプトは、核の部分が約 400 トークンであり、日付と OS を含まない（作業ディレクトリと `AGENTS.md` の中身は含む）。DeepSeek Harness は、システムプロンプトを変えずに保ち、変わる情報を利用者の側の発言として後から加える（[先行事例](../08-appendix/08-01-prior-art.md)）。
 
 ## 仕様
@@ -45,16 +45,17 @@
 
 ### Benitoite の Skill の置き方
 
-【方針】制限モードでは、埋め込んだ Skill の `SKILL.md` の本文（先頭の属性の部分と、本文の先頭の HTML の注釈を除く）を `<benitoite>` の節にそのまま入れる。その前に、次の対応を書く。
+【方針】制限モードでは、起動した処理系から得た Skill の `SKILL.md` の本文（先頭の属性の部分と、本文の先頭の HTML の注釈を除く。[Benitoite の処理系との連携](../04-benitoite/04-01-benitoite-integration.md)の「取り込む文書と版」）を `<benitoite>` の節にそのまま入れる。その前に、次の対応を書く。対応は `v0.0.7` の `SKILL.md` に合わせて書く。
 
-- Skill の `benitoite check` は `benitoite_check`、`benitoite run` は `benitoite_run`、`benitoite test` は `benitoite_test` の道具で行う。
+- Skill の `benitoite check` は `benitoite_check`、`benitoite test --check` は `tests` を真にした `benitoite_check`、`benitoite run` は `benitoite_run`、`benitoite test` は `benitoite_test` の道具で行う。
 - `references/<name>.md` は `benitoite_reference` の道具で `name` を指定して読む。
-- Skill の「Check the version first」の手順は `benitoiteh` が起動のときに済ませているので行わない。
+- Skill の「Check the version first」の手順（`--version` と `--version=json`）と、`skill list`・`skill show` は、`benitoiteh` が起動のときに済ませているので行わない。
+- Skill の、確認の直前の `check --report=json`・`test --check --report=json` と、実行の `--allow-effects` は、`benitoite_run` と `benitoite_test` が行う。LLM は報告を読まず、許す集合を渡さない。
 - Skill の「Before running」の確認は `benitoiteh` が画面で行うので、LLM は利用者に確認を求めなくてよい。ただし、エフェクトの意味を応答の文で説明するのはよい。
 
-【決定】本文の先頭の HTML の注釈（`<!--` から最初の `-->` まで）は、LLM に見せるときにいつも除く。通常モードで `benitoite_reference` に `SKILL` を指定して読ませるときも同じである。2026-10-17 に設計者が決めた。理由: この注釈は、処理系の側のテストが文書の中の例をどう確かめるかの説明であり、LLM の作業に要らない。`v0.0.6` の時点で 878 バイトある。
+【決定】本文の先頭の HTML の注釈（`<!--` から最初の `-->` まで）は、LLM に見せるときにいつも除く。通常モードで `benitoite_reference` に `SKILL` を指定して読ませるときも同じである。2026-10-17 に設計者が決めた。理由: この注釈は、処理系の側のテストが文書の中の例をどう確かめるかの説明であり、LLM の作業に要らない。`v0.0.6` と `v0.0.7` の時点で 878 バイトある。
 
-`SKILL.md` は `v0.0.6` の時点で約 21 KB（英語の文で約 5,400 トークンの見込み）である。制限モードの作業はすべて Benitoite のスクリプトを書くことなので、毎回読ませる価値がある。キャッシュが効けば、2 回目以降の要求の費用は小さい。
+`SKILL.md` は `v0.0.7` の時点で約 26 KB（英語の文で約 6,700 トークンの見込み。`v0.0.6` の約 21 KB から、版と機能の問い合わせ、実行の前の検査、`--allow-effects` の手順が加わった）である。制限モードの作業はすべて Benitoite のスクリプトを書くことなので、毎回読ませる価値がある。キャッシュが効けば、2 回目以降の要求の費用は小さい。
 
 【方針】通常モードでは、`<benitoite>` の節に、Skill の名前と説明（`SKILL.md` の先頭の `description`）と、`benitoite_reference` に `SKILL` を指定すれば全文を読めることだけを書く。理由: 通常モードの作業は Benitoite に限らないので、Agent Skills の段階的な読み込みと同じく、要るときに読ませる。
 
@@ -64,7 +65,7 @@
 
 - プロジェクトのディレクトリの絶対パス、OS の種類、今日の日付（UTC の年月日だけ）
 - モードと、OS のサンドボックスの方針の要約（書ける場所、ネットワークの可否）
-- Benitoite の処理系の版（埋め込んだ文書の版と違うときは、その旨）
+- Benitoite の処理系の版（システムプロンプトの対応の説明を確かめた版と違うときは、その旨。[Benitoite の処理系との連携](../04-benitoite/04-01-benitoite-integration.md)の「処理系の見つけ方と版の確かめ」）
 - 通常モードでは、プロジェクトの指示のファイル（後述）
 
 セッションの途中で変わったとき（日付の変化、`create_project` によるプロジェクトのディレクトリの変更）は、変わった項目だけを次の依頼の前に同じ形で加える。
