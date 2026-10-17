@@ -119,6 +119,31 @@ pub(super) fn definitions(mode: crate::config::Mode) -> Vec<ToolDefinition> {
         ));
     }
     tools.push(definition(
+        ToolId::BenitoiteExplain,
+        text::BENITOITE_EXPLAIN,
+        &[text::BENITOITE_EXPLAIN.1],
+        vec![arg_described("code", String, true, text::SKILL_CODE)],
+        true,
+    ));
+    tools.push(definition(
+        ToolId::BenitoiteReference,
+        text::BENITOITE_REFERENCE,
+        if mode == crate::config::Mode::Normal {
+            &[
+                text::BENITOITE_REFERENCE.1,
+                text::BENITOITE_REFERENCE_NORMAL,
+            ]
+        } else {
+            &[text::BENITOITE_REFERENCE.1]
+        },
+        vec![
+            arg_described("name", String, false, text::SKILL_NAME),
+            arg("offset", Integer, false),
+            arg("limit", Integer, false),
+        ],
+        true,
+    ));
+    tools.push(definition(
         ToolId::WebFetch,
         text::WEB_FETCH,
         &[text::WEB_FETCH.1],
@@ -151,10 +176,19 @@ fn definition(
 }
 
 fn arg(name: &str, kind: ArgumentType, required: bool) -> ArgumentSpec {
+    arg_described(name, kind, required, text::argument(name))
+}
+
+fn arg_described(
+    name: &str,
+    kind: ArgumentType,
+    required: bool,
+    description: &str,
+) -> ArgumentSpec {
     ArgumentSpec {
         name: name.to_owned(),
         kind,
         required,
-        description: text::argument(name).to_owned(),
+        description: description.to_owned(),
     }
 }

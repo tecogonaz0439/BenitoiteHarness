@@ -2,6 +2,7 @@
 
 mod executable;
 mod query;
+pub mod skill;
 pub(crate) mod text;
 
 use crate::sandbox;

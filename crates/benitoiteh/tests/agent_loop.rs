@@ -114,6 +114,9 @@ impl Fixture {
             )?,
         )
         .with_session(session.clone());
+        if config.mode == Mode::Restricted {
+            context = context.with_skill(support::skills()?);
+        }
         if let Some((sandbox, sandboxed)) = sandbox {
             let additional = self.root.join("additional");
             fs::create_dir_all(&additional)?;

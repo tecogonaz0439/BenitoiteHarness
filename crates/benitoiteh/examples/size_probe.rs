@@ -172,10 +172,10 @@ fn probe(root: &Path) -> Result<(), ProbeError> {
     let mut decoder = SseDecoder::new();
     println!("{}", text::value(text::SSE, decoder.push(SSE)));
     decoder.finish();
-    // Skill を含む既存の文脈を丸ごと表示し、埋め込んだ文書の領域も測る。
+    // 処理系なしの文脈を表示し、固定のプロンプトの領域も測る。
     // （設計書 06-02「目標」）
-    let context =
-        SystemContext::new(&ToolSet::new(Mode::Restricted)).map_err(ProbeError::Context)?;
+    let context = SystemContext::new(&ToolSet::without_benitoite(Mode::Normal), None)
+        .map_err(ProbeError::Context)?;
     println!("{}", text::value(text::CONTEXT, context));
     println!("{}", text::value(text::HTTP, HttpClient::default()));
     println!(

@@ -131,7 +131,6 @@ impl Fixture {
                 adapter: AdapterKind::OpenAiChat,
             },
             benitoite: None,
-            skill_version: "test".into(),
             system_prompt_sha256: "test".into(),
             tools_sha256: "test".into(),
         }))?;
