@@ -164,6 +164,11 @@
 
 - 制限モードの `ToolSet` に、01-03 の表の順（`benitoite_check` の後）で加える。通常モードと `ToolSet::without_benitoite` には加えない。期待のファイル（`tests/expected/tools-restricted.json`・`system-restricted.txt`）を作り直す。
 
+### 残ったプロセスでの停止（03-02「子プロセスの後始末」）
+
+- `sandbox::run` が、グループに `SIGKILL` を送った後もパイプが 2 秒のうちに閉じない（`Leftovers::PossiblyRemaining`）と知らせたら、`benitoite_run`（と P2-12 の `benitoite_test`、P2-09 の `benitoite_scratch`）は、道具の結果に残ったプロセスの英文を添え、`ToolOutput` に止める印（例: `stop_run: Option<String>`）を立てる。ループはこの印を見たら、その道具の結果を会話に入れた後、次の番へ進まずに `AgentError::LeftoverProcesses(String)`（`kind()` は `"limit"`。`Outcome` と `cli` は変えない）で一連の処理を止める。英文の案: `The run stopped because processes started by the script may still be running.`（`agent/text.rs`）。通常モードの `bash` では止めない（今の扱いのまま）。
+- テスト: 許すプログラム（`sandbox-probe`）が、パイプを持ったまま新しいセッションに逃げる子を作る形（P2-01 の `sandboxed_groups_are_cleaned_and_escaped_pipe_holders_are_reported` と同じ作り）で、macOS の制限モードの一連の処理が止まること。
+
 ## 触るファイル
 
 - `crates/benitoiteh/src/benitoite/`（`report.rs`（新）、`effects.rs`（新）、`text.rs`）
