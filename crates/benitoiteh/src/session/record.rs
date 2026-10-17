@@ -200,6 +200,14 @@ pub enum Record {
     /// 画面にも示す開始の通知。ヘッダとは別の行。
     SessionStart {
         session_id: String,
+        #[serde(default)]
+        resumed: bool,
+        #[serde(default)]
+        base_url: Option<String>,
+        #[serde(default)]
+        system_prompt_sha256: Option<String>,
+        #[serde(default)]
+        tools_sha256: Option<String>,
         mode: RecordedMode,
         provider: String,
         model: String,
@@ -304,6 +312,8 @@ pub enum CompactionReason {
     Manual,
     /// 提供者が文脈の超過を返した。
     Overflow,
+    /// 再開で推論を引き継げない会話を要約する。
+    Resume,
 }
 
 impl CompactionReason {
@@ -313,6 +323,7 @@ impl CompactionReason {
             Self::Threshold => "threshold",
             Self::Manual => "manual",
             Self::Overflow => "overflow",
+            Self::Resume => "resume",
         }
     }
 }

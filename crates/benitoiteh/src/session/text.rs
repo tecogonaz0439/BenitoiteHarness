@@ -8,7 +8,8 @@ pub const RANDOM_ERROR: &str = "Could not generate a session ID.";
 pub const UNSAFE_PATH: &str =
     "Session entry has an unsafe type, owner, link count, or permissions.";
 pub const LOCKED: &str = "Session is in use.";
-pub const INVALID_FORMAT: &str = "Unsupported session format.";
+pub const INVALID_FORMAT: &str = "Invalid session record format.";
+pub const UNSUPPORTED_FORMAT: &str = "Unsupported session format version.";
 pub const RECORD_TOO_LARGE: &str = "Session record exceeds the line size limit.";
 pub const INVALID_SPILL: &str = "Invalid session spill reference.";
 pub const COUNTER_OVERFLOW: &str = "Spill byte count overflowed.";
@@ -19,3 +20,10 @@ pub const CANCELLED: &str = "Tool call was cancelled by the user.";
 pub fn spill_footer(written: u64, discarded: u64) -> String {
     format!("\n[Partial output: wrote {written} bytes; discarded {discarded} bytes.]\n")
 }
+
+/// 一覧で分割された最初の依頼を読まない場合の表示。
+pub const NOT_AVAILABLE: &str = "(not available)";
+pub const NO_SESSION: &str = "No resumable session was found for this project.";
+pub const STORAGE_LIMIT: &str = "Session storage limit reached; output could not be saved.";
+pub const TOTAL_LIMIT: &str =
+    "Session storage exceeds 10 GiB; reduce [sessions] retention_days to remove older sessions.";

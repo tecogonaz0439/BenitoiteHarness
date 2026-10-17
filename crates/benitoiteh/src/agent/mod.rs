@@ -3,6 +3,9 @@
 mod compaction;
 mod events;
 mod execution;
+mod reasoning;
+#[cfg(test)]
+mod resume_tests;
 mod retry;
 mod text;
 mod transport;
@@ -187,6 +190,11 @@ pub struct Agent {
     started: bool,
     turn: u64,
     repeated: Option<(String, serde_json::Value, u64)>,
+    resuming: bool,
+    resume_compaction: bool,
+    resume_has_reasoning: bool,
+    resume_results: Vec<Record>,
+    environment_changes: Option<String>,
 }
 
 impl Agent {
@@ -198,6 +206,36 @@ impl Agent {
         environment: Environment,
         session: Session,
     ) -> Result<Self, AgentError> {
+        Self::construct(config, api_key, tool_context, environment, session, None)
+    }
+
+    /// 記録の続きから始める。承認と読んだ版を戻さず、ヘッダを追記しない。
+    pub fn resume(
+        config: AgentConfig,
+        api_key: String,
+        tool_context: ToolContext,
+        environment: Environment,
+        session: Session,
+        state: session::ResumeState,
+    ) -> Result<Self, AgentError> {
+        Self::construct(
+            config,
+            api_key,
+            tool_context,
+            environment,
+            session,
+            Some(state),
+        )
+    }
+
+    fn construct(
+        config: AgentConfig,
+        api_key: String,
+        tool_context: ToolContext,
+        environment: Environment,
+        session: Session,
+        state: Option<session::ResumeState>,
+    ) -> Result<Self, AgentError> {
         if config.mode != tool_context.mode {
             return Err(AgentError::InvalidConfiguration);
         }
@@ -207,24 +245,26 @@ impl Agent {
         let adapter = Adapter::new(&config, api_key)?;
         let client = HttpClient::new(config.http_timeouts);
         let mut writer = session.writer()?;
-        writer.append(&Record::Header(Header {
-            format: session::FORMAT_VERSION,
-            session_id: session.id().to_string(),
-            started_at: session.id().started_at_utc(),
-            benitoiteh_version: env!("CARGO_PKG_VERSION").into(),
-            mode: config.mode.into(),
-            project_dir: tool_context.project.real_path().into(),
-            provider: RecordedProvider {
-                name: config.destination.provider.clone(),
-                base_url: config.destination.base_url.clone(),
-                model: config.destination.model.clone(),
-                adapter: config.kind,
-            },
-            benitoite: None,
-            skill_version: context::BENITOITE_DOCUMENT_VERSION.into(),
-            system_prompt_sha256: context::system_prompt_hash(&system.system_prompt),
-            tools_sha256: context::tool_definitions_hash(&system.tools)?,
-        }))?;
+        if state.is_none() {
+            writer.append(&Record::Header(Header {
+                format: session::FORMAT_VERSION,
+                session_id: session.id().to_string(),
+                started_at: session.id().started_at_utc(),
+                benitoiteh_version: env!("CARGO_PKG_VERSION").into(),
+                mode: config.mode.into(),
+                project_dir: tool_context.project.real_path().into(),
+                provider: RecordedProvider {
+                    name: config.destination.provider.clone(),
+                    base_url: config.destination.base_url.clone(),
+                    model: config.destination.model.clone(),
+                    adapter: config.kind,
+                },
+                benitoite: None,
+                skill_version: context::BENITOITE_DOCUMENT_VERSION.into(),
+                system_prompt_sha256: context::system_prompt_hash(&system.system_prompt),
+                tools_sha256: context::tool_definitions_hash(&system.tools)?,
+            }))?;
+        }
         let mut approval_policy = ApprovalPolicy {
             approval: Approval::Never,
             sandbox: match config.mode {
@@ -237,7 +277,7 @@ impl Agent {
             approval_policy.sandbox = shell.sandbox;
             approval_policy.sandboxed = shell.policy.is_some();
         }
-        Ok(Self {
+        let mut agent = Self {
             config,
             adapter,
             client,
@@ -261,7 +301,61 @@ impl Agent {
             started: false,
             turn: 0,
             repeated: None,
-        })
+            resuming: false,
+            resume_compaction: false,
+            resume_has_reasoning: false,
+            resume_results: Vec::new(),
+            environment_changes: None,
+        };
+        if let Some(mut state) = state {
+            let prompt_hash = context::system_prompt_hash(&agent.system.system_prompt);
+            let tools_hash = context::tool_definitions_hash(&agent.system.tools)?;
+            let mut contexts = state.reasoning.iter();
+            for item in &mut state.conversation.items {
+                if let Item::AssistantTurn(turn) = item {
+                    let segment = contexts.next().ok_or(AgentError::InvalidConfiguration)?;
+                    let hashes_changed = segment.system_prompt_sha256 != prompt_hash
+                        || segment.tools_sha256 != tools_hash;
+                    let changed = hashes_changed || segment.destination != agent.config.destination;
+                    if changed
+                        && agent.config.capabilities.reasoning_replay
+                            == crate::provider::ReasoningReplay::AllTurns
+                    {
+                        agent.resume_compaction = true;
+                    }
+                    if hashes_changed {
+                        reasoning::strip_reasoning(turn);
+                    }
+                    if changed {
+                        agent.resume_has_reasoning |= reasoning::has_reasoning(turn);
+                    }
+                }
+            }
+            let rendered = state
+                .conversation
+                .items
+                .iter()
+                .filter_map(|item| match item {
+                    Item::UserMessage(message) => Some(
+                        message
+                            .parts
+                            .iter()
+                            .filter(|part| part.kind == UserPartKind::Environment)
+                            .map(|part| part.text.as_str()),
+                    ),
+                    Item::AssistantTurn(_) | Item::ToolResult(_) => None,
+                })
+                .flatten()
+                .collect::<Vec<_>>();
+            agent.environment_changes = agent.environment.changes_since_rendered(&rendered);
+            agent.conversation = state.conversation;
+            agent.files = state.files;
+            agent.turn = state.max_turn;
+            agent.resume_results = state.missing_results;
+            agent.started = true;
+            agent.resuming = true;
+        }
+        Ok(agent)
     }
 
     /// 起動側の承認の方針と、LLM から独立した確認の受け手を設定する。
@@ -290,12 +384,21 @@ impl Agent {
     ) -> Result<RunReport, AgentError> {
         let started = Instant::now();
         let mut summary = Summary::default();
-        if !self.started {
+        for record in std::mem::take(&mut self.resume_results) {
+            self.writer.append(&record)?;
+        }
+        if !self.started || self.resuming {
             let host = provider_host(&self.config.destination)?;
             self.emit(
                 &events,
                 AgentEvent::SessionStart {
                     session_id: self.session.id().to_string(),
+                    resumed: self.resuming,
+                    base_url: Some(self.config.destination.base_url.clone()),
+                    system_prompt_sha256: Some(context::system_prompt_hash(
+                        &self.system.system_prompt,
+                    )),
+                    tools_sha256: Some(context::tool_definitions_hash(&self.system.tools)?),
                     mode: self.config.mode.into(),
                     provider: self.config.destination.provider.clone(),
                     model: self.config.destination.model.clone(),
@@ -323,26 +426,7 @@ impl Agent {
                 },
             )?;
         }
-        let mut parts = Vec::new();
-        if !self.started {
-            parts.push(UserPart {
-                kind: UserPartKind::Environment,
-                text: self.environment.render(),
-            });
-        }
-        parts.push(UserPart {
-            kind: UserPartKind::Request,
-            text: request,
-        });
-        let message = UserMessage { parts };
-        self.writer.append(&Record::User {
-            kind: UserKind::Request,
-            message: message.clone(),
-        })?;
-        self.push_item(Item::UserMessage(message));
-        self.started = true;
-        self.repeated = None;
-        let (outcome, reason) = match self.run_inner(&cancelled, &events, &mut summary) {
+        let (outcome, reason) = match self.run_request(request, &cancelled, &events, &mut summary) {
             Ok(Outcome::Completed) => (Outcome::Completed, text::COMPLETED.into()),
             Ok(Outcome::Cancelled) => (Outcome::Cancelled, text::RUN_CANCELLED.into()),
             Ok(Outcome::Failed) => return Err(AgentError::Worker),
@@ -362,6 +446,64 @@ impl Agent {
         summary.reason = reason.clone();
         self.emit(&events, AgentEvent::SessionEnd { outcome, reason })?;
         Ok(RunReport { outcome, summary })
+    }
+
+    fn run_request(
+        &mut self,
+        request: String,
+        cancelled: &AtomicBool,
+        events: &SyncSender<AgentEvent>,
+        summary: &mut Summary,
+    ) -> Result<Outcome, AgentError> {
+        self.resuming = false;
+        if self.resume_compaction {
+            let report = self.perform_compaction(
+                CompactOptions {
+                    reason: CompactionReason::Resume,
+                    instructions: None,
+                    keep_recent: false,
+                    separate_request: true,
+                },
+                cancelled,
+                events,
+                summary,
+                &mut Usage::default(),
+            )?;
+            match report.outcome {
+                CompactOutcome::Compacted => {}
+                CompactOutcome::NothingToCompact if !self.resume_has_reasoning => {}
+                CompactOutcome::NothingToCompact
+                | CompactOutcome::Failed
+                | CompactOutcome::Cancelled => return Err(AgentError::Compaction),
+            }
+            self.resume_compaction = false;
+        }
+        let mut parts = Vec::new();
+        if !self.started {
+            parts.push(UserPart {
+                kind: UserPartKind::Environment,
+                text: self.environment.render(),
+            });
+        }
+        if let Some(changes) = self.environment_changes.take() {
+            parts.push(UserPart {
+                kind: UserPartKind::Environment,
+                text: changes,
+            });
+        }
+        parts.push(UserPart {
+            kind: UserPartKind::Request,
+            text: request,
+        });
+        let message = UserMessage { parts };
+        self.writer.append(&Record::User {
+            kind: UserKind::Request,
+            message: message.clone(),
+        })?;
+        self.push_item(Item::UserMessage(message));
+        self.started = true;
+        self.repeated = None;
+        self.run_inner(cancelled, events, summary)
     }
 
     fn run_inner(

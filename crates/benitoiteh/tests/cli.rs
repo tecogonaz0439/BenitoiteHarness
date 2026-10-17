@@ -62,7 +62,7 @@ fn help_lists_command_forms() -> Result<(), Box<dyn Error>> {
         "benitoiteh [options] [request]",
         "benitoiteh exec [options] <request>",
         "benitoiteh doctor",
-        "benitoiteh sessions",
+        "benitoiteh sessions [--project <dir>] [--json]",
         "benitoiteh --help | --version | --licenses",
     ] {
         assert!(help.lines().any(|line| line.trim() == command), "{help}");
@@ -79,6 +79,8 @@ fn help_lists_command_forms() -> Result<(), Box<dyn Error>> {
         "--sandbox read-only|workspace-write|danger-full-access",
         "--approval never",
         "--no-sandbox",
+        "--resume <ID>",
+        "--continue",
         "--json",
         "--output-last-message <file>",
     ] {
@@ -98,7 +100,7 @@ fn other_arguments_are_usage_errors() -> Result<(), Box<dyn Error>> {
         &["--unknown"],
         &["exec"],
         &["doctor"],
-        &["sessions"],
+        &["sessions", "--unknown"],
         &["--licenses"],
         &["--help", "--unknown"],
         &["--version", "--help"],

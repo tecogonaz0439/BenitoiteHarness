@@ -3,6 +3,7 @@
 pub mod args;
 mod exec;
 mod panic;
+mod sessions;
 mod signals;
 mod text;
 
@@ -52,6 +53,9 @@ fn run(
 ) -> Result<u8, CliError> {
     // 非 UTF-8 の引数も panic させず、使い方の誤りとして扱う（設計書 05-01「終了状態」）。
     let argument = argument.ok_or(CliError::Usage)?;
+    if argument == "sessions" {
+        return sessions::run(args);
+    }
     if argument == "exec" {
         let arguments = args.collect::<Vec<_>>();
         if arguments.len() == 1 && arguments.first().is_some_and(|arg| arg == "--help") {

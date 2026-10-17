@@ -37,13 +37,13 @@ impl Request {
 pub struct DeferredOptions {
     pub allow: Option<Vec<String>>,
     pub project_parent: Option<PathBuf>,
-    pub resume: Option<String>,
-    pub continue_session: bool,
 }
 
 /// P1 の exec が使う明示的な指定。既定の値は config で解決する。
 #[derive(Clone, Debug)]
 pub struct ExecArgs {
+    pub resume: Option<String>,
+    pub continue_session: bool,
     pub sandbox: Option<Sandbox>,
     pub approval: Option<Approval>,
     pub no_sandbox: bool,
@@ -89,6 +89,8 @@ impl ExecArgs {
     /// `exec` の後ろだけを渡して解釈する。パスの値は非 UTF-8 でも保つ。
     pub fn parse(args: impl IntoIterator<Item = impl Into<OsString>>) -> Result<Self, ArgsError> {
         let mut result = Self {
+            resume: None,
+            continue_session: false,
             sandbox: None,
             approval: None,
             no_sandbox: false,
@@ -217,16 +219,12 @@ impl ExecArgs {
                     deferred.allow = Some(effects);
                 }
                 "--project-parent" => deferred.project_parent = Some(PathBuf::from(value)),
-                "--resume" => deferred.resume = Some(string()?.to_owned()),
-                "--continue" => deferred.continue_session = true,
+                "--resume" => result.resume = Some(string()?.to_owned()),
+                "--continue" => result.continue_session = true,
                 "--no-sandbox" => result.no_sandbox = true,
                 _ => return Err(ArgsError::Invalid),
             }
-            if matches!(
-                option,
-                "--allow" | "--project-parent" | "--resume" | "--continue"
-            ) && unavailable.is_none()
-            {
+            if matches!(option, "--allow" | "--project-parent") && unavailable.is_none() {
                 unavailable = Some(option.to_owned());
             }
         }
@@ -235,6 +233,9 @@ impl ExecArgs {
                 option,
                 values: Box::new(deferred),
             });
+        }
+        if result.resume.is_some() && result.continue_session {
+            return Err(ArgsError::Invalid);
         }
         result.request = request.ok_or(ArgsError::Invalid)?;
         Ok(result)

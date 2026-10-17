@@ -1,5 +1,7 @@
 //! 実行ファイルの入口で出力・記録・道具の変更を確かめる（設計書 07-01「持ち主の境界」）。
 
+#[path = "exec/resume.rs"]
+mod resume;
 mod support;
 
 use std::error::Error;

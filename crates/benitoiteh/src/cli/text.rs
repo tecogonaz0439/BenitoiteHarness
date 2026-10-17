@@ -5,7 +5,7 @@ pub const HELP: &str = "Usage:
     benitoiteh [options] [request]
     benitoiteh exec [options] <request>
     benitoiteh doctor
-    benitoiteh sessions
+    benitoiteh sessions [--project <dir>] [--json]
     benitoiteh --help | --version | --licenses
 
 Exec options:
@@ -20,14 +20,16 @@ Exec options:
     --sandbox read-only|workspace-write|danger-full-access
     --approval never
     --no-sandbox
+    --resume <ID>
+    --continue
     --json
     --output-last-message <file>
     --help
 
 Use - as the request to read standard input.
-Interactive mode, doctor, sessions, and --licenses are not available yet.
+Interactive mode, doctor, and --licenses are not available yet.
 The following options are not available yet:
-    --resume, --continue, --allow, --project-parent
+    --allow, --project-parent
 ";
 
 /// 使い方の誤りに共通の案内。
@@ -99,4 +101,11 @@ pub const PRIVATE_DIRECTORY: &str =
 
 pub fn sandbox_disabled(reason: &crate::sandbox::SandboxError) -> String {
     format!("{SANDBOX_DISABLED} Reason: {reason}")
+}
+
+pub const RESUME_PROJECT: &str = "--project does not match the recorded session project directory.";
+
+/// 再開する ID とプロジェクトを一行で示す。
+pub fn resuming(id: &crate::session::SessionId, project: &std::path::Path) -> String {
+    format!("Resuming session {id}; project: {}", project.display())
 }

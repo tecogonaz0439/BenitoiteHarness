@@ -32,3 +32,6 @@ pub fn unknown_provider(name: &str) -> String {
 pub const EXEC_APPROVAL: &str = "exec only supports --approval never";
 pub const NORMAL_OPTIONS: &str = "--sandbox, --approval, and --no-sandbox require normal mode";
 pub const WRITABLE_EXECUTABLE: &str = "writable root contains the benitoiteh executable";
+
+pub const RESUME_MODE: &str =
+    "exec cannot resume a restricted session in normal mode; interactive confirmation is required.";

@@ -40,6 +40,7 @@ pub(super) enum StartupError {
     Agent(AgentError),
     Io(io::Error),
     Sandbox(SandboxError),
+    Invalid(&'static str),
 }
 
 impl fmt::Display for StartupError {
@@ -55,6 +56,7 @@ impl fmt::Display for StartupError {
             Self::Agent(e) => e.fmt(f),
             Self::Io(e) => e.fmt(f),
             Self::Sandbox(e) => e.fmt(f),
+            Self::Invalid(message) => f.write_str(message),
         }
     }
 }
@@ -73,8 +75,35 @@ fn prepare(
     safe_fs::verify_platform_support(&paths.temporary_root).map_err(StartupError::SafeFs)?;
     let user = UserConfig::load(&paths.config_file).map_err(StartupError::Config)?;
     let cwd = std::env::current_dir().map_err(StartupError::Io)?;
-    let root =
-        ScopeRoot::open(args.project.as_deref().unwrap_or(&cwd)).map_err(StartupError::SafeFs)?;
+    let opened = if let Some(id) = &args.resume {
+        let id = id.parse::<SessionId>().map_err(StartupError::Session)?;
+        Some(Session::open(paths, &id).map_err(StartupError::Session)?)
+    } else if args.continue_session {
+        Some(
+            session::continue_session(paths, args.project.as_deref().unwrap_or(&cwd))
+                .map_err(StartupError::Session)?,
+        )
+    } else {
+        None
+    };
+    let resume = opened
+        .as_ref()
+        .map(Session::take_resume_state)
+        .transpose()
+        .map_err(StartupError::Session)?;
+    if let (Some(state), Some(project)) = (&resume, &args.project) {
+        let requested = std::fs::canonicalize(project).map_err(StartupError::Io)?;
+        let recorded = std::fs::canonicalize(&state.project_dir).map_err(StartupError::Io)?;
+        if requested != recorded {
+            return Err(StartupError::Invalid(text::RESUME_PROJECT));
+        }
+    }
+    let requested = resume
+        .as_ref()
+        .map(|state| state.project_dir.as_path())
+        .or(args.project.as_deref())
+        .unwrap_or(&cwd);
+    let root = ScopeRoot::open(requested).map_err(StartupError::SafeFs)?;
     let project = ProjectConfig::load(&root);
     if project.read {
         ExecOutput::diagnostic(&text::project_loaded(root.real_path()))
@@ -83,9 +112,11 @@ fn prepare(
     if let Some(error) = &project.error {
         ExecOutput::diagnostic(&text::project_ignored(error)).map_err(StartupError::Io)?;
     }
-    let resolved = user
-        .resolve_exec(args, &project.config, &cwd)
-        .map_err(StartupError::Config)?;
+    let resolved = match &resume {
+        Some(state) => user.resolve_resume(args, &project.config, &cwd, state),
+        None => user.resolve_exec(args, &project.config, &cwd),
+    }
+    .map_err(StartupError::Config)?;
     ExecOutput::diagnostic(&text::destination(&resolved.destination)).map_err(StartupError::Io)?;
     let key = resolved
         .api_key
@@ -94,7 +125,10 @@ fn prepare(
         .transpose()
         .map_err(StartupError::Credentials)?;
     let now = SystemTime::now();
-    let id = SessionId::generate(now).map_err(StartupError::Session)?;
+    let id = match &opened {
+        Some(session) => session.id().clone(),
+        None => SessionId::generate(now).map_err(StartupError::Session)?,
+    };
     let temporary = paths
         .temporary_dir(id.as_str())
         .map_err(StartupError::Config)?;
@@ -111,7 +145,19 @@ fn prepare(
             .map_err(StartupError::Writable)?;
     let _cleanup = session::cleanup(paths, user.sessions.retention_days, now)
         .map_err(StartupError::Session)?;
-    let session = Session::create(paths, id).map_err(StartupError::Session)?;
+    let session = match opened {
+        Some(session) => {
+            ExecOutput::diagnostic(&text::resuming(session.id(), root.real_path()))
+                .map_err(StartupError::Io)?;
+            session
+        }
+        None => Session::create(paths, id).map_err(StartupError::Session)?,
+    };
+    let usage = session::storage_usage(paths, Some(session.id())).map_err(StartupError::Session)?;
+    session.configure_budget(&usage);
+    if let Some(warning) = usage.warning() {
+        ExecOutput::diagnostic(warning).map_err(StartupError::Io)?;
+    }
     // macOS の TMPDIR の /var という別名を Seatbelt に渡さない（設計書 03-02）。
     locations.temporary =
         std::fs::canonicalize(session.temporary_dir()).map_err(StartupError::Io)?;
@@ -234,14 +280,26 @@ fn prepare(
     if sandbox_disabled {
         environment = environment.with_startup_notice(text::SANDBOX_DISABLED);
     }
-    let mut agent = Agent::new(
-        resolved.into(),
-        key.map(|key| key.expose_secret().to_owned())
-            .unwrap_or_default(),
-        context,
-        environment,
-        session.clone(),
-    )
+    let api_key = key
+        .map(|key| key.expose_secret().to_owned())
+        .unwrap_or_default();
+    let mut agent = match resume {
+        Some(state) => Agent::resume(
+            resolved.into(),
+            api_key,
+            context,
+            environment,
+            session.clone(),
+            state,
+        ),
+        None => Agent::new(
+            resolved.into(),
+            api_key,
+            context,
+            environment,
+            session.clone(),
+        ),
+    }
     .map_err(StartupError::Agent)?;
     if let Some(policy) = approval_policy {
         agent = agent.with_approvals(Box::new(NonInteractiveApprover), policy);

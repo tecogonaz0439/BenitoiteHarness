@@ -324,7 +324,7 @@ fn replay_uses_last_compaction_as_its_conversation_base() -> TestResult {
         kept_items: 0,
     })?;
     let base = Conversation {
-        items: vec![Item::AssistantTurn(response(&[call("retained")]))],
+        items: vec![Item::AssistantTurn(response(&[call("turn-7-call-0")]))],
     };
     // 欄を加える前の形式の行を、JSON Lines の読み手で確かめる。
     writeln!(
@@ -340,13 +340,20 @@ fn replay_uses_last_compaction_as_its_conversation_base() -> TestResult {
 
     let conversation = replay(session.directory())?;
     assert_eq!(conversation.items.first(), base.items.first());
-    let mut cancelled = result(&call("retained"), "Tool call was cancelled by the user.");
+    let mut cancelled = result(
+        &call("turn-7-call-0"),
+        "Tool call was cancelled by the user.",
+    );
     cancelled.is_error = true;
     assert_eq!(
         conversation.items.get(1),
         Some(&Item::ToolResult(cancelled))
     );
     assert_eq!(conversation.items.len(), 2);
+    let state = benitoiteh::session::ResumeState::read(session.directory())?;
+    assert!(
+        matches!(state.missing_results.first(), Some(Record::ToolResult { turn: 7, name, .. }) if name == "write")
+    );
     Ok(())
 }
 
@@ -370,6 +377,16 @@ fn reader_rejects_unsupported_formats_and_spill_references_outside_the_spill_dir
         Err(SessionError::Invalid(_))
     ));
 
+    let unsupported_message = read_records(session.directory())
+        .err()
+        .ok_or("unsupported format")?
+        .to_string();
+    fs::write(&path, b"")?;
+    let missing_message = read_records(session.directory())
+        .err()
+        .ok_or("missing header")?
+        .to_string();
+    assert_ne!(unsupported_message, missing_message);
     let outside = fixture.root.join("outside.json");
     fs::write(
         &outside,
@@ -507,7 +524,7 @@ fn session_entries_are_private_exclusive_and_live_until_the_last_writer_drops() 
 }
 
 // 作成時の関門: ロック中の一時領域・記録を消す、リンクの先を消す、ID の時刻を
-// 無視して記録の mtime で期限を決める退行を、同じ掃除の公開 API で捕まえる。
+// 使って更新済みの記録も消す退行を、同じ掃除の公開 API で捕まえる。
 #[test]
 fn cleanup_removes_only_inactive_matching_directories_and_expired_sessions() -> TestResult {
     let fixture = Fixture::new()?;
@@ -515,6 +532,7 @@ fn cleanup_removes_only_inactive_matching_directories_and_expired_sessions() -> 
     let stale = Session::create(&fixture.paths, "20200101T000000Z-0000000000000002".parse()?)?;
     let stale_dir = stale.directory().to_path_buf();
     let stale_temp = stale.temporary_dir().to_path_buf();
+    fs::File::open(stale_dir.join("session.jsonl"))?.set_modified(UNIX_EPOCH)?;
     drop(stale);
     fs::DirBuilder::new().create(&stale_temp)?;
     fs::set_permissions(&stale_temp, fs::Permissions::from_mode(0o700))?;
@@ -531,6 +549,10 @@ fn cleanup_removes_only_inactive_matching_directories_and_expired_sessions() -> 
     let recent = fixture.session()?;
     let recent_dir = recent.directory().to_path_buf();
     drop(recent);
+    let updated = Session::create(&fixture.paths, "20200101T000000Z-0000000000000004".parse()?)?;
+    let updated_dir = updated.directory().to_owned();
+    fs::File::open(updated_dir.join("session.jsonl"))?.set_modified(SystemTime::now())?;
+    drop(updated);
     let report = cleanup(&fixture.paths, DEFAULT_RETENTION_DAYS, SystemTime::now())?;
     assert_eq!(report.temporary_removed, 2);
     assert_eq!(report.sessions_removed, 1);
@@ -540,6 +562,7 @@ fn cleanup_removes_only_inactive_matching_directories_and_expired_sessions() -> 
     assert!(active.temporary_dir().exists());
     assert!(active.directory().exists());
     assert!(recent_dir.exists());
+    assert!(updated_dir.exists());
     assert!(unrelated.exists());
     assert_eq!(fs::read_to_string(fixture.paths.home.join("keep"))?, "keep");
     Ok(())
@@ -589,5 +612,124 @@ fn ids_are_utc_chronological_and_validate_calendar_dates() -> TestResult {
     ] {
         assert!(invalid.parse::<SessionId>().is_err(), "{invalid}");
     }
+    Ok(())
+}
+
+// 作成時の関門: spill と objects の合計の上限、discard による予約の返却を
+// 記録の持ち主の公開 API で守る。リンクの先や checkpoints の扱いも実ファイルで確かめる。
+#[test]
+fn storage_counts_all_regular_files_and_shares_output_reservations() -> TestResult {
+    use benitoiteh::session::storage_usage;
+    let fixture = Fixture::new()?;
+    let session = fixture.session()?;
+    session.writer()?.append(&header(&session))?;
+    fs::create_dir(session.directory().join("objects"))?;
+    fs::set_permissions(
+        session.directory().join("objects"),
+        fs::Permissions::from_mode(0o700),
+    )?;
+    fs::create_dir(session.directory().join("checkpoints"))?;
+    fs::write(session.directory().join("checkpoints/index"), b"checkpoint")?;
+    let limit = 1024_u64.saturating_mul(1024).saturating_mul(1024);
+    fs::File::create(session.directory().join("objects/sparse"))?
+        .set_len(limit.saturating_sub(3))?;
+    fs::File::create(fixture.root.join("external"))?.set_len(limit)?;
+    symlink(
+        fixture.root.join("external"),
+        session.directory().join("spill/external"),
+    )?;
+    let usage = storage_usage(&fixture.paths, Some(session.id()))?;
+    assert_eq!(usage.current_outputs, limit.saturating_sub(3));
+    assert_eq!(
+        usage.total,
+        usage
+            .current_outputs
+            .saturating_add(10)
+            .saturating_add(fs::metadata(session.directory().join("session.jsonl"))?.len())
+    );
+    session.configure_budget(&usage);
+    let mut first = session.spill_writer("first")?;
+    first.write_all(b"abc")?;
+    let clone = session.clone();
+    let mut second = clone.spill_writer("second")?;
+    assert!(second.write_all(b"x").is_err());
+    second.discard()?;
+    first.discard()?;
+    let mut replacement = clone.spill_writer("replacement")?;
+    replacement.write_all(b"abc")?;
+    replacement.finish()?;
+    assert!(!session.reserve(1));
+    // 再開用の記録は出力の保存量で止めない。大きな行の分割も同じである。
+    session.writer()?.append(&Record::Error {
+        kind: "test".into(),
+        message: "x".repeat(MAX_BYTES),
+    })?;
+    assert_eq!(read_records(session.directory())?.len(), 2);
+    Ok(())
+}
+
+// 作成時の関門: 不正な記録や log のリンクを拒んだ後に、既存のディレクトリを
+// 新規作成の失敗と同じように消してしまう退行を守る。
+#[test]
+fn opening_rejects_unsafe_logs_and_corruption_without_deleting_session() -> TestResult {
+    let fixture = Fixture::new()?;
+    let session = fixture.session()?;
+    let id = session.id().clone();
+    session.writer()?.append(&header(&session))?;
+    let directory = session.directory().to_owned();
+    let log = directory.join("session.jsonl");
+    let original = fs::read(&log)?;
+    drop(session);
+    fs::set_permissions(&log, fs::Permissions::from_mode(0o644))?;
+    assert!(Session::open(&fixture.paths, &id).is_err());
+    assert_eq!(fs::read(&log)?, original);
+    fs::set_permissions(&log, fs::Permissions::from_mode(0o600))?;
+    fs::hard_link(&log, fixture.root.join("hardlink"))?;
+    assert!(Session::open(&fixture.paths, &id).is_err());
+    fs::remove_file(fixture.root.join("hardlink"))?;
+    fs::rename(&log, fixture.root.join("outside-log"))?;
+    symlink(fixture.root.join("outside-log"), &log)?;
+    assert!(Session::open(&fixture.paths, &id).is_err());
+    assert_eq!(fs::read(&log)?, original);
+    fs::remove_file(&log)?;
+    fs::rename(fixture.root.join("outside-log"), &log)?;
+    OpenOptions::new()
+        .append(true)
+        .open(&log)?
+        .write_all(b"broken\n")?;
+    let corrupt = fs::read(&log)?;
+    assert!(Session::open(&fixture.paths, &id).is_err());
+    assert_eq!(fs::read(&log)?, corrupt);
+    assert!(directory.join("spill").is_dir() && directory.join("lock").is_file());
+    Ok(())
+}
+
+// 作成時の関門: ほかのセッションの権限不足で全起動を止める退行を、本物の権限で守る。
+#[test]
+fn storage_skips_unreadable_entries_in_other_sessions() -> TestResult {
+    struct Restore(std::path::PathBuf);
+    impl Drop for Restore {
+        fn drop(&mut self) {
+            let _restored = fs::set_permissions(&self.0, fs::Permissions::from_mode(0o700));
+        }
+    }
+    let fixture = Fixture::new()?;
+    let current = fixture.session()?;
+    let other = fixture.session()?;
+    let private = other.directory().join("unreadable");
+    fs::create_dir(&private)?;
+    fs::write(private.join("hidden"), b"hidden")?;
+    fs::write(other.directory().join("visible"), b"visible")?;
+    fs::set_permissions(&private, fs::Permissions::from_mode(0o000))?;
+    let _restore = Restore(private.clone());
+    assert_eq!(
+        fs::read_dir(&private)
+            .err()
+            .ok_or("directory is readable")?
+            .kind(),
+        io::ErrorKind::PermissionDenied
+    );
+    let usage = benitoiteh::session::storage_usage(&fixture.paths, Some(current.id()))?;
+    assert_eq!(usage.total, 7);
     Ok(())
 }

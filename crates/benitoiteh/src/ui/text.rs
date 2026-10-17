@@ -51,3 +51,30 @@ pub fn compaction(
         reason.as_str()
     )
 }
+
+/// セッションの一覧の正常な一行を作る。
+pub fn session_entry(
+    id: &str,
+    started: &str,
+    mode: &str,
+    project: &str,
+    request: &str,
+    active: bool,
+) -> String {
+    let active = if active { " [active]" } else { "" };
+    format!("{id}  {started}  {mode}  {project}  {request}{active}")
+}
+
+/// 記録のモードを一覧に示す綴りにする。
+pub fn session_mode(mode: Option<crate::session::RecordedMode>) -> &'static str {
+    match mode {
+        Some(crate::session::RecordedMode::Restricted) => "restricted",
+        Some(crate::session::RecordedMode::Normal) => "normal",
+        None => "",
+    }
+}
+
+/// 読めない記録の ID と理由を示す。
+pub fn session_error(id: &str, error: &str) -> String {
+    format!("{id}  {error}")
+}
