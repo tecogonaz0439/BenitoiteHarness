@@ -722,13 +722,11 @@ fn storage_skips_unreadable_entries_in_other_sessions() -> TestResult {
     fs::write(other.directory().join("visible"), b"visible")?;
     fs::set_permissions(&private, fs::Permissions::from_mode(0o000))?;
     let _restore = Restore(private.clone());
-    assert_eq!(
-        fs::read_dir(&private)
-            .err()
-            .ok_or("directory is readable")?
-            .kind(),
-        io::ErrorKind::PermissionDenied
-    );
+    let Err(error) = fs::read_dir(&private) else {
+        // root など権限 000 でも読める環境では、権限不足を再現できないので確かめを飛ばす。
+        return Ok(());
+    };
+    assert_eq!(error.kind(), io::ErrorKind::PermissionDenied);
     let usage = benitoiteh::session::storage_usage(&fixture.paths, Some(current.id()))?;
     assert_eq!(usage.total, 7);
     Ok(())
