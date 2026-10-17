@@ -51,7 +51,7 @@ benitoiteh __sandbox <方針の JSON> -- <プログラム> <引数...>
 - 版が 0.8.0 以上であること（`bwrap --version` の出力）。理由: 使う指定のうち最も新しい `--disable-userns` が 0.8.0 で加わった。`--as-pid-1` と `--cap-drop` は 0.2.0、`--tmpfs` に掛かる `--perms` は 0.5.0 で加わった（[bubblewrap のリリースの説明](https://github.com/containers/bubblewrap/releases)）。
 - `/usr/bin/bwrap` に setuid の印がないこと。理由: setuid で導入された bubblewrap は、特権を持つ形の別の処理で動く（`--overlay` などを使えない。0.11.0 のリリースの説明）。試作はその形で確かめていない。
 
-【方針】bubblewrap には、全体の指定に `--cap-drop ALL` を加える。理由: 2026-10-17 に、rootless の podman の中の root（bubblewrap 0.12.0）で、`--unshare-user` の中のプロセスが呼び出した側の特権（`CAP_DAC_OVERRIDE`、`--cap-add SYS_ADMIN` で起動した podman では `CAP_SYS_ADMIN` も）を持ったままであることを確かめた。読ませない場所の覆いは空なので、権限 000 を越えて読まれても秘密は出ないが、特権を残す理由がない。`--cap-drop ALL` を加えると、root でも root でない利用者でも、中のプロセスの有効な特権が空になった。
+【決定】bubblewrap には、全体の指定に `--cap-drop ALL` を加える（2026-10-17 に設計者が承認した）。理由: 2026-10-17 に、rootless の podman の中の root（bubblewrap 0.12.0）で、`--unshare-user` の中のプロセスが呼び出した側の特権（`CAP_DAC_OVERRIDE`、`--cap-add SYS_ADMIN` で起動した podman では `CAP_SYS_ADMIN` も）を持ったままであることを確かめた。読ませない場所の覆いは空なので、権限 000 を越えて読まれても秘密は出ないが、特権を残す理由がない。`--cap-drop ALL` を加えると、root でも root でない利用者でも、中のプロセスの有効な特権が空になった。
 
 【方針】Linux の補助のプロセスは、次の順に処理する。
 
