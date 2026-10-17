@@ -94,6 +94,7 @@ fn resume_starts_with_empty_session_command_approvals() -> Result<(), Box<dyn st
         session.clone(),
     )?;
     agent.allowed_commands.insert("cat private".into());
+    agent.session_domains.insert("mock.invalid".into());
     agent.writer.append(&Record::Approval {
         phase: session::ApprovalPhase::Result,
         id: "approval".into(),
@@ -147,6 +148,7 @@ fn resume_starts_with_empty_session_command_approvals() -> Result<(), Box<dyn st
         state,
     )?;
     assert!(agent.allowed_commands.is_empty());
+    assert!(agent.session_domains.is_empty());
     assert_eq!(agent.conversation(), &previous);
     let (sender, receiver) = std::sync::mpsc::sync_channel(32);
     agent.run(
@@ -158,5 +160,120 @@ fn resume_starts_with_empty_session_command_approvals() -> Result<(), Box<dyn st
     assert_eq!(session::replay(session.directory())?, *agent.conversation());
     assert_eq!(server.requests()?.len(), 2);
     server.shutdown()?;
+    Ok(())
+}
+
+// 作成時の関門: 二ラベルの名前を実際に解かずに、ループが今回の答えだけをドメインの
+// 許可へ記憶することを確かめる。確認直後の利用者の取り消しは本番の口を通す。
+#[test]
+fn web_session_answers_are_remembered_by_the_loop_before_cancelled_execution()
+-> Result<(), Box<dyn std::error::Error>> {
+    use crate::approval::{
+        ApprovalAnswer, ApprovalKind, ApprovalOutcome, ApprovalRecord, Approver,
+    };
+    struct CancelAfterApproval {
+        cancelled: Arc<AtomicBool>,
+        outcome: ApprovalOutcome,
+    }
+    impl Approver for CancelAfterApproval {
+        fn approve(&mut self, request: &ApprovalRecord) -> ApprovalAnswer {
+            assert_eq!(request.kind, ApprovalKind::WebFetch);
+            assert_eq!(request.facts.domain.as_deref(), Some("mock.invalid"));
+            self.cancelled
+                .store(true, std::sync::atomic::Ordering::Release);
+            ApprovalAnswer {
+                outcome: self.outcome,
+                message: None,
+            }
+        }
+    }
+    let id = session::SessionId::generate(std::time::SystemTime::now())?;
+    let directory = std::env::temp_dir().join(format!("benitoiteh-web-approvals-{id}"));
+    std::fs::create_dir(&directory)?;
+    let fixture = Fixture(std::fs::canonicalize(directory)?);
+    for name in ["home", "project", "tmp"] {
+        std::fs::create_dir(fixture.0.join(name))?;
+    }
+    let paths = DataPaths::from_values(
+        Some(&fixture.0.join("home")),
+        Some(&fixture.0.join("config")),
+        Some(&fixture.0.join("state")),
+        Some(&fixture.0.join("tmp")),
+    )?;
+    let project = fixture.0.join("project");
+    for outcome in [
+        ApprovalOutcome::Approved,
+        ApprovalOutcome::ApprovedForSession,
+    ] {
+        let session = Session::create(
+            &paths,
+            session::SessionId::generate(std::time::SystemTime::now())?,
+        )?;
+        let response = serde_json::json!({"choices":[{"delta":{"tool_calls":[{"index":0,"id":"fetch","type":"function","function":{"name":"web_fetch","arguments":serde_json::json!({"url":"https://MOCK.INVALID.:443/"}).to_string()}}]},"finish_reason":"tool_calls"}]});
+        let mut server =
+            mock_provider::MockProvider::start(vec![mock_provider::ResponseScript::sse(format!(
+                "data: {response}\n\ndata: [DONE]\n\n"
+            ))])?;
+        let config = AgentConfig {
+            mode: Mode::Normal,
+            destination: Destination {
+                provider: "test".into(),
+                base_url: server.base_url(),
+                model: "model".into(),
+            },
+            kind: AdapterKind::OpenAiChat,
+            capabilities: Capabilities::default(),
+            effort: "high".into(),
+            limits: Limits::default(),
+            http_timeouts: HttpTimeouts::default(),
+            retry_initial: Duration::from_millis(1),
+        };
+        let environment = Environment::capture(
+            &project,
+            Mode::Normal,
+            &[],
+            false,
+            std::time::SystemTime::now(),
+        )?;
+        let cancelled = Arc::new(AtomicBool::new(false));
+        let mut agent = Agent::new(
+            config,
+            String::new(),
+            tool_context(&paths, &project, &session)?,
+            environment,
+            session.clone(),
+        )?
+        .with_approvals(
+            Box::new(CancelAfterApproval {
+                cancelled: Arc::clone(&cancelled),
+                outcome,
+            }),
+            ApprovalPolicy {
+                approval: Approval::OnRequest,
+                sandbox: Sandbox::WorkspaceWrite,
+                sandboxed: true,
+            },
+        );
+        let (sender, receiver) = std::sync::mpsc::sync_channel(32);
+        let report = agent.run("Fetch the page".into(), Arc::clone(&cancelled), sender)?;
+        assert_eq!(report.outcome, Outcome::Cancelled);
+        assert!(agent.allowed_commands.is_empty());
+        let expected = if outcome == ApprovalOutcome::ApprovedForSession {
+            BTreeSet::from(["mock.invalid".to_owned()])
+        } else {
+            BTreeSet::new()
+        };
+        assert_eq!(agent.session_domains, expected);
+        let events = receiver.into_iter().collect::<Vec<_>>();
+        assert_eq!(
+            events
+                .iter()
+                .filter(|event| matches!(event, AgentEvent::ApprovalRequest { .. }))
+                .count(),
+            1
+        );
+        assert!(agent.conversation.items.iter().any(|item| matches!(item, Item::ToolResult(result) if result.is_error && result.text.contains("cancelled"))));
+        server.shutdown()?;
+    }
     Ok(())
 }

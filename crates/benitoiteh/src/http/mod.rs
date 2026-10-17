@@ -180,7 +180,12 @@ impl HttpClient {
         Self::with_tls(timeouts, tls)
     }
 
-    fn with_tls(timeouts: HttpTimeouts, tls: ureq::tls::TlsConfig) -> Self {
+    /// TLS の設定を保ち、時間の上限だけを変えたクライアントを作る。
+    pub fn with_timeouts(&self, timeouts: HttpTimeouts) -> Self {
+        Self::with_tls(timeouts, self.tls.clone())
+    }
+
+    pub(crate) fn with_tls(timeouts: HttpTimeouts, tls: ureq::tls::TlsConfig) -> Self {
         let agent = make_agent(timeouts, tls.clone(), None, None);
         Self {
             agent,
@@ -198,7 +203,7 @@ impl HttpClient {
         headers: &HeaderMap,
         limit: u64,
     ) -> Result<HttpResponse, HttpError> {
-        self.get_with_agent(&self.agent, uri, headers, limit)
+        self.get_with_agent(&self.agent, uri, headers, limit, false)
     }
 
     /// 判定済みのアドレスだけに接続する GET。空の一覧は接続の失敗になる。
@@ -218,7 +223,7 @@ impl HttpClient {
             Some(addresses.to_vec()),
             None,
         );
-        self.get_with_agent(&agent, uri, headers, limit)
+        self.get_with_agent(&agent, uri, headers, limit, true)
     }
 
     fn get_with_agent(
@@ -227,6 +232,7 @@ impl HttpClient {
         uri: &Uri,
         headers: &HeaderMap,
         limit: u64,
+        bound_status: bool,
     ) -> Result<HttpResponse, HttpError> {
         let request = request(uri, headers, false, Vec::new())?;
         let response = agent.run(request).map_err(classify)?;
@@ -236,7 +242,7 @@ impl HttpClient {
             headers: parts.headers,
         };
         let mut reader = body.into_reader();
-        if !(200..300).contains(&head.status) {
+        if !(200..300).contains(&head.status) && !bound_status {
             return Err(status_error(head, &mut reader));
         }
         let mut body = Vec::new();
@@ -246,6 +252,15 @@ impl HttpClient {
             .map_err(|e| classify(e.into()))?;
         if u64::try_from(body.len()).map_err(|_| HttpError::BodyLimit { limit })? > limit {
             return Err(HttpError::BodyLimit { limit });
+        }
+        if !(200..300).contains(&head.status) {
+            // 本文全体の上限を検査した後も、既存の診断用の接頭辞の契約は保つ。
+            body.truncate(usize::try_from(ERROR_BODY_LIMIT).unwrap_or(65536));
+            return Err(HttpError::Status(Box::new(HttpStatusError {
+                retry_after: head.headers.get(header::RETRY_AFTER).cloned(),
+                head,
+                body,
+            })));
         }
         Ok(HttpResponse { head, body })
     }

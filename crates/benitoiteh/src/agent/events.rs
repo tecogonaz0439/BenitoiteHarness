@@ -254,6 +254,7 @@ mod tests {
             cwd: Some("/project".into()),
             path: None,
             sandbox_policy: Some("workspace-write".into()),
+            ..ApprovalFacts::default()
         };
         for event in [
             AgentEvent::ApprovalRequest {
@@ -281,7 +282,7 @@ mod tests {
                 assert_eq!(
                     output.get("facts"),
                     Some(
-                        &json!({"command":"cargo test","cwd":"/project","path":null,"sandbox_policy":"workspace-write"})
+                        &json!({"command":"cargo test","cwd":"/project","path":null,"sandbox_policy":"workspace-write", "url":null, "domain":null})
                     )
                 );
                 assert_eq!(output.get("justification"), Some(&json!("Needs network")));

@@ -1,6 +1,7 @@
 //! 利用者設定と信頼しないプロジェクト設定を分けて検証する（設計書 05-01「設定ファイル」「プロジェクトの設定ファイル」）。
 
 pub mod credentials;
+pub(crate) mod domain;
 mod environment;
 pub use environment::child_environment;
 pub mod paths;
@@ -299,7 +300,11 @@ impl UserConfig {
 
     /// 知らない欄と、秘密の直書きを拒む。
     pub fn parse(input: &str) -> Result<Self, ConfigError> {
-        let config: Self = parse(input)?;
+        let mut config: Self = parse(input)?;
+        for domain in &mut config.web_fetch.allowed_domains {
+            *domain = self::domain::normalize(domain)
+                .ok_or(ConfigError::Invalid(text::INVALID_DOMAIN))?;
+        }
         if config
             .restricted
             .allowed_programs

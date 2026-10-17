@@ -166,6 +166,13 @@ impl Agent {
                 }
             }
             if selected
+                && let Record::ToolStart { call } = record
+                && call.name == "web_fetch"
+            {
+                // 取得の成否では外への通信の有無を証明できないので保守的に示す。
+                candidates.insert(call.id.clone());
+            }
+            if selected
                 && let Record::ToolResult { result: output, .. } = record
                 && !output.is_error
                 && let Some(call) = calls.get(&output.id)

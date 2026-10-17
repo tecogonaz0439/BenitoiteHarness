@@ -35,3 +35,5 @@ pub const WRITABLE_EXECUTABLE: &str = "writable root contains the benitoiteh exe
 
 pub const RESUME_MODE: &str =
     "exec cannot resume a restricted session in normal mode; interactive confirmation is required.";
+
+pub const INVALID_DOMAIN: &str = "Invalid web_fetch.allowed_domains entry. Use an ASCII domain name of at least two labels (punycode xn-- for international names), without a scheme, port, wildcard, or IP address.";

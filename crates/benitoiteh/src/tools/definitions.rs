@@ -118,6 +118,13 @@ pub(super) fn definitions(mode: crate::config::Mode) -> Vec<ToolDefinition> {
             false,
         ));
     }
+    tools.push(definition(
+        ToolId::WebFetch,
+        text::WEB_FETCH,
+        &[text::WEB_FETCH.1],
+        vec![arg("url", String, true)],
+        false,
+    ));
     tools
 }
 

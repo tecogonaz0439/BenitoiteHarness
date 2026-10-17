@@ -18,11 +18,17 @@ pub enum ApprovalKind {
     Command,
     /// サンドボックスの外で動かすコマンド。
     Escalate,
+    /// ウェブのドメインの取得。
+    WebFetch,
 }
 
 /// ハーネスが確かめた操作の事実。LLM の説明とは別に渡す。
 #[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
 pub struct ApprovalFacts {
+    #[serde(default)]
+    pub url: Option<String>,
+    #[serde(default)]
+    pub domain: Option<String>,
     pub command: Option<String>,
     pub cwd: Option<PathBuf>,
     pub path: Option<PathBuf>,
@@ -54,6 +60,7 @@ pub fn decide(
     kind: ApprovalKind,
     facts: &ApprovalFacts,
     allowed: &BTreeSet<String>,
+    domains: &BTreeSet<String>,
 ) -> Decision {
     let command = || match policy.approval {
         Approval::Untrusted => {
@@ -70,6 +77,19 @@ pub fn decide(
         Approval::OnRequest | Approval::Never => Decision::Allow,
     };
     match kind {
+        ApprovalKind::WebFetch => {
+            if facts
+                .domain
+                .as_ref()
+                .is_some_and(|domain| domains.contains(domain))
+            {
+                Decision::Allow
+            } else if policy.approval == Approval::Never {
+                Decision::Deny
+            } else {
+                Decision::Ask
+            }
+        }
         ApprovalKind::WriteScope if policy.sandbox == Sandbox::DangerFullAccess => Decision::Allow,
         ApprovalKind::Command => command(),
         ApprovalKind::Escalate
@@ -117,6 +137,15 @@ impl ApprovalAnswer {
             allowed.insert(command.clone());
         }
     }
+    /// 今回の答えだけからドメインを覚える。再開した記録は許可を復元しない。
+    pub(crate) fn remember_domain(&self, request: &ApprovalRecord, domains: &mut BTreeSet<String>) {
+        if self.outcome == ApprovalOutcome::ApprovedForSession
+            && request.kind == ApprovalKind::WebFetch
+            && let Some(domain) = &request.facts.domain
+        {
+            domains.insert(domain.clone());
+        }
+    }
 }
 
 /// 利用者に代わって確認に答える境界。LLM の道具には公開しない。
@@ -144,6 +173,7 @@ pub fn policy_denial_message(kind: ApprovalKind) -> &'static str {
         ApprovalKind::WriteScope => text::POLICY_WRITE_DENIED,
         ApprovalKind::Command => text::POLICY_COMMAND_DENIED,
         ApprovalKind::Escalate => text::POLICY_ESCALATE_DENIED,
+        ApprovalKind::WebFetch => text::POLICY_WEB_DENIED,
     }
 }
 
@@ -153,6 +183,7 @@ pub fn user_denial_message(kind: ApprovalKind, message: Option<&str>) -> String 
         ApprovalKind::WriteScope => text::USER_WRITE_DENIED,
         ApprovalKind::Command => text::USER_COMMAND_DENIED,
         ApprovalKind::Escalate => text::USER_ESCALATE_DENIED,
+        ApprovalKind::WebFetch => text::USER_WEB_DENIED,
     };
     match message {
         Some(message) => text::with_user_message(denial, message),

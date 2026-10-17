@@ -129,5 +129,21 @@
       "type": "object"
     },
     "name": "edit"
+  },
+  {
+    "description": "Fetch an HTTPS URL and return its text content.",
+    "input_schema": {
+      "properties": {
+        "url": {
+          "description": "Absolute HTTPS URL to fetch.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "url"
+      ],
+      "type": "object"
+    },
+    "name": "web_fetch"
   }
 ]

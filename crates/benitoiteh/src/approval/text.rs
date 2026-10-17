@@ -12,3 +12,7 @@ pub const USER_ESCALATE_DENIED: &str =
 pub fn with_user_message(denial: &str, message: &str) -> String {
     format!("{denial}\nMessage from the user: {message}")
 }
+
+pub const POLICY_WEB_DENIED: &str = "Tool call was denied by the never approval policy: this web domain requires approval. Use a domain in web_fetch.allowed_domains or stop and report.";
+pub const USER_WEB_DENIED: &str =
+    "The user denied this web fetch. No DNS lookup or HTTP request was made by this call.";

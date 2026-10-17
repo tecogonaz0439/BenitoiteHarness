@@ -97,6 +97,7 @@ impl Agent {
                 let (batch, rest) = remaining.split_at(count);
                 let tools = &self.tools;
                 let context = &self.tool_context;
+                let session_domains = &self.session_domains;
                 let outputs = thread::scope(|scope| {
                     let mut workers = Vec::new();
                     let mut failed = false;
@@ -116,6 +117,7 @@ impl Agent {
                                     Invocation {
                                         call_id: &prepared.call.id,
                                         cancelled,
+                                        session_domains,
                                     },
                                 )
                             }
@@ -158,6 +160,7 @@ impl Agent {
                             Invocation {
                                 call_id: &first.call.id,
                                 cancelled,
+                                session_domains: &self.session_domains,
                             },
                         );
                         self.approve(&first.call, validated, output, cancelled, events, summary)?
@@ -188,6 +191,7 @@ impl Agent {
             request.kind,
             &request.facts,
             &self.allowed_commands,
+            &self.session_domains,
         ) {
             Decision::Allow => return Ok(self.execute_approved(call, validated, cancelled)),
             Decision::Deny => {
@@ -227,6 +231,7 @@ impl Agent {
             self.approver.approve(&record)
         };
         answer.remember_command(&record, &mut self.allowed_commands);
+        answer.remember_domain(&record, &mut self.session_domains);
         summary.add_approval(answer.outcome);
         self.emit(
             events,
@@ -271,6 +276,7 @@ impl Agent {
                 Invocation {
                     call_id: &call.id,
                     cancelled,
+                    session_domains: &self.session_domains,
                 },
             )
         }

@@ -475,6 +475,7 @@ fn tool_checkpoints_are_written_only_at_execution_and_cancelled_capture_stops_wr
         &call,
         ApprovalStatus::Unapproved,
         Invocation {
+            session_domains: &Default::default(),
             call_id: "cancelled",
             cancelled: &cancelled,
         },
@@ -850,6 +851,7 @@ fn cancellation_during_capture_prevents_writes_and_bash_and_does_not_record_exec
                         &call,
                         ApprovalStatus::Approved,
                         Invocation {
+                            session_domains: &Default::default(),
                             call_id: "cancel-mid-capture",
                             cancelled: &worker_cancelled,
                         },
@@ -1241,5 +1243,30 @@ fn unchanged_manifests_are_byte_identical_and_excluded_entries_have_no_attribute
         vec![".git", "a", "a-", "a/file"]
     );
     assert!(!serde_json::to_string(&manifest)?.contains(":null"));
+    Ok(())
+}
+
+// 作成時の関門: ウェブの通信をファイルと一緒に戻せると誤認する退行を、巻き戻しの境界で捕まえる。
+#[test]
+fn web_fetch_calls_are_reported_as_irreversible_after_the_selected_checkpoint() -> TestResult {
+    let f = Fixture::new()?;
+    let mut server = MockProvider::start(vec![
+        response(&[("web_fetch", json!({"url":"https://mock.invalid/path"}))]),
+        response(&[]),
+    ])?;
+    let mut agent = f.agent(&server)?;
+    run(&mut agent)?;
+    let points = agent.checkpoints()?;
+    let first = points.first().ok_or("missing checkpoint")?;
+    let report = rewind(&mut agent, &first.checkpoint.id, RewindScope::Files, false)?;
+    assert_eq!(report.irreversible.len(), 1);
+    assert!(
+        report
+            .irreversible
+            .first()
+            .is_some_and(|operation| operation.summary.contains("web_fetch")
+                && operation.summary.contains("https://mock.invalid/path"))
+    );
+    server.shutdown()?;
     Ok(())
 }

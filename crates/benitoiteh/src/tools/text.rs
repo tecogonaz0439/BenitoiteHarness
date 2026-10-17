@@ -66,6 +66,7 @@ pub fn argument(name: &str) -> &'static str {
         "context" => "Number of surrounding lines to show.",
         "files_only" => "Return only paths of matching files.",
         "content" => "Complete file contents.",
+        "url" => "Absolute HTTPS URL to fetch.",
         "old_string" => "Text to replace.",
         "new_string" => "Replacement text.",
         "replace_all" => "Replace every occurrence.",
@@ -220,3 +221,51 @@ pub fn bash_truncated(
 }
 
 pub const CHECKPOINT_CANCELLED: &str = "Tool execution was cancelled while recording a checkpoint.";
+
+pub const WEB_FETCH: (&str, &str) = prompt_parts(include_str!("../../prompts/tools/web_fetch.md"));
+pub const WEB_URL: &str = "Invalid web URL. Use an absolute https:// URL with an ASCII domain of at least two labels (punycode xn-- for international names), port 443 or no port, and no user information or IP address.";
+pub const WEB_ADDRESS: &str =
+    "Web fetch refused: DNS returned a private or special-use address. Choose a public HTTPS site.";
+pub const WEB_DNS: &str = "Could not resolve the web domain. Check the domain and retry.";
+pub const WEB_TIMEOUT: &str =
+    "Web fetch exceeded its total time limit. Retry later or use another URL.";
+pub const WEB_CANCELLED: &str = "Web fetch was cancelled.";
+pub const WEB_WORKER: &str = "Could not complete the web fetch worker. Retry later.";
+pub const WEB_REDIRECT: &str =
+    "Web fetch received a missing, invalid, or ambiguous Location header. Use a valid HTTPS URL.";
+pub const WEB_REDIRECT_LIMIT: &str =
+    "Web fetch stopped after five redirects. Use the final HTTPS URL directly.";
+pub const WEB_ENCODING: &str = "Web fetch refused an encoded response. Only an absent Content-Encoding or a single identity value is supported.";
+pub const WEB_CONTENT_TYPE: &str = "Web fetch requires a Content-Type of HTML, text/*, application/json, or a +json type. Choose a text resource.";
+pub const WEB_CHARSET: &str =
+    "Web fetch does not support this charset. Use UTF-8, us-ascii, or iso-8859-1 (latin1).";
+pub const WEB_UTF16: &str = "Web fetch refused a UTF-16 byte order mark. Use a UTF-8 resource.";
+
+pub fn web_approval(url: &str, domain: &str) -> String {
+    format!(
+        "Fetching {url} requires approval for domain {domain}. No DNS lookup or HTTP request has been made. Approve once, allow this domain for this session, or deny."
+    )
+}
+pub fn web_redirect_approval(url: &str) -> String {
+    format!(
+        "Web fetch stopped before following a redirect to a domain requiring approval. No DNS lookup or HTTP request was made for the target. Call web_fetch again with this URL to request approval:\nURL: {url}"
+    )
+}
+pub fn web_http(error: &crate::http::HttpError) -> String {
+    format!("Web fetch failed: {error} Check the URL and response size, or retry later.")
+}
+pub fn web_status(status: u16, body: &str) -> String {
+    format!("Web fetch returned HTTP status {status}. Check the URL or retry later.\n{body}")
+}
+pub fn web_result(url: &str, kind: &str, body: &str, total: usize) -> String {
+    let mut output = format!(
+        "URL: {url}\nContent-Type: {kind}\n\n{}",
+        super::truncate::prefix(body, 51200)
+    );
+    if total > 51200 {
+        output.push_str(&format!(
+            "\n[Showing the first 51200 of {total} bytes of the converted text.]"
+        ));
+    }
+    output
+}

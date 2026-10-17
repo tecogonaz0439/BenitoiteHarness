@@ -1323,6 +1323,7 @@ fn write_and_edit_follow_selected_roots_protection_and_approval_policy() -> Test
                     cwd: Some(f.project.clone()),
                     path: Some(path.clone()),
                     sandbox_policy: Some(sandbox.name().into()),
+                    ..ApprovalFacts::default()
                 };
                 assert_eq!(
                     requests
@@ -1621,5 +1622,135 @@ fn bash_spill_metadata_is_recorded_for_the_correct_invocation_only() -> TestResu
     assert!(spill.is_none());
     assert_eq!(fs::read_dir(directory.join("spill"))?.count(), 1);
     server.shutdown()?;
+    Ok(())
+}
+
+// 作成時の関門: 道具単体では届かない never の扱い、拒否の文と承認の記録の配線を守る。
+#[test]
+fn web_approval_policy_and_denials_are_recorded() -> TestResult {
+    struct WebApprover {
+        requests: Arc<Mutex<Vec<ApprovalRecord>>>,
+        outcome: ApprovalOutcome,
+    }
+    impl Approver for WebApprover {
+        fn approve(&mut self, request: &ApprovalRecord) -> ApprovalAnswer {
+            if let Ok(mut records) = self.requests.lock() {
+                records.push(request.clone());
+            }
+            ApprovalAnswer {
+                outcome: if request.facts.domain.as_deref() == Some("mock.invalid") {
+                    self.outcome
+                } else {
+                    ApprovalOutcome::Denied
+                },
+                message: (self.outcome == ApprovalOutcome::DeniedWithMessage)
+                    .then(|| "Do not fetch this site.".into()),
+            }
+        }
+    }
+    for mode in [Mode::Normal, Mode::Restricted] {
+        for (policy, answer, expected_requests) in [
+            (Approval::Never, ApprovalOutcome::ApprovedForSession, 0),
+            (Approval::OnRequest, ApprovalOutcome::Denied, 4),
+            (Approval::OnRequest, ApprovalOutcome::DeniedWithMessage, 4),
+        ] {
+            let f = Fixture::new()?;
+            let mut server = MockProvider::start(vec![
+                ResponseScript::sse(calls(
+                    &[
+                        (
+                            "web_fetch",
+                            json!({"url":"https://MOCK.INVALID.:443/first"}),
+                        ),
+                        ("web_fetch", json!({"url":"https://mock.invalid/second"})),
+                        ("web_fetch", json!({"url":"https://different.invalid/"})),
+                        ("web_fetch", json!({"url":"https://sub.mock.invalid/"})),
+                    ],
+                    "tool_calls",
+                )),
+                final_text(),
+            ])?;
+            let mut config = f.config(&server, AdapterKind::OpenAiChat);
+            config.mode = mode;
+            let (agent, directory) = f.agent(config)?;
+            let requests = Arc::new(Mutex::new(Vec::new()));
+            let mut agent = agent.with_approvals(
+                Box::new(WebApprover {
+                    requests: Arc::clone(&requests),
+                    outcome: answer,
+                }),
+                ApprovalPolicy {
+                    approval: policy,
+                    sandbox: Sandbox::DangerFullAccess,
+                    sandboxed: false,
+                },
+            );
+            let (report, _) = run(&mut agent, Arc::new(AtomicBool::new(false)), |_| {})?;
+            assert_eq!(report.outcome, Outcome::Completed);
+            let asked = requests.lock().map_err(|_| "request lock")?;
+            assert_eq!(
+                asked.len(),
+                expected_requests,
+                "{mode:?} {policy:?} {answer:?}"
+            );
+            for request in asked.iter() {
+                assert_eq!(request.kind, ApprovalKind::WebFetch);
+                assert!(request.facts.command.is_none());
+                assert!(
+                    request
+                        .facts
+                        .url
+                        .as_ref()
+                        .is_some_and(|url| url.starts_with("https://"))
+                );
+            }
+            let records = read_records(&directory)?;
+            let approvals = records
+                .iter()
+                .filter_map(|record| {
+                    if let Record::Approval { kind, facts, .. } = record {
+                        Some((kind, facts))
+                    } else {
+                        None
+                    }
+                })
+                .collect::<Vec<_>>();
+            assert_eq!(approvals.len(), expected_requests.saturating_mul(2));
+            assert!(
+                approvals
+                    .iter()
+                    .all(|(kind, facts)| **kind == Some(ApprovalKind::WebFetch)
+                        && facts.domain.is_some()
+                        && facts.url.is_some())
+            );
+            let results = records
+                .iter()
+                .filter_map(|record| {
+                    if let Record::ToolResult { result, .. } = record {
+                        Some(result)
+                    } else {
+                        None
+                    }
+                })
+                .collect::<Vec<_>>();
+            assert_eq!(results.len(), 4);
+            assert!(results.iter().all(|result| result.is_error));
+            if policy == Approval::Never {
+                assert!(
+                    results
+                        .iter()
+                        .all(|r| r.text.contains("never approval policy"))
+                );
+            }
+            if answer == ApprovalOutcome::DeniedWithMessage && policy != Approval::Never {
+                assert!(
+                    results
+                        .first()
+                        .is_some_and(|r| r.text.contains("Do not fetch this site."))
+                );
+            }
+            server.shutdown()?;
+        }
+    }
     Ok(())
 }

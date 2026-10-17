@@ -254,6 +254,7 @@ fn bash_never_falls_back_when_sandbox_preparation_fails() -> TestResult {
             &call,
             ApprovalStatus::Approved,
             Invocation {
+                session_domains: &Default::default(),
                 call_id: "missing",
                 cancelled: &AtomicBool::new(false),
             },
