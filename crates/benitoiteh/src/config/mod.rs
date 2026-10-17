@@ -406,6 +406,37 @@ impl UserConfig {
             read: ReadConfig { exclude },
         })
     }
+
+    /// 再開では記録のモード・送り先を既定にし、今の安全の設定で解決する。
+    pub fn resolve_resume(
+        &self,
+        args: &ExecArgs,
+        project: &ProjectConfig,
+        cwd: &Path,
+        state: &crate::session::ResumeState,
+    ) -> Result<ResolvedExec, ConfigError> {
+        let mut args = args.clone();
+        let recorded_mode = match state.mode {
+            crate::session::RecordedMode::Restricted => Mode::Restricted,
+            crate::session::RecordedMode::Normal => Mode::Normal,
+        };
+        args.mode = Some(args.mode.unwrap_or(recorded_mode));
+        if recorded_mode == Mode::Restricted && args.mode == Some(Mode::Normal) {
+            return Err(ConfigError::Invalid(text::RESUME_MODE));
+        }
+        let different_provider = args
+            .provider
+            .as_ref()
+            .is_some_and(|name| *name != state.destination.provider);
+        if !different_provider {
+            args.provider = Some(state.destination.provider.clone());
+            if args.model.is_none() && !state.destination.model.is_empty() {
+                args.model = Some(state.destination.model.clone());
+            }
+        }
+        args.project = Some(state.project_dir.clone());
+        self.resolve_exec(&args, project, cwd)
+    }
 }
 
 /// exec がアダプタとループに渡す、優先順位を解決済みの設定。

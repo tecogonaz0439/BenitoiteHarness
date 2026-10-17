@@ -40,6 +40,7 @@ pub struct CompactOptions {
     pub reason: CompactionReason,
     pub instructions: Option<String>,
     pub keep_recent: bool,
+    pub separate_request: bool,
 }
 
 impl CompactOptions {
@@ -49,6 +50,7 @@ impl CompactOptions {
             reason,
             instructions: None,
             keep_recent: true,
+            separate_request: false,
         }
     }
 }
@@ -230,7 +232,8 @@ impl Agent {
             report.summarized_items = 0;
             return Ok(report);
         }
-        let continuing = options.reason != CompactionReason::Overflow
+        let continuing = !options.separate_request
+            && options.reason != CompactionReason::Overflow
             && self.config.capabilities.tool_choice_none;
         let mut result = None;
         let mut shorten = options.reason == CompactionReason::Overflow;

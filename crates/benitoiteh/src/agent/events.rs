@@ -39,6 +39,14 @@ pub enum AgentEvent {
     /// 送り先と送る内容の通知。
     SessionStart {
         session_id: String,
+        #[serde(default)]
+        resumed: bool,
+        #[serde(default)]
+        base_url: Option<String>,
+        #[serde(default)]
+        system_prompt_sha256: Option<String>,
+        #[serde(default)]
+        tools_sha256: Option<String>,
         mode: RecordedMode,
         provider: String,
         model: String,
@@ -121,6 +129,10 @@ impl AgentEvent {
         Some(match self {
             Self::SessionStart {
                 session_id,
+                resumed,
+                base_url,
+                system_prompt_sha256,
+                tools_sha256,
                 mode,
                 provider,
                 model,
@@ -131,6 +143,10 @@ impl AgentEvent {
                 skipped_instructions,
             } => Record::SessionStart {
                 session_id: session_id.clone(),
+                resumed: *resumed,
+                base_url: base_url.clone(),
+                system_prompt_sha256: system_prompt_sha256.clone(),
+                tools_sha256: tools_sha256.clone(),
                 mode: *mode,
                 provider: provider.clone(),
                 model: model.clone(),

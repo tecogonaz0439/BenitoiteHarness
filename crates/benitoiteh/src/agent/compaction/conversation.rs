@@ -340,39 +340,7 @@ pub(super) fn rebuild(
     if replay == ReasoningReplay::SameDestination {
         for item in &mut retained {
             if let Item::AssistantTurn(turn) = item {
-                turn.parts
-                    .retain(|part| !matches!(part, AssistantPart::Reasoning(_)));
-                match turn.raw_items.adapter {
-                    AdapterKind::AnthropicMessages => turn.raw_items.items.retain(|raw| {
-                        !matches!(
-                            raw.get("type").and_then(serde_json::Value::as_str),
-                            Some("thinking" | "redacted_thinking")
-                        )
-                    }),
-                    AdapterKind::OpenAiResponses => {
-                        let had_reasoning = turn.raw_items.items.iter().any(|raw| {
-                            raw.get("type").and_then(serde_json::Value::as_str) == Some("reasoning")
-                        });
-                        turn.raw_items.items.retain(|raw| {
-                            raw.get("type").and_then(serde_json::Value::as_str) != Some("reasoning")
-                        });
-                        if had_reasoning {
-                            for raw in &mut turn.raw_items.items {
-                                if let Some(fields) = raw.as_object_mut() {
-                                    fields.remove("id");
-                                }
-                            }
-                        }
-                    }
-                    AdapterKind::OpenAiChat => {
-                        for raw in &mut turn.raw_items.items {
-                            if let Some(fields) = raw.as_object_mut() {
-                                fields.remove("reasoning_content");
-                                fields.remove("reasoning");
-                            }
-                        }
-                    }
-                }
+                crate::agent::reasoning::strip_reasoning(turn);
             }
         }
     }

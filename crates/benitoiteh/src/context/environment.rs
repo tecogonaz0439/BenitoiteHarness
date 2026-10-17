@@ -87,6 +87,31 @@ impl Environment {
         self.render_fields(Some(previous))
     }
 
+    /// 記録に描いた欄と照合して、今の値がどこにもない欄だけを追加する。
+    /// 消えた欄や、読まなくなった指示のファイルは伝えられない（設計書 01-05「再開」）。
+    pub fn changes_since_rendered(&self, previous: &[&str]) -> Option<String> {
+        let fields = self
+            .fields()
+            .into_iter()
+            .map(|(name, value)| {
+                if name == "project_instructions" {
+                    value
+                } else {
+                    format!("<{name}>{}</{name}>", escape(&value))
+                }
+            })
+            .filter(|field| !previous.iter().any(|rendered| rendered.contains(field)))
+            .collect::<Vec<_>>();
+        if fields.is_empty() {
+            None
+        } else {
+            Some(format!(
+                "<environment>\n{}\n</environment>\n",
+                fields.join("\n")
+            ))
+        }
+    }
+
     fn render_fields(&self, previous: Option<&Self>) -> Option<String> {
         let fields = self.fields();
         let previous_fields = previous.map(Self::fields);

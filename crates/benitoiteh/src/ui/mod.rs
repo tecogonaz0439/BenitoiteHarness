@@ -26,6 +26,27 @@ pub fn terminal_text(input: &str, multiline: bool) -> String {
     output
 }
 
+/// 一覧の一件を、端末の制御文字を含まない一行にする。
+pub fn session_entry(entry: &crate::session::SessionEntry) -> String {
+    if let Some(error) = &entry.error {
+        return text::session_error(&entry.id, &terminal_text(error, false));
+    }
+    let mode = text::session_mode(entry.mode);
+    let project = entry
+        .project_dir
+        .as_ref()
+        .map(|path| terminal_text(&path.to_string_lossy(), false))
+        .unwrap_or_default();
+    text::session_entry(
+        &entry.id,
+        entry.started_at.as_deref().unwrap_or_default(),
+        mode,
+        &project,
+        &terminal_text(entry.first_request.as_deref().unwrap_or_default(), false),
+        entry.active,
+    )
+}
+
 /// 非対話の出力先。JSON と端末用の整形をここで分ける。
 pub struct ExecOutput {
     json: bool,

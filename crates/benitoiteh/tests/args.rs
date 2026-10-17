@@ -59,6 +59,13 @@ fn exec_arguments_preserve_explicit_values_and_the_request_source() -> Result<()
     let args = ExecArgs::parse(["--", "--request"])?;
     assert_eq!(args.request, Request::Text("--request".to_owned()));
     assert_eq!(args.request.read(&mut Cursor::new("unused"))?, "--request");
+    assert_eq!(
+        ExecArgs::parse(["--resume", "id", "request"])?
+            .resume
+            .as_deref(),
+        Some("id")
+    );
+    assert!(ExecArgs::parse(["--continue", "request"])?.continue_session);
     let path = OsString::from_vec(vec![b'p', 0xff]);
     let args = ExecArgs::parse([
         OsString::from("--project"),
@@ -117,14 +124,13 @@ fn exec_arguments_reject_duplicates_invalid_values_and_unavailable_options() {
         vec!["--max-check-fix", "abc", "request"],
         vec!["--json=true", "request"],
         vec!["one", "two"],
+        vec!["--resume", "id", "--continue", "request"],
     ] {
         assert!(ExecArgs::parse(args.clone()).is_err(), "{args:?}");
     }
     for (option, value) in [
         ("--allow", Some("File.Read,File.Write")),
         ("--project-parent", Some("/project")),
-        ("--resume", Some("id")),
-        ("--continue", None),
     ] {
         let mut args = vec![option];
         args.extend(value);

@@ -23,14 +23,24 @@ pub(super) struct LogState {
     file: File,
     has_header: bool,
     failed: bool,
+    truncate_at: Option<u64>,
 }
 
 impl LogState {
+    pub(super) fn resumed(file: File, complete: u64) -> Self {
+        Self {
+            file,
+            has_header: true,
+            failed: false,
+            truncate_at: Some(complete),
+        }
+    }
     pub(super) fn new(file: File) -> Self {
         Self {
             file,
             has_header: false,
             failed: false,
+            truncate_at: None,
         }
     }
 }
@@ -86,6 +96,14 @@ impl SessionWriter {
         }
         bytes.push(b'\n');
         log.failed = true;
+        // 起動の検査に失敗したときは記録を保つ。実際の最初の追記の直前にだけ修復する
+        // （設計書 01-05「再開」、P4-02 の点検の指示 1）。
+        if let Some(complete) = log.truncate_at {
+            if log.file.metadata()?.len() != complete {
+                rustix::fs::ftruncate(&log.file, complete)?;
+            }
+            log.truncate_at = None;
+        }
         log.file.write_all(&bytes)?;
         log.file.flush()?;
         log.failed = false;
@@ -99,6 +117,7 @@ pub struct SpillWriter {
     _session: Session,
     file: File,
     info: SpillInfo,
+    reserved: u64,
 }
 
 impl SpillWriter {
@@ -115,6 +134,7 @@ impl SpillWriter {
             name,
             rustix::fs::AtFlags::empty(),
         )?;
+        self._session.release(self.reserved);
         Ok(())
     }
 
@@ -128,6 +148,7 @@ impl SpillWriter {
         let file = create_file(&session.inner.spill, &name, OFlags::WRONLY)?;
         Ok(Self {
             _session: session,
+            reserved: 0,
             file,
             info: SpillInfo {
                 path: PathBuf::from("spill").join(name),
@@ -149,9 +170,14 @@ impl SpillWriter {
 
     fn finish_output(&mut self) -> Result<(), SessionError> {
         if self.info.discarded_bytes != 0 {
-            self.file.write_all(
-                text::spill_footer(self.info.written_bytes, self.info.discarded_bytes).as_bytes(),
-            )?;
+            let footer = text::spill_footer(self.info.written_bytes, self.info.discarded_bytes);
+            let bytes = u64::try_from(footer.len())
+                .map_err(|_| io::Error::other(text::COUNTER_OVERFLOW))?;
+            if !self._session.reserve(bytes) {
+                return Err(SessionError::Invalid(text::STORAGE_LIMIT));
+            }
+            self.reserved = self.reserved.saturating_add(bytes);
+            self.file.write_all(footer.as_bytes())?;
         }
         self.file.flush()?;
         Ok(())
@@ -166,7 +192,22 @@ impl Write for SpillWriter {
         let stored = bytes
             .get(..keep)
             .ok_or_else(|| io::Error::other(text::COUNTER_OVERFLOW))?;
-        let saved = self.file.write(stored)?;
+        let reservation =
+            u64::try_from(stored.len()).map_err(|_| io::Error::other(text::COUNTER_OVERFLOW))?;
+        if !self._session.reserve(reservation) {
+            return Err(io::Error::other(text::STORAGE_LIMIT));
+        }
+        let saved = match self.file.write(stored) {
+            Ok(saved) => saved,
+            Err(error) => {
+                self._session.release(reservation);
+                return Err(error);
+            }
+        };
+        let saved_reservation = u64::try_from(saved).unwrap_or(u64::MAX);
+        self._session
+            .release(reservation.saturating_sub(saved_reservation));
+        self.reserved = self.reserved.saturating_add(saved_reservation);
         let saved_count =
             u64::try_from(saved).map_err(|_| io::Error::other(text::COUNTER_OVERFLOW))?;
         self.info.written_bytes = self

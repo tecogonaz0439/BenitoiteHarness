@@ -2,15 +2,21 @@
 
 mod files;
 mod id;
+mod quota;
 mod record;
 mod replay;
+mod resume;
+mod scan;
 mod storage;
 mod text;
 
 pub use files::FileHistory;
 pub use id::SessionId;
+pub use quota::{StorageUsage, storage_usage};
 pub use record::*;
 pub use replay::{read_records, replay};
+pub use resume::{ReasoningContext, ResumeState};
+pub use scan::{SessionEntry, continue_session, list_sessions};
 pub use storage::{SessionWriter, SpillWriter};
 
 use std::fmt;
@@ -18,6 +24,7 @@ use std::fs::{self, DirBuilder, File};
 use std::io;
 use std::os::unix::fs::{DirBuilderExt, MetadataExt};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, AtomicU64};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime};
 
@@ -108,9 +115,74 @@ struct SessionState {
     _lock: File,
     temporary: PathBuf,
     temporary_identity: (u64, u64),
+    available: AtomicU64,
+    limit_notified: AtomicBool,
+    resume: Mutex<Option<ResumeState>>,
 }
 
 impl Session {
+    /// 既存の記録を排他に開く。失敗しても記録を削除しない。
+    pub fn open(paths: &DataPaths, id: &SessionId) -> Result<Self, SessionError> {
+        let sessions = sessions_root(&paths.sessions_dir)?;
+        let directory = open_directory_at(&sessions, id.as_str())?;
+        let lock = open_existing_file(&directory, "lock", OFlags::RDWR)?;
+        try_lock(&lock)?;
+        if lock.metadata()?.nlink() == 0 {
+            return Err(io::Error::from(io::ErrorKind::NotFound).into());
+        }
+        let path = crate::safe_fs::resolved_path(&directory)?;
+        let record =
+            open_existing_file(&directory, "session.jsonl", OFlags::WRONLY | OFlags::APPEND)?;
+        let reader_file = open_existing_file(&directory, "session.jsonl", OFlags::RDONLY)?;
+        if record.metadata()?.ino() != reader_file.metadata()?.ino() {
+            return Err(SessionError::Invalid(text::UNSAFE_PATH));
+        }
+        let root = ScopeRoot::open(&path)?;
+        let (records, complete) = replay::read_records_from(&root, reader_file)?;
+        if !matches!(records.first(), Some(Record::Header(header)) if header.session_id == id.as_str())
+        {
+            return Err(SessionError::Invalid(text::INVALID_FORMAT));
+        }
+        let resume = ResumeState::from_records(&records)?;
+        let spill = open_directory_at(&directory, "spill")?;
+        let temporary = paths.temporary_root.join(format!("benitoiteh-{id}"));
+        match fs::symlink_metadata(&temporary) {
+            Ok(metadata) if private_metadata(&metadata, true) => fs::remove_dir_all(&temporary)?,
+            Ok(_) => return Err(SessionError::Invalid(text::UNSAFE_PATH)),
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+            Err(error) => return Err(error.into()),
+        }
+        DirBuilder::new().mode(0o700).create(&temporary)?;
+        let metadata = fs::symlink_metadata(&temporary)?;
+        if !private_metadata(&metadata, true) {
+            return Err(SessionError::Invalid(text::UNSAFE_PATH));
+        }
+        Ok(Self {
+            inner: Arc::new(SessionState {
+                id: id.clone(),
+                path,
+                spill,
+                log: Mutex::new(storage::LogState::resumed(record, complete)),
+                _lock: lock,
+                temporary,
+                temporary_identity: (metadata.dev(), metadata.ino()),
+                available: AtomicU64::new(quota::SESSION_LIMIT),
+                limit_notified: AtomicBool::new(false),
+                resume: Mutex::new(Some(resume)),
+            }),
+        })
+    }
+
+    /// 開くときに一度解析した復元状態を、起動処理へ移す。
+    pub fn take_resume_state(&self) -> Result<ResumeState, SessionError> {
+        self.inner
+            .resume
+            .lock()
+            .map_err(|_| SessionError::Invalid(text::INVALID_FORMAT))?
+            .take()
+            .ok_or(SessionError::Invalid(text::INVALID_FORMAT))
+    }
+
     /// 排他に作ったデータ領域をロックしてから、共有の一時領域を作る。
     pub fn create(paths: &DataPaths, id: SessionId) -> Result<Self, SessionError> {
         let sessions = sessions_root(&paths.sessions_dir)?;
@@ -138,6 +210,9 @@ impl Session {
                     _lock: lock,
                     temporary,
                     temporary_identity: (metadata.dev(), metadata.ino()),
+                    available: AtomicU64::new(quota::SESSION_LIMIT),
+                    limit_notified: AtomicBool::new(false),
+                    resume: Mutex::new(None),
                 }),
             })
         })();
@@ -237,23 +312,44 @@ pub fn cleanup(
         else {
             continue;
         };
-        if !now
-            .duration_since(id.started_at())
-            .is_ok_and(|age| age > retention)
-        {
-            continue;
-        }
         let metadata = fs::symlink_metadata(entry.path())?;
         if !private_metadata(&metadata, true) {
             continue;
         }
+        let directory = open_directory_at(&sessions, id.as_str())?;
+        if !expired(&directory, retention, now)? {
+            continue;
+        }
         let lock = inactive_lock(&sessions, &id)?;
         if let Inactive::Locked(_guard) = lock {
+            let directory = open_directory_at(&sessions, id.as_str())?;
+            // 候補の判定後に再開され更新された記録は消さない（設計書 01-05「記録を残す期間」）。
+            if !expired(&directory, retention, now)? {
+                continue;
+            }
             fs::remove_dir_all(entry.path())?;
             report.sessions_removed = report.sessions_removed.saturating_add(1);
         }
     }
     Ok(report)
+}
+
+fn expired(directory: &File, retention: Duration, now: SystemTime) -> Result<bool, SessionError> {
+    let stat = match rustix::fs::statat(
+        directory,
+        "session.jsonl",
+        rustix::fs::AtFlags::SYMLINK_NOFOLLOW,
+    ) {
+        Ok(stat) => stat,
+        Err(rustix::io::Errno::NOENT) => rustix::fs::fstat(directory)?,
+        Err(error) => return Err(error.into()),
+    };
+    let modified = u64::try_from(stat.st_mtime)
+        .ok()
+        .and_then(|seconds| SystemTime::UNIX_EPOCH.checked_add(Duration::from_secs(seconds)));
+    Ok(modified
+        .and_then(|time| now.duration_since(time).ok())
+        .is_some_and(|age| age > retention))
 }
 
 enum Inactive {
@@ -285,6 +381,7 @@ fn inactive_lock(sessions: &File, id: &SessionId) -> Result<Inactive, SessionErr
         return Ok(Inactive::Busy);
     }
     match try_lock(&lock) {
+        Ok(()) if lock.metadata()?.nlink() == 0 => Ok(Inactive::Missing),
         Ok(()) => Ok(Inactive::Locked(lock)),
         Err(SessionError::Locked) => Ok(Inactive::Busy),
         Err(error) => Err(error),
@@ -331,6 +428,19 @@ fn create_file(parent: &File, name: &str, flags: OFlags) -> Result<File, Session
         name,
         flags | OFlags::CREATE | OFlags::EXCL | OFlags::NOFOLLOW | OFlags::CLOEXEC,
         Mode::RUSR | Mode::WUSR,
+    )?);
+    if !private_metadata(&file.metadata()?, false) {
+        return Err(SessionError::Invalid(text::UNSAFE_PATH));
+    }
+    Ok(file)
+}
+
+fn open_existing_file(parent: &File, name: &str, flags: OFlags) -> Result<File, SessionError> {
+    let file = File::from(openat(
+        parent,
+        name,
+        flags | OFlags::NOFOLLOW | OFlags::NONBLOCK | OFlags::CLOEXEC,
+        Mode::empty(),
     )?);
     if !private_metadata(&file.metadata()?, false) {
         return Err(SessionError::Invalid(text::UNSAFE_PATH));
