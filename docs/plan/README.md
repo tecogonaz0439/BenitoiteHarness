@@ -36,7 +36,7 @@
 | [P2-04](tasks/P2-04-bwrap-checks.md) | bubblewrap の版と setuid の確かめ、特権の除去（BH-094 の一部） | P2-01 | 完了 |
 | [P3-01](tasks/P3-01-project-instructions.md) | プロジェクトの指示のファイル（BH-013 の決定） | P1-10 | 完了 |
 | [P3-02](tasks/P3-02-bash.md) | 通常モードのサンドボックスの方針と `bash` | P2-01、P2-03、P2-04 | 未着手 |
-| [P3-03](tasks/P3-03-openai-responses.md) | `openai-responses` のアダプタ（BH-030） | P1-10 | 作業中 |
+| [P3-03](tasks/P3-03-openai-responses.md) | `openai-responses` のアダプタ（BH-030） | P1-10 | 完了 |
 | [P3-04](tasks/P3-04-approval-policies.md) | 通常モードの承認の方針 | P3-02 | 未着手 |
 
 P1 の作業は P0-04・P0-05（OS のサンドボックス）の結果に依らないので、P0-04・P0-05 が設計者の判断を待つ間に先に進めてよい。
