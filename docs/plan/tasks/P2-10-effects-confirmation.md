@@ -2,7 +2,7 @@
 
 ## 目的
 
-制限モードの実行の前の確認（`ApprovalKind::Effects`。P2-08）を、対話の画面（P4-07 の確認の画面）で、設計書 03-03 の「制限モードの確認」が定める事実をすべて示す形にする。示すのは、スクリプトのパスと増えたエフェクト、エフェクトごとの説明、OS のサンドボックスが許す範囲、`Process.Run` を含むときの許すプログラムと注意、シェルの参照の注意である。
+制限モードの実行の前の確認（`ApprovalKind::Effects`（P2-08）と `ApprovalKind::TestEffects`（P2-12））を、対話の画面（P4-07 の確認の画面）で、設計書 03-03 の「制限モードの確認」が定める事実をすべて示す形にする。示すのは、スクリプトのパスと増えたエフェクト、エフェクトごとの説明、OS のサンドボックスが許す範囲、`Process.Run` を含むときの許すプログラムと注意、シェルの参照の注意である。題、答えのキー、対象のパス、エフェクトの一覧、増えたエフェクト、シェルの参照の行は P2-08 と P2-12 で作ってあるので、この作業では、エフェクトの説明、サンドボックスの範囲、許すプログラムと注意を加え、行の並びを整える。
 
 ## 読む設計書
 
@@ -12,22 +12,22 @@
 - [セキュリティモデル](../../design/03-safety/03-01-security-model.md)の「保証しないこと」（`Process.Run` を許すと、処理系で別のスクリプトを起動できること）
 - [対話の画面](../../design/05-interface/05-02-tui.md)の「確認の画面」「出力の示し方」（目に見えない文字、幅の数え方）
 - [未決事項](../../design/open-issues.md)の BH-053（2026-10-17 の決定: 試作は英語だけ）
-- 既存のもの: P4-07 の確認の画面（`src/ui/tui/confirmation.rs`、事実の行の作り方、答えのキー、`fits`、`ApprovalPrompt`）、P2-08 の `ApprovalKind::Effects` と `ApprovalFacts` の欄、`sandbox::restricted_policy`、`assets/benitoite/v0.0.7/skill/SKILL.md` の「Before running」の表
+- 既存のもの: P4-07 の確認の画面（`src/ui/tui/confirmation.rs`、事実の行の作り方、答えのキー、`fits`、`ApprovalPrompt`）、P2-08 の `ApprovalKind::Effects` と `ApprovalFacts` の欄（`targets`・`effects`・`added_effects`・`shell_reference`）と事実の行、P2-12 の `ApprovalKind::TestEffects`、`sandbox::restricted_policy`、`assets/benitoite/v0.0.7/skill/SKILL.md` の「Before running」の表
 
 ## この作業が認める型の変更
 
-- `ApprovalFacts` に、サンドボックスの範囲（書ける場所の一覧、IP の通信の可否）、許すプログラムの一覧、シェルの参照の有無の欄を `#[serde(default)]` で加える。P2-08 の確認の要求を作る箇所で埋める。
+- `ApprovalFacts` に、サンドボックスの範囲（書ける場所の一覧、IP の通信の可否）と、許すプログラムの一覧の欄を `#[serde(default)]` で加える。P2-08・P2-12・P2-09 の確認の要求を作る箇所で埋める。
 
 ## 作るもの
 
 - 確認の画面の題と事実の行（`Effects` の種類）。並びは次のとおりとし、どれも `benitoiteh` が作る事実として示す（LLM の説明は事実より前）。
-  1. スクリプトのパス（テストでは対象のパスの一覧）。
-  2. エフェクトの一覧。前に確認したものがあれば、増えたものを先に、印（例: `+`）を付けて示す。`Assert.Check` は示さない。各エフェクトに、同梱の Skill の「Before running」の表の説明の英文（`Console.Write` なら `writes to standard output and standard error`）を添える。説明の英文は、`v0.0.7` の `SKILL.md` の表から写して `approval/text.rs`（か `ui/tui/text.rs`）に置き、写した元の版を注記に書く。
+  1. スクリプトのパス（テストでは対象のパスの一覧）。P2-08 の `Targets` の行。
+  2. エフェクトの一覧。P2-08 の `Effects` と `Added effects` の行を、次の形に改める。前に確認したものがあれば、増えたものを先に、印（例: `+`）を付けて示す。`Assert.Check` は示さない。各エフェクトに、同梱の Skill の「Before running」の表の説明の英文（`Console.Write` なら `writes to standard output and standard error`）を添える。説明の英文は、`v0.0.7` の `SKILL.md` の表から写して `approval/text.rs`（か `ui/tui/text.rs`）に置き、写した元の版を注記に書く。
   3. OS のサンドボックスが許す範囲: 書ける場所の一覧、ネットワークの可否。
   4. `Process.Run` を含むとき: 許すプログラムの一覧（処理系と利用者の設定のもの）、一覧にないプログラムの起動は OS のサンドボックスが拒むこと、`Process.Run` を許すと処理系で別のスクリプトを起動してほかのエフェクトもサンドボックスの範囲で使えるようになること。macOS で処理系のほかのプログラムを許しているときは、そのプログラムがプロセスグループを抜けて起動したプロセスを道具の終わりに止められないこと。
-  5. 報告がシェルの参照を `"present"` と示し、`Process.Run` を含むとき: スクリプトが `Process.shell` を参照していることと、制限モードではシェルの起動を OS のサンドボックスが拒むこと。
-- 答えのキーは、許す・拒否する・言付けを添えて拒否する、の三つとする（「このセッションの間」の答えは作らない）。
-- 4・5 の注意の文と題の英文は、全文を `text` に置き、報告に書く。オーケストレータが取り込む前に文面を見直す。
+  5. 報告がシェルの参照を `"present"` と示し、`Process.Run` を含むとき: スクリプトが `Process.shell` を参照していることと、制限モードではシェルの起動を OS のサンドボックスが拒むこと。P2-08 の `Shell` の行を、この位置に置く。
+- 答えのキーは、P2-08 と P2-12 のとおり、許す・拒否する・言付けを添えて拒否する、の三つとする（「このセッションの間」の答えは作らない）。
+- 3 と 4 の行の英文（見出しと注意の文）は、全文を `text` に置き、報告に書く。オーケストレータが取り込む前に文面を見直す。
 - 03-03 の利用者の言語の訳は示さない。理由: 試作は英語だけとする（BH-053 の 2026-10-17 の決定）。03-03 の該当の記述とこの決定の食い違いは、オーケストレータが設計書で直す。
 - 画面に収まらないときの扱い（許す答えを受け付けない）は、P4-07 の規則をそのまま当てる。事実の行が多い（許すプログラムの一覧が長いなど）ときも、題・すべての事実・答えのキーが収まらなければ許さない。
 - 記録: 確認の要求の記録に、加えた欄を書く。
@@ -36,7 +36,7 @@
 
 - `crates/benitoiteh/src/ui/tui/`（`confirmation.rs`、`text.rs`）
 - `crates/benitoiteh/src/approval/`（事実の欄、`text.rs`）
-- `crates/benitoiteh/src/tools/benitoite_run.rs`・`benitoite_test.rs`・`benitoite_scratch.rs`（事実を埋める箇所）
+- `crates/benitoiteh/src/tools/benitoite_run.rs`・`benitoite_test.rs`・`benitoite_scratch.rs`（事実を埋める箇所。三つの道具が確認の要求を作る部品を共有していれば、その部品だけ）
 - 関係するテスト
 
 ## テスト

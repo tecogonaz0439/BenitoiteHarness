@@ -12,7 +12,7 @@
 - [テスト](../../design/07-quality/07-01-testing.md)の「安全の性質のテスト」（全体と、結果に添える環境の情報）「処理系の用意」「完了の前に通す検査」
 - [セキュリティモデル](../../design/03-safety/03-01-security-model.md)の R1〜R5 と「保証しないこと」「Linux での保証の範囲」
 - [OS のサンドボックス](../../design/03-safety/03-02-sandbox.md)の「サンドボックスを掛けられないとき」
-- 既存のもの: `tests/sandbox_*.rs`、P2-05〜P2-10 で加えたテスト、`scripts/check.sh`、`scripts/remote-linux-run.sh`
+- 既存のもの: `tests/sandbox_*.rs`、P2-05〜P2-10 と P2-12 で加えたテスト、`scripts/check.sh`、`scripts/remote-linux-run.sh`
 
 ## この作業が認める型の変更
 
@@ -25,7 +25,7 @@
 - 07-01 の「安全の性質のテスト」の各項目のうち、制限モードと子プロセスの境界に関わるもの（P2 の対象）を一つずつ挙げ、確かめるテスト（ファイルと関数の名前）、走る OS（macOS、aarch64 の Linux、x86_64 の Linux）、Landlock を要するかを表にする。P4 の対象（巻き戻し、`web_fetch`、画面、`create_project`）は P4-08 の一覧に任せ、この表では「P4」と書くだけにする。
 - テストのない項目は、テストを足す。足せない項目（環境がない、`unsafe` が要るなど）は、理由を表に書く。少なくとも次を確かめる。
   - 制限モードの道具の一覧に `bash` がないこと。`write`・`edit` が `.bnt` の外とプロジェクトの外を拒むこと（既存のテストの確かめ）。
-  - `DYLD_INSERT_LIBRARIES` の項目、`E0512` の項目、`Process.Run` で `/bin/sh` と `python3` を拒む項目、`File.Write`・`Http.Connect` を確認しないスクリプトの項目、確認の答えを偽れない項目、提供者のキーの項目、偽の診断の位置の項目、子孫のプロセスの項目（P2-07・P2-08 で加えたもの）。
+  - `DYLD_INSERT_LIBRARIES` の項目、`E0512` の項目、`Process.Run` で `/bin/sh` と `python3` を拒む項目、`File.Write`・`Http.Connect` を確認しないスクリプトの項目、確認の答えを偽れない項目、提供者のキーの項目、偽の診断の位置の項目、子孫のプロセスの項目（P2-07・P2-08・P2-12 で加えたもの）。
   - bubblewrap がない、利用者の名前空間を作れない、Landlock の ABI の版 3 を使えない Linux で、制限モードが起動しないこと（差し替えで条件を作る）。
   - 処理系の実行ファイルの形の規則（`#!`、書ける場所の中、動的リンク、名前の一覧）で、制限モードが起動しないこと（P2-05）。
 
