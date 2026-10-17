@@ -73,6 +73,8 @@ Benitoite の処理系（`benitoite`）を見つけ、`--version=json` で要る
 - 処理系を要するテストは、環境変数がなければ、理由を示して失敗する（飛ばさない）。テストの共通の部品（`tests/support/`）に、処理系のパスを得る関数を一つ置く。
 - Codex の中では、`BENITOITEH_TEST_BENITOITE=/Users/tecogonaz/src/BenitoiteHarness/work/benitoite-v0.0.7/target/release/benitoite` を設定して `scripts/check.sh --inside-codex` を走らせる。
 
+- 対話の画面の `/status` の処理系の欄（P4-08 では `not checked`）に、見つけた処理系のパスと版を示す（05-02「`/` で始まるコマンド」）。処理系がなく Benitoite の道具を外したときは、その旨を示す。
+
 ## 触るファイル
 
 - `crates/benitoiteh/src/benitoite/`（新。`mod.rs`、`text.rs`、版の確かめ、問い合わせ、実行ファイルの形の確かめ）
