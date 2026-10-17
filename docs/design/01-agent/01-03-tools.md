@@ -235,9 +235,12 @@ Benitoite の事前検討は、LLM に見せる道具の形を、サーバモー
 ```
 
 - `paths` は `.bnt` のファイルかディレクトリのパスとする。同じパスを重ねて指定したときは一つにまとめる。ディレクトリを受け付ける理由は[Benitoite の処理系との連携](../04-benitoite/04-01-benitoite-integration.md)の「実行の前の検査の報告」に書いた。
+- 【方針】`paths` は 1 個以上 100 個までとする。空の配列は `paths must contain at least one .bnt file or directory.`、100 個を超えた配列は `paths must contain at most 100 entries.` を道具の誤りとして返す。各要素は `benitoite_check` の `path` と同じ規則で解き、ファイルの実のパスの拡張子が `.bnt` でないときと、実のパスが UTF-8 でないときは、`Each path must be a UTF-8 path to a .bnt file or a directory. Choose readable Benitoite tests.` を返す。理由: 要素ごとにファイルを開いて範囲を判定し、処理系の引数にも並べるので、数に上限を置いて一回の呼び出しの手間を限る。100 個は、一つの依頼で選ぶテストの対象として十分に大きい。
+- 【方針】重ねて指定したものをまとめるのは、実のパスが同じものだけとする。ディレクトリとその下のファイルを両方指定したときは、処理系と同じく、そのファイルのテストを二度実行する。理由: 処理系は明示したパスの並びと重なりを保つ（Inspecting before execution）。ディレクトリの下のどのファイルが入口になるか（`package.bnt` と入れ子のパッケージを除く規則）を `benitoiteh` が真似て判定すると、処理系と食い違いうる。
 - `benitoite test --check --report=json <paths>` で報告を得て、選んだテストの関数のエフェクトの和について確認を受けてから、同じ集合を `--allow-effects` に渡して `benitoite test --diagnostics=json <paths>` を実行する。サンドボックスの方針は、`main` のエフェクトの代わりにこの和から、`benitoite_run` と同じ規則で決める（[OS のサンドボックス](../03-safety/03-02-sandbox.md)の「制限モードの方針」）。どれかの対象に検査の誤りがあれば、報告は完全でないので、どのテストも実行せずに診断を返す。
 - 確認を拒否されたら、`The user declined to run tests in <paths> with effects: <list>. Ask the user how to proceed, or change the tests.` を返す。確認を受けた後に報告を得直すことは `benitoite_run` と同じである。
 - 結果は、失敗したテストの名前、位置、理由（表明が外れたときは比べた二つの値 `left`・`right`）、成功と失敗の数、実行しなかった対象の数とする。結果の作り方、`benitoiteh` が読まないファイルのテストを件数だけにする規則、テストが通ったと示す条件は、[Benitoite の処理系との連携](../04-benitoite/04-01-benitoite-integration.md)の「終了状態と診断の受け渡し」で定める。
+- 【方針】失敗したテストは、出た順に先頭 20 件を示し、残りの件数を `[<n> more failed tests not shown. Fix the ones above, then run the tests again.]` で示す。数えるのは、読まないファイルのテストを件数だけにした後に残った行である。理由: テストごとの出力の上限（後述の「出力の切り詰め」）だけでは、失敗が多いと結果が 64 KiB を超え、中ほどの切り詰めで失敗の行が途中で欠ける。診断の 20 件の上限と揃えれば、LLM は上から直して実行し直す同じ手順で進められる。
 
 ### benitoite_scratch（制限モード）
 
@@ -310,6 +313,7 @@ Benitoite の事前検討は、LLM に見せる道具の形を、サーバモー
 - 【決定】`benitoite_test` の上限（2026-10-17 に設計者が承認した）をテストごとに小さくするのは、失敗したテストが多いと出力が重なるからである。失敗の理由と位置は、この上限と別に示す。
 - 子プロセスを起動する道具は、子プロセスが終わるまで出力を読み続け、メモリに保つ量、`spill/` への保存、LLM に返す量を別々に限る。LLM に返す末尾は、受け取りながら末尾だけを保つ形で、本当の出力の末尾にする。`spill/` には一つの出力について 16 MiB まで書き、超えた分は書かずに、書いた量と捨てた量をファイルの末尾と結果の印に示す。印の `Full output` は、すべてを書けたときだけ使い、書けなかったときは `Partial output (first X of Y bytes)` とする。理由: 受け取りの上限で読むのをやめると、本当の末尾（失敗の理由や集計）が失われ、子プロセスがパイプの書き込みで止まる。
 - `bash`・`benitoite_run`・`benitoite_test` の出力は、セッションのディレクトリの `spill/` に書く。`read` は、どのモードでもこのディレクトリを読める。子プロセスにはこのディレクトリへの書き込みを許さない。
+- 【方針】`benitoite_run` と `benitoite_test` が `spill/` に書くのは、処理系の出力のうち、診断として読まなかった標準エラー出力の行と、`benitoite_test` ではテストの結果として読まなかった標準出力の行だけとする。診断の行とテストの結果の行は書かない。そのため、`benitoite_test` がテストごとの `stdout`・`stderr` の欄を切り詰めたときは、続きを得る方法を示さず、`[Showing last lines A-B of N of this test's output.]` だけを付ける。理由: 診断とテストの結果の行は、`benitoiteh` が読まないファイル（`.env.bnt` など）の識別子、表明の値、出力を含みうる。結果の本文では件数だけにしても（[Benitoite の処理系との連携](../04-benitoite/04-01-benitoite-integration.md)の「終了状態と診断の受け渡し」）、行のまま `spill/` に書けば、LLM が `read` で読めてしまう。
 - どの道具の結果も、上の規則の後になお 64 KiB を超えるときは、先頭と末尾を残して中ほどを除き、除いた量を示す。
 - 【決定】一つのセッションの `spill/` と巻き戻しの記録（`objects/`）の合計の大きさの上限は 1 GiB、すべてのセッションの合計は 10 GiB とする（2026-10-17 に設計者が決めた。BH-063 を閉じた）。上限に達したら、黙って古い記録を消さず、それ以上を書かないことと、そのことを結果と画面に示す。
 

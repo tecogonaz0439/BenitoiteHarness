@@ -139,3 +139,94 @@
 
 - `scripts/check.sh --inside-codex` が通る（`BENITOITEH_TEST_BENITOITE` を設定して）。サンドボックスを要するテストは走らないので、オーケストレータが外で確かめる。
 - 完了の報告に、道具の説明の英文、足した英文の全文、`test` の結果の行の形（`outcome` の値、`location`・`primary`・`left`・`right` の形）、結果の例（失敗の各形と集計の各場合）、加えた公開の関数と型のシグネチャ、実行ファイルの大きさの変化を書く。
+
+## P2-08 の実装の後の補足（2026-10-18）
+
+P2-05〜P2-08、P4-07 を取り込んだ後に、この文書を実装と `v0.0.7` に突き合わせた。上の記述と食い違うところは、この節を正とする。
+
+### 前提の事実の訂正と追加（2026-10-18 に `v0.0.7` で確かめた）
+
+- 21〜26 行: `outcome` は `"passed"` と `"failed"` の二つだけで、`failure` が `null` なら `"passed"` である（処理系の `test_runner/report.rs`）。`failure` の欄は四つの理由とも `message` を持つ。
+  - `"assert"`: `message`・`primary`（`null` になりうる）・`notes`・`trace`・`traceOmitted`・`taskOrigins` を持つ。`left`・`right` は `Assert.equal`・`Assert.notEqual` のときだけあり、値は `Show` の形の文字列（例: `"\"secret-left\""`、`"5"`）か `null` である。`Assert.isTrue`・`Assert.fail` では欄そのものがない。
+  - `"exit"`: `message`（`called \`Process.exit\` with status N`）・`exitCode`・`notes` を持つ。`die` は、`kind` が `"die"` の完全な診断の形である。`die.message` は固定の `explicit failure exit` で、利用者の文と原因は `die.notes`（`message: ...`・`cause: ...`）にある。
+  - `"runtime"`: `reason` の他に診断の欄（`kind`・`severity`・`code`・`message`・`primary`・`secondary`・`notes`・`helps`）と `trace` などを同じオブジェクトに持つ。
+  - `location`・`primary` は `{file, start{line,column,offset}, end{...}, label}` で、`diagnostics::Span` と同じ形である。`file` は渡したパスの綴りのままで、絶対のパスを渡せば絶対になる。ディレクトリを渡したときは `<ディレクトリ>/<入口>` になる。
+- テストの関数が書いた出力と、`Process.run` の子の出力は、行の `stdout`・`stderr` の欄に入る。処理系の標準出力にも標準エラー出力にも直接は出ない（`Process.run` の子に testSummary の形の行を出させて確かめた）。欄の長さに処理系の上限はない（`Vec<u8>` に全部を保つ）。
+- ディレクトリを渡すと、`.env.bnt` のような点で始まる入口も実行され、その名前、`left`・`right`、`stdout` が行に出る。
+- 下のディレクトリのモジュールの表明が外れると、`primary.file` に BH-029 と同じ誤ったパスが出る（`t5/Lib/Lib/Help.bnt` という、ないパス）。
+- `E0512`: 終了状態 2、`testSummary` の `filesNotRun` は重なりと「テストのないファイル」も数える。診断の `primary.file` は外れた関数のある入口のファイルで、ディレクトリを渡したときはその下のファイルである。
+- `SIGINT`: 終了状態 130、`interrupted` は真。途中のテストには行がなく、始めていない入口があっても `filesNotRun` は 0 のことがある。
+- 空のディレクトリ: 報告は `ok`、`targets` は空、集合は空で、`--allow-effects=` を受け付ける。`test` は終了状態 0 で、集計の数はすべて 0 である。
+- 32 行の「実装の始めに確かめ、報告に書く」は上で済んだ。報告には残りの実例だけを書く。
+
+### 既存のものの名前と形（実装との対応）
+
+- 報告: `report::parse(bytes, status, ReportKind::Test)`。問い合わせは `ToolContext.check_query` に `["test","--check","--report=json",<実のパス>...]` を渡す。上限は `benitoite_run` と同じで、`Ok(o) => parse(&o.stdout, Some(0), Test)`、`Err(BenitoiteError::Exit { code, stdout, .. }) => parse(&stdout, code, Test)` である。`OutputLimit` は `error.to_string()` をそのまま返し、ほかの誤りは `benitoite::text::inspection_failure(<パス>, &benitoite::skill::report_reason(&e))` とする。`ReportError::Check` の描き方は `benitoite_run.rs` の `render`（`PreparedDiagnostics::new(d, context, cancelled).render(context, None, cancelled)` に読まない診断の件数を足すもの）と同じとする。
+- 51 行（ファイルとディレクトリの見分け）: `benitoite_check.rs` と同じく `std::fs::metadata(context.requested_path(p)).is_ok_and(is_dir)` なら `context.search_path(p)?`、ほかは `context.open_file(p, false)?.real_path` とする。実のパスが UTF-8 でないものと、ファイルで拡張子が `.bnt` でないものは道具の誤りとする。
+- 52 行: 二度目の報告が収まらないときの英文は `benitoite::text::EFFECTS_CHANGED`（04-01 の文。「The script changed...」のまま）。
+- 53 行: `ConfirmKey::from_facts` は今 `Effects` だけを見る（`tools/mod.rs` 669 行）。`TestEffects` の枝を加え、`facts.targets` を並べ替えて重なりを除いた `ConfirmKey::Test` を返す。`ApprovalAnswer::remember_effects` はこの関数を通るので変えなくてよい。`facts.targets` は指定の順（重なりを除いたもの）とする。
+- 55 行: `RunLimits { timeout, stop_signal: StopSignal::Interrupt, ..RunLimits::default() }`（`grace` の既定は 10 秒）。
+- 57 行: 説明は `tools/text.rs` に `BENITOITE_TEST: (&str,&str) = prompt_parts(include_str!("../../prompts/tools/benitoite_test.md"))` として置く。引数は `arg("paths", ArgumentType::StringArray, true)` とする。`prompts/benitoite-mapping.md` はすでに `benitoite_test` に触れているので、`system-restricted.txt` の差分は `<tools>` の行と規則の行だけになる。
+- 39 行の追加: `approval::decide` の `Effects` の枝を `ApprovalKind::Effects | ApprovalKind::TestEffects` に、`decide_in_mode` の `matches!` にも `TestEffects` を加える。`policy_denial_message` は網羅の `match` なので `TestEffects` の文が要る。案: `Tool call was denied by the never approval policy: running Benitoite tests requires confirming their effects. Stop and report.`。非対話では 4 の経路が先に扱うので、守りとしてだけ使う。
+- 39 行の追加: 次の箇所は `==` で比べているので、コンパイラが見落としを教えない。`ui/tui/confirmation.rs` 134 行の `if request.kind == ApprovalKind::Effects` を `matches!(request.kind, ApprovalKind::Effects | ApprovalKind::TestEffects)` にする。`a`・`s` は `Command`・`WebFetch` に限ってあるので、そのままでよい。
+- 89〜90 行の追加: `approval::effects_summary` と `text::effects_denied` は、今 `targets.first()` だけを使う。`TestEffects` では全部の表示用のパスを `, ` で繋ぐ。要約の文の案: `Run tests in <paths> with effects: <list>`（`needs_approval` の `text` と記録の `summary` に入る）。`Shell` の行の英文（`SHELL_REFERENCE`「The script references...」）は、テストでもそのまま使ってよい。
+- 40 行と 111 行: `ui/tui/text.rs` の `checkpoint_row` の網羅の `match` に `"benitoite_test"` を加える。戻せないものの一覧は `agent/rewind.rs` 239 行の `matches!(call.name.as_str(), "web_fetch" | "benitoite_run")` に `"benitoite_test"` を加える。
+- 113 行: `ToolSet::without_benitoite` の `retain` の `matches!` に `ToolId::BenitoiteTest` を加える（P2-08 の補足と同じ誤りを避けるため）。
+- 41 行: `AgentError` の `Display`（156 行）と `kind()`（198 行）の腕に `EffectsNotAllowed` を加える。
+- 43 行: `AgentConfig` は `From<ResolvedExec>` で作り、`prepare` が `Agent::new(resolved.into(), ..)` に直に渡している。`let mut config: AgentConfig = resolved.into(); config.allow_effects = ...` の形にする。構造体のリテラルで作っている所（`agent/resume_tests.rs` の二か所、`agent/compaction/tests.rs`、`tests/agent_loop.rs`、`tests/sandbox_benitoite_run.rs`、`tests/tui.rs`、`tests/support/rewind.rs`）に `allow_effects: None` を足す。`Agent::new`・`resume` は、モードが通常で `allow_effects` が `Some` なら `InvalidConfiguration` を返す（守り）。
+- 96 行: 「`exec` は」を「`cli::exec::prepare` は、`!args.interactive` で解決したモードが制限モードのときだけ」に改める（`prepare` は対話の画面と `/new` も使う）。通常モードで `args.allow` があれば、`StartupError::Invalid(<新しい英文>)`（終了状態 2）とする。英文の案: `benitoiteh: --allow is available only in restricted mode.`。対話の形は `parse_interactive` が `ArgsError::Invalid` で断る。
+- 94〜95 行: 名前の検査（13 の名前、`IO.All`、重なり、空の要素）は `ExecArgs::parse` で `ArgsError::Invalid` として行う。`ExecArgs.allow` は `Option<BTreeSet<Effect>>` にしてよい（`cli` から `benitoite::Effect` を使う）。`tests/args.rs` 131〜141 行は、今 `--allow` に `Unavailable` を期待しているので、`--project-parent` だけを残す形に直す。
+- 135 行の追加: 既存の `tests/sandbox_exec_restricted.rs` の `exec_denies_every_first_run_until_noninteractive_effect_permissions_are_implemented` は、新しい形の断り（`--allow` を省いた `File.Write` で 4 の英文、`policy_denied` 1、`checks` 1）に書き直し、名前も改める。`tests/agent_loop/checks.rs` 388 行の検査（`allow_effects: None`・`Never`）は、守りの文のまま通る。
+
+### A. 安全の性質（P2-08 の点検の教訓を当てる）
+
+- **A-1（84 行を置き換える）**: 旧「標準出力と標準エラー出力の全体をそれぞれ `spill/` に書き」 → 新「`spill/` には、JSON のテストの結果として読まなかった標準出力の行と、診断でない標準エラー出力の行だけを書く（`benitoite_run` の標準エラー出力と同じ。`<call_id>-stdout`・`-stderr`、切り詰めたときだけ残す）。テストの結果の行と診断の行は `spill/` に書かない。」
+  - 理由: `spill/` はどのモードでも `read` で読める。全体を書けば、読まないファイル（`.env.bnt`）のテストの名前、`left`・`right`、`stdout` を `read` で読めてしまい、D1 を飛ばせる。
+  - その結果、テストごとの欄（100 行か 4 KiB）を切り詰めたときに `Full output` は示せない。示す文は `[Showing last lines A-B of N of this test's output.]`（`tools/text.rs` の新しい関数）とする。
+- **A-2（76 行を置き換える）**: 読まないファイルの判定は、行の `file`、`location.file`、`failure.primary.file`（`assert` と `runtime`）、`failure.die.primary.file` のすべてを、P2-07 の `DiagnosticSources::resolve` で解いて行う。解いた結果の `display` が一つでも `None` なら、その失敗したテストは名前、文、`left`・`right`、出力、`die`・`runtime` の診断を示さず、件数だけにする（判定は存在を調べない。除いたパス、ないパス、予算を超えたパスを同じに数える）。
+  - 解くときは、`PreparedDiagnostics` と同じ一回の予算（`MAX_EXCLUSION_WORK`、キャッシュ、`bounded_path`）を共有する。今の `CachedSources`・`ResolutionState`・`render_one` は `diagnostics.rs` の非公開のものなので、P2-07 の動きを変えずに `pub(super)` にして使ってよい。
+  - `secondary`・`edits` は `render_one` の規則のまま（読めない要素は示さない）とする。
+  - 解決は失敗したテストの先頭 1,000 件（`MAX_RESOLVED_DIAGNOSTICS`）までとし、取り消しの後は解かない。解かなかった行は決して示さず、件数だけにする（文の案: `[<n> failed tests were not inspected. Resolution is limited to the first 1000 failed tests.]`）。
+  - 理由: `die.notes` は読まないモジュールのリテラル（`message: ...`）を含みうる。`runtime` の `message` も値を含みうる。`assert` の `primary.file` には BH-029 の誤ったパスが出る（上の事実）。
+- **A-3（67 行・68〜75 行に追加）**: 読み方を次のとおり限る。
+  - 標準出力は、P2-08 の `Stderr` と同じく行ごとに流して読む。一行の上限は 16 MiB（`DIAGNOSTICS_BYTES`）とし、超えた `{` で始まる行は「読めなかった結果の行」として数える（文の案: `[<n> test result lines were too long to read.]`）。
+  - 成功の行は保たない。失敗の行は、保った行の生のバイトの和が 16 MiB を超えるまで、かつ 1,000 件までとする。超えた分は件数だけにする（`run_diagnostics_omitted` と同じ形の文）。
+  - `serde_json::Value`、`#[serde(untagged)]`、内部のタグの列挙（どちらも中間の木を作る）を使わない。`report/decode.rs` の `Object`/`Scalar` の形か、欄をすべて `#[serde(default)]` の `Option` にした一つの構造体で、一度だけ読む。`runtime` は `failure` を `Diagnostic` として読んでよい（`deny_unknown_fields` がないので、`reason` と `trace` は捨てられる）。
+  - `stdout`・`stderr` の欄は、読みながら末尾の 100 行か 4 KiB だけを保つ型で読む。
+  - `decode.rs` の項目は `pub(super)` なので、新しいモジュール（例: `benitoite/test_results.rs`）から使うなら見え方を `pub(in crate::benitoite)` にする。
+- **A-4（69〜72 行に追加）**: スクリプトが決める文字列の形を揃える。`name` と `message` は JSON の文字列の形（引用符と `\n` などの逃がし）で示す。`left`・`right` は、改行と制御の文字を `\n`・`\u{..}` に逃がして一行にする。どれも 2,000 文字で切り、切った印を付ける。
+  - 理由: 文に改行を入れて、偽の `FAILED` の行、`All tests passed.`、`[exit code: 0]` を作らせない。長さで結果の上限を使い切らせない。
+- **A-5（取り消し）**: 結果を作る繰り返しは、一件ごとに `invocation.cancelled` を見て止める。止めたら、まだ示していない失敗の件数と `benitoite::text::DIAGNOSTICS_CANCELLED` に当たる行を添える。
+- **A-6（集計の行）**: `testSummary` が二行以上あるときは、最後の行を示す。ただし「通った」とは示さない（処理系は一行だけ書く。守りのため）。
+
+### 結果の作り方の訂正
+
+- 71 行: 旧「`"exit"` では、`die` の欄があればその `message`、なければ `exit code <exitCode>`」 → 新「`<message>` は、四つの理由とも `failure.message` とする」。理由: `exit` も `message` を持ち、`die.message` は固定の文である。
+- 72 行: 旧「値が `null` の側は省く」 → 新「欄がないか、値が `null` の側は省く」。
+- 67 行: 旧「P2-07 の部品で診断と出力の行に分ける」 → 新「`benitoite_run.rs` の流して読む `Stderr`（16 MiB と 1,000 件の上限、`run_diagnostics_omitted`）を、共有のモジュール（例: `tools/process_output.rs` か新しい `tools/benitoite_process.rs`）へ移して使う」。`prepare`・`finish`・`append`・`render` も同じく移す。
+  - `Stderr` の `E0512` の判定（`Path::new(&span.file) == self.target`）は、対象の並びに広げる（ファイルなら同じパス、ディレクトリならその下）。79 行の「`E0512` の診断があれば」は、この判定に置き換える。
+- 80 行に追加: 条件を満たし、`passed` と `failed` がともに 0 のときは、`All tests passed.` の代わりに `No tests ran.` を示し、誤りの印は付けない（空のディレクトリで確かめた。C-4）。
+- 81〜82 行: 並びは `benitoite_run` の実装に揃え、`[exit code: N]` の後に、時間切れ、取り消し、残ったプロセスの文を置く。
+- 画面の一行（`ToolOutput.screen`）は `text::screen_exit(code)` とする。
+
+### 非対話と続けての拒否の補足
+
+- 98 行: 範囲に収まるときは `self.confirmed_effects.entry(key).or_default().extend(許す集合)` とする。`--allow` を省いて許す集合が空でも、単位の項目を作る。作らないと、呼び直しで `previous` が `None` になり `EFFECTS_CHANGED` を返す。`key` は `ConfirmKey::from_facts` で得て、得られなければ `ToolError::State` 相当の誤りとする。
+- 99 行: 英文は `approval/text.rs` に `allow_denied(kind, facts, project, allowed)` として置く。事実の `effects` を `Effect::from_name` で戻し、読めない名前があれば範囲の外とする。
+- 106 行: 回数を 0 に戻す所を明記する。`approve` の先頭の `output.approval` が `None` で早く返る経路で、`validated.id()` が `BenitoiteRun`・`BenitoiteTest` で、`output.processor_launches >= 2` なら 0 に戻す。4 の範囲に収まると判定したときも 0 に戻す。
+  - `benitoite_run` は、起動の段に達すれば `run::run` が失敗しても 2 になる。これは「実行の段に進んだ」とみなす。
+- 107 行: 一連の処理の始め（`run_request` の `self.check_limit.clear()` の隣）で 0 にする。止める判定は `TurnEnd` の後に置き、順は `LeftoverProcesses`、`EffectsNotAllowed`、`CheckFixLimit` とする。同じ番の残りの呼び出しは、止める印で打ち切らず、実行して記録する（`stop_run` の経路とは違う）。
+
+### C. オーケストレータの決定（2026-10-18）
+
+- **C-1（時間の上限）**: `benitoite::RunContext` に `test_timeout: Duration` を加える。`exec`（と対話の画面）は 120 秒とする。作る所は `cli/exec.rs` と `tests/support/benitoite_run.rs` の二つである。133 行の「短い上限を渡す」は、この欄で行う。
+- **C-2（4 の英文のテスト向けの形）**: `benitoite_test` では `This non-interactive run allows only these effects: <list>. <paths> use: <list>. Narrow the uses of the tests, or stop and report.` とする（03-03 を改めた）。`benitoite_run` は今の文のままとする。
+- **C-3（示す失敗の件数）**: 失敗したテストは、出た順に先頭 20 件を示し、残りを `[<n> more failed tests not shown. Fix the ones above, then run the tests again.]` で示す（01-03 に加えた）。数えるのは、読まないファイルの規則で件数だけにした行を除いた後の行である。
+- **C-4（テストのない成功）**: テストが通ったと示す条件を満たし、`passed` と `failed` がともに 0 のときは、`All tests passed.` の代わりに `No tests ran.` を示し、誤りの印を付けない（04-01 に加えた）。
+- **C-5（読まないファイルの判定の範囲）**: A-2 のとおり、行の `file`、`location.file`、`assert`・`runtime` の `primary.file`、`die.primary.file` に広げる（04-01 に加えた）。BH-029 の誤ったパスのせいで、下のディレクトリのモジュールの正当な表明の失敗が件数だけになる制約は、安全側として受け入れる（open-issues の BH-029 に書いた）。
+- **C-6（小さな上限）**: `paths` は 100 個までとする。空の配列は `paths must contain at least one .bnt file or directory.`、`.bnt` でないパスと UTF-8 でない実のパスは `Each path must be a UTF-8 path to a .bnt file or a directory. Choose readable Benitoite tests.` とする。100 個を超えたときの文は `paths must contain at most 100 entries.` とする（01-03 に加えた）。
+- **C-7（重なり）**: 今の規則のままとする。同じ実のパスだけを一つにまとめ、ディレクトリとその下のファイルを両方渡したときは、処理系と同じくそのファイルを二度実行する（01-03 に書いた）。
+
+### 触るファイルに加える
+
+`src/tools/benitoite_run.rs`（共有の部品を移す）、`src/tools/process_output.rs`、`src/benitoite/diagnostics.rs`（見え方だけ）、`src/benitoite/report/decode.rs`（見え方だけ）、`src/approval/mod.rs`・`text.rs`、`src/agent/execution.rs`・`rewind.rs`、`src/ui/tui/text.rs`・`confirmation.rs`、`src/benitoite/mod.rs`（C-1）、`tests/args.rs`、`tests/sandbox_exec_restricted.rs`、`tests/support/benitoite_run.rs`（C-1）、`AgentConfig` を作る所（上の六つ）。
