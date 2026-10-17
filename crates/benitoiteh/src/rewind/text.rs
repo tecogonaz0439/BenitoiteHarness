@@ -10,7 +10,6 @@ pub const TIME_LIMIT: &str = "Checkpoint time limit reached.";
 pub const FILE_LIMIT: &str = "Checkpoint file size limit reached.";
 pub const MANIFEST_LIMIT: &str = "Checkpoint manifest size limit reached.";
 pub const STORAGE_LIMIT: &str = "Checkpoint storage budget exhausted.";
-pub const IGNORE_INVALID: &str = "The .gitignore is not a regular file of an allowed size.";
 pub const CHANGED: &str = "The entry changed while it was being recorded or restored.";
 pub const INCOMPLETE_BEFORE: &str =
     "The before_rewind checkpoint is incomplete; explicit permission is required.";

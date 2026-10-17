@@ -7,6 +7,7 @@ pub mod exclude;
 mod paths;
 mod read;
 mod search;
+mod search_notices;
 mod text;
 pub mod truncate;
 mod web_fetch;
@@ -197,8 +198,10 @@ impl ToolSet {
         }
         let result = match call.id {
             ToolId::Read => read::execute(context, &call.arguments).map(ToolOutput::success),
-            ToolId::Glob => search::glob(context, &call.arguments).map(ToolOutput::success),
-            ToolId::Grep => search::grep(context, &call.arguments).map(ToolOutput::success),
+            ToolId::Glob => search::glob(context, &call.arguments, invocation.cancelled)
+                .map(ToolOutput::success),
+            ToolId::Grep => search::grep(context, &call.arguments, invocation.cancelled)
+                .map(ToolOutput::success),
             ToolId::Write => write::execute(context, &call.arguments, approval, invocation),
             ToolId::Edit => edit::execute(context, &call.arguments, approval, invocation),
             ToolId::Bash => bash::execute(context, &call.arguments, approval, invocation),
@@ -283,6 +286,25 @@ pub struct ToolContext {
     pub session: Option<Session>,
     read_versions: Mutex<BTreeMap<PathBuf, FileVersion>>,
     pub checkpoints: Option<crate::rewind::CheckpointRecorder>,
+    search_limits: SearchLimits,
+}
+
+/// 検索が主のプロセスで使える走査と読み取りの上限（設計書 01-03「glob」「grep」）。
+#[derive(Clone, Copy, Debug)]
+pub struct SearchLimits {
+    pub max_entries: usize,
+    pub max_duration: std::time::Duration,
+    pub max_file_bytes: u64,
+}
+
+impl Default for SearchLimits {
+    fn default() -> Self {
+        Self {
+            max_entries: 200_000,
+            max_duration: std::time::Duration::from_secs(10),
+            max_file_bytes: read::MAX_FILE_BYTES,
+        }
+    }
 }
 
 impl ToolContext {
@@ -305,6 +327,7 @@ impl ToolContext {
             session: None,
             read_versions: Mutex::new(BTreeMap::new()),
             checkpoints: None,
+            search_limits: SearchLimits::default(),
         }
     }
 
@@ -317,6 +340,17 @@ impl ToolContext {
     /// 利用者の設定で検査したドメインと HTTP クライアントを渡す。
     pub fn with_web_fetch(mut self, web_fetch: WebFetchContext) -> Self {
         self.web_fetch = web_fetch;
+        self
+    }
+
+    /// 検索の上限を小さくして渡す。固定の安全の上限を超えて広げない。
+    pub fn with_search_limits(mut self, limits: SearchLimits) -> Self {
+        let defaults = SearchLimits::default();
+        self.search_limits = SearchLimits {
+            max_entries: limits.max_entries.min(defaults.max_entries),
+            max_duration: limits.max_duration.min(defaults.max_duration),
+            max_file_bytes: limits.max_file_bytes.min(defaults.max_file_bytes),
+        };
         self
     }
 

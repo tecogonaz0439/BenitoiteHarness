@@ -1,10 +1,10 @@
 //! リンクと特殊ファイルを開かずに、上限付きで木を辿る（設計書 01-05「辿り方」）。
 
 use super::{text, types::*};
-use crate::safe_fs::{SafeFsError, ScopeRelPath, ScopeRoot};
+use crate::safe_fs::{ScopeRelPath, ScopeRoot, gitignore};
 use crate::session::Session;
 use crate::tools::exclude::ExcludeRules;
-use ignore::gitignore::{Gitignore, GitignoreBuilder};
+use ignore::gitignore::Gitignore;
 use rustix::fs::FileType;
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, HashSet};
@@ -243,11 +243,12 @@ fn exclusion(
         return Some(reason);
     }
     for ignore in ignores.iter().rev() {
-        let matched = ignore.matched(absolute, kind == ManifestKind::Directory);
-        if matched.is_ignore() {
-            return Some("gitignore".into());
-        }
-        if matched.is_whitelist() {
+        if let Some(ignored) =
+            gitignore::decision(ignore, absolute, kind == ManifestKind::Directory)
+        {
+            if ignored {
+                return Some("gitignore".into());
+            }
             break;
         }
     }
@@ -309,52 +310,20 @@ impl Walk<'_> {
         relative: &Path,
         ignores: &mut Arc<Vec<Arc<Gitignore>>>,
     ) -> Option<String> {
-        let result = (|| -> Result<Option<Gitignore>, String> {
-            let path = ScopeRelPath::new(".gitignore").map_err(|e| e.to_string())?;
-            let stat = match directory.stat(&path) {
-                Ok(stat) => stat,
-                Err(SafeFsError::NotFound(_)) => return Ok(None),
-                Err(error) => return Err(error.to_string()),
-            };
-            if FileType::from_raw_mode(stat.st_mode) != FileType::RegularFile
-                || u64::try_from(stat.st_size).unwrap_or(u64::MAX) > self.limits.max_ignore_bytes
-            {
-                return Err(text::IGNORE_INVALID.into());
-            }
-            let file = directory.open_read(&path).map_err(|e| e.to_string())?;
-            let metadata = file.metadata().map_err(|e| e.to_string())?;
-            if !metadata.is_file() || metadata.len() > self.limits.max_ignore_bytes {
-                return Err(text::IGNORE_INVALID.into());
-            }
-            let mut bytes = Vec::new();
-            file.take(self.limits.max_ignore_bytes.saturating_add(1))
-                .read_to_end(&mut bytes)
-                .map_err(|e| e.to_string())?;
-            if u64::try_from(bytes.len()).unwrap_or(u64::MAX) > self.limits.max_ignore_bytes {
-                return Err(text::IGNORE_INVALID.into());
-            }
-            let body = std::str::from_utf8(&bytes).map_err(|e| e.to_string())?;
-            let mut builder = GitignoreBuilder::new(self.root.real_path().join(relative));
-            for line in body.lines() {
-                if self.stopped() {
-                    return Err(text::TIME_LIMIT.into());
-                }
-                builder
-                    .add_line(
-                        Some(self.root.real_path().join(relative).join(".gitignore")),
-                        line,
-                    )
-                    .map_err(|e| e.to_string())?;
-            }
-            builder.build().map(Some).map_err(|e| e.to_string())
-        })();
+        let max_bytes = self.limits.max_ignore_bytes;
+        let result = gitignore::load_gitignore(
+            directory,
+            &self.root.real_path().join(relative),
+            max_bytes,
+            || self.stopped(),
+        );
         match result {
             Ok(Some(ignore)) => {
                 Arc::make_mut(ignores).push(Arc::new(ignore));
                 None
             }
             Ok(None) => None,
-            Err(error) => Some(error),
+            Err(error) => Some(error.to_string()),
         }
     }
 

@@ -378,25 +378,15 @@ impl CheckpointRecorder {
             let Ok(bytes) = self.session.read_object(hash, 1024 * 1024) else {
                 return true;
             };
-            let Ok(body) = std::str::from_utf8(&bytes) else {
+            let Ok(ignore) = crate::safe_fs::gitignore::build_gitignore(
+                &self.project.real_path().join(directory),
+                &bytes,
+                || false,
+            ) else {
                 return true;
             };
-            let mut builder =
-                ignore::gitignore::GitignoreBuilder::new(self.project.real_path().join(directory));
-            for line in body.lines() {
-                if builder.add_line(None, line).is_err() {
-                    return true;
-                }
-            }
-            let Ok(ignore) = builder.build() else {
-                return true;
-            };
-            let matched = ignore.matched(absolute, false);
-            if matched.is_ignore() {
-                return true;
-            }
-            if matched.is_whitelist() {
-                return false;
+            if let Some(ignored) = crate::safe_fs::gitignore::decision(&ignore, absolute, false) {
+                return ignored;
             }
         }
         false
