@@ -93,3 +93,15 @@ M・A・X の実行と環境情報の追記は、取り込み時にオーケス�
 
 5. `/compact` の最中に `//new` を Alt+Enter で後続に積み、ESC か Ctrl+C で取り消す。入力欄に `//new` が戻り、Enter で送り直しても `/new` を実行しないことを確かめる。通常の依頼の途中の操縦と後続も同様に確かめる。
 6. 多数のファイルを戻す `/rewind` で、復元前の時点の記録が表示された後に、外から TERM と HUP を送る。終了状態130となり、端末の復元後に `Checkpoint before rewind: ID` が出ることを確かめる。復元完了後に同じ操作をした場合は、その行が出ないことも確かめる。これは上表の擬似端末のテストでも実行する。
+
+## 取り込みの後の実行（オーケストレータ、2026-10-18）
+
+P4-08 を取り込む前の最後の全体の検査（`BENITOITEH_X86_64_HOST=intelmacmini scripts/check.sh`、終了状態 0）で、M・A・X の環境のテストを走らせた。環境は次のとおりである。
+
+| 記号 | 環境 |
+|---|---|
+| M | macOS 27.0.1（26A434）、Darwin 27.0.0、Apple M4（arm64）。`tests/sandbox_macos.rs` と `tests/sandbox_rewind.rs` を含む |
+| A | Apple の `container` 1.4.1 の aarch64 の Linux（既定のカーネル 6.18.15。Landlock を持たないので `tests/sandbox_linux.rs` を除く）。`aarch64-unknown-linux-musl` |
+| X | x86_64 の機械（Omarchy、Linux 7.2.9、Intel Core i3-8100B）の rootless の podman 6.1.1。bubblewrap 0.12.0。Landlock ABI は 3 以上（`kernel_landlock_and_seccomp_are_available` が通った）。`x86_64-unknown-linux-musl` |
+
+処理系の版とハッシュは「なし」である（処理系との連携は group B の P2-05 から）。

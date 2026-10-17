@@ -193,6 +193,12 @@ P0-04 で作った型: 方針の入力 `PolicyConfig`（`readable: ReadAccess`�
 - `ui::tui`: `Screen::input_at(event, read_at, now, running) -> Action`、`InputSource::{poll_timed, discard_pending}`（`discard_pending` は Resize と Ctrl+C を残す）、`confirm(screen, input, output, terminated, cursor_position) -> io::Result<bool>`。確認の画面の並べ方と収まりの判定は `ui::tui::confirmation`、目に見えない文字と幅の見積もりは `ui::tui::unicode`。
 - `sandbox`: 道具の子は `benitoiteh __session -- <絶対パスのプログラム> <引数...>` を挟んで新しいセッションで起動する（`sandbox::session`。失敗は終了状態 125）。Linux の bubblewrap の中は `--new-session`。新しく子を起動する道具（P2 の処理系の道具など）は、同じ口を使う。
 
+### `/` で始まるコマンド（P4-08）
+
+- `agent`: `AgentStatus`（`agent/status.rs`）、`Agent::rewind_preview(checkpoint, scope)`、時点の一覧の依頼の先頭と道具の名前・引数、`Agent::end(reason)`。`rewind::RewindError::IncompleteBefore { checkpoint, incomplete }`。
+- `ui::tui`: `NewSession { agent, session, status, diagnostics }` を返す関数を画面の芯が受け取る。コマンドの解釈は `ui/tui/commands.rs`、選択の画面は `ui/tui/selection.rs`、`Confirmation` に `/rewind` の確かめの種類。
+- `cli::exec::prepare` は `SessionOverrides`（モード、プロジェクト、サンドボックス、承認、`normal.network`、`normal.writable_roots`、`restricted.allowed_programs`）を受け取る。`/new` は今のセッションの解いた値を渡す。新しく安全に関わる設定を使い始める作業（P2-05 の `benitoite.path`、P2-09 の `scratch_auto_effects`）は、ここに加えて固定する。
+
 ### `provider`（P1-01、P1-02）
 
 - 共通の形（`provider::types`、`provider` から再公開）: `Destination { provider, base_url, model }`、`AdapterKind`、`Conversation { items }`、`Item::{UserMessage, AssistantTurn, ToolResult}`、`UserMessage { parts: Vec<UserPart> }`（`UserPartKind::{Environment, Request, Steering}`）、`AssistantTurn { parts, raw_items, finish_reason, usage }`、`AssistantPart::{Text, Reasoning, ToolCall}`、`RawItems { destination, adapter, items }`、`ToolCall { id, provider_id, provider_item_id, name, arguments, raw_arguments }`、`ToolResult { id, provider_id, text, is_error }`、`Usage`（各項目 `Option<u64>` と `raw`）、`FinishReason::{Completed, ToolCalls, OutputLimit, Refusal(String), Error, Cancelled, Disconnected}`、`StreamEvent`、`ProviderError`、`Capabilities`。
