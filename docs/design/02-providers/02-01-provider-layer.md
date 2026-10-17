@@ -9,7 +9,7 @@
 
 ## 前提
 
-- Benitoite の事前検討は、OpenAI 互換の API（Chat Completions と Responses）、Sign in with ChatGPT、Anthropic の Messages API、Google の Gemini API の四つの提供者を採ると定めた（[ADR 0340](https://github.com/tecogonaz0439/Benitoite/blob/v0.0.6/docs/archive/2026-10-09-design-first-release/decisions/0340-llm-providers-for-own-agent-harness.md)）。手元の推論サーバと中継のサービスは OpenAI 互換の実装で扱う。Claude の購読のアカウントで処理系が自らサインインする形は候補にしない（ADR 0340 の決定 5）。
+- Benitoite の事前検討は、OpenAI 互換の API（Chat Completions と Responses）、Sign in with ChatGPT、Anthropic の Messages API、Google の Gemini API の四つの提供者を採ると定めた（[ADR 0340](https://github.com/tecogonaz0439/Benitoite/blob/v0.0.7/docs/archive/2026-10-09-design-first-release/decisions/0340-llm-providers-for-own-agent-harness.md)）。手元の推論サーバと中継のサービスは OpenAI 互換の実装で扱う。Claude の購読のアカウントで処理系が自らサインインする形は候補にしない（ADR 0340 の決定 5）。
 - Pi の提供者の層は、会社ごとではなく、通信の形（wire API）ごとに一つの実装を持ち、約 35 の提供者をその上の設定で扱う（[先行事例](../08-appendix/08-01-prior-art.md)）。Codex CLI は、調べたコミットでは Responses API だけを持ち、Chat Completions を外している。
 - DeepSeek の API は、Anthropic の Messages API と互換の口（`https://api.deepseek.com/anthropic`）を持ち、DeepSeek Harness はこの口を使う。この口ではキャッシュが自動で効き、`cache_control` を使わない（DeepSeek Harness のソースで確かめた。[先行事例](../08-appendix/08-01-prior-art.md)）。
 

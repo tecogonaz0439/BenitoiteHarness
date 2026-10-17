@@ -9,7 +9,7 @@
 
 ## 前提
 
-- Benitoite の事前検討は、エージェントハーネスが、同梱の Agent Skill の実行の前の確認と同じ内容を自らの画面で受け、LLM の道具に承認の操作を含めないと定めた（[ADR 0345](https://github.com/tecogonaz0439/Benitoite/blob/v0.0.6/docs/archive/2026-10-09-design-first-release/decisions/0345-agent-harness-confirmation-and-server-approval.md) の決定 1）。同じ ADR の決定 2（サーバモードの承認の画面との関係）は、試作にサーバモードがないので当てはまらない。
+- Benitoite の事前検討は、エージェントハーネスが、同梱の Agent Skill の実行の前の確認と同じ内容を自らの画面で受け、LLM の道具に承認の操作を含めないと定めた（[ADR 0345](https://github.com/tecogonaz0439/Benitoite/blob/v0.0.7/docs/archive/2026-10-09-design-first-release/decisions/0345-agent-harness-confirmation-and-server-approval.md) の決定 1）。同じ ADR の決定 2（サーバモードの承認の画面との関係）は、試作にサーバモードがないので当てはまらない。
 - 同梱の Agent Skill は、エフェクトごとに利用者に示す言葉の表を持つ（Skill の「Before running」）。
 - Codex CLI の承認の方針は `untrusted`・`on-request`（既定）・`granular`・`never` である（[先行事例](../08-appendix/08-01-prior-art.md)）。
 
@@ -33,8 +33,8 @@
 
 【方針】`benitoite_run` と `benitoite_test` は、次のときに確認を受ける。
 
-- そのスクリプト（テストではそのファイルの組）を、セッションで初めて実行するとき。
-- `main`（テストでは、対象のファイルの `uses` の和。[Benitoite の処理系との連携](../04-benitoite/04-01-benitoite-integration.md)の「`main` のエフェクトの読み取り」）のエフェクトが、そのスクリプトについて前に確認したときより増えたとき。
+- そのスクリプト（テストでは指定したファイルとディレクトリの組）を、セッションで初めて実行するとき。
+- `main`（テストでは、選んだテストの関数の和）の宣言したエフェクトが、そのスクリプトについて前に確認したときより増えたとき。エフェクトは、確認の直前に得た処理系の検査の報告から取る（[Benitoite の処理系との連携](../04-benitoite/04-01-benitoite-integration.md)の「実行の前の検査の報告」）。`Assert.Check` は、増えたかの判定に数えず、確認の画面にも示さない（同節）。
 
 エフェクトが確認した範囲に収まるときは、スクリプトの中身が変わっていても確認しない。これは ADR 0345 の決定 1 のとおりである。理由: 検査を通ったスクリプトは、エフェクトにない組み込みの操作を行わず、OS のサンドボックスもエフェクトに応じて範囲を狭める（[OS のサンドボックス](03-02-sandbox.md)の「制限モードの方針」）。中身の変化ごとに確認すると、確認の回数が増えて確認を読まずに許可するようになる。
 
@@ -44,14 +44,14 @@
 - エフェクトごとに、同梱の Skill の表の言葉（「writes to standard output and standard error」など）を、利用者の言語の訳とあわせて示す。訳の対応は Benitoite の日本語の訳（Benitoite の `docs/ja/`）に揃える。
 - OS のサンドボックスが許す範囲（書ける場所、ネットワークの可否）。
 - `Process.Run` を含むときは、`benitoiteh` が許すプログラムの一覧（処理系と、利用者の設定で許したもの）と、一覧にないプログラムの起動は OS のサンドボックスが拒否することを示す。理由: 制限モードでは、スクリプトが起動しようとするコマンドの多くが拒否される。実行して失敗してから知るより、確認の時点で知る方がよい。あわせて、`Process.Run` を許すと、処理系で別のスクリプトを起動して、ほかのエフェクトもサンドボックスの範囲で使えるようになることを示す（[セキュリティモデル](03-01-security-model.md)の「保証しないこと」）。macOS で、処理系のほかのプログラムを許しているときは、そのプログラムがプロセスグループを抜けて起動したプロセスを、道具の終わりに止められないことも示す（[OS のサンドボックス](03-02-sandbox.md)の「子プロセスの後始末」）。
-- `main` のエフェクトを読み取れずに最大の集合とみなしたときは、そのこと（[Benitoite の処理系との連携](../04-benitoite/04-01-benitoite-integration.md)の「`main` のエフェクトの読み取り」）。
+- 報告が、スクリプトが標準のシェルの関数（`Process.shell`）を参照していると示し（`processShellReference` が `"present"`）、エフェクトに `Process.Run` を含むときは、そのことと、制限モードではシェルの起動を OS のサンドボックスが拒むこと。参照がないという報告を、シェルが起動されないことの証明として示さない（[Benitoite の処理系との連携](../04-benitoite/04-01-benitoite-integration.md)の「実行の前の検査の報告」）。
 
 ### 一時的なスクリプト
 
 【方針】`benitoite_scratch` は、エフェクトが確認なしの範囲に収まれば、確認なしで実行する。範囲の既定は、エフェクトなし、`Console.Write`、`State`、`Process.Exit` とする。範囲を超えれば、`benitoite_run` と同じく確認を受ける。
 
 - ADR 0345 の決定 3 の既定（エフェクトなしと `Console.Write`）に `State` を加えた。理由: `State` は可変のセルとタスクの操作を表し、プログラムの外に作用しない（Benitoite の設計書 01-07「組み込みのエフェクト」）。下調べの計算でよく使い、確認を求める理由がない。
-- 【決定】`Process.Exit` も既定に加えた（2026-10-17 に設計者が承認した）。理由: `Process.Exit` は、スクリプトの実行を、選んだ終了状態で終えるだけであり、プログラムの外に作用しない。`benitoiteh` は、子プロセスの終了状態を道具の結果として示すだけで、確認とサンドボックスの判定に使わない（[OS のサンドボックス](03-02-sandbox.md)の「サンドボックスの掛け方」）。終了状態を偽られても、確認とサンドボックスは変わらない。`v0.0.6` の Skill は、入口の関数で失敗したら終える `try e or die` を勧め、`or die` は `Process.Exit` を加える。既定に加えなければ、Skill のとおりに書いた一時的なスクリプトが、毎回確認を受ける。同じ Skill の「Before running」も、確認を求めるエフェクトに `Process.Exit` を挙げていない。
+- 【決定】`Process.Exit` も既定に加えた（2026-10-17 に設計者が承認した）。理由: `Process.Exit` は、スクリプトの実行を、選んだ終了状態で終えるだけであり、プログラムの外に作用しない。`benitoiteh` は、子プロセスの終了状態を道具の結果として示すだけで、確認とサンドボックスの判定に使わない（[OS のサンドボックス](03-02-sandbox.md)の「サンドボックスの掛け方」）。終了状態を偽られても、確認とサンドボックスは変わらない。`v0.0.6` 以降の Skill（`v0.0.7` を含む）は、入口の関数で失敗したら終える `try e or die` を勧め、`or die` は `Process.Exit` を加える。既定に加えなければ、Skill のとおりに書いた一時的なスクリプトが、毎回確認を受ける。同じ Skill の「Before running」も、確認を求めるエフェクトに `Process.Exit` を挙げていない。
 - 利用者の設定で、範囲に `File.Read`・`Clock.Time`・`Random.Generate`・`Process.Environment` を加えられる。`File.Write`・`Process.Run`・`Console.Read`・`Http.Connect`・`Http.Listen` は加えられない。プロジェクトの設定では範囲を変えられない（ADR 0345 の決定 3）。理由: 加えられないものは、プロジェクトの外の状態を変えるか、制限モードの起動の規則に関わるか、外部と通信する操作である。
 - 確認なしで実行するときは、OS のサンドボックスで読める範囲を、プロジェクトのディレクトリ、一時ディレクトリ、処理系の実行ファイル、処理系の動作に要る OS の場所（システムのライブラリなど）に限る。書ける場所は一時ディレクトリだけとする。理由: ADR 0345 の決定 3 は、`File.Read` を範囲に加えるときは読める場所を限ることを勧めている。確認なしで動くスクリプトに、ファイルシステムのほぼ全体を読ませないためである。Linux では、この範囲を Landlock の読み取りの権利で限る。2026-10-17 に、試作の P0-05 で、読める範囲を限る Landlock の規則が働くことを確かめた。
 
@@ -84,7 +84,7 @@
 
 【方針】非対話（`benitoiteh exec`）では、対話の確認ができないので、次のように扱う。ADR 0345 の決定 4 を元にする。
 
-- 制限モードでは、許可するエフェクトを `--allow` で指定する（例: `--allow File.Read,File.Write`）。エフェクトが確認なしの範囲と `--allow` の和に収まるスクリプトだけを実行する。`--allow` を省いたときは、確認なしの範囲だけを許す。
+- 制限モードでは、許可するエフェクトを `--allow` で指定する（例: `--allow File.Read,File.Write`）。名前は、処理系の `--allow-effects` と同じ原子の名前（`IO.All` は受け付けない）とする。エフェクトが確認なしの範囲と `--allow` の和に収まるスクリプトだけを実行する。テストの `Assert.Check` は、いつも収まるものとして扱う。`--allow` を省いたときは、確認なしの範囲だけを許す。
 - 範囲を超えるスクリプトは実行せず、`This non-interactive run allows only these effects: <list>. <path> uses: <list>. Narrow the uses of main, or stop and report.` を道具の結果として LLM に返す。同じ一連の処理で 3 回続いたら、処理を止めて、終了状態で失敗を示す。
 - 通常モードでは、承認の方針を `never` とする。起動のときに `--sandbox danger-full-access` を指定すれば、サンドボックスなしで動かす。
 - `web_fetch` は利用者の設定の一覧のドメインだけを取得し、`create_project` は `--project-parent` の下にだけ作る。

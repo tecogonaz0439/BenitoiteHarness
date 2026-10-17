@@ -1,7 +1,7 @@
 # 道具
 
 - 状態: 草稿
-- 未決事項: BH-003, BH-004, BH-005, BH-006, BH-007, BH-008, BH-009
+- 未決事項: BH-003, BH-004, BH-005, BH-006, BH-007, BH-008, BH-009, BH-028
 
 ## 目的と範囲
 
@@ -10,7 +10,7 @@
 ## 前提
 
 - モードの定義と、モードごとの書き込みの範囲は[モード](01-02-modes.md)で定める。
-- Benitoite の事前検討は、エージェントハーネスの道具を `create_project`・`write_script`・`run_scratch`・`check`・`explain`・`read_reference`・`list_files`・`read_file`・`run`・`web_fetch`・`test`・`ask_user` と git の道具と定めた（[ADR 0344](https://github.com/tecogonaz0439/Benitoite/blob/v0.0.6/docs/archive/2026-10-09-design-first-release/decisions/0344-agent-harness-operation-scope-and-tools.md) の決定 4、[ADR 0348](https://github.com/tecogonaz0439/Benitoite/blob/v0.0.6/docs/archive/2026-10-09-design-first-release/decisions/0348-agent-harness-rewind-and-git.md)）。本章は、この一覧を制限モードの道具の元にし、名前と形を後述の「道具の形の選び方」で改める。
+- Benitoite の事前検討は、エージェントハーネスの道具を `create_project`・`write_script`・`run_scratch`・`check`・`explain`・`read_reference`・`list_files`・`read_file`・`run`・`web_fetch`・`test`・`ask_user` と git の道具と定めた（[ADR 0344](https://github.com/tecogonaz0439/Benitoite/blob/v0.0.7/docs/archive/2026-10-09-design-first-release/decisions/0344-agent-harness-operation-scope-and-tools.md) の決定 4、[ADR 0348](https://github.com/tecogonaz0439/Benitoite/blob/v0.0.7/docs/archive/2026-10-09-design-first-release/decisions/0348-agent-harness-rewind-and-git.md)）。本章は、この一覧を制限モードの道具の元にし、名前と形を後述の「道具の形の選び方」で改める。
 - 参考にしたハーネスの道具の形と制限の値は、[先行事例](../08-appendix/08-01-prior-art.md)にまとめた。
 
 ## 仕様
@@ -21,7 +21,7 @@
 
 Benitoite に固有の道具だけは新しい形になる。名前に `benitoite_` を付け、同梱の Agent Skill が使う `benitoite` のコマンドと一対一に対応させる（`benitoite check` に対して `benitoite_check`）。理由: Skill の文書は `benitoite` のコマンドを打つ前提で書いてあり、名前が対応していれば、システムプロンプトに置く対応の説明が短くて済む（[文脈の管理](01-04-context.md)の「システムプロンプトの構成」）。
 
-Benitoite の事前検討は、LLM に見せる道具の形を、サーバモードの MCP の道具と揃えると定めた（[ADR 0346](https://github.com/tecogonaz0439/Benitoite/blob/v0.0.6/docs/archive/2026-10-09-design-first-release/decisions/0346-agent-harness-connects-to-daemon-directly.md)）。サーバモードの MCP の道具はまだ定まっていないので、試作では揃える相手がない。マージを決めるときに見直す（BH-009）。
+Benitoite の事前検討は、LLM に見せる道具の形を、サーバモードの MCP の道具と揃えると定めた（[ADR 0346](https://github.com/tecogonaz0439/Benitoite/blob/v0.0.7/docs/archive/2026-10-09-design-first-release/decisions/0346-agent-harness-connects-to-daemon-directly.md)）。サーバモードの MCP の道具はまだ定まっていないので、試作では揃える相手がない。マージを決めるときに見直す（BH-009）。
 
 ### 道具の定義の共通の規則
 
@@ -152,9 +152,9 @@ Benitoite の事前検討は、LLM に見せる道具の形を、サーバモー
 
 ### 書いた後の検査（制限モード）
 
-【方針】制限モードでは、`write` と `edit` で `.bnt` のファイルを書いた後に、`benitoiteh` が検査を行い、その結果を道具の結果に添える。検査する対象は、書いたファイルが `function main` を含めばそのファイル、含まず、プロジェクトの根に `main.bnt` があれば `main.bnt` とする。どちらでもなければ（テストのファイルなど）検査しない。理由: Benitoite の Skill の手順では、書くたびに LLM が `check` を呼ぶので、書くことと検査することが別の往復になる。書いた後に検査して返せば、往復を一回減らせる。効果は評価で確かめる（BH-004）。
+【方針】制限モードでは、`write` と `edit` で `.bnt` のファイルを書いた後に、`benitoiteh` が `benitoite test --check --diagnostics=json <プロジェクトのディレクトリ>` で検査を行い、その結果を道具の結果に添える（[Benitoite の処理系との連携](../04-benitoite/04-01-benitoite-integration.md)の「処理系の起動」）。`test --check` は、ディレクトリの下の入口を `main` を要さずに、テストを実行せずに検査し、`main` を持つ入口には `main` の規則も当てる（2026-10-18 に、`v0.0.7` で、`main` に `Assert.Check` を書いた `main.bnt` が `E0415` になることを確かめた）。理由: Benitoite の Skill の手順では、書くたびに LLM が `check` を呼ぶので、書くことと検査することが別の往復になる。書いた後に検査して返せば、往復を一回減らせる。効果は評価で確かめる（BH-004）。書いたファイルを直接指定しないのは、処理系が直接指定したファイルの親のディレクトリを根として取り込みを解く（Inspecting before execution）ので、プロジェクトの根からの名前で別のモジュールを取り込む下のディレクトリのファイルが、正しくても `E0318` になるからである（2026-10-18 に、`v0.0.7` で、`Lib.Other` を取り込む `Lib/Text.bnt` を直接指定すると `E0318` になり、プロジェクトのディレクトリを指定すると誤りがないことを確かめた）。プロジェクト全体を検査する時間が、検査の時間の上限（30 秒）に比べて大きなプロジェクトで足りるかは、測って確かめる（【要検証】BH-028）。
 
-【方針】結果は `Check of <検査したファイル> after this change: ok` か、診断（[Benitoite の処理系との連携](../04-benitoite/04-01-benitoite-integration.md)の「終了状態と診断の受け渡し」の形）とし、検査しなかったときは `Not checked automatically: <path> has no main and the project has no main.bnt. Use benitoite_check or benitoite_test.` とする。検査の結果が誤りでも、書くことは成功しているので、道具の結果に誤りの印を付けない。理由: `main.bnt` の検査が通っても、`main.bnt` が書いたファイルを取り込んでいなければ、書いたファイルは検査されていない。検査したファイルを名指しすれば、LLM が「書いたファイルの検査が済んだ」と誤って受け取ることを減らせる。誤りの印を付けると、LLM が同じ書き込みをやり直すことがある。
+【方針】結果は、書いたファイルの診断（[Benitoite の処理系との連携](../04-benitoite/04-01-benitoite-integration.md)の「終了状態と診断の受け渡し」の形）と、ほかのファイルの診断の件数とする。書いたファイルに診断がなければ `Check of <path> after this change: ok` とし、ほかのファイルに診断があれば `<n> diagnostics in other files. Use benitoite_check with tests=true on the project directory to see them.` を添える。書いたファイルが下位のパッケージ（プロジェクトの根より下で `package.bnt` を持つディレクトリ）の中にあるときは、処理系が対象から外すので、`Not checked automatically: <path> is in a nested package.` とする。検査の結果が誤りでも、書くことは成功しているので、道具の結果に誤りの印を付けない。理由: 誤りの印を付けると、LLM が同じ書き込みをやり直すことがある。ほかのファイルの診断を件数だけにするのは、書いた変更と関係のない誤りで道具の結果を長くしないためである。書いたファイルを取り込むファイルに生じた誤りも件数に現れるので、LLM は調べる手がかりを得られる。
 
 ### bash（通常モード）
 
@@ -174,10 +174,11 @@ Benitoite の事前検討は、LLM に見せる道具の形を、サーバモー
 ### benitoite_check
 
 ```json
-{ "path": "string" }
+{ "path": "string", "tests": "boolean (optional)" }
 ```
 
 - `benitoite check --diagnostics=json <path>` を実行し、誤りも警告もなければ `ok`、あれば診断を返す。ディレクトリを指定したときは、その中の `main.bnt` を検査する（処理系の規則）。
+- `tests` が真のときは、`benitoite test --check --diagnostics=json <path>` を実行する。`main` を要さず、テストを実行せずに、`test` と同じ選び方の対象（ファイルか、ディレクトリの下の入口）を検査する。理由: 同梱の Skill は、テストのファイルを `benitoite test --check` で検査するよう求めている（[文脈の管理](01-04-context.md)の「Benitoite の Skill の置き方」）。直接指定したファイルは、その親のディレクトリを根として取り込みを解く（処理系の規則）ので、道具の説明の文に、下のディレクトリのモジュールを検査するときはプロジェクトのディレクトリを指定するよう書く。
 - 制限モードの検査と修正の回数の数え方は、[エージェントのループ](01-01-agent-loop.md)の「上限」で定める。
 
 ### benitoite_run（制限モード）
@@ -186,10 +187,9 @@ Benitoite の事前検討は、LLM に見せる道具の形を、サーバモー
 { "path": "string", "args": ["string (optional)"], "stdin": "string (optional)", "timeout": "integer (seconds, optional, max 600)" }
 ```
 
-1. `benitoite_check` と同じく検査する。誤りがあれば、実行せずに診断を返す。
-2. `main` のエフェクトを読み取る（[Benitoite の処理系との連携](../04-benitoite/04-01-benitoite-integration.md)の「`main` のエフェクトの読み取り」）。
-3. 実行の前の確認を行う（[利用者の確認](../03-safety/03-03-approval.md)の「制限モードの確認」）。拒否されたら、`The user declined to run <path> with effects: <list>. Ask the user how to proceed, or change the script.` を返す。
-4. 確認したエフェクトから作った方針の OS のサンドボックスの中で `benitoite run` を実行し、終了状態、標準出力、標準エラー出力（診断を除く）、診断を返す。処理系が許すエフェクトの集合を受け取る機能（BH-027）を持てば、確認したエフェクトを渡す。
+1. `benitoite check --report=json <path>` で、実行の前の検査の報告を得る（[Benitoite の処理系との連携](../04-benitoite/04-01-benitoite-integration.md)の「実行の前の検査の報告」）。検査の誤りがあれば、実行せずに診断を返す。報告を確定した結果として使えなければ、実行せずに理由を返す。
+2. 報告のエフェクトについて、実行の前の確認を行う（[利用者の確認](../03-safety/03-03-approval.md)の「制限モードの確認」）。拒否されたら、`The user declined to run <path> with effects: <list>. Ask the user how to proceed, or change the script.` を返す。
+3. 報告のエフェクトから作った方針の OS のサンドボックスの中で、同じ集合を `--allow-effects` に渡して `benitoite run` を実行し、終了状態、標準出力、標準エラー出力（診断を除く）、診断を返す。処理系が `E0512` で実行を断ったときは、報告の後にスクリプトが変えられたことを添える（[Benitoite の処理系との連携](../04-benitoite/04-01-benitoite-integration.md)の「終了状態と診断の受け渡し」）。
 - `stdin` は子プロセスの標準入力に書いてから閉じる。省いたときは空とする。
 - 出力は、標準出力と標準エラー出力のそれぞれについて末尾の 1,000 行か 25 KiB を返し、`bash` と同じく `spill/` に書く。
 - 時間の上限は既定 120 秒、`timeout` で 600 秒まで延ばせる。止め方は[Benitoite の処理系との連携](../04-benitoite/04-01-benitoite-integration.md)の「処理系の起動」による。
@@ -200,9 +200,9 @@ Benitoite の事前検討は、LLM に見せる道具の形を、サーバモー
 { "paths": ["string"] }
 ```
 
-- `paths` は `.bnt` のファイルのパスに限り、ディレクトリを受け付けない（誤りを返す）。同じファイルを重ねて指定したときは一つにまとめる。理由は[Benitoite の処理系との連携](../04-benitoite/04-01-benitoite-integration.md)の「`main` のエフェクトの読み取り」に書いた。
-- 対象のファイルのエフェクト（ファイルの中のすべての `uses` の和）を読み取り、確認を受けてから `benitoite test --diagnostics=json <paths>` を実行する。サンドボックスの方針は、`main` のエフェクトの代わりにこの和から、`benitoite_run` と同じ規則で決める（[OS のサンドボックス](../03-safety/03-02-sandbox.md)の「制限モードの方針」）。
-- 結果は、失敗したテストの名前と理由、成功と失敗の数とする。検査の誤りがあるファイルは、診断を返す。結果の作り方は、[Benitoite の処理系との連携](../04-benitoite/04-01-benitoite-integration.md)の「終了状態と診断の受け渡し」で定める。
+- `paths` は `.bnt` のファイルかディレクトリのパスとする。同じパスを重ねて指定したときは一つにまとめる。ディレクトリを受け付ける理由は[Benitoite の処理系との連携](../04-benitoite/04-01-benitoite-integration.md)の「実行の前の検査の報告」に書いた。
+- `benitoite test --check --report=json <paths>` で報告を得て、選んだテストの関数のエフェクトの和について確認を受けてから、同じ集合を `--allow-effects` に渡して `benitoite test --diagnostics=json <paths>` を実行する。サンドボックスの方針は、`main` のエフェクトの代わりにこの和から、`benitoite_run` と同じ規則で決める（[OS のサンドボックス](../03-safety/03-02-sandbox.md)の「制限モードの方針」）。どれかの対象に検査の誤りがあれば、報告は完全でないので、どのテストも実行せずに診断を返す。
+- 結果は、失敗したテストの名前と理由、成功と失敗の数、実行しなかった対象の数とする。結果の作り方と、テストが通ったと示す条件は、[Benitoite の処理系との連携](../04-benitoite/04-01-benitoite-integration.md)の「終了状態と診断の受け渡し」で定める。
 
 ### benitoite_scratch（制限モード）
 
@@ -210,7 +210,7 @@ Benitoite の事前検討は、LLM に見せる道具の形を、サーバモー
 { "code": "string", "args": ["string (optional)"], "stdin": "string (optional)" }
 ```
 
-- `code` を、セッションごとの一時ディレクトリに新しい名前の `.bnt` のファイル（`scratch-<n>.bnt`）として書き、検査し、エフェクトが確認なしの範囲に収まれば確認なしで実行する。範囲を超えれば、`benitoite_run` と同じく確認を受ける。確認なしの範囲と、確認なしで実行するときの読める範囲は、[利用者の確認](../03-safety/03-03-approval.md)の「一時的なスクリプト」で定める。出力の扱いと時間の上限は `benitoite_run` と同じとする。
+- `code` を、セッションごとの一時ディレクトリに新しい名前の `.bnt` のファイル（`scratch-<n>.bnt`）として書き、`benitoite_run` と同じく実行の前の検査の報告を得て、エフェクトが確認なしの範囲に収まれば確認なしで実行する。実行では、報告のエフェクトを `--allow-effects` に渡す。範囲を超えれば、`benitoite_run` と同じく確認を受ける。確認なしの範囲と、確認なしで実行するときの読める範囲は、[利用者の確認](../03-safety/03-03-approval.md)の「一時的なスクリプト」で定める。出力の扱いと時間の上限は `benitoite_run` と同じとする。
 - 結果に、書いた一時ファイルのパスを含める。役に立ったスクリプトは、LLM が `read` で読んで `write` でプロジェクトへ写せる。
 - 一時的なスクリプトの根のディレクトリは一時ディレクトリなので、プロジェクトのモジュールは取り込めない。
 
@@ -218,10 +218,11 @@ Benitoite の事前検討は、LLM に見せる道具の形を、サーバモー
 
 ```json
 { "code": "string" }
-{ "name": "string", "offset": "integer (optional)", "limit": "integer (optional)" }
+{ "name": "string (optional)", "offset": "integer (optional)", "limit": "integer (optional)" }
 ```
 
-- 中身は [Benitoite の処理系との連携](../04-benitoite/04-01-benitoite-integration.md)の「参照の文書と診断の説明」で定める。`benitoite_reference` の説明の文に、引ける名前の一覧（`stdlib/` のモジュールの名前を除く）と、`stdlib/index` でモジュールの一覧を得られることを書く。
+- 中身は [Benitoite の処理系との連携](../04-benitoite/04-01-benitoite-integration.md)の「参照の文書と診断の説明」で定める。
+- 【方針】`benitoite_reference` の道具の定義（説明の文と引数）は、処理系から得た一覧に依らない固定の文とする。説明の文には、`v0.0.7` の主な名前（`idioms`・`grammar`・`common-mistakes`・`language-comparison`・`diagnostics`・`inspection`）を例として挙げ、`stdlib/index` でモジュールの一覧を得られることと、`name` を省くと引ける名前の一覧を返すことを書く。`name` を省いたときと、一覧にない名前を指定したときは、処理系の `skill list` から作った引ける名前の一覧を返す（一覧にない名前は誤りの印を付ける）。理由: 道具の定義をモードだけで決まる形に保てば、プロンプトのキャッシュが処理系の版に依らず効き、道具の定義の全文をテストで固定できる（[文脈の管理](01-04-context.md)の「文脈の構成」、[テスト](../07-quality/07-01-testing.md)の「LLM に見せる文の固定」）。
 - 通常モードでは、`name` に `SKILL` を指定すると同梱の Skill の `SKILL.md` を返す（[文脈の管理](01-04-context.md)の「Benitoite の Skill の置き方」）。
 - `read` と同じく、2,000 行か 50 KiB で区切り、続きの読み方を示す。
 
@@ -236,7 +237,7 @@ Benitoite の事前検討は、LLM に見せる道具の形を、サーバモー
 - 作ったディレクトリは、以後のセッションのプロジェクトのディレクトリになる。前のプロジェクトのディレクトリは、道具の読み書きの範囲とサンドボックスの書ける場所から外す。理由: 読み書きの範囲を一つのディレクトリに保つと、範囲の判定と OS のサンドボックスの指定が単純になる。
 - プロジェクトのディレクトリを変えたことは、セッションの記録にイベントとして書き、環境の情報の変化として LLM に伝える（[文脈の管理](01-04-context.md)の「環境の情報」）。巻き戻しの記録は、新しいディレクトリについて新しく始める。確認したエフェクトの記録と、読んだファイルの版の記録は消す。`--continue` は、記録の最後のプロジェクトのディレクトリで照合する。理由: 前のプロジェクトで確認した範囲と読んだ版を、別のプロジェクトの同じ名前のファイルに当てはめないためである。
 - 新しいディレクトリのプロジェクトの設定ファイルは読まない（設定ファイルは起動のときにだけ読む）。
-- 雛形の中身は BH-006 で決める。非対話では、起動のときの `--project-parent` で指定したディレクトリの下にだけ作れる（ADR 0345 の決定 4 の `--dir` に当たる）。
+- 雛形の中身は BH-006 で決める。雛形に `language` の宣言を書くときは、起動した処理系の `--version=json` の `version` を書く。理由: 処理系は、今の版より古い宣言を、互換性の変更を経たものとして `E0908` にする（`v0.0.7` は `language "0.0.6"` を拒む）。決まった版を埋め込むと、処理系を新しくしたときに雛形が検査を通らない。非対話では、起動のときの `--project-parent` で指定したディレクトリの下にだけ作れる（ADR 0345 の決定 4 の `--dir` に当たる）。
 
 ### web_fetch
 
@@ -244,7 +245,7 @@ Benitoite の事前検討は、LLM に見せる道具の形を、サーバモー
 { "url": "string" }
 ```
 
-- 事前検討の決定（[ADR 0347](https://github.com/tecogonaz0439/Benitoite/blob/v0.0.6/docs/archive/2026-10-09-design-first-release/decisions/0347-agent-harness-web-fetch.md)）を引き継ぐ。`https` の GET だけを行い、クッキーと認証の情報を送らない。利用者の設定の一覧にあるドメインは確認なしで取得し、それ以外のドメインは、セッションで初めて取得するときに確認を受ける。一覧はプロジェクトの設定では広げられない。非対話では一覧のドメインだけを取得する。
+- 事前検討の決定（[ADR 0347](https://github.com/tecogonaz0439/Benitoite/blob/v0.0.7/docs/archive/2026-10-09-design-first-release/decisions/0347-agent-harness-web-fetch.md)）を引き継ぐ。`https` の GET だけを行い、クッキーと認証の情報を送らない。利用者の設定の一覧にあるドメインは確認なしで取得し、それ以外のドメインは、セッションで初めて取得するときに確認を受ける。一覧はプロジェクトの設定では広げられない。非対話では一覧のドメインだけを取得する。
 - リダイレクトは 5 回まで辿り、辿るたびに先のドメインを同じ規則で判定する。リダイレクトの先が `https` でなければ取得しない。確認が要るドメイン（一覧にも、このセッションで許したドメインにもないもの）へのリダイレクトは辿らずに止め、先の URL を結果に示す。LLM がその URL で改めて呼べば、確認を受ける。理由: 一つの道具の実行の途中に確認を挟むと、確認の流れ（確認を受けてから実行し直す形）で扱えない。
 - 名前を解いて得たアドレスのどれかが、ループバック（`127.0.0.0/8`・`::1`）、プライベート（`10.0.0.0/8`・`172.16.0.0/12`・`192.168.0.0/16`・`fc00::/7`）、リンクローカル（`169.254.0.0/16`・`fe80::/10`）、CGNAT（`100.64.0.0/10`）、未指定（`0.0.0.0`・`::`）、および IPv4 を写した IPv6 でこれらに当たるもの、に入れば、一覧にあっても取得しない。判定したアドレスにそのまま接続し、名前を解き直さない。理由: LLM が組み立てた URL で、手元の計算機、クラウドの仮想機械の情報のサービス（`169.254.169.254`）、内側のネットワークのサービスを読ませないためである。判定と接続の間に名前の答えを変える攻撃（DNS rebinding）も、解き直さないことで防ぐ。
 - 環境変数のプロキシの指定（`HTTPS_PROXY` など）を使わない。
