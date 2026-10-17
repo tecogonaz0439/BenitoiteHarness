@@ -33,6 +33,7 @@
 | [P2-01](tasks/P2-01-process-run.md) | 子プロセスの実行と後始末（BH-090） | P0-07 | 作業中 |
 | [P2-02](tasks/P2-02-hardlinks.md) | サンドボックスの中のハードリンクの作成（BH-092） | P0-07 | 未着手 |
 | [P2-03](tasks/P2-03-linux-placeholders.md) | Linux の塞ぐ場所の錠と記録、入れ子の探索の時間（BH-095） | P2-01 | 未着手 |
+| [P2-04](tasks/P2-04-bwrap-checks.md) | bubblewrap の版と setuid の確かめ、特権の除去（BH-094 の一部） | P2-01 | 未着手 |
 
 P1 の作業は P0-04・P0-05（OS のサンドボックス）の結果に依らないので、P0-04・P0-05 が設計者の判断を待つ間に先に進めてよい。
 
