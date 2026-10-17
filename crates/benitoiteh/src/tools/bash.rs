@@ -157,6 +157,7 @@ pub(super) fn execute(
         append(&mut contents, text::BASH_SANDBOX);
     }
     Ok(ToolOutput {
+        screen: Some(text::screen_exit(code)),
         spill,
         is_error: code != 0,
         ..ToolOutput::success(contents)

@@ -357,6 +357,14 @@ impl UserConfig {
         cwd: &Path,
     ) -> Result<ResolvedExec, ConfigError> {
         let mode = args.mode.unwrap_or(self.default_mode);
+        if args.interactive
+            && (args.approval.is_some_and(|value| value != Approval::Never)
+                || (mode == Mode::Normal
+                    && args.approval.is_none()
+                    && self.normal.approval != Approval::Never))
+        {
+            return Err(ConfigError::Invalid(text::INTERACTIVE_APPROVAL));
+        }
         if args
             .approval
             .is_some_and(|approval| approval != Approval::Never)

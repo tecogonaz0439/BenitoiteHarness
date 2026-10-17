@@ -1,0 +1,563 @@
+//! 画面の芯に模擬の端末と提供者をつなぐ（設計書 07-01、実装プラン P4-06）。
+
+#[allow(dead_code)]
+mod support;
+
+use std::error::Error;
+use std::fs;
+use std::io;
+use std::path::PathBuf;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::thread;
+use std::time::{Duration, Instant, SystemTime};
+
+use benitoiteh::agent::{Agent, AgentConfig, AgentEvent, Outcome};
+use benitoiteh::approval::{ApprovalFacts, ApprovalKind, ApprovalOutcome};
+use benitoiteh::config::{Limits, Mode, ReadConfig, paths::DataPaths};
+use benitoiteh::context::Environment;
+use benitoiteh::http::HttpTimeouts;
+use benitoiteh::provider::{AdapterKind, Capabilities, Destination, ProviderError};
+use benitoiteh::safe_fs::ScopeRoot;
+use benitoiteh::session::{
+    Record, RecordedMode, Session, SessionId, SkippedInstruction, read_records,
+};
+use benitoiteh::tools::{ToolContext, exclude::ExcludeRules};
+use benitoiteh::ui::tui::{InputSource, RunControl, Screen, Status, Worker, restoration, run};
+use crossterm::event::{Event, KeyCode, KeyEvent, KeyModifiers};
+use regex::Regex;
+use serde_json::json;
+use support::mock_provider::{Delivery, MockProvider, ResponseScript};
+
+type TestResult = Result<(), Box<dyn Error>>;
+
+fn status() -> Status {
+    Status {
+        mode: Mode::Normal,
+        provider: "mock".into(),
+        model: "mock-model".into(),
+        host: "localhost".into(),
+        sandbox: "workspace-write".into(),
+        sandbox_disabled: false,
+        context_window: Some(100_000),
+        estimate: 123,
+    }
+}
+
+fn controls() -> Result<Regex, regex::Error> {
+    // 画面を消す CSI 2J、題名、クリップボード、別画面、端末への問い合わせは許さない。
+    Regex::new(
+        r"\x1b\[(?:[0-9;]*m|[0-9]+[AG]|0?J|[012]?K|\?(?:25|7|2026|2004)[hl]|>[0-9]+u|<[0-9]+u)",
+    )
+}
+
+fn safe_output(bytes: &[u8]) -> Result<String, Box<dyn Error>> {
+    let value = std::str::from_utf8(bytes)?;
+    let visible = controls()?.replace_all(value, "").replace("\r\n", "\n");
+    for ch in visible.chars() {
+        assert!(
+            !matches!(ch, '\u{0}'..='\u{9}' | '\u{b}'..='\u{1f}' | '\u{7f}'..='\u{9f}' | '\u{202a}'..='\u{202e}' | '\u{2066}'..='\u{2069}'),
+            "unexpected control {ch:?}"
+        );
+    }
+    Ok(visible)
+}
+
+// 作成時の関門: 値を可視化し忘れた欄から端末が操作される退行を、実際の書き先で検出する。
+// 同じ可視化関数から期待値を作らず、許す制御の列を独立に検査する。
+#[test]
+fn every_untrusted_surface_emits_only_harness_controls() -> TestResult {
+    let attack = "SGR\x1b[31m ESC\x1b[2J OSC52\x1b]52;c;AAAA\x07 OSC0\x1b]0;title\x07\r\x08\u{9b}2J\u{202e}\u{2066}";
+    let mut state = status();
+    for field in [
+        &mut state.provider,
+        &mut state.model,
+        &mut state.host,
+        &mut state.sandbox,
+    ] {
+        *field = attack.into();
+    }
+    let mut screen = Screen::new((240, 24), state);
+    screen.startup([attack.into()]);
+    let events = [
+        AgentEvent::SessionStart {
+            session_id: "id".into(),
+            resumed: false,
+            base_url: Some("https://user:DO_NOT_PRINT@host/path?DO_NOT_PRINT".into()),
+            system_prompt_sha256: None,
+            tools_sha256: None,
+            mode: RecordedMode::Normal,
+            provider: attack.into(),
+            model: attack.into(),
+            host: attack.into(),
+            benitoiteh_version: "test".into(),
+            notice: Some(attack.into()),
+            instruction_files: vec![attack.into()],
+            skipped_instructions: vec![SkippedInstruction {
+                path: attack.into(),
+                reason: attack.into(),
+            }],
+        },
+        AgentEvent::TextDelta {
+            turn: 1,
+            text: format!("**{attack}**\n"),
+        },
+        AgentEvent::ReasoningDelta {
+            turn: 1,
+            text: attack.into(),
+        },
+        AgentEvent::ToolCall {
+            turn: 1,
+            call_id: "call".into(),
+            name: attack.into(),
+            arguments: json!({"path":attack}),
+        },
+        AgentEvent::ToolCall {
+            turn: 1,
+            call_id: "call".into(),
+            name: "read".into(),
+            arguments: json!({"path":attack}),
+        },
+        AgentEvent::ToolResult {
+            turn: 1,
+            call_id: "call".into(),
+            name: "write".into(),
+            is_error: false,
+            summary: attack.into(),
+            screen: Some(attack.into()),
+            display: Some(format!("--- {attack}\n+++ {attack}\n+{attack}\n-{attack}")),
+        },
+        AgentEvent::ToolResult {
+            turn: 1,
+            call_id: "call".into(),
+            name: "other".into(),
+            is_error: true,
+            summary: attack.into(),
+            screen: None,
+            display: None,
+        },
+        AgentEvent::ApprovalResult {
+            call_id: "call".into(),
+            kind: ApprovalKind::Command,
+            facts: ApprovalFacts {
+                command: Some(attack.into()),
+                cwd: Some(attack.into()),
+                path: Some(attack.into()),
+                sandbox_policy: Some(attack.into()),
+                url: Some(attack.into()),
+                domain: Some(attack.into()),
+            },
+            justification: Some(attack.into()),
+            summary: attack.into(),
+            decision: ApprovalOutcome::DeniedWithMessage,
+            user_message: Some(attack.into()),
+        },
+        AgentEvent::Error {
+            kind: "test".into(),
+            message: attack.into(),
+        },
+        AgentEvent::Retry {
+            attempt: 1,
+            delay_ms: 10,
+            reason: ProviderError::ContextOverflow,
+        },
+        AgentEvent::SessionEnd {
+            outcome: Outcome::Cancelled,
+            reason: attack.into(),
+        },
+    ];
+    let mut output = Vec::new();
+    for event in events {
+        screen.event(&event);
+        screen.draw(&mut output, None)?;
+    }
+    screen.input(Event::Paste(attack.into()), Duration::ZERO, false);
+    screen.draw(&mut output, None)?;
+    output.extend(restoration(screen.rows_below_cursor())?);
+    let visible = safe_output(&output)?;
+    assert!(!String::from_utf8_lossy(&output).contains("\x1b[31m"));
+    for expected in [
+        "\\x1b",
+        "\\x07",
+        "\\x0d",
+        "\\x08",
+        "\\x9b",
+        "\\u{202e}",
+        "\\u{2066}",
+    ] {
+        assert!(visible.contains(expected), "{expected}");
+    }
+    assert!(!visible.contains("DO_NOT_PRINT"));
+    assert!(visible.contains("Interrupted."));
+    Ok(())
+}
+
+struct Fixture {
+    root: PathBuf,
+    project: PathBuf,
+    paths: DataPaths,
+}
+impl Fixture {
+    fn new() -> Result<Self, Box<dyn Error>> {
+        let root = std::env::temp_dir().join(format!(
+            "benitoiteh-tui-{}",
+            SessionId::generate(SystemTime::now())?
+        ));
+        fs::create_dir(&root)?;
+        let root = fs::canonicalize(root)?;
+        let project = root.join("project");
+        for path in [&project, &root.join("home"), &root.join("tmp")] {
+            fs::create_dir(path)?;
+        }
+        let paths = DataPaths::from_values(
+            Some(&root.join("home")),
+            Some(&root.join("config")),
+            Some(&root.join("state")),
+            Some(&root.join("tmp")),
+        )?;
+        fs::write(project.join("a.bnt"), "before\n")?;
+        Ok(Self {
+            root,
+            project,
+            paths,
+        })
+    }
+
+    fn worker(&self, server: &MockProvider) -> Result<(Worker, PathBuf), Box<dyn Error>> {
+        let session = Session::create(&self.paths, SessionId::generate(SystemTime::now())?)?;
+        let directory = session.directory().to_owned();
+        let spill = directory.join("spill");
+        let config = AgentConfig {
+            mode: Mode::Normal,
+            destination: Destination {
+                provider: "mock".into(),
+                base_url: server.base_url(),
+                model: "mock-model".into(),
+            },
+            kind: AdapterKind::OpenAiChat,
+            capabilities: Capabilities::default(),
+            effort: "high".into(),
+            limits: Limits::default(),
+            http_timeouts: HttpTimeouts {
+                connect: Duration::from_secs(1),
+                headers: Duration::from_secs(2),
+                idle: Duration::from_secs(2),
+                total: Duration::from_secs(4),
+            },
+            retry_initial: Duration::from_millis(2),
+        };
+        let context = ToolContext::new(
+            Mode::Normal,
+            ScopeRoot::open(&self.project)?,
+            ScopeRoot::open(session.temporary_dir())?,
+            ScopeRoot::open(&spill)?,
+            ExcludeRules::new(
+                &self.project,
+                &self.paths,
+                &spill,
+                &ReadConfig::default(),
+                &ReadConfig::default(),
+            )?,
+        )
+        .with_session(session.clone());
+        let environment = Environment::capture(
+            &self.project,
+            Mode::Normal,
+            &[self.project.clone(), session.temporary_dir().to_owned()],
+            false,
+            SystemTime::now(),
+        )?;
+        let agent = Agent::new(
+            config,
+            "synthetic-tui-key".into(),
+            context,
+            environment,
+            session.clone(),
+        )?;
+        assert!(agent.context_estimate() > 0);
+        assert_eq!(agent.context_window(), None);
+        Ok((Worker::start(agent, session)?, directory))
+    }
+}
+impl Drop for Fixture {
+    fn drop(&mut self) {
+        let _removed = fs::remove_dir_all(&self.root);
+    }
+}
+
+fn response(delta: serde_json::Value, reason: &str) -> String {
+    format!(
+        "data: {}\n\ndata: [DONE]\n\n",
+        json!({"choices":[{"delta":delta,"finish_reason":reason}]})
+    )
+}
+
+fn finish(worker: &mut Worker, screen: &mut Screen, output: &mut Vec<u8>) -> TestResult {
+    let deadline = Instant::now();
+    while worker.is_running() {
+        assert!(deadline.elapsed() < Duration::from_secs(5));
+        worker.drain(screen)?;
+        screen.draw(output, None)?;
+        thread::sleep(Duration::from_millis(1));
+    }
+    Ok(())
+}
+
+// 作成時の関門: ワーカーと画面と記録の接続に固有の退行を捕まえる。ネットワークだけを置き換える。
+#[test]
+fn requests_show_real_tool_summaries_diffs_and_append_a_summary_each_time() -> TestResult {
+    let mut server = MockProvider::start(vec![
+        ResponseScript::sse(response(
+            json!({"tool_calls":[{"index":0,"id":"read","type":"function","function":{"name":"read","arguments":"{\"path\":\"a.bnt\"}"}}]}),
+            "tool_calls",
+        )),
+        ResponseScript::sse(response(
+            json!({"tool_calls":[{"index":0,"id":"write","type":"function","function":{"name":"write","arguments":"{\"path\":\"a.bnt\",\"content\":\"changed\\n\"}"}}]}),
+            "tool_calls",
+        )),
+        ResponseScript::sse(response(json!({"content":"First answer\n"}), "stop")),
+        ResponseScript::sse(response(json!({"content":"Second answer\n"}), "stop")),
+    ])?;
+    let fixture = Fixture::new()?;
+    let (mut worker, directory) = fixture.worker(&server)?;
+    let mut screen = Screen::new((100, 24), status());
+    let mut bytes = Vec::new();
+    for request in ["Read and write", "Continue"] {
+        screen.request(request);
+        worker.submit(request.into(), RunControl::default())?;
+        finish(&mut worker, &mut screen, &mut bytes)?;
+    }
+    worker.close()?;
+    let visible = safe_output(&bytes)?;
+    for expected in [
+        "read a.bnt",
+        "1 lines",
+        "write a.bnt",
+        "+1 -1",
+        "-before",
+        "+changed",
+        "First answer",
+        "Second answer",
+    ] {
+        assert!(visible.contains(expected), "{expected}: {visible}");
+    }
+    assert_eq!(
+        fs::read_to_string(fixture.project.join("a.bnt"))?,
+        "changed\n"
+    );
+    assert_eq!(
+        read_records(&directory)?
+            .iter()
+            .filter(|record| matches!(record, Record::Summary { .. }))
+            .count(),
+        2
+    );
+    server.shutdown()?;
+    Ok(())
+}
+
+#[test]
+fn a_cancelled_request_does_not_cancel_the_next_request() -> TestResult {
+    let mut server = MockProvider::start(vec![ResponseScript::sse(response(
+        json!({"content":"After cancellation"}),
+        "stop",
+    ))])?;
+    let fixture = Fixture::new()?;
+    let (mut worker, directory) = fixture.worker(&server)?;
+    let mut screen = Screen::new((100, 24), status());
+    let mut output = Vec::new();
+    let control = RunControl::default();
+    control.cancel();
+    worker.submit("Cancel before networking".into(), control)?;
+    finish(&mut worker, &mut screen, &mut output)?;
+    worker.submit("New request".into(), RunControl::default())?;
+    finish(&mut worker, &mut screen, &mut output)?;
+    worker.close()?;
+    let records = read_records(&directory)?;
+    let outcomes: Vec<_> = records
+        .iter()
+        .filter_map(|record| {
+            if let Record::SessionEnd { outcome, .. } = record {
+                Some(outcome.as_str())
+            } else {
+                None
+            }
+        })
+        .collect();
+    assert_eq!(outcomes, ["cancelled", "completed"]);
+    assert_eq!(
+        records
+            .iter()
+            .filter(|record| matches!(record, Record::Summary { .. }))
+            .count(),
+        2
+    );
+    assert!(safe_output(&output)?.contains("After cancellation"));
+    assert_eq!(server.requests()?.len(), 1);
+    server.shutdown()?;
+    Ok(())
+}
+
+struct StopInput<'a> {
+    signal: &'a AtomicBool,
+    provider: &'a MockProvider,
+    external: bool,
+    sent: bool,
+    failure: Option<io::Error>,
+}
+impl InputSource for StopInput<'_> {
+    fn poll(&mut self, wait: Duration) -> io::Result<Vec<Event>> {
+        if !self.sent && !self.provider.requests()?.is_empty() {
+            self.sent = true;
+            if self.external {
+                self.signal.store(true, Ordering::Release);
+                if let Some(failure) = self.failure.take() {
+                    return Err(failure);
+                }
+            } else {
+                return Ok(vec![Event::Key(KeyEvent::new(
+                    KeyCode::Char('d'),
+                    KeyModifiers::CONTROL,
+                ))]);
+            }
+        }
+        thread::sleep(wait);
+        Ok(Vec::new())
+    }
+}
+
+// シグナルと Ctrl+D のどちらでも、イベントを捨てず session_end と Summary まで受け取って戻る。
+#[test]
+fn shutdown_drains_the_worker_and_preserves_the_restoration_position() -> TestResult {
+    for (external, failure, output_fails) in [
+        (false, None, false),
+        (true, None, false),
+        (true, Some(io::Error::from_raw_os_error(5)), false),
+        (true, Some(io::ErrorKind::UnexpectedEof.into()), false),
+        (true, None, true),
+    ] {
+        let mut response = ResponseScript::sse("unused");
+        response.delivery = Delivery::HeadersOnly;
+        let mut server = MockProvider::start(vec![response])?;
+        let fixture = Fixture::new()?;
+        let (mut worker, directory) = fixture.worker(&server)?;
+        worker.submit("Stop".into(), RunControl::default())?;
+        let mut screen = Screen::new((100, 24), status());
+        let signal = AtomicBool::new(false);
+        let mut input = StopInput {
+            signal: &signal,
+            provider: &server,
+            external,
+            sent: false,
+            failure,
+        };
+        struct Output<'a> {
+            bytes: Vec<u8>,
+            signal: &'a AtomicBool,
+            fails: bool,
+        }
+        impl io::Write for Output<'_> {
+            fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+                if self.fails && self.signal.load(Ordering::Acquire) {
+                    return Err(io::Error::from_raw_os_error(5));
+                }
+                self.bytes.extend_from_slice(bytes);
+                Ok(bytes.len())
+            }
+            fn flush(&mut self) -> io::Result<()> {
+                Ok(())
+            }
+        }
+        let mut output = Output {
+            bytes: Vec::new(),
+            signal: &signal,
+            fails: output_fails,
+        };
+        let mut below = 0;
+        assert_eq!(
+            run(
+                &mut screen,
+                worker,
+                &mut input,
+                &mut output,
+                &signal,
+                |rows| below = rows
+            )?,
+            if external { 130 } else { 0 }
+        );
+        output.bytes.extend(restoration(below)?);
+        let visible = safe_output(&output.bytes)?;
+        if !output_fails {
+            assert!(visible.contains("Interrupted."));
+        }
+        let records = read_records(&directory)?;
+        assert!(matches!(records.last(), Some(Record::Summary { .. })));
+        assert_eq!(below, screen.rows_below_cursor());
+        server.shutdown()?;
+    }
+    Ok(())
+}
+
+// 作成時の関門: 終了待ち中の入力を捨てる退行と、二度目でもワーカーを待つ退行を守る。
+#[test]
+fn repeated_shutdown_returns_immediately_and_resize_is_kept_while_exiting() -> TestResult {
+    for second in [Some('c'), Some('d'), None] {
+        let mut response = ResponseScript::sse("unused");
+        response.delivery = Delivery::HeadersOnly;
+        let mut server = MockProvider::start(vec![response])?;
+        let fixture = Fixture::new()?;
+        let (mut worker, _) = fixture.worker(&server)?;
+        worker.submit("Stop twice".into(), RunControl::default())?;
+        let signal = AtomicBool::new(false);
+        struct Input<'a> {
+            provider: &'a MockProvider,
+            signal: &'a AtomicBool,
+            second: Option<char>,
+            delivered: bool,
+        }
+        impl InputSource for Input<'_> {
+            fn poll(&mut self, wait: Duration) -> io::Result<Vec<Event>> {
+                if !self.delivered && !self.provider.requests()?.is_empty() {
+                    self.delivered = true;
+                    if let Some(second) = self.second {
+                        return Ok(vec![
+                            Event::Key(KeyEvent::new(KeyCode::Char('d'), KeyModifiers::CONTROL)),
+                            Event::Resize(12, 4),
+                            Event::Key(KeyEvent::new(KeyCode::Char(second), KeyModifiers::CONTROL)),
+                        ]);
+                    }
+                    self.signal.store(true, Ordering::Release);
+                }
+                thread::sleep(wait);
+                Ok(Vec::new())
+            }
+            fn termination_count(&mut self) -> io::Result<usize> {
+                Ok(if self.delivered && self.second.is_none() {
+                    2
+                } else {
+                    0
+                })
+            }
+        }
+        let mut input = Input {
+            provider: &server,
+            signal: &signal,
+            second,
+            delivered: false,
+        };
+        let mut screen = Screen::new((100, 24), status());
+        let mut bytes = Vec::new();
+        assert_eq!(
+            run(&mut screen, worker, &mut input, &mut bytes, &signal, |_| {})?,
+            130
+        );
+        if second.is_some() {
+            let mut after = Vec::new();
+            screen.draw(&mut after, None)?;
+            let visible = safe_output(&after)?;
+            assert!(!visible.contains("context"), "{visible}");
+            assert!(visible.contains("normal | moc"), "{visible}");
+        }
+        server.shutdown()?;
+    }
+    Ok(())
+}

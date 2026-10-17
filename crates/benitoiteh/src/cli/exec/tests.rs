@@ -120,19 +120,20 @@ fn startup_selects_policy_and_fails_closed_unless_explicitly_disabled() -> Resul
         let Some(expected) = expected else {
             assert!(matches!(
                 prepared,
-                Err(StartupError::Sandbox(SandboxError::Unavailable))
+                Err(PreparationError {
+                    error: StartupError::Sandbox(SandboxError::Unavailable),
+                    ..
+                })
             ));
             assert_eq!(fs::read_dir(&paths.temporary_root)?.count(), 0);
             continue;
         };
         let Prepared {
-            mut agent,
-            session,
-            request,
+            mut agent, session, ..
         } = prepared.map_err(|e| io::Error::other(e.to_string()))?;
         let (sender, receiver) = mpsc::sync_channel(64);
         // 依頼と開始通知を記録した後、API を呼ぶ前に取り消す。
-        agent.run(request, Arc::new(AtomicBool::new(true)), sender)?;
+        agent.run("request".into(), Arc::new(AtomicBool::new(true)), sender)?;
         let events = receiver.into_iter().collect::<Vec<_>>();
         let start = events.first().ok_or("missing session_start")?;
         assert!(
@@ -179,7 +180,7 @@ fn startup_selects_policy_and_fails_closed_unless_explicitly_disabled() -> Resul
         );
         drop(agent);
         drop(session);
-        panic::install(None);
+        panic::install(None, None);
         assert_eq!(fs::read_dir(&paths.temporary_root)?.count(), 0);
     }
     Ok(())
@@ -227,13 +228,11 @@ fn unavailable_sandbox_keeps_write_approval_policy_and_configured_roots()
         fs::write(&paths.config_file, config)?;
         let args = f.args(&["--sandbox", sandbox, "--no-sandbox"])?;
         let Prepared {
-            mut agent,
-            session,
-            request,
+            mut agent, session, ..
         } = prepare(&args, &paths, |_, _| Err(SandboxError::Unavailable))
             .map_err(|e| io::Error::other(e.to_string()))?;
         let (sender, receiver) = mpsc::sync_channel(64);
-        let report = agent.run(request, Arc::new(AtomicBool::new(false)), sender)?;
+        let report = agent.run("request".into(), Arc::new(AtomicBool::new(false)), sender)?;
         assert_eq!(report.outcome, Outcome::Completed);
         assert_eq!(report.summary.approvals.policy_denied, u64::from(denied));
         assert_eq!(path.exists(), !denied);
@@ -244,7 +243,7 @@ fn unavailable_sandbox_keeps_write_approval_policy_and_configured_roots()
         )));
         drop(agent);
         drop(session);
-        panic::install(None);
+        panic::install(None, None);
         server.shutdown()?;
     }
     Ok(())

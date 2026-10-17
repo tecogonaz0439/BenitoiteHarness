@@ -467,6 +467,15 @@ impl Agent {
                 (Outcome::Failed, message)
             }
         };
+        if let Some(message) = self.session.take_storage_notice() {
+            self.emit(
+                &events,
+                AgentEvent::Error {
+                    kind: "storage_limit".into(),
+                    message: message.into(),
+                },
+            )?;
+        }
         summary.elapsed_ms = u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX);
         summary.reason = reason.clone();
         self.emit(&events, AgentEvent::SessionEnd { outcome, reason })?;

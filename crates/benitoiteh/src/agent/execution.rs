@@ -324,6 +324,8 @@ impl Agent {
                 turn: self.turn,
                 call_id: call.id.clone(),
                 name: call.name.clone(),
+                screen: output.screen,
+                display: output.display,
                 is_error: result.is_error,
                 summary: result.text.lines().next().unwrap_or_default().to_owned(),
             },

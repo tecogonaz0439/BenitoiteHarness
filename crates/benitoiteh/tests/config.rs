@@ -255,6 +255,23 @@ fn exec_resolution_applies_options_project_user_and_defaults_in_order() -> TestR
     assert_eq!(resolved.limits.max_turns, 8);
     assert_eq!(resolved.limits.max_check_fix, 2);
     assert_eq!(resolved.limits.max_run_tokens, Some(100));
+    // 対話の確認がまだない間、利用者の承認の設定を黙って never に下げない。
+    for (approval, options, accepted) in [
+        ("on-request", vec![], false),
+        ("untrusted", vec![], false),
+        ("never", vec![], true),
+        ("on-request", vec!["--approval", "never"], true),
+    ] {
+        let config = UserConfig::parse(&format!(
+            "default_mode='normal'\ndefault_provider='p'\n[providers.p]\nkind='openai-chat'\nmodel='model'\n[normal]\napproval='{approval}'"
+        ))?;
+        let args = ExecArgs::parse_interactive(options)?;
+        let resolved = config.resolve_exec(&args, &ProjectConfig::default(), &fixture.0);
+        assert_eq!(resolved.is_ok(), accepted);
+        if let Err(error) = resolved {
+            assert!(error.to_string().contains("P4-07"));
+        }
+    }
     Ok(())
 }
 

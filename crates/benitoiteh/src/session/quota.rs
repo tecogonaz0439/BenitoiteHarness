@@ -1,7 +1,6 @@
 //! 起動時の保存量の走査と、spill・objects 共通の予約（設計書 01-05「記録を残す期間」）。
 
 use std::fs::File;
-use std::io::Write;
 use std::sync::atomic::Ordering;
 
 use rustix::fs::{AtFlags, Dir, FileType, Mode, OFlags, openat, statat};
@@ -125,7 +124,7 @@ impl Session {
             .store(own.min(global), Ordering::Release);
     }
 
-    /// spill と objects の書き込みを予約し、超過を一度だけ標準エラー出力に示す。
+    /// spill と objects の書き込みを予約し、超過の通知を呼び出し側のために保持する。
     pub fn reserve(&self, bytes: u64) -> bool {
         if self
             .inner
@@ -137,10 +136,16 @@ impl Session {
         {
             return true;
         }
-        if !self.inner.limit_notified.swap(true, Ordering::AcqRel) {
-            let _output = writeln!(std::io::stderr().lock(), "{}", text::STORAGE_LIMIT);
-        }
+        self.inner.limit_notified.store(true, Ordering::Release);
         false
+    }
+
+    /// 前に読んだ後の超過をまとめて受け取る。端末への書き込みは UI が持つ。
+    pub fn take_storage_notice(&self) -> Option<&'static str> {
+        self.inner
+            .limit_notified
+            .swap(false, Ordering::AcqRel)
+            .then_some(text::STORAGE_LIMIT)
     }
 
     /// 不要になった出力、または失敗した書き込みの予約を返す。

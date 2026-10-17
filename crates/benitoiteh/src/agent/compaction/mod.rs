@@ -152,6 +152,16 @@ impl Agent {
         )
     }
 
+    /// 依頼の間に画面が読む文脈の見積もり（設計書 01-04「文脈の大きさの見積もり」）。
+    pub fn context_estimate(&self) -> u64 {
+        self.estimate()
+    }
+
+    /// 提供者の設定で指定された文脈の上限。
+    pub fn context_window(&self) -> Option<u64> {
+        self.config.capabilities.context_window
+    }
+
     fn estimate(&self) -> u64 {
         context::estimate_tokens(
             self.last_usage.as_ref(),

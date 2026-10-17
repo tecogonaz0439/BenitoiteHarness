@@ -315,3 +315,16 @@ pub fn web_result(url: &str, kind: &str, body: &str, total: usize) -> String {
     }
     output
 }
+
+/// 読んだ行数を画面に示す。
+pub fn screen_lines(count: usize) -> String {
+    format!("{count} lines")
+}
+/// コマンドの終了状態を画面に示す。
+pub fn screen_exit(code: i32) -> String {
+    format!("exit {code}")
+}
+/// 差分の追加と削除を画面に示す。
+pub fn screen_diff(added: usize, deleted: usize) -> String {
+    format!("+{added} -{deleted}")
+}

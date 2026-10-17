@@ -1,6 +1,6 @@
 //! 行番号と続きの位置を付けてテキストを読む（設計書 01-03「read」）。
 
-use super::{FileVersion, ToolContext, ToolError, text};
+use super::{FileVersion, ToolContext, ToolError, ToolOutput, text};
 use serde_json::Value;
 use std::io::Read;
 use std::path::Path;
@@ -8,7 +8,7 @@ use std::path::Path;
 pub(super) const MAX_BYTES: usize = 50 * 1024;
 pub(super) const MAX_FILE_BYTES: u64 = 64 * 1024 * 1024;
 
-pub(super) fn execute(context: &ToolContext, arguments: &Value) -> Result<String, ToolError> {
+pub(super) fn execute(context: &ToolContext, arguments: &Value) -> Result<ToolOutput, ToolError> {
     let path = string(arguments, "path")?;
     let offset = number(arguments, "offset", 1, false)?;
     let limit = number(arguments, "limit", 2000, false)?.min(2000);
@@ -129,7 +129,11 @@ pub(super) fn execute(context: &ToolContext, arguments: &Value) -> Result<String
         return Err(ToolError::Changed);
     }
     context.record_read_version(opened.real_path, version)?;
-    Ok(output)
+    let screen = text::screen_lines(last.saturating_sub(start));
+    Ok(ToolOutput {
+        screen: Some(screen),
+        ..ToolOutput::success(output)
+    })
 }
 
 struct ReadLines {

@@ -248,6 +248,42 @@ fn types(values: &[Value]) -> Vec<&str> {
         .collect()
 }
 
+// 起動の途中で失敗しても、先に無視した設定の診断を失わないことを実行ファイルの入口で守る。
+#[test]
+fn startup_failure_preserves_earlier_project_diagnostics() -> TestResult {
+    let mut server = MockProvider::start(Vec::new())?;
+    let fixture = Fixture::new(Protocol::Chat, &server)?;
+    fs::create_dir_all(fixture.root.join("project/.benitoiteh"))?;
+    fs::write(
+        fixture.root.join("project/.benitoiteh/config.toml"),
+        "[invalid",
+    )?;
+    let output = fixture
+        .command("request")
+        .args(["--provider", "unknown"])
+        .output()?;
+    assert_eq!(output.status.code(), Some(2));
+    let stderr = String::from_utf8(output.stderr)?;
+    let ignored = stderr
+        .find("Ignoring project configuration:")
+        .ok_or("missing earlier diagnostic")?;
+    let failure = stderr
+        .find("benitoiteh:")
+        .ok_or("missing startup failure")?;
+    assert!(ignored < failure, "{stderr}");
+    assert!(output.stdout.is_empty());
+    assert!(server.requests()?.is_empty());
+    // 診断の書き先が書けなくても、使い方の誤りの終了状態を上書きしない。
+    let status = fixture
+        .command("request")
+        .args(["--provider", "unknown"])
+        .stderr(Stdio::from(fs::File::open("/dev/null")?))
+        .status()?;
+    assert_eq!(status.code(), Some(2));
+    server.shutdown()?;
+    Ok(())
+}
+
 fn no_secret(output: &Output, records: &[Value]) {
     for bytes in [&output.stdout, &output.stderr] {
         assert!(!String::from_utf8_lossy(bytes).contains(KEY));
@@ -434,6 +470,12 @@ fn exec_completes_tools_and_preserves_output_records_and_original_items() -> Tes
                     ]
                 );
                 assert_eq!(events.last(), Some(summary));
+                assert!(
+                    events
+                        .iter()
+                        .filter(|event| event.get("type") == Some(&json!("tool_result")))
+                        .all(|event| event.get("display").is_none())
+                );
                 assert!(events.iter().any(|e| e.get("text") == Some(&json!(FINAL))));
             }
             for (path, mode) in [
