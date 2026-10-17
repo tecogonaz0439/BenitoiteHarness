@@ -113,6 +113,14 @@ P0-04 で作った型: 方針の入力 `PolicyConfig`（`readable: ReadAccess`�
   - `run` に `PreparedSandbox` を渡すときは、入力があれば `SandboxStdin::Piped`、なければ `Null` で準備する。Linux の bubblewrap の標準入力は、補助のプロセスへの制御のソケットである。
   - Linux の `SandboxChild` に `take_stdin`・`stop(StopSignal)`・`terminate` を加えた。補助のプロセスは bubblewrap の名前空間の pid 1 として動く（`--as-pid-1`）。
 
+### 通常モードの起動の準備（P3-02）
+
+- `sandbox::normal_policy(sandbox: Sandbox, locations: &WritableLocations, network: bool, denied_candidates: &[PathBuf]) -> Result<Option<SandboxPolicy>, SandboxError>`。`danger-full-access` は `None`。ない読ませない場所の候補は入れない。
+- `sandbox::check_availability(helper: &Path, scratch: &Path) -> Result<(), SandboxError>`。macOS は `/usr/bin/sandbox-exec` の有無、Linux は `probe_linux` の四つの欄。
+- `config::PROVIDER_KEY_ENV_VARS` と `config::child_environment(inherited, referenced_keys, temporary, sandbox: Option<(&str, bool)>) -> BTreeMap<OsString, OsString>`。子プロセスの環境は、どの起動の形でもこの関数で作る。
+- `config::writable::validate_writable_with_executable(...)`。書ける場所が `benitoiteh` の実行ファイルを含めば `WritableRule::Executable` で拒む。
+- `tools::ShellContext`（子プロセスの方針と名前、補助のプロセスのパス、Linux の一時の場所と `placeholders`、子プロセスの環境、承認の方針）。`ToolContext` に足して道具へ渡す。
+
 ### `provider`（P1-01、P1-02）
 
 - 共通の形（`provider::types`、`provider` から再公開）: `Destination { provider, base_url, model }`、`AdapterKind`、`Conversation { items }`、`Item::{UserMessage, AssistantTurn, ToolResult}`、`UserMessage { parts: Vec<UserPart> }`（`UserPartKind::{Environment, Request, Steering}`）、`AssistantTurn { parts, raw_items, finish_reason, usage }`、`AssistantPart::{Text, Reasoning, ToolCall}`、`RawItems { destination, adapter, items }`、`ToolCall { id, provider_id, provider_item_id, name, arguments, raw_arguments }`、`ToolResult { id, provider_id, text, is_error }`、`Usage`（各項目 `Option<u64>` と `raw`）、`FinishReason::{Completed, ToolCalls, OutputLimit, Refusal(String), Error, Cancelled, Disconnected}`、`StreamEvent`、`ProviderError`、`Capabilities`。
