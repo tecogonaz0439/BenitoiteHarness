@@ -53,7 +53,7 @@
   benitoiteh handles the "Before running" confirmation in its UI; you do not need to ask the user for confirmation yourself. You may explain what the effects mean in your response.
   ```
 
-- 対応の説明の 1 行目と 5 行目は、まだない道具（`benitoite_check`・`benitoite_run`・`benitoite_test`）を名指す。P2-07 と P2-08 がこれらの道具を加えるまでの間、システムプロンプトがまだない道具を名指すことは、意図した途中の形とする。理由: 対応の説明は `v0.0.7` の `SKILL.md` に合わせた一つの文であり、作業ごとに書き換えると、期待のファイルの差分が作業ごとに生じて見直しが増える。
+- 対応の説明の 1 行目と 5 行目は、まだない道具（`benitoite_check`・`benitoite_run`・`benitoite_test`）を名指す。P2-07、P2-08、P2-12 がこれらの道具を加えるまでの間、システムプロンプトがまだない道具を名指すことは、意図した途中の形とする。理由: 対応の説明は `v0.0.7` の `SKILL.md` に合わせた一つの文であり、作業ごとに書き換えると、期待のファイルの差分が作業ごとに生じて見直しが増える。
 - 通常モード: 処理系を使えるときは、得た `SKILL.md` の先頭の属性の `name` と `description` と、`prompts/benitoite-index.md` の一行を置く（今の形）。処理系を使えないときは、`<benitoite>` の節を置かない。
 - `Agent::construct` は、`ToolContext` が Skill の部品を持てば `ToolSet::new`、持たなければ（通常モードで処理系を使えないとき）`ToolSet::without_benitoite` を使い、部品が保つ `SKILL.md` を `SystemContext::new` に渡す。
 - ヘッダのシステムプロンプトのハッシュは、得た `SKILL.md` を含めた全文から求める（今の関数のまま）。`SKILL.md` の `contentHash` は、どちらのモードでもヘッダに書く（設計書 01-05「セッションの記録」）。

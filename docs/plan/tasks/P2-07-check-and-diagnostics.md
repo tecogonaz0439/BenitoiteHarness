@@ -46,7 +46,7 @@
 
 `src/benitoite/diagnostics.rs` に、処理系の診断を読み、分類し、まとめ、04-01 の文の形に変える部品を作る。`benitoite` は `tools` に依存しない（設計書 06-01 の依存の向き）ので、パスを解く処理とソースの行を読む処理は、小さな trait（例: `DiagnosticSources`）で受け取り、`tools` の側が実装を渡す。
 
-- **読み方**: 標準エラー出力の各行のうち、JSON のオブジェクトとして読めて、診断の欄（前提の一つ目）をすべて正しい型で持つ行を診断とする。`code` と `primary` は `null` を許す。欄が欠けるか型が違う行は、診断とせず出力の行とする（P2-08 の `run` でも使う。`kind` が `"die"` の報告が同じ欄を持つかは P2-08 で確かめる）。
+- **読み方**: 標準エラー出力の各行のうち、JSON のオブジェクトとして読めて、診断の欄（前提の一つ目）をすべて正しい型で持つ行を診断とする。`code` と `primary` は `null` を許す。欄が欠けるか型が違う行は、診断とせず出力の行とする（P2-08 の `run` と P2-12 の `test` でも使う。`kind` が `"die"` と `"runtime"` の報告がこの読み方で診断として読めるかは P2-08 で確かめる）。
 - **終了状態の分類**（04-01 の表）: 関数（例: `classify_check(status, diagnostics, other_lines) -> CheckClass`）で、次のどれかに分ける。
   - 通った: 0 で診断がない。
   - 通った（警告あり）: 0 で診断が警告だけ。
@@ -125,7 +125,7 @@
 ### 5. セッションの集計
 
 - `Summary.checks` と `Summary.fixes` は、今はどこでも埋めていない。この作業で次のとおり埋める（どちらのモードでも数える）。
-  - `checks`: `ToolOutput.check_launch` が `Some` の数（検査のために処理系を起動した回数）。`benitoite_check` と書いた後の検査を含む。P2-08 が `benitoite_run`・`benitoite_test`・`benitoite_scratch` の起動を加える（07-02 の数え方）。
+  - `checks`: `ToolOutput.check_launch` が `Some` の数（検査のために処理系を起動した回数）。`benitoite_check` と書いた後の検査を含む。P2-08 が `ToolOutput.processor_launches`（報告の問い合わせと実行の起動の回数）を加え、`checks` をこの数との和にする。`benitoite_run`（P2-08）、`benitoite_test`（P2-12）、`benitoite_scratch`（P2-09）の起動がここに入る（07-02 の数え方）。
   - `after_write_checks`（新）: `checks` のうち `CheckLaunch::AfterWrite` の数。07-02 が、書いた後の検査の回数を分けて示すことを求めるので加える。
   - `fixes`: `ToolOutput.check` が `Some` で `failed` が真の数（検査が誤りを返した回数。その後に LLM が直すので、修正の回数とみなす）。
 - 加える欄は `#[serde(default)]` とし、既存の記録を読めるようにする。

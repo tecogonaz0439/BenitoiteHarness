@@ -37,10 +37,11 @@
 | [P2-05](tasks/P2-05-processor-discovery.md) | 処理系の見つけ方と確かめ、問い合わせの起動 | P4-07、P4-08 | 未着手 |
 | [P2-06](tasks/P2-06-skill-runtime.md) | Skill の文書を処理系から得る、`benitoite_explain`・`benitoite_reference` | P2-05 | 未着手 |
 | [P2-07](tasks/P2-07-check-and-diagnostics.md) | 診断の受け渡し、`benitoite_check`、書いた後の検査、検査と修正の回数（BH-028 の測定） | P2-06 | 未着手 |
-| [P2-08](tasks/P2-08-run-and-test.md) | 実行の前の検査の報告、制限モードの方針、`benitoite_run`・`benitoite_test`、非対話の確認 | P2-07 | 未着手 |
-| [P2-09](tasks/P2-09-scratch.md) | 一時的なスクリプト `benitoite_scratch` | P2-08 | 未着手 |
-| [P2-10](tasks/P2-10-effects-confirmation.md) | 対話の画面の、エフェクトの確認 | P2-08、P4-07 | 未着手 |
-| [P2-11](tasks/P2-11-p2-completion.md) | P2 の完了の確かめ（制限モードの安全の性質のテストの一覧と結果） | P2-09、P2-10 | 未着手 |
+| [P2-08](tasks/P2-08-run-and-confirm.md) | 実行の前の検査の報告、制限モードの方針、`benitoite_run`、対話の確認 | P2-07 | 未着手 |
+| [P2-09](tasks/P2-09-scratch.md) | 一時的なスクリプト `benitoite_scratch` | P2-08、P2-12 | 未着手 |
+| [P2-10](tasks/P2-10-effects-confirmation.md) | 対話の画面の、エフェクトの確認 | P2-09、P2-12、P4-07 | 未着手 |
+| [P2-11](tasks/P2-11-p2-completion.md) | P2 の完了の確かめ（制限モードの安全の性質のテストの一覧と結果） | P2-09、P2-10、P2-12 | 未着手 |
+| [P2-12](tasks/P2-12-test-and-allow.md) | `benitoite_test` と、非対話の `--allow` | P2-08 | 未着手 |
 | [P3-01](tasks/P3-01-project-instructions.md) | プロジェクトの指示のファイル（BH-013 の決定） | P1-10 | 完了 |
 | [P3-02](tasks/P3-02-normal-setup.md) | 通常モードの起動の準備（サンドボックスの方針と子プロセスの環境） | P2-04 | 完了 |
 | [P3-03](tasks/P3-03-openai-responses.md) | `openai-responses` のアダプタ（BH-030） | P1-10 | 完了 |
@@ -63,6 +64,8 @@ P0-05 は、Apple の `container` の既定のカーネル（6.18.15）が Landl
 
 P0 の各作業の確かめの結果（BH-010、BH-043、BH-049、BH-062、BH-093）は、オーケストレータが設計書と [未決事項](../design/open-issues.md) に反映する。Skill の取り込み（P0 の内容の一つ）は、オーケストレータが `assets/benitoite/v0.0.6/` に済ませた（`SOURCE.md`）。
 
-2026-10-18 に、Benitoite の `v0.0.7`（2026-10-17 公開。コミット `63de89a2`）を受けて、処理系との連携の作業（group B: P2-05〜P2-11 と P4-10）を加えた。設計書は同日に `v0.0.7` に合わせて改めてある（04-01 ほか）。P2-05 は、`cli/exec.rs` の起動の流れと子プロセスの端末からの切り離し（`__session`）を P4-07 が変えるので、P4-07 の取り込みの後に始める。`create_project`（BH-006 の雛形が未決）は group B に含めない。テストに使う処理系は `v0.0.7` のタグからビルドしたもので、Linux の静的リンクの処理系（x86_64 と aarch64 の musl）は、P2-05 の前にオーケストレータが用意する（P2-05 の「前提」）。
+2026-10-18 に、Benitoite の `v0.0.7`（2026-10-17 公開。コミット `63de89a2`）を受けて、処理系との連携の作業（group B: P2-05〜P2-12 と P4-10）を加えた。設計書は同日に `v0.0.7` に合わせて改めてある（04-01 ほか）。P2-05 は、`cli/exec.rs` の起動の流れと子プロセスの端末からの切り離し（`__session`）を P4-07 が変えるので、P4-07 の取り込みの後に始める。`create_project`（BH-006 の雛形が未決）は group B に含めない。テストに使う処理系は `v0.0.7` のタグからビルドしたもので、Linux の静的リンクの処理系（x86_64 と aarch64 の musl）は、P2-05 の前にオーケストレータが用意する（P2-05 の「前提」）。
+
+2026-10-18 に、始める前の点検で、元の P2-08（`benitoite_run`・`benitoite_test`・非対話の確認）を、P2-08（報告、方針、`benitoite_run`、対話の確認）と P2-12（`benitoite_test`、非対話の `--allow`、続けての拒否での停止）に分けた。P2-09 は非対話の範囲と停止に `benitoite_scratch` を加えるので P2-12 の後に行い、作業の順は番号の順と違う（P2-08、P2-12、P2-09、P2-10、P2-11）。
 
 P1 で作らず後の段階に回すもの: ストリームの途中で読み取りの道具を先に始めること（01-01 の「道具の実行」の 5。P2 の後に効果を測る作業として加える）、圧縮（P4）、対話の確認（P4）。

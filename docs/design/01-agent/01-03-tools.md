@@ -222,7 +222,7 @@ Benitoite の事前検討は、LLM に見せる道具の形を、サーバモー
 ```
 
 1. `benitoite check --report=json <path>` で、実行の前の検査の報告を得る（[Benitoite の処理系との連携](../04-benitoite/04-01-benitoite-integration.md)の「実行の前の検査の報告」）。検査の誤りがあれば、実行せずに診断を返す。報告を確定した結果として使えなければ、実行せずに理由を返す。
-2. 報告のエフェクトについて、実行の前の確認を行う（[利用者の確認](../03-safety/03-03-approval.md)の「制限モードの確認」）。拒否されたら、`The user declined to run <path> with effects: <list>. Ask the user how to proceed, or change the script.` を返す。
+2. 報告のエフェクトについて、実行の前の確認を行う（[利用者の確認](../03-safety/03-03-approval.md)の「制限モードの確認」）。拒否されたら、`The user declined to run <path> with effects: <list>. Ask the user how to proceed, or change the script.` を返す。確認を受けたときは、実行の直前に報告を得直し、その集合が確認した範囲に収まるときだけ次に進む（[Benitoite の処理系との連携](../04-benitoite/04-01-benitoite-integration.md)の「実行の前の検査の報告」）。
 3. 報告のエフェクトから作った方針の OS のサンドボックスの中で、同じ集合を `--allow-effects` に渡して `benitoite run` を実行し、終了状態、標準出力、標準エラー出力（診断を除く）、診断を返す。処理系が `E0512` で実行を断ったときは、報告の後にスクリプトが変えられたことを添える（[Benitoite の処理系との連携](../04-benitoite/04-01-benitoite-integration.md)の「終了状態と診断の受け渡し」）。
 - `stdin` は子プロセスの標準入力に書いてから閉じる。省いたときは空とする。
 - 出力は、標準出力と標準エラー出力のそれぞれについて末尾の 1,000 行か 25 KiB を返し、`bash` と同じく `spill/` に書く。
@@ -236,7 +236,8 @@ Benitoite の事前検討は、LLM に見せる道具の形を、サーバモー
 
 - `paths` は `.bnt` のファイルかディレクトリのパスとする。同じパスを重ねて指定したときは一つにまとめる。ディレクトリを受け付ける理由は[Benitoite の処理系との連携](../04-benitoite/04-01-benitoite-integration.md)の「実行の前の検査の報告」に書いた。
 - `benitoite test --check --report=json <paths>` で報告を得て、選んだテストの関数のエフェクトの和について確認を受けてから、同じ集合を `--allow-effects` に渡して `benitoite test --diagnostics=json <paths>` を実行する。サンドボックスの方針は、`main` のエフェクトの代わりにこの和から、`benitoite_run` と同じ規則で決める（[OS のサンドボックス](../03-safety/03-02-sandbox.md)の「制限モードの方針」）。どれかの対象に検査の誤りがあれば、報告は完全でないので、どのテストも実行せずに診断を返す。
-- 結果は、失敗したテストの名前と理由、成功と失敗の数、実行しなかった対象の数とする。結果の作り方と、テストが通ったと示す条件は、[Benitoite の処理系との連携](../04-benitoite/04-01-benitoite-integration.md)の「終了状態と診断の受け渡し」で定める。
+- 確認を拒否されたら、`The user declined to run tests in <paths> with effects: <list>. Ask the user how to proceed, or change the tests.` を返す。確認を受けた後に報告を得直すことは `benitoite_run` と同じである。
+- 結果は、失敗したテストの名前、位置、理由（表明が外れたときは比べた二つの値 `left`・`right`）、成功と失敗の数、実行しなかった対象の数とする。結果の作り方、`benitoiteh` が読まないファイルのテストを件数だけにする規則、テストが通ったと示す条件は、[Benitoite の処理系との連携](../04-benitoite/04-01-benitoite-integration.md)の「終了状態と診断の受け渡し」で定める。
 
 ### benitoite_scratch（制限モード）
 

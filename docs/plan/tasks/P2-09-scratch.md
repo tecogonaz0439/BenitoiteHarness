@@ -10,12 +10,14 @@
 - [利用者の確認](../../design/03-safety/03-03-approval.md)の「一時的なスクリプト」（既定の範囲、利用者の設定で加えられるものと加えられないもの、プロジェクトの設定では変えられないこと、確認なしで実行するときの読める範囲と書ける場所）「制限モードの確認」「非対話での扱い」
 - [OS のサンドボックス](../../design/03-safety/03-02-sandbox.md)の「制限モードの方針」「方針の要素」
 - [セッション](../../design/01-agent/01-05-sessions.md)の「一時ディレクトリ」「巻き戻し」（記録する時点）
-- 既存のもの: P2-08 の `benitoite_run`（報告、方針、実行、結果、確認の判定、非対話の範囲）、`src/config/mod.rs`（`RestrictedConfig.scratch_auto_effects` と名前の検査）、`src/sandbox/policy.rs`（`ReadAccess::Roots`）、`src/session/`（一時ディレクトリ）
+- 既存のもの: P2-08 の `benitoite_run`（報告、方針、実行、結果、`ApprovalKind::Effects` の確認の判定、`ConfirmKey`）、P2-12 の非対話の判定（ループの `approve`）と続けての拒否の数、`src/config/mod.rs`（`RestrictedConfig.scratch_auto_effects` と名前の検査）、`src/sandbox/policy.rs`（`ReadAccess::Roots`）、`src/session/`（一時ディレクトリ）
 
 ## この作業が認める型の変更
 
 - `ToolId` に `BenitoiteScratch` を加える。並べて実行しない。
-- P2-08 の確認の判定に、確認なしの範囲を渡す口を加える。
+- P2-12 の非対話の判定に、確認なしの範囲を渡す口を加える（今は `benitoite_run`・`benitoite_test` の空の範囲だけ）。
+- 巻き戻しの時点の理由は、`CheckpointReason` に `BenitoiteScratch` を加えるか、P2-08 の `BenitoiteRun` を使うかをこの作業で決め、報告に書く。
+- P2-12 の続けての拒否の停止の英文を、`The run stopped because benitoite_run, benitoite_test or benitoite_scratch was refused 3 times in a row: the effects were outside --allow.` に改める。
 
 ## 作るもの
 
@@ -23,8 +25,8 @@
 - `code` を、セッションの一時ディレクトリに `scratch-<n>.bnt`（`n` はセッションの中で 1 から増やす。すでにある名前には書かず、次の番号にする）として、リンクを辿らずに新しく作って書く。書いたファイルのパスを結果に含める。
 - 報告（`check --report=json`）を得て、エフェクト（`Assert.Check` を除く）が確認なしの範囲に収まるかを決める。範囲は、既定（エフェクトなし、`Console.Write`、`State`、`Process.Exit`）と、利用者の設定の `restricted.scratch_auto_effects` の和とする。プロジェクトの設定では変えられない（今の `ProjectConfig` が `restricted` を持たないことをテストで確かめる）。
 - 収まるとき: 確認なしで実行する。方針は、03-03 のとおり、読める範囲をプロジェクトのディレクトリ、一時ディレクトリ、処理系の実行ファイル、処理系の動作に要る OS の場所に限り（`ReadAccess::Roots`）、書ける場所は一時ディレクトリだけとする。ネットワークとプログラムの起動は、P2-08 の方針の規則のとおり（範囲の中では `Http.*` と `Process.Run` は含まれないので、どちらも許さない）。処理系の動作に要る OS の場所は、macOS と Linux のそれぞれで、処理系の `run` が動く最小の組を試して決め、報告に一覧と理由を書く（例: macOS の `/usr/lib`、`/System/Library` の一部。Linux の静的リンクの処理系では要らない見込み）。
-- 収まらないとき: `benitoite_run` と同じ確認（確かめの単位は書いたファイルの実のパス）を受け、許されたら P2-08 の方針（読める範囲は既定）で実行する。非対話では、確認なしの範囲と `--allow` の和に収まれば実行し、超えれば P2-08 の英文を返す。
-- 実行は P2-08 の `benitoite_run` の部品を使う（`--allow-effects` に報告の集合、出力の扱い、時間の上限 120 秒、止め方、結果の形）。巻き戻しの時点を実行の直前に記録する。
+- 収まらないとき: `benitoite_run` と同じ確認（`ApprovalKind::Effects`。確かめの単位は書いたファイルの実のパスの `ConfirmKey::Run`）を受け、許されたら、P2-08 のとおり報告を得直して確認した範囲と照らし、P2-08 の方針（読める範囲は既定）で実行する。非対話では、P2-12 の判定で、確認なしの範囲と `--allow` の和に収まれば実行し、超えれば P2-12 の英文を返して、続けての拒否の数に入れる。
+- 実行は P2-08 の `benitoite_run` の部品を使う（`--allow-effects` に報告の集合、出力の扱い、時間の上限 120 秒、止め方、結果の形、`processor_launches` の数え方）。巻き戻しの時点を実行の直前に記録する。戻せないものの一覧に `benitoite_scratch` の呼び出しを、`benitoite_run` と同じ選び方で含める。
 - 一時的なスクリプトの根は一時ディレクトリなので、プロジェクトのモジュールを取り込めないことを、道具の説明に書く。道具の説明の英文を `prompts/tools/benitoite_scratch.md` に置く（案を報告に書き、オーケストレータが取り込む前に見直す）。
 - 制限モードの `ToolSet` に、01-03 の表の順（`benitoite_test` の後）で加える。期待のファイルを作り直す。
 
@@ -35,7 +37,8 @@
 - `crates/benitoiteh/src/tools/`（`benitoite_scratch.rs`（新）、`mod.rs`、`definitions.rs`、`text.rs`）
 - `crates/benitoiteh/prompts/tools/benitoite_scratch.md`（新）
 - `crates/benitoiteh/src/sandbox/`（読める範囲を限る方針）
-- `crates/benitoiteh/src/approval/`、`src/agent/`（範囲の受け渡し）
+- `crates/benitoiteh/src/approval/`、`src/agent/`（範囲の受け渡し、停止の英文、`rewind.rs`）
+- `crates/benitoiteh/src/rewind/types.rs`（`CheckpointReason` を加えるとき）
 - `crates/benitoiteh/tests/expected/`、新しいテスト（サンドボックスを要するものは `tests/sandbox_*.rs`）
 
 ## テスト
