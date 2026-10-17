@@ -58,3 +58,11 @@ pub const CONTROL: &str =
     "Expected a Unix stream control socket and exactly one standard input descriptor.";
 #[cfg(target_os = "linux")]
 pub const DUMPABLE: &str = "dumpable";
+
+#[cfg(target_os = "linux")]
+pub const PLACEHOLDERS: &str = "placeholders";
+#[cfg(target_os = "linux")]
+pub const INVALID_PLACEHOLDERS: &str = "The placeholders directory must be a real directory owned by the effective user with no group or other permissions.";
+#[cfg(target_os = "linux")]
+pub const WRITABLE_PLACEHOLDERS: &str =
+    "The placeholders directory must be outside every writable root.";

@@ -65,7 +65,12 @@ fn mount_order_keeps_masks_after_writable_roots() -> TestResult {
             secret.clone(),
         ];
         config.allow_ip = allow_ip;
-        let mut plan = build(&SandboxPolicy::new(config)?, &f.0, &f.0)?;
+        let mut plan = build(
+            &SandboxPolicy::new(config)?,
+            &f.0,
+            &f.0,
+            &f.0.join("placeholders"),
+        )?;
         let cover = plan.cleanup.cover.as_ref().ok_or("Missing cover")?;
         let mut expected: Vec<OsString> = [
             "--unshare-user",
@@ -159,7 +164,7 @@ fn gitdir_and_custom_protection_use_the_same_mount_precedence() -> TestResult {
     config.denied_read.push(removed.clone());
     let policy = SandboxPolicy::new(config)?;
     fs::remove_file(removed)?;
-    let mut plan = build(&policy, &f.0, &f.0)?;
+    let mut plan = build(&policy, &f.0, &f.0, &f.0.join("placeholders"))?;
     let mut expected: Vec<OsString> = [
         "--unshare-user",
         "--unshare-pid",
@@ -222,7 +227,7 @@ fn mutable_links_and_invalid_gitdir_fail_before_launch() -> TestResult {
         fs::create_dir_all(path.parent().ok_or("Missing parent")?)?;
         symlink(&f.0, &path)?;
         assert!(matches!(
-            build(&policy, &f.0, &f.0),
+            build(&policy, &f.0, &f.0, &f.0.join("placeholders")),
             Err(SandboxError::InvalidPolicy(_))
         ));
         fs::remove_file(path)?;
@@ -236,7 +241,10 @@ fn mutable_links_and_invalid_gitdir_fail_before_launch() -> TestResult {
         "gitdir: metadata\nextra",
     ] {
         fs::write(w.join(".git"), contents)?;
-        assert!(build(&policy, &f.0, &f.0).is_err(), "{contents}");
+        assert!(
+            build(&policy, &f.0, &f.0, &f.0.join("placeholders")).is_err(),
+            "{contents}"
+        );
     }
     fs::remove_file(w.join(".git"))?;
     let denied = w.join("secret");
@@ -247,8 +255,47 @@ fn mutable_links_and_invalid_gitdir_fail_before_launch() -> TestResult {
     fs::remove_dir(&denied)?;
     symlink(&f.0, &denied)?;
     assert!(matches!(
-        build(&policy, &f.0, &f.0),
+        build(&policy, &f.0, &f.0, &f.0.join("placeholders")),
         Err(SandboxError::InvalidPolicy(_))
     ));
+    Ok(())
+}
+
+// 作成時の関門: パスを UTF-8 に置き換えたり、ハッシュの名前が変わると別の錠になる。
+// 記録のバイト列と既知の SHA-256 を確かめ、相対パスと不一致の記録が削除だけになる境界を守る。
+#[test]
+fn placeholder_records_preserve_path_bytes_and_validate_record_identity() -> TestResult {
+    use std::os::unix::ffi::OsStringExt;
+    let f = Fixture::new()?;
+    let directory = f.0.join("placeholders");
+    let store = Store::prepare(&directory, &[])?;
+    let bytes = b"/placeholder-\xff/.benitoiteh";
+    let mut placeholder = store.lock(PathBuf::from(OsString::from_vec(bytes.to_vec())))?;
+    placeholder.record_missing()?;
+    let record =
+        directory.join("6b976ac00bf2e3b6ff5f6296fa087deb25c7ced255066765ede6c58ed3cac9f5.path");
+    assert_eq!(fs::read(&record)?, bytes);
+    // 固定の絶対パスを片付ける処理には渡さず、記録の生成だけを確かめる。
+    fs::remove_file(record)?;
+    drop(placeholder);
+    for (name, bytes) in [
+        (
+            "d2d9e1f13413d3e07064d629ac3341a6e1d6a5eb0895e76a3c66df19307a56f0",
+            b"relative".as_slice(),
+        ),
+        (
+            "0e16e3abe8b3c19aad4caa4c6442c20df7de439fa94aa276b494a92e13545011",
+            b"/different".as_slice(),
+        ),
+    ] {
+        let record = directory.join(format!("{name}.path"));
+        fs::write(&record, bytes)?;
+        Store::prepare(&directory, &[])?;
+        assert!(!record.exists());
+    }
+    let malformed = directory.join(OsString::from_vec(b"\xff.path".to_vec()));
+    fs::write(&malformed, b"invalid hash")?;
+    Store::prepare(&directory, &[])?;
+    assert!(!malformed.exists());
     Ok(())
 }

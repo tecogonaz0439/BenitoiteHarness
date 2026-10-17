@@ -5,7 +5,7 @@ mod text;
 
 use std::ffi::{OsStr, OsString};
 use std::fs::{self, File};
-use std::io::{self, Read, Write};
+use std::io::{self, BufRead, Read, Write};
 use std::net::TcpStream;
 use std::os::fd::AsRawFd;
 use std::os::unix::net::{UnixDatagram, UnixStream};
@@ -59,6 +59,12 @@ fn run(operation: &OsStr, args: &[OsString]) -> io::Result<Option<u8>> {
     match (operation, args) {
         ("read", [path]) => fs::read(path).map(|_| ()),
         ("read-dir", [path]) => fs::read_dir(path).map(|_| ()),
+        ("wait-line", [next, rest @ ..]) => {
+            writeln!(io::stdout(), "{}", text::READY)?;
+            io::stdout().flush()?;
+            io::stdin().lock().read_line(&mut String::new())?;
+            return run(next, rest);
+        }
         ("wait-stdin", []) => {
             // 親はマウントの準備完了を見てから、EOF で子の終了を指示する。
             writeln!(io::stdout(), "{}", text::READY)?;
@@ -66,6 +72,15 @@ fn run(operation: &OsStr, args: &[OsString]) -> io::Result<Option<u8>> {
             io::stdin().read_to_end(&mut Vec::new()).map(|_| ())
         }
         ("write", [path]) => fs::write(path, b"sandbox-probe\n"),
+        ("write-with-parents", [path]) => {
+            // マウントの場所を外から消した後は親もなくなるので、作り直してから書く。
+            // 錠を無視した場合の塞ぎの消失を確かめる（実装プラン P2-03）。
+            let path = std::path::Path::new(path);
+            if let Some(parent) = path.parent() {
+                fs::create_dir_all(parent)?;
+            }
+            fs::write(path, b"sandbox-probe\n")
+        }
         ("mkdir", [path]) => fs::create_dir(path),
         ("remove-file", [path]) => fs::remove_file(path),
         ("remove-dir", [path]) => fs::remove_dir(path),

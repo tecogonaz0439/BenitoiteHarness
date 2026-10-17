@@ -1,8 +1,9 @@
 //! 実際の起動の結果から Linux の必須機能を個別に診断する（設計書 03-02「サンドボックスを掛けられないとき」）。
 
 use std::collections::BTreeMap;
-use std::fs;
+use std::fs::{self, DirBuilder};
 use std::io;
+use std::os::unix::fs::DirBuilderExt;
 use std::path::Path;
 
 use crate::sandbox::{
@@ -45,6 +46,11 @@ pub fn probe_linux(helper: &Path, scratch: &Path) -> Result<LinuxAvailability, S
         u128::from_ne_bytes(random)
     ));
     fs::create_dir(&root).map_err(SandboxError::Io)?;
+    let placeholders = root.with_extension("placeholders");
+    if let Err(error) = DirBuilder::new().mode(0o700).create(&placeholders) {
+        let _cleanup = fs::remove_dir(&root);
+        return Err(SandboxError::Io(error));
+    }
     let result = (|| {
         let sandbox = SandboxCommand {
             policy: SandboxPolicy::new(PolicyConfig::new(vec![root.clone()]))?,
@@ -54,7 +60,7 @@ pub fn probe_linux(helper: &Path, scratch: &Path) -> Result<LinuxAvailability, S
             env: BTreeMap::new(),
             stdin: SandboxStdin::Null,
         }
-        .prepare(helper, scratch)?;
+        .prepare(helper, scratch, &placeholders)?;
         match sandbox.output() {
             Ok(output) => classify(
                 output.status.code(),
@@ -64,8 +70,11 @@ pub fn probe_linux(helper: &Path, scratch: &Path) -> Result<LinuxAvailability, S
             Err(error) => Err(error),
         }
     })();
-    // 中のプログラムは --version だけなので、残した項目を再帰的には消さない。
-    fs::remove_dir(&root).map_err(SandboxError::Io)?;
+    // 錠はこの探査専用なので消せる。実行先は --version だけであり、再帰的には消さない。
+    let records_cleanup = fs::remove_dir_all(&placeholders);
+    let root_cleanup = fs::remove_dir(&root);
+    records_cleanup.map_err(SandboxError::Io)?;
+    root_cleanup.map_err(SandboxError::Io)?;
     result
 }
 
