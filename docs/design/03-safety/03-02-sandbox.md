@@ -44,7 +44,14 @@ benitoiteh __sandbox <方針の JSON> -- <プログラム> <引数...>
 
 理由: 書ける場所の下の一部を除く規則は、Landlock では表せず（後述の Landlock の限界）、マウントの名前空間が要る。Codex CLI、Claude Code の sandbox-runtime、Gemini CLI も、Linux で書ける場所の中の守る場所を bubblewrap のマウントで表している。マウントの名前空間を `benitoiteh` が自分で作ると、`unsafe` の関数（`rustix` の `unshare_unsafe`）が要り、bubblewrap の一部を作り直すことになる。bubblewrap が名前空間を作れば、`benitoiteh` は `unsafe` なしに書ける。検討した形と、ほかのハーネスの作りは[Linux のサンドボックスの検討の記録](../08-appendix/08-04-linux-sandbox.md)に書く。
 
-【決定】bubblewrap は、利用者が配布物から導入したものを使い、試作には同梱しない。`/usr/bin/bwrap` を固定のパスで起動し、`PATH` から探さない。理由（同梱しないこと）: 試作の間は配布物を作らない（[クレートの構成](../06-impl/06-01-crate-structure.md)の「対象の環境」）。Codex CLI は bubblewrap を同梱するが、同梱すると配るものと版の管理が増える。理由（固定のパス）: `sandbox-exec` と同じく、`PATH` に置かれた偽の `bwrap` を起動しないためである。`/usr/bin` の外に bubblewrap を置く配布物での指定の仕方、要る最も古い版、setuid で導入された bubblewrap の扱い、特権を持たない利用者の名前空間の作成を AppArmor などで限る配布物での扱いは確かめる（【要検証】BH-094）。2026-10-17 の時点で、試験に使う x86_64 の機械（Omarchy）には、配布物の bubblewrap 0.12.0 が `/usr/bin/bwrap` にある。
+【決定】bubblewrap は、利用者が配布物から導入したものを使い、試作には同梱しない。`/usr/bin/bwrap` を固定のパスで起動し、`PATH` から探さない。理由（同梱しないこと）: 試作の間は配布物を作らない（[クレートの構成](../06-impl/06-01-crate-structure.md)の「対象の環境」）。Codex CLI は bubblewrap を同梱するが、同梱すると配るものと版の管理が増える。理由（固定のパス）: `sandbox-exec` と同じく、`PATH` に置かれた偽の `bwrap` を起動しないためである。`/usr/bin` の外に bubblewrap を置く配布物での指定の仕方と、特権を持たない利用者の名前空間の作成を AppArmor などで限る配布物での扱いは確かめる（【要検証】BH-094）。2026-10-17 の時点で、試験に使う x86_64 の機械（Omarchy）には、配布物の bubblewrap 0.12.0 が `/usr/bin/bwrap` にある。
+
+【方針】bubblewrap について、次のことを起動のときに確かめ、満たさなければ掛けられないものとして扱う（後述の「サンドボックスを掛けられないとき」）。
+
+- 版が 0.8.0 以上であること（`bwrap --version` の出力）。理由: 使う指定のうち最も新しい `--disable-userns` が 0.8.0 で加わった。`--as-pid-1` と `--cap-drop` は 0.2.0、`--tmpfs` に掛かる `--perms` は 0.5.0 で加わった（[bubblewrap のリリースの説明](https://github.com/containers/bubblewrap/releases)）。
+- `/usr/bin/bwrap` に setuid の印がないこと。理由: setuid で導入された bubblewrap は、特権を持つ形の別の処理で動く（`--overlay` などを使えない。0.11.0 のリリースの説明）。試作はその形で確かめていない。
+
+【方針】bubblewrap には、全体の指定に `--cap-drop ALL` を加える。理由: 2026-10-17 に、rootless の podman の中の root（bubblewrap 0.12.0）で、`--unshare-user` の中のプロセスが呼び出した側の特権（`CAP_DAC_OVERRIDE`、`--cap-add SYS_ADMIN` で起動した podman では `CAP_SYS_ADMIN` も）を持ったままであることを確かめた。読ませない場所の覆いは空なので、権限 000 を越えて読まれても秘密は出ないが、特権を残す理由がない。`--cap-drop ALL` を加えると、root でも root でない利用者でも、中のプロセスの有効な特権が空になった。
 
 【方針】Linux の補助のプロセスは、次の順に処理する。
 
@@ -84,7 +91,7 @@ Landlock には、次の限界がある。
 
 【決定】bubblewrap に渡す見え方は、Codex CLI の作りに倣い、次のとおりとする（[Linux のサンドボックスの検討の記録](../08-appendix/08-04-linux-sandbox.md)）。2026-10-17 に設計者が決めた。
 
-- **全体**: ファイルシステムの全体を読み取りだけで見せ（`--ro-bind / /`）、`/dev` と `/proc` は新しく作る（`--dev /dev`・`--proc /proc`）。ユーザ、プロセスの番号、IPC の名前空間を新しく作る（`--unshare-user`・`--unshare-pid`・`--unshare-ipc`）。IP の通信を許さないときは、ネットワークの名前空間も新しく作る（`--unshare-net`）。端末のセッションを分け（`--new-session`）、親が終われば中のプロセスも終わらせる（`--die-with-parent`）。理由（`/proc`）: 外のプロセスの番号の名前空間の `/proc` を見せると、`/proc` の下の特別なリンクを通してマウントを回り込みうる（DeepSeek Harness の説明）。理由（`--new-session`）: 端末に入力を差し込む操作で、サンドボックスの外のシェルにコマンドを打たせることを防ぐ（[bubblewrap の説明](https://github.com/containers/bubblewrap/blob/main/bwrap.xml)）。
+- **全体**: ファイルシステムの全体を読み取りだけで見せ（`--ro-bind / /`）、`/dev` と `/proc` は新しく作る（`--dev /dev`・`--proc /proc`）。ユーザ、プロセスの番号、IPC の名前空間を新しく作る（`--unshare-user`・`--unshare-pid`・`--unshare-ipc`）。IP の通信を許さないときは、ネットワークの名前空間も新しく作る（`--unshare-net`）。端末のセッションを分け（`--new-session`）、親が終われば中のプロセスも終わらせる（`--die-with-parent`）。中のプロセスの特権を外す（`--cap-drop ALL`。「サンドボックスの掛け方」の bubblewrap の確かめ）。理由（`/proc`）: 外のプロセスの番号の名前空間の `/proc` を見せると、`/proc` の下の特別なリンクを通してマウントを回り込みうる（DeepSeek Harness の説明）。理由（`--new-session`）: 端末に入力を差し込む操作で、サンドボックスの外のシェルにコマンドを打たせることを防ぐ（[bubblewrap の説明](https://github.com/containers/bubblewrap/blob/main/bwrap.xml)）。
 - **書ける場所**: 書ける場所ごとに、書ける形で重ねる（`--bind <場所> <場所>`）。Landlock の規則では、書ける場所に、作成・削除・名前の付け替えを含む書き込みの権利をすべて与える。守る場所は、後述のとおり読み取りだけのマウントで守るので、Landlock の規則からは除かない。
 - **書ける場所の根の直下の守る場所**: 書ける場所の根の直下の `.git` と `.benitoiteh` は、あってもなくても守る。あるときは、読み取りだけで重ねる（`--ro-bind`）。`.git` が別の場所を指すファイル（`gitdir:` の行）であれば、指す先が書ける場所の中にあるときは、指す先も読み取りだけで重ねる。まだないときは、権限 555 の空の tmpfs を、読み取りだけでその名前にマウントする（`--perms 555 --tmpfs <場所> --remount-ro <場所>`）。サンドボックスの中からは、その名前のディレクトリがすでにあるように見え、中に書けない。マウントの場所なので、名前の付け替えと削除もできない（[rename(2)](https://man7.org/linux/man-pages/man2/rename.2.html) の `EBUSY`）。
 - **入れ子の守る場所**: 根の直下より深い守る場所は、子プロセスを起動するときにすでにあるものだけを、読み取りだけで重ねる。探す深さは、既定で根から 3 段（`a/b/.git` まで）とし、シンボリックリンクを辿らない。名前は ASCII の大文字と小文字を区別せずに比べる。理由（すでにあるものだけ）: まだない入れ子の守る場所は、どの深さに作られるか分からず、前もって塞げない。すでにある入れ子のリポジトリの hooks は、利用者が後で git を使うと動くので守る。理由（深さ）: 子プロセスを起動するたびに書ける場所の木を辿る時間を限る。3 段は Claude Code の sandbox-runtime の既定と同じである。辿る時間を測って、深さの既定を確かめる（【要検証】BH-095）。
