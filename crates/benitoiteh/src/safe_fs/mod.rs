@@ -163,6 +163,7 @@ pub struct DirectoryEntry {
 pub struct ScopeRoot {
     directory: File,
     real_path: PathBuf,
+    no_follow: bool,
 }
 
 impl ScopeRoot {
@@ -181,7 +182,85 @@ impl ScopeRoot {
         Ok(Self {
             directory,
             real_path,
+            no_follow: false,
         })
+    }
+
+    /// 途中の要素も最後の要素もリンクを辿らない範囲を作る（設計書 01-05「辿り方」）。
+    pub fn no_follow(&self) -> Result<Self, SafeFsError> {
+        Ok(Self {
+            directory: self.directory.try_clone()?,
+            real_path: self.real_path.clone(),
+            no_follow: true,
+        })
+    }
+
+    fn open_at(
+        &self,
+        root: &File,
+        path: &Path,
+        flags: OFlags,
+        mode: Mode,
+    ) -> Result<File, SafeFsError> {
+        if self.no_follow {
+            // 一度の open で途中の要素も拒否する。Linux の NO_SYMLINKS と
+            // macOS の NOFOLLOW_ANY を弱めない（設計書 01-05「辿り方」）。
+            os::open_no_follow(root, path, flags | OFlags::NONBLOCK, mode)
+        } else {
+            os::open(root, path, flags, mode)
+        }
+    }
+
+    /// 親もリンクを辿らず、fstatat(AT_SYMLINK_NOFOLLOW) で種類と時刻を調べる。
+    pub fn stat(&self, path: &ScopeRelPath) -> Result<fs::Stat, SafeFsError> {
+        if path.as_path().components().count() == 1 {
+            return fs::statat(&self.directory, path.as_path(), AtFlags::SYMLINK_NOFOLLOW)
+                .map_err(SafeFsError::from_errno);
+        }
+        let (parent, name) = self.parent(path, false)?;
+        fs::statat(parent, name, AtFlags::SYMLINK_NOFOLLOW).map_err(SafeFsError::from_errno)
+    }
+
+    /// 列挙の各項目で打ち切りを判定する。false を返すと読み取りを終える。
+    pub fn visit_names(&self, mut visit: impl FnMut(OsString) -> bool) -> Result<(), SafeFsError> {
+        let directory = self.open_at(
+            &self.directory,
+            Path::new("."),
+            OFlags::RDONLY | OFlags::DIRECTORY,
+            Mode::empty(),
+        )?;
+        let iterator = fs::Dir::read_from(&directory).map_err(SafeFsError::from_errno)?;
+        for entry in iterator {
+            let entry = entry.map_err(SafeFsError::from_errno)?;
+            let bytes = entry.file_name().to_bytes();
+            if bytes != b"." && bytes != b".." && !visit(OsString::from_vec(bytes.to_vec())) {
+                break;
+            }
+        }
+        Ok(())
+    }
+
+    /// 検証した中身を一時ファイルに写して置き換える。権限は下位 9 ビットだけを許す。
+    pub fn write_from_with_mode(
+        &self,
+        path: &ScopeRelPath,
+        source: &mut impl Read,
+        mode: u32,
+    ) -> Result<(), SafeFsError> {
+        if mode & !0o777 != 0 {
+            return Err(SafeFsError::InvalidPath);
+        }
+        let strict = self.no_follow()?;
+        let (parent, name) = strict.parent(path, false)?;
+        let _mode = writable_mode(&parent, &name)?;
+        let mut temporary = TemporaryFile::create(&parent)?;
+        io::copy(source, &mut temporary.file)?;
+        fs::fchmod(&temporary.file, Mode::from_raw_mode(mode as _))
+            .map_err(SafeFsError::from_errno)?;
+        let _mode = writable_mode(&parent, &name)?;
+        fs::renameat(&parent, &temporary.name, &parent, &name).map_err(SafeFsError::from_errno)?;
+        temporary.armed = false;
+        Ok(())
     }
 
     /// 開いた根の実のパスを返す。
@@ -195,7 +274,7 @@ impl ScopeRoot {
     /// 同じ ScopeRoot に最後の名前だけを渡して書く。判定後に親をパスから開き直さない
     /// ためである（設計書 01-03「書く道具のパスの規則」）。
     pub fn open_dir(&self, path: &ScopeRelPath) -> Result<Self, SafeFsError> {
-        let directory = os::open(
+        let directory = self.open_at(
             &self.directory,
             path.as_path(),
             OFlags::RDONLY | OFlags::DIRECTORY,
@@ -205,6 +284,7 @@ impl ScopeRoot {
         Ok(Self {
             directory,
             real_path,
+            no_follow: self.no_follow,
         })
     }
 
@@ -247,7 +327,7 @@ impl ScopeRoot {
 
     /// 範囲の中に解決できるパスを、読むために開く。
     pub fn open_read(&self, path: &ScopeRelPath) -> Result<File, SafeFsError> {
-        os::open(
+        self.open_at(
             &self.directory,
             path.as_path(),
             OFlags::RDONLY | OFlags::NONBLOCK,
@@ -271,13 +351,13 @@ impl ScopeRoot {
         path: Option<&ScopeRelPath>,
     ) -> Result<Vec<DirectoryEntry>, SafeFsError> {
         let directory = match path {
-            Some(path) => os::open(
+            Some(path) => self.open_at(
                 &self.directory,
                 path.as_path(),
                 OFlags::RDONLY | OFlags::DIRECTORY | OFlags::NOFOLLOW,
                 Mode::empty(),
             )?,
-            None => os::open(
+            None => self.open_at(
                 &self.directory,
                 Path::new("."),
                 OFlags::RDONLY | OFlags::DIRECTORY,
@@ -348,12 +428,22 @@ impl ScopeRoot {
     /// 最後のリンクを辿らずに、ファイルまたはリンクを消す。
     pub fn remove_file(&self, path: &ScopeRelPath) -> Result<(), SafeFsError> {
         let (parent, name) = self.parent(path, false)?;
+        let stat = fs::statat(&parent, &name, AtFlags::SYMLINK_NOFOLLOW)
+            .map_err(SafeFsError::from_errno)?;
+        if fs::FileType::from_raw_mode(stat.st_mode) == fs::FileType::Directory {
+            return Err(SafeFsError::NotRegularFile);
+        }
         fs::unlinkat(parent, name, AtFlags::empty()).map_err(SafeFsError::from_errno)
     }
 
     /// 最後のリンクを辿らずに、空のディレクトリを消す。
     pub fn remove_dir(&self, path: &ScopeRelPath) -> Result<(), SafeFsError> {
         let (parent, name) = self.parent(path, false)?;
+        let stat = fs::statat(&parent, &name, AtFlags::SYMLINK_NOFOLLOW)
+            .map_err(SafeFsError::from_errno)?;
+        if fs::FileType::from_raw_mode(stat.st_mode) != fs::FileType::Directory {
+            return Err(SafeFsError::NotRegularFile);
+        }
         fs::unlinkat(parent, name, AtFlags::REMOVEDIR).map_err(SafeFsError::from_errno)
     }
 
@@ -377,7 +467,7 @@ impl ScopeRoot {
             let mut prefix = PathBuf::new();
             for component in parent_path.components() {
                 prefix.push(component);
-                match os::open(
+                match self.open_at(
                     &self.directory,
                     &prefix,
                     OFlags::RDONLY | OFlags::DIRECTORY,
@@ -391,7 +481,7 @@ impl ScopeRoot {
                             Err(error) => return Err(error),
                         }
                         // 競合した作成を信用せず、根からの制限を掛け直す。
-                        let _directory = os::open(
+                        let _directory = self.open_at(
                             &self.directory,
                             &prefix,
                             OFlags::RDONLY | OFlags::DIRECTORY,
@@ -407,7 +497,7 @@ impl ScopeRoot {
         } else {
             parent_path
         };
-        let parent = os::open(
+        let parent = self.open_at(
             &self.directory,
             parent_path,
             OFlags::RDONLY | OFlags::DIRECTORY,

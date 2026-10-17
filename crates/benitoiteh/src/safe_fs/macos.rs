@@ -73,3 +73,18 @@ pub(super) fn resolved_path(file: &File) -> Result<PathBuf, SafeFsError> {
         path.into_bytes(),
     )))
 }
+
+// /Library/Developer/CommandLineTools/SDKs/MacOSX.sdk/usr/include/sys/fcntl.h:159
+// O_NOFOLLOW_ANY = 0x20000000 を 2026-10-17 に確認した（設計書 01-05「辿り方」）。
+const NOFOLLOW_ANY: OFlags = OFlags::from_bits_retain(0x2000_0000);
+
+pub(super) fn open_no_follow(
+    root: &File,
+    path: &Path,
+    flags: OFlags,
+    mode: Mode,
+) -> Result<File, SafeFsError> {
+    // この OS は NOFOLLOW_ANY と NOFOLLOW の同時指定を EINVAL にする。
+    // 最後の要素も拒む、より強い NOFOLLOW_ANY だけを使う（設計書 01-05「辿り方」）。
+    open(root, path, (flags & !OFlags::NOFOLLOW) | NOFOLLOW_ANY, mode)
+}

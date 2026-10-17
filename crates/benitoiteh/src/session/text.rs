@@ -27,3 +27,5 @@ pub const NO_SESSION: &str = "No resumable session was found for this project.";
 pub const STORAGE_LIMIT: &str = "Session storage limit reached; output could not be saved.";
 pub const TOTAL_LIMIT: &str =
     "Session storage exceeds 10 GiB; reduce [sessions] retention_days to remove older sessions.";
+
+pub const INVALID_OBJECT: &str = "Invalid checkpoint object or content hash.";

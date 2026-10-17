@@ -101,6 +101,8 @@ impl ExecOutput {
                 kept_items,
                 ..
             } => Some(text::compaction(*reason, *summarized_items, *kept_items)),
+            AgentEvent::Checkpoint { checkpoint } => Some(text::checkpoint(checkpoint)),
+            AgentEvent::HardLinks { paths } => Some(text::hard_links(paths)),
             AgentEvent::Error { message, .. } => Some(text::error(message)),
             AgentEvent::SessionEnd { outcome, reason }
                 if *outcome == crate::agent::Outcome::Cancelled =>

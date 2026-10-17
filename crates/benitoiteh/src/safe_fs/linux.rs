@@ -43,3 +43,24 @@ pub(super) fn write_target(parent: &File, name: &Path) -> Result<File, SafeFsErr
 pub(super) fn resolved_path(file: &File) -> Result<PathBuf, SafeFsError> {
     std::fs::read_link(format!("/proc/self/fd/{}", file.as_raw_fd())).map_err(SafeFsError::from)
 }
+
+pub(super) fn open_no_follow(
+    root: &File,
+    path: &Path,
+    flags: OFlags,
+    mode: Mode,
+) -> Result<File, SafeFsError> {
+    fs::openat2(
+        root,
+        path,
+        flags | OFlags::CLOEXEC | OFlags::NOFOLLOW,
+        mode,
+        ResolveFlags::BENEATH | ResolveFlags::NO_SYMLINKS,
+    )
+    .map(File::from)
+    .map_err(|error| match error {
+        rustix::io::Errno::XDEV => SafeFsError::OutsideScope,
+        rustix::io::Errno::LOOP => SafeFsError::IntermediateSymlink(error.into()),
+        other => SafeFsError::from_errno(other),
+    })
+}

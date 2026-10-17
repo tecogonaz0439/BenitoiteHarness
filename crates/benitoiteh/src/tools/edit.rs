@@ -13,6 +13,7 @@ pub(super) fn execute(
     context: &ToolContext,
     arguments: &Value,
     approval: ApprovalStatus,
+    invocation: super::Invocation<'_>,
 ) -> Result<ToolOutput, ToolError> {
     let path = string(arguments, "path")?;
     let old = string(arguments, "old_string")?;
@@ -84,6 +85,11 @@ pub(super) fn execute(
     if after == before {
         return Err(ToolError::InvalidArguments(text::edit_unchanged(path)));
     }
+    context.checkpoint_before(
+        crate::rewind::CheckpointReason::Edit,
+        Some(&target.real_path),
+        &invocation,
+    )?;
     target.write(context, Some(version), after.as_bytes())?;
     Ok(write::output(path, before, &after))
 }

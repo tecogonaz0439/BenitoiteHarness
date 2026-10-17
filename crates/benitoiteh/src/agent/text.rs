@@ -57,3 +57,20 @@ pub fn summary_scope(items: usize) -> String {
         "Summarize any previous compacted summary and the user's request and steering text in the first user message, together with the next {items} conversation items after that message. Exclude environment information."
     )
 }
+
+pub const UNKNOWN_CHECKPOINT: &str = "Unknown checkpoint ID.";
+pub const CONVERSATION_REWIND_UNAVAILABLE: &str =
+    "Conversation rewind is unavailable for this checkpoint.";
+
+/// 戻せない操作の一覧には、書いた中身を繰り返さず、コマンドかパスを短く示す。
+pub fn rewind_operation(name: &str, arguments: &serde_json::Value) -> String {
+    let key = if name == "bash" { "command" } else { "path" };
+    let detail = arguments
+        .get(key)
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or_default();
+    let shortened = detail.chars().take(512).collect::<String>();
+    format!("{name}: {shortened}")
+}
+
+pub const INVALID_EVENT_PATH: &str = "Invalid hexadecimal path in event.";

@@ -2,6 +2,7 @@
 
 mod files;
 mod id;
+mod objects;
 mod quota;
 mod record;
 mod replay;
@@ -111,6 +112,8 @@ struct SessionState {
     id: SessionId,
     path: PathBuf,
     spill: File,
+    objects: File,
+    known_objects: Mutex<std::collections::HashSet<String>>,
     log: Mutex<storage::LogState>,
     _lock: File,
     temporary: PathBuf,
@@ -145,6 +148,11 @@ impl Session {
         }
         let resume = ResumeState::from_records(&records)?;
         let spill = open_directory_at(&directory, "spill")?;
+        match rustix::fs::mkdirat(&directory, "objects", Mode::RWXU) {
+            Ok(()) | Err(rustix::io::Errno::EXIST) => {}
+            Err(error) => return Err(error.into()),
+        }
+        let objects = open_directory_at(&directory, "objects")?;
         let temporary = paths.temporary_root.join(format!("benitoiteh-{id}"));
         match fs::symlink_metadata(&temporary) {
             Ok(metadata) if private_metadata(&metadata, true) => fs::remove_dir_all(&temporary)?,
@@ -162,6 +170,8 @@ impl Session {
                 id: id.clone(),
                 path,
                 spill,
+                objects,
+                known_objects: Mutex::new(std::collections::HashSet::new()),
                 log: Mutex::new(storage::LogState::resumed(record, complete)),
                 _lock: lock,
                 temporary,
@@ -194,6 +204,8 @@ impl Session {
             try_lock(&lock)?;
             rustix::fs::mkdirat(&directory, "spill", Mode::RWXU)?;
             let spill = open_directory_at(&directory, "spill")?;
+            rustix::fs::mkdirat(&directory, "objects", Mode::RWXU)?;
+            let objects = open_directory_at(&directory, "objects")?;
             let record = create_file(&directory, "session.jsonl", OFlags::WRONLY | OFlags::APPEND)?;
             let temporary = paths.temporary_root.join(format!("benitoiteh-{id}"));
             DirBuilder::new().mode(0o700).create(&temporary)?;
@@ -206,6 +218,8 @@ impl Session {
                     id,
                     path: path.clone(),
                     spill,
+                    objects,
+                    known_objects: Mutex::new(std::collections::HashSet::new()),
                     log: Mutex::new(storage::LogState::new(record)),
                     _lock: lock,
                     temporary,

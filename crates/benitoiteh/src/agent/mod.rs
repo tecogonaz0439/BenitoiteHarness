@@ -1,12 +1,14 @@
 //! 要求、応答、道具、記録を順序付けるループ（設計書 01-01、01-04、01-05）。
 
 mod compaction;
+mod event_paths;
 mod events;
 mod execution;
 mod reasoning;
 #[cfg(test)]
 mod resume_tests;
 mod retry;
+mod rewind;
 mod text;
 mod transport;
 
@@ -97,6 +99,8 @@ pub enum AgentError {
     Provider(ProviderError),
     /// 要約の要求または結果の失敗。
     Compaction,
+    /// 巻き戻しの一覧または操作の誤り。
+    Rewind(crate::rewind::RewindError),
     /// 提供者の拒否の分類。
     Refusal(String),
     /// 番数またはトークンの上限。
@@ -117,6 +121,7 @@ impl fmt::Display for AgentError {
             Self::Session(error) => error.fmt(f),
             Self::Context(error) => error.fmt(f),
             Self::Compaction => f.write_str(text::COMPACTION_FAILED),
+            Self::Rewind(error) => error.fmt(f),
             Self::Provider(ProviderError::ContextOverflow) => f.write_str(text::CONTEXT_OVERFLOW),
             Self::Provider(error) => error.fmt(f),
             Self::Refusal(category) => f.write_str(&text::refusal(category)),
@@ -146,12 +151,19 @@ impl From<ProviderError> for AgentError {
     }
 }
 
+impl From<crate::rewind::RewindError> for AgentError {
+    fn from(error: crate::rewind::RewindError) -> Self {
+        Self::Rewind(error)
+    }
+}
+
 impl AgentError {
     fn kind(&self) -> &'static str {
         match self {
             Self::Session(_) => "session",
             Self::Context(_) => "context",
             Self::Compaction => "compaction",
+            Self::Rewind(_) => "rewind",
             Self::Provider(ProviderError::ContextOverflow) => "context_overflow",
             Self::Provider(_) => "provider",
             Self::Refusal(_) => "refusal",
@@ -231,7 +243,7 @@ impl Agent {
     fn construct(
         config: AgentConfig,
         api_key: String,
-        tool_context: ToolContext,
+        mut tool_context: ToolContext,
         environment: Environment,
         session: Session,
         state: Option<session::ResumeState>,
@@ -277,6 +289,17 @@ impl Agent {
             approval_policy.sandbox = shell.sandbox;
             approval_policy.sandboxed = shell.policy.is_some();
         }
+        let records = if state.is_some() {
+            session::read_records(session.directory())?
+        } else {
+            Vec::new()
+        };
+        tool_context.checkpoints = Some(crate::rewind::CheckpointRecorder::new(
+            session.clone(),
+            &tool_context.project,
+            tool_context.exclude.clone(),
+            &records,
+        )?);
         let mut agent = Self {
             config,
             adapter,
@@ -352,7 +375,7 @@ impl Agent {
             agent.files = state.files;
             agent.turn = state.max_turn;
             agent.resume_results = state.missing_results;
-            agent.started = true;
+            agent.started = !agent.conversation.items.is_empty();
             agent.resuming = true;
         }
         Ok(agent)
@@ -478,6 +501,16 @@ impl Agent {
             }
             self.resume_compaction = false;
         }
+        if let Some(recorder) = &self.tool_context.checkpoints {
+            recorder.set_turn(self.turn)?;
+            let _recorded = recorder.capture(
+                crate::rewind::CheckpointReason::Request,
+                None,
+                Some(self.conversation.items.len()),
+                cancelled,
+            )?;
+        }
+        self.checkpoint_notices(events)?;
         let mut parts = Vec::new();
         if !self.started {
             parts.push(UserPart {
@@ -540,6 +573,9 @@ impl Agent {
                 }
             }
             self.turn = self.turn.saturating_add(1);
+            if let Some(recorder) = &self.tool_context.checkpoints {
+                recorder.set_turn(self.turn)?;
+            }
             self.emit(events, AgentEvent::TurnStart { turn: self.turn })?;
             // 通信のやり直しでは本文を保ち、文脈の超過のときだけ圧縮後の要求に作り直す
             // （設計書 01-01「やり直し」）。

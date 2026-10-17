@@ -57,6 +57,7 @@ impl ResumeState {
             reasoning: Vec::new(),
             files: FileHistory::from_records(records),
         };
+        let mut item_reasoning = Vec::new();
         let mut results = BTreeSet::new();
         let mut calls = BTreeMap::new();
         for record in records {
@@ -94,14 +95,17 @@ impl ResumeState {
                     state.project_dir = project_dir.clone()
                 }
                 Record::Assistant { turn, response } => {
-                    state.reasoning.push(segment.clone());
+                    item_reasoning.push(Some(segment.clone()));
                     for part in &response.parts {
                         if let crate::provider::AssistantPart::ToolCall(call) = part {
                             calls.insert(call.id.clone(), (*turn, call.name.clone()));
                         }
                     }
                 }
+                Record::User { .. } => item_reasoning.push(None),
+                Record::Rewind { items, .. } => item_reasoning.truncate(*items),
                 Record::ToolResult { result, .. } => {
+                    item_reasoning.push(None);
                     results.insert(result.id.clone());
                 }
                 Record::ToolCall { turn, call, .. } => {
@@ -131,17 +135,16 @@ impl ResumeState {
                             Item::UserMessage(_) => {}
                         }
                     }
-                    state.reasoning = conversation
+                    item_reasoning = conversation
                         .items
                         .iter()
-                        .filter_map(|item| {
+                        .map(|item| {
                             matches!(item, Item::AssistantTurn(_)).then_some(segment.clone())
                         })
                         .collect();
                 }
                 Record::Header(_)
                 | Record::TurnStart { .. }
-                | Record::User { .. }
                 | Record::ToolStart { .. }
                 | Record::Approval { .. }
                 | Record::Retry { .. }
@@ -149,7 +152,8 @@ impl ResumeState {
                 | Record::TurnEnd { .. }
                 | Record::SessionEnd { .. }
                 | Record::Summary { .. }
-                | Record::Rewind { .. }
+                | Record::Checkpoint(_)
+                | Record::WriteTarget { .. }
                 | Record::Spilled { .. } => {}
             }
             if let Record::TurnStart { turn }
@@ -161,6 +165,7 @@ impl ResumeState {
                 state.max_turn = state.max_turn.max(*turn);
             }
         }
+        state.reasoning = item_reasoning.into_iter().flatten().collect();
         state.max_turn = calls
             .values()
             .fold(state.max_turn, |maximum, (turn, _)| maximum.max(*turn));

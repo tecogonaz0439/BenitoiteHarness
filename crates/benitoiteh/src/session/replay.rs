@@ -128,7 +128,12 @@ pub(super) fn replay_records(records: &[Record]) -> Conversation {
                 conversation = compacted.clone();
                 starts.clear();
             }
-            Record::Header(_)
+            Record::Rewind { items, .. } => {
+                conversation.items.truncate(*items);
+                starts.clear();
+            }
+            Record::Checkpoint(_)
+            | Record::Header(_)
             | Record::SessionStart { .. }
             | Record::TurnStart { .. }
             | Record::ToolCall { .. }
@@ -139,7 +144,7 @@ pub(super) fn replay_records(records: &[Record]) -> Conversation {
             | Record::SessionEnd { .. }
             | Record::Summary { .. }
             | Record::ProjectDirChanged { .. }
-            | Record::Rewind { .. }
+            | Record::WriteTarget { .. }
             | Record::Spilled { .. } => {}
         }
     }

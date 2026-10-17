@@ -72,6 +72,31 @@ impl ExcludeRules {
         None
     }
 
+    /// 除外されていない親の直下の一要素だけを判定する。木の走査は除外した親へ降りない。
+    pub(crate) fn reason_entry(&self, real_path: &Path) -> Option<String> {
+        let name = real_path.file_name()?.to_string_lossy();
+        if secret_component(&name) {
+            return Some(format!("{} ({name})", text::DEFAULT_SECRET));
+        }
+        if !real_path.starts_with(&self.spill) {
+            if real_path.starts_with(&self.config) {
+                return Some(text::CONFIG_DIRECTORY.into());
+            }
+            if real_path.starts_with(&self.data) {
+                return Some(text::DATA_DIRECTORY.into());
+            }
+        }
+        let relative = real_path.strip_prefix(&self.project).unwrap_or(real_path);
+        self.additional
+            .iter()
+            .find(|(_, matcher)| {
+                matcher.is_match(real_path)
+                    || matcher.is_match(relative)
+                    || matcher.is_match(Path::new(name.as_ref()))
+            })
+            .map(|(pattern, _)| pattern.clone())
+    }
+
     pub(super) fn descend(&self, real_path: &Path) -> bool {
         // data/ 自体の除外で spill/ への走査まで切らない（設計書 01-03「読まないファイル」）。
         self.reason(real_path).is_none()

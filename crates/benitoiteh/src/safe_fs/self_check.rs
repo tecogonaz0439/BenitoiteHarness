@@ -37,6 +37,36 @@ pub fn verify_platform_support(temporary_root: &Path) -> Result<(), SafeFsError>
         Ok(_) => return Err(unsupported(text::BENEATH_UNSUPPORTED)),
         Err(error) => return Err(error),
     }
+    std::os::unix::fs::symlink("inside", root_path.join("link"))?;
+    match os::open_no_follow(
+        &scope.directory,
+        Path::new("link"),
+        OFlags::RDONLY | OFlags::NONBLOCK,
+        Mode::empty(),
+    ) {
+        Err(SafeFsError::IntermediateSymlink(_)) | Err(SafeFsError::FinalSymlink) => {}
+        Ok(_) => return Err(unsupported(text::NOFOLLOW_UNSUPPORTED)),
+        Err(error) => return Err(error),
+    }
+    let _inside_no_follow = os::open_no_follow(
+        &scope.directory,
+        Path::new("inside"),
+        OFlags::RDONLY | OFlags::NONBLOCK,
+        Mode::empty(),
+    )?;
+    fs::create_dir(root_path.join("nested"))?;
+    fs::write(root_path.join("nested/value"), b"inside")?;
+    std::os::unix::fs::symlink("nested", root_path.join("linkdir"))?;
+    match os::open_no_follow(
+        &scope.directory,
+        Path::new("linkdir/value"),
+        OFlags::RDONLY | OFlags::NONBLOCK,
+        Mode::empty(),
+    ) {
+        Err(SafeFsError::IntermediateSymlink(_)) | Err(SafeFsError::FinalSymlink) => {}
+        Ok(_) => return Err(unsupported(text::NOFOLLOW_UNSUPPORTED)),
+        Err(error) => return Err(error),
+    }
     #[cfg(target_os = "macos")]
     {
         fs::hard_link(root_path.join("inside"), root_path.join("hard"))?;

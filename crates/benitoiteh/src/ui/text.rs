@@ -78,3 +78,25 @@ pub fn session_mode(mode: Option<crate::session::RecordedMode>) -> &'static str 
 pub fn session_error(id: &str, error: &str) -> String {
     format!("{id}  {error}")
 }
+
+pub fn checkpoint(checkpoint: &crate::rewind::Checkpoint) -> String {
+    if checkpoint.incomplete.is_empty() {
+        format!("Checkpoint {} recorded.", checkpoint.id)
+    } else {
+        format!(
+            "Checkpoint {} is incomplete: {}",
+            checkpoint.id,
+            checkpoint.incomplete.join("; ")
+        )
+    }
+}
+pub fn hard_links(paths: &[std::path::PathBuf]) -> String {
+    format!(
+        "Files with multiple hard links: {}",
+        paths
+            .iter()
+            .map(|path| path.display().to_string())
+            .collect::<Vec<_>>()
+            .join(", ")
+    )
+}

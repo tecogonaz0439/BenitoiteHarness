@@ -1,5 +1,8 @@
 //! 記録の保存と復元、一時領域の寿命を実ファイルで確かめる（設計書 01-05）。
 
+#[path = "support/session.rs"]
+mod session_support;
+
 use std::error::Error;
 use std::fs::{self, OpenOptions};
 use std::io::{self, Write};
@@ -623,11 +626,6 @@ fn storage_counts_all_regular_files_and_shares_output_reservations() -> TestResu
     let fixture = Fixture::new()?;
     let session = fixture.session()?;
     session.writer()?.append(&header(&session))?;
-    fs::create_dir(session.directory().join("objects"))?;
-    fs::set_permissions(
-        session.directory().join("objects"),
-        fs::Permissions::from_mode(0o700),
-    )?;
     fs::create_dir(session.directory().join("checkpoints"))?;
     fs::write(session.directory().join("checkpoints/index"), b"checkpoint")?;
     let limit = 1024_u64.saturating_mul(1024).saturating_mul(1024);
@@ -681,15 +679,15 @@ fn opening_rejects_unsafe_logs_and_corruption_without_deleting_session() -> Test
     let original = fs::read(&log)?;
     drop(session);
     fs::set_permissions(&log, fs::Permissions::from_mode(0o644))?;
-    assert!(Session::open(&fixture.paths, &id).is_err());
+    assert!(session_support::open_created_session(&fixture.paths, &id).is_err());
     assert_eq!(fs::read(&log)?, original);
     fs::set_permissions(&log, fs::Permissions::from_mode(0o600))?;
     fs::hard_link(&log, fixture.root.join("hardlink"))?;
-    assert!(Session::open(&fixture.paths, &id).is_err());
+    assert!(session_support::open_created_session(&fixture.paths, &id).is_err());
     fs::remove_file(fixture.root.join("hardlink"))?;
     fs::rename(&log, fixture.root.join("outside-log"))?;
     symlink(fixture.root.join("outside-log"), &log)?;
-    assert!(Session::open(&fixture.paths, &id).is_err());
+    assert!(session_support::open_created_session(&fixture.paths, &id).is_err());
     assert_eq!(fs::read(&log)?, original);
     fs::remove_file(&log)?;
     fs::rename(fixture.root.join("outside-log"), &log)?;
@@ -698,7 +696,7 @@ fn opening_rejects_unsafe_logs_and_corruption_without_deleting_session() -> Test
         .open(&log)?
         .write_all(b"broken\n")?;
     let corrupt = fs::read(&log)?;
-    assert!(Session::open(&fixture.paths, &id).is_err());
+    assert!(session_support::open_created_session(&fixture.paths, &id).is_err());
     assert_eq!(fs::read(&log)?, corrupt);
     assert!(directory.join("spill").is_dir() && directory.join("lock").is_file());
     Ok(())

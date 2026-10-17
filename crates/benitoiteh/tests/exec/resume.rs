@@ -1,5 +1,8 @@
 //! 再開・一覧の契約を、実行ファイルと実ファイルの境界で守る（設計書 07-01）。
 
+#[path = "../support/session.rs"]
+mod session_support;
+
 use super::*;
 use benitoiteh::config::paths::DataPaths;
 use benitoiteh::provider::Item;
@@ -171,7 +174,7 @@ fn resume_appends_to_same_record_preserves_history_and_mode_and_repairs_tail() -
             .ok_or("missing user")?;
         assert_eq!(last_user.parts.len(), 1);
         // 修復した記録が、もう一度開けることまで確かめる。
-        let opened = Session::open(&paths(&f)?, &id(&directory)?.parse()?)?;
+        let opened = session_support::open_created_session(&paths(&f)?, &id(&directory)?.parse()?)?;
         let state = ResumeState::read(opened.directory())?;
         assert_eq!(state.max_turn, 43);
         assert!(state.files.read.contains("a.bnt"));
@@ -448,7 +451,7 @@ fn continue_selects_latest_matching_readable_inactive_session() -> TestResult {
     let _other = saved(&f, template, "20990101T000000Z-0000000000000004", &other)?;
     let busy_id = "20990101T000000Z-0000000000000005";
     let _busy = saved(&f, template, busy_id, &f.root.join("project"))?;
-    let busy = Session::open(&paths(&f)?, &busy_id.parse()?)?;
+    let busy = session_support::open_created_session(&paths(&f)?, &busy_id.parse()?)?;
     let output = Running::start(f.command("Continue").args(["--continue", "--json"]))?.finish()?;
     assert!(
         output.status.success(),
@@ -867,7 +870,7 @@ fn startup_retention_uses_log_mtime_and_preserves_explicit_resume_and_symlink_ta
     )?;
     let busy_id = "20000101T000000Z-0000000000000002";
     let _busy = saved(&f, template, busy_id, &f.root.join("project"))?;
-    let busy = Session::open(&paths(&f)?, &busy_id.parse()?)?;
+    let busy = session_support::open_created_session(&paths(&f)?, &busy_id.parse()?)?;
     let updated = saved(
         &f,
         template,
