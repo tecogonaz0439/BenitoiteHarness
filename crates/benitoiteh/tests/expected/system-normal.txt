@@ -6,6 +6,7 @@ glob: Find files by glob pattern, newest first.
 grep: Search file lines using a regular expression.
 write: Create or replace a file.
 edit: Replace matching text in a file.
+bash: Run a shell command in the project directory.
 </tools>
 
 <rules>
@@ -14,6 +15,8 @@ glob: Search under path, or the project directory if omitted; narrow the pattern
 grep: Use glob to filter files, context for surrounding lines, and files_only to return matching paths.
 write: Read an existing file before replacing it; if it has changed since that read, read it again before retrying.
 edit: Read the file before editing it. Provide a nonempty old_string that occurs once, or set replace_all to true to replace every occurrence.
+bash: Use timeout to set a limit of 1-600 seconds (default 120).
+If the sandbox blocks a necessary command, retry with escalate=true and a justification; the user will be asked.
 Keep responses concise.
 Include file paths when referring to files.
 </rules>

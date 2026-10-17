@@ -168,7 +168,7 @@ impl Summary {
 }
 
 /// 道具の出力の保存先と、上限で捨てた量。パスはセッションからの相対。
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct SpillInfo {
     pub path: PathBuf,
     pub written_bytes: u64,

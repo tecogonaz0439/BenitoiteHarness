@@ -129,5 +129,33 @@
       "type": "object"
     },
     "name": "edit"
+  },
+  {
+    "description": "Run a shell command in the project directory.",
+    "input_schema": {
+      "properties": {
+        "command": {
+          "description": "Shell command to run in the project directory.",
+          "type": "string"
+        },
+        "escalate": {
+          "description": "Request execution outside the sandbox for this call.",
+          "type": "boolean"
+        },
+        "justification": {
+          "description": "Reason for requesting execution outside the sandbox.",
+          "type": "string"
+        },
+        "timeout": {
+          "description": "Time limit in seconds (1-600; default 120).",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "command"
+      ],
+      "type": "object"
+    },
+    "name": "bash"
   }
 ]

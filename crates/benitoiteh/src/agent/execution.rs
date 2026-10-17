@@ -7,7 +7,7 @@ use std::thread;
 use crate::approval::{self, ApprovalAnswer, ApprovalOutcome, ApprovalRecord, Decision};
 use crate::provider::{FinishReason, Item, ToolCall, ToolResult};
 use crate::session::{Record, Summary};
-use crate::tools::{ApprovalStatus, ToolOutput, ValidatedCall};
+use crate::tools::{ApprovalStatus, Invocation, ToolOutput, ValidatedCall};
 
 use super::{Agent, AgentError, AgentEvent, text};
 
@@ -113,6 +113,10 @@ impl Agent {
                                     context,
                                     validated,
                                     ApprovalStatus::Unapproved,
+                                    Invocation {
+                                        call_id: &prepared.call.id,
+                                        cancelled,
+                                    },
                                 )
                             }
                         }) {
@@ -151,6 +155,10 @@ impl Agent {
                             &self.tool_context,
                             validated,
                             ApprovalStatus::Unapproved,
+                            Invocation {
+                                call_id: &first.call.id,
+                                cancelled,
+                            },
                         );
                         self.approve(&first.call, validated, output, cancelled, events, summary)?
                     }
@@ -181,7 +189,7 @@ impl Agent {
             &request.facts,
             &self.allowed_commands,
         ) {
-            Decision::Allow => return Ok(self.execute_approved(validated, cancelled)),
+            Decision::Allow => return Ok(self.execute_approved(call, validated, cancelled)),
             Decision::Deny => {
                 summary.approvals.policy_denied = summary.approvals.policy_denied.saturating_add(1);
                 return Ok(ToolOutput::error(approval::policy_denial_message(
@@ -234,7 +242,7 @@ impl Agent {
         )?;
         Ok(match answer.outcome {
             ApprovalOutcome::Approved | ApprovalOutcome::ApprovedForSession => {
-                self.execute_approved(validated, cancelled)
+                self.execute_approved(call, validated, cancelled)
             }
             ApprovalOutcome::Denied => {
                 ToolOutput::error(approval::user_denial_message(record.kind, None))
@@ -247,12 +255,24 @@ impl Agent {
         })
     }
 
-    fn execute_approved(&self, validated: &ValidatedCall, cancelled: &AtomicBool) -> ToolOutput {
+    fn execute_approved(
+        &self,
+        call: &ToolCall,
+        validated: &ValidatedCall,
+        cancelled: &AtomicBool,
+    ) -> ToolOutput {
         if cancelled.load(Ordering::Acquire) {
             ToolOutput::error(text::CANCELLED)
         } else {
-            self.tools
-                .execute_validated(&self.tool_context, validated, ApprovalStatus::Approved)
+            self.tools.execute_validated(
+                &self.tool_context,
+                validated,
+                ApprovalStatus::Approved,
+                Invocation {
+                    call_id: &call.id,
+                    cancelled,
+                },
+            )
         }
     }
 
@@ -289,7 +309,7 @@ impl Agent {
             turn: self.turn,
             name: call.name.clone(),
             result: result.clone(),
-            spill: None,
+            spill: output.spill,
         })?;
         self.emit(
             events,
