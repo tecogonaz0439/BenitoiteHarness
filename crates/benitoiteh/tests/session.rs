@@ -220,7 +220,7 @@ fn records_replay_conversation_losslessly_and_finish_with_summary() -> TestResul
     )?;
     assert_eq!(
         last,
-        json!({"type":"summary", "turns":1, "compactions":0, "tool_calls":{"write":2}, "checks":2, "fixes":1, "approvals":{"approved":2,"denied":2,"cancelled":1,"policy_denied":0}, "tokens":{"input":100,"cache_read":20,"cache_write":3,"output":9}, "elapsed_ms":123,"reason":"completed"})
+        json!({"type":"summary", "turns":1, "compactions":0, "tool_calls":{"write":2}, "checks":2, "after_write_checks":0, "fixes":1, "approvals":{"approved":2,"denied":2,"cancelled":1,"policy_denied":0}, "tokens":{"input":100,"cache_read":20,"cache_write":3,"output":9}, "elapsed_ms":123,"reason":"completed"})
     );
     Ok(())
 }
@@ -706,6 +706,10 @@ fn opening_rejects_unsafe_logs_and_corruption_without_deleting_session() -> Test
 // 作成時の関門: ほかのセッションの権限不足で全起動を止める退行を、本物の権限で守る。
 #[test]
 fn storage_skips_unreadable_entries_in_other_sessions() -> TestResult {
+    if rustix::process::geteuid().is_root() {
+        eprintln!("Skipped unreadable-session storage check: root can read mode 000 directories.");
+        return Ok(());
+    }
     struct Restore(std::path::PathBuf);
     impl Drop for Restore {
         fn drop(&mut self) {
@@ -721,10 +725,9 @@ fn storage_skips_unreadable_entries_in_other_sessions() -> TestResult {
     fs::write(other.directory().join("visible"), b"visible")?;
     fs::set_permissions(&private, fs::Permissions::from_mode(0o000))?;
     let _restore = Restore(private.clone());
-    let Err(error) = fs::read_dir(&private) else {
-        // root など権限 000 でも読める環境では、権限不足を再現できないので確かめを飛ばす。
-        return Ok(());
-    };
+    let error = fs::read_dir(&private)
+        .err()
+        .ok_or("Mode 000 directory unexpectedly remained readable for a non-root user.")?;
     assert_eq!(error.kind(), io::ErrorKind::PermissionDenied);
     let usage = benitoiteh::session::storage_usage(&fixture.paths, Some(current.id()))?;
     assert_eq!(usage.total, 7);

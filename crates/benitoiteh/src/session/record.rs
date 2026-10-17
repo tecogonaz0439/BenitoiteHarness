@@ -105,6 +105,8 @@ pub struct Summary {
     pub compactions: u64,
     pub tool_calls: BTreeMap<String, u64>,
     pub checks: u64,
+    #[serde(default)]
+    pub after_write_checks: u64,
     pub fixes: u64,
     pub approvals: ApprovalCounts,
     pub tokens: TokenCounts,

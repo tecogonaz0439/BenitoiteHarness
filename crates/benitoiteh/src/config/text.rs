@@ -39,3 +39,4 @@ pub const RESUME_MODE: &str =
 pub const INVALID_DOMAIN: &str = "Invalid web_fetch.allowed_domains entry. Use an ASCII domain name of at least two labels (punycode xn-- for international names), without a scheme, port, wildcard, or IP address.";
 
 pub const INVALID_BENITOITE_PATH: &str = "benitoite.path must be an absolute path";
+pub const CHECK_FIX_POSITIVE: &str = "--max-check-fix and limits.max_check_fix must be at least 1.";

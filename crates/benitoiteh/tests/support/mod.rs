@@ -8,3 +8,7 @@ pub use processor::benitoite;
 mod skill;
 #[allow(unused_imports)]
 pub use skill::skills;
+
+mod check;
+#[allow(unused_imports)]
+pub use check::checks;

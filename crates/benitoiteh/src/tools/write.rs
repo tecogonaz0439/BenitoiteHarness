@@ -30,8 +30,15 @@ pub(super) fn execute(
         Some(&target.real_path),
         &invocation,
     )?;
+    let real_path = target.real_path.clone();
     target.write(context, previous, contents.as_bytes())?;
-    Ok(output(path, &String::from_utf8_lossy(&before), contents))
+    Ok(super::benitoite_check::after_write(
+        context,
+        path,
+        &real_path,
+        output(path, &String::from_utf8_lossy(&before), contents),
+        invocation.cancelled,
+    ))
 }
 
 pub(super) fn output(path: &str, before: &str, after: &str) -> ToolOutput {

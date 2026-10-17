@@ -301,6 +301,9 @@ impl UserConfig {
     /// 知らない欄と、秘密の直書きを拒む。
     pub fn parse(input: &str) -> Result<Self, ConfigError> {
         let mut config: Self = parse(input)?;
+        if config.limits.max_check_fix == 0 {
+            return Err(ConfigError::Invalid(text::CHECK_FIX_POSITIVE));
+        }
         for domain in &mut config.web_fetch.allowed_domains {
             *domain = self::domain::normalize(domain)
                 .ok_or(ConfigError::Invalid(text::INVALID_DOMAIN))?;
@@ -365,6 +368,9 @@ impl UserConfig {
         cwd: &Path,
     ) -> Result<ResolvedExec, ConfigError> {
         let mode = args.mode.unwrap_or(self.default_mode);
+        if args.max_check_fix.unwrap_or(self.limits.max_check_fix) == 0 {
+            return Err(ConfigError::Invalid(text::CHECK_FIX_POSITIVE));
+        }
         if !args.interactive
             && args
                 .approval

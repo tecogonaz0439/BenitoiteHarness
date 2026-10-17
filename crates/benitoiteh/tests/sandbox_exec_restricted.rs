@@ -530,3 +530,117 @@ fn normal_query_inspects_real_processor_and_records_its_identity() -> TestResult
     server.shutdown()?;
     Ok(())
 }
+
+// 関門: 道具の実行器のテストは処理系を直接起動する。ここでは起動時に作った
+// Processor の問い合わせが、write と明示の検査の両方へ渡ることを本物の OS で守る。
+#[test]
+fn restricted_write_and_explicit_check_use_sandboxed_processor_queries() -> TestResult {
+    let protocol = Protocol::Chat;
+    let mut server = MockProvider::start(vec![
+        ResponseScript::sse(protocol.response(Some(("write", "write", json!({"path":"main.bnt","content":"function main() -> Unit\n return ()\nend function\n"}))), "", false)),
+        ResponseScript::sse(protocol.response(Some(("check", "benitoite_check", json!({"path":"main.bnt"}))), "", false)),
+        ResponseScript::sse(protocol.response(None, "Checked", false)),
+    ])?;
+    let f = Fixture::restricted(protocol, &server)?;
+    let output = Running::start(f.command("Write and check").arg("--json"))?.finish()?;
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let (_, records) = f.records()?;
+    let outputs = records
+        .iter()
+        .filter(|r| r.get("type") == Some(&json!("tool_result")))
+        .collect::<Vec<_>>();
+    assert!(
+        outputs.iter().any(|r| r
+            .pointer("/result/text")
+            .and_then(Value::as_str)
+            .is_some_and(|text| text.contains("Check of main.bnt after this change: ok"))),
+        "{outputs:?}"
+    );
+    assert!(
+        outputs
+            .iter()
+            .any(|r| r.pointer("/result/text") == Some(&json!("ok")))
+    );
+    let summary = records
+        .iter()
+        .find(|r| r.get("type") == Some(&json!("summary")))
+        .ok_or("summary")?;
+    assert_eq!(summary.get("checks"), Some(&json!(2)));
+    assert_eq!(summary.get("after_write_checks"), Some(&json!(1)));
+    assert_eq!(summary.get("fixes"), Some(&json!(0)));
+    server.shutdown()?;
+    Ok(())
+}
+
+// 関門: 残る診断が JSON のイベントと exec の stderr から欠けること、
+// stderr に端末制御が通ることを、制限モードの本物の入口で守る。
+#[test]
+fn restricted_check_limit_emits_full_safe_diagnostics_and_flat_summary() -> TestResult {
+    let protocol = Protocol::Chat;
+    let mut server = MockProvider::start(vec![ResponseScript::sse(protocol.response(
+        Some(("check", "benitoite_check", json!({"path":".","tests":true}))),
+        "",
+        false,
+    ))])?;
+    let f = Fixture::restricted(protocol, &server)?;
+    fs::write(
+        f.root.join("project/.env.bnt"),
+        "function secret() -> Unit\n return SECRET_TOKEN_abc\nend function\n",
+    )?;
+    let output =
+        Running::start(
+            f.command("Check errors")
+                .args(["--max-check-fix", "1", "--json"]),
+        )?
+        .finish()?;
+    assert_eq!(output.status.code(), Some(1));
+    let events = lines(&output.stdout)?;
+    let error = events
+        .iter()
+        .find(|e| e.get("type") == Some(&json!("error")) && e.get("kind") == Some(&json!("limit")))
+        .ok_or("limit error")?;
+    let message = error
+        .get("message")
+        .and_then(Value::as_str)
+        .ok_or("message")?;
+    assert!(
+        message.starts_with("The run stopped because checks of . failed 1 time without passing"),
+        "{message}"
+    );
+    assert!(message.contains("\nRemaining diagnostics:\nerror["));
+    assert!(message.contains("1 diagnostic in a file that benitoiteh does not read is not shown."));
+    assert!(!message.contains("SECRET_TOKEN_abc"));
+    let stderr = String::from_utf8(output.stderr)?;
+    assert!(
+        stderr.contains("\nRemaining diagnostics:\nerror["),
+        "{stderr}"
+    );
+    assert!(
+        !stderr.contains('\x1b') && stderr.contains("\\x1b"),
+        "{stderr}"
+    );
+    let summary = events
+        .iter()
+        .find(|e| e.get("type") == Some(&json!("summary")))
+        .ok_or("summary")?;
+    assert_eq!(summary.get("checks"), Some(&json!(1)));
+    assert_eq!(
+        summary.get("reason").and_then(Value::as_str),
+        message.lines().next()
+    );
+    let ended = events
+        .iter()
+        .position(|e| e.get("type") == Some(&json!("turn_end")))
+        .ok_or("turn end")?;
+    let failed = events
+        .iter()
+        .position(|e| std::ptr::eq(e, error))
+        .ok_or("error index")?;
+    assert!(ended < failed);
+    server.shutdown()?;
+    Ok(())
+}

@@ -82,7 +82,7 @@ impl Agent {
                 None
             };
             if let Some(message) = suppressed {
-                self.result(&first.call, ToolOutput::error(message), events)?;
+                self.result(&first.call, ToolOutput::error(message), events, summary)?;
                 remaining = remaining.get(1..).ok_or(AgentError::Worker)?;
                 continue;
             }
@@ -142,7 +142,7 @@ impl Agent {
                 })?;
                 // join の順序と会話の順序を応答に揃える。完了時刻は順序に使わない。
                 for (prepared, output) in batch.iter().zip(outputs) {
-                    self.result(&prepared.call, output, events)?;
+                    self.result(&prepared.call, output, events, summary)?;
                 }
                 remaining = rest;
             } else {
@@ -167,7 +167,7 @@ impl Agent {
                     }
                     Err(message) => ToolOutput::error(message.clone()),
                 };
-                self.result(&first.call, output, events)?;
+                self.result(&first.call, output, events, summary)?;
                 remaining = remaining.get(1..).ok_or(AgentError::Worker)?;
             }
         }
@@ -288,8 +288,34 @@ impl Agent {
         call: &ToolCall,
         mut output: ToolOutput,
         events: &SyncSender<AgentEvent>,
+        summary: &mut Summary,
     ) -> Result<(), AgentError> {
         self.checkpoint_notices(events)?;
+        if let Some(launch) = output.check_launch {
+            summary.checks = summary.checks.saturating_add(1);
+            if launch == crate::tools::CheckLaunch::AfterWrite {
+                summary.after_write_checks = summary.after_write_checks.saturating_add(1);
+            }
+        }
+        if let Some(check) = &output.check {
+            if check.failed {
+                summary.fixes = summary.fixes.saturating_add(1);
+            }
+            if self.config.mode == crate::config::Mode::Restricted {
+                let count = self.check_failures.entry(check.key.clone()).or_default();
+                *count = if check.failed {
+                    count.saturating_add(1)
+                } else {
+                    0
+                };
+                if *count >= self.config.limits.max_check_fix {
+                    self.check_limit
+                        .insert(check.key.clone(), check.diagnostics.clone());
+                } else {
+                    self.check_limit.remove(&check.key);
+                }
+            }
+        }
         let arguments = self
             .tools
             .validate(&call.name, call.arguments.clone())

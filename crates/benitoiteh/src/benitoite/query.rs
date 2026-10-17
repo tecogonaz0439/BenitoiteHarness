@@ -42,22 +42,31 @@ pub(crate) struct QueryContext {
     pub launcher: QueryLauncher,
 }
 
+/// 標準エラーの先頭だけを保つか、超過した問い合わせを止めるか。
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum StderrLimit {
+    KeepFirst(usize),
+    FailOver(usize),
+}
+
 /// 問い合わせの時間の上限と、停止後の猶予。
 #[derive(Clone, Copy, Debug)]
 pub struct QueryLimits {
     pub timeout: Duration,
     pub grace: Duration,
+    pub stderr: StderrLimit,
 }
 impl Default for QueryLimits {
     fn default() -> Self {
         Self {
             timeout: Duration::from_secs(10),
             grace: Duration::from_secs(10),
+            stderr: StderrLimit::KeepFirst(64 * 1024),
         }
     }
 }
 
-/// 問い合わせの全標準出力と、標準エラーの先頭 64 KiB。
+/// 問い合わせの全標準出力と、指定した上限までの標準エラー。
 #[derive(Debug)]
 pub struct QueryOutput {
     pub stdout: Vec<u8>,
@@ -135,10 +144,18 @@ impl Processor {
             cap: 16 * 1024 * 1024,
             overflow: Some((Arc::clone(&exceeded), Arc::clone(&stop))),
         }));
+        let diagnostics_exceeded = Arc::new(AtomicBool::new(false));
+        let (cap, overflow) = match limits.stderr {
+            StderrLimit::KeepFirst(cap) => (cap, None),
+            StderrLimit::FailOver(cap) => (
+                cap,
+                Some((Arc::clone(&diagnostics_exceeded), Arc::clone(&stop))),
+            ),
+        };
         let stderr = Arc::new(Mutex::new(Output {
             bytes: Vec::new(),
-            cap: 64 * 1024,
-            overflow: None,
+            cap,
+            overflow,
         }));
         let done = AtomicBool::new(false);
         let outcome = std::thread::scope(|scope| {
@@ -175,6 +192,9 @@ impl Processor {
         }
         if exceeded.load(Ordering::Acquire) {
             return Err(BenitoiteError::OutputLimit);
+        }
+        if diagnostics_exceeded.load(Ordering::Acquire) {
+            return Err(BenitoiteError::DiagnosticsLimit);
         }
         match outcome.end {
             RunEnd::TimedOut => return Err(BenitoiteError::TimedOut),

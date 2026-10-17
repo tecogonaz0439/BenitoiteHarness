@@ -1,6 +1,7 @@
 //! 道具の検証と実行をまとめ、範囲と結果の上限を守る（設計書 01-03「道具の定義の共通の規則」）。
 
 mod bash;
+mod benitoite_check;
 mod benitoite_reference;
 mod definitions;
 mod edit;
@@ -52,6 +53,8 @@ pub enum ToolId {
     Bash,
     /// 診断のコードの説明。
     BenitoiteExplain,
+    /// スクリプトとテストの静的検査。
+    BenitoiteCheck,
     /// 処理系の Skill の文書。
     BenitoiteReference,
     /// HTTPS の本文の取得。
@@ -68,6 +71,7 @@ impl ToolId {
             Self::Write => "write",
             Self::Edit => "edit",
             Self::Bash => "bash",
+            Self::BenitoiteCheck => "benitoite_check",
             Self::BenitoiteExplain => "benitoite_explain",
             Self::BenitoiteReference => "benitoite_reference",
             Self::WebFetch => "web_fetch",
@@ -147,7 +151,7 @@ impl ToolSet {
         tools.definitions.retain(|tool| {
             !matches!(
                 tool.id,
-                ToolId::BenitoiteExplain | ToolId::BenitoiteReference
+                ToolId::BenitoiteExplain | ToolId::BenitoiteReference | ToolId::BenitoiteCheck
             )
         });
         tools
@@ -231,6 +235,9 @@ impl ToolSet {
             ToolId::Write => write::execute(context, &call.arguments, approval, invocation),
             ToolId::Edit => edit::execute(context, &call.arguments, approval, invocation),
             ToolId::Bash => bash::execute(context, &call.arguments, approval, invocation),
+            ToolId::BenitoiteCheck => {
+                benitoite_check::execute(context, &call.arguments, invocation)
+            }
             ToolId::BenitoiteExplain => {
                 benitoite_reference::explain(context, &call.arguments, invocation.cancelled)
             }
@@ -306,7 +313,6 @@ pub struct WebFetchContext {
 }
 
 /// 最大八つの道具が共有する文脈。変わる版の記録だけを Mutex で守る。
-#[derive(Debug)]
 pub struct ToolContext {
     pub mode: Mode,
     pub project: ScopeRoot,
@@ -315,12 +321,22 @@ pub struct ToolContext {
     pub exclude: ExcludeRules,
     pub benitoite: Option<Arc<crate::benitoite::Processor>>,
     pub skill: Option<Arc<crate::benitoite::skill::SkillDocuments>>,
+    pub check_query: Option<Arc<crate::benitoite::CheckQuery>>,
     pub shell: Option<ShellContext>,
     pub web_fetch: WebFetchContext,
     pub session: Option<Session>,
     read_versions: Mutex<BTreeMap<PathBuf, FileVersion>>,
     pub checkpoints: Option<crate::rewind::CheckpointRecorder>,
     search_limits: SearchLimits,
+}
+
+impl fmt::Debug for ToolContext {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("ToolContext")
+            .field("mode", &self.mode)
+            .field("project", &self.project)
+            .finish_non_exhaustive()
+    }
 }
 
 /// 検索が主のプロセスで使える走査と読み取りの上限（設計書 01-03「glob」「grep」）。
@@ -358,6 +374,7 @@ impl ToolContext {
             exclude,
             benitoite: None,
             skill: None,
+            check_query: None,
             shell: None,
             web_fetch: WebFetchContext::default(),
             session: None,
@@ -376,6 +393,12 @@ impl ToolContext {
     /// セッションの間共有する Skill の問い合わせとキャッシュを追加する。
     pub fn with_skill(mut self, skill: Arc<crate::benitoite::skill::SkillDocuments>) -> Self {
         self.skill = Some(skill);
+        self
+    }
+
+    /// 起動時の処理系の検査の口を共有する。
+    pub fn with_check_query(mut self, query: Arc<crate::benitoite::CheckQuery>) -> Self {
+        self.check_query = Some(query);
         self
     }
 
@@ -481,6 +504,21 @@ pub struct ApprovalRequest {
     pub summary: String,
 }
 
+/// 検査の起動を、LLM の文によらず数えるための区分。
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum CheckLaunch {
+    Tool,
+    AfterWrite,
+}
+
+/// 同じ実のパスで続けて失敗した回数を数える結果。
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct CheckOutcome {
+    pub key: PathBuf,
+    pub failed: bool,
+    pub diagnostics: String,
+}
+
 /// LLM の結果、画面用の文、実行前の確認の要求。
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ToolOutput {
@@ -491,6 +529,8 @@ pub struct ToolOutput {
     pub screen: Option<String>,
     pub approval: Option<ApprovalRequest>,
     pub spill: Option<SpillInfo>,
+    pub check_launch: Option<CheckLaunch>,
+    pub check: Option<CheckOutcome>,
 }
 
 impl ToolOutput {
@@ -503,6 +543,8 @@ impl ToolOutput {
             screen: None,
             approval: None,
             spill: None,
+            check_launch: None,
+            check: None,
         }
     }
 
@@ -523,6 +565,8 @@ impl ToolOutput {
             display: None,
             screen: None,
             spill: None,
+            check_launch: None,
+            check: None,
         }
     }
 }

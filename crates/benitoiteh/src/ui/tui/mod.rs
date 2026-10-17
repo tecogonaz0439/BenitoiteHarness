@@ -282,7 +282,8 @@ impl Screen {
             }
             AgentEvent::Error { message, .. } => {
                 self.flush_pending();
-                self.history.push(plain(message, Decoration::Error));
+                self.history
+                    .extend(message.lines().map(|line| plain(line, Decoration::Error)));
             }
             AgentEvent::Retry { reason, .. } => {
                 self.flush_pending();

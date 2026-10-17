@@ -80,3 +80,11 @@ pub fn rewind_operation(name: &str, arguments: &serde_json::Value) -> String {
 pub const INVALID_EVENT_PATH: &str = "Invalid hexadecimal path in event.";
 
 pub const SESSION_COMPLETED: &str = "completed";
+
+/// イベントには診断を含め、集計だけが先頭の理由を使う（設計書 01-01「上限」）。
+pub fn check_fix_limit(path: &str, count: u64, max: u64, diagnostics: &str) -> String {
+    let times = if count == 1 { "time" } else { "times" };
+    format!(
+        "The run stopped because checks of {path} failed {count} {times} without passing (limit: {max}; change it with --max-check-fix or limits.max_check_fix).\nRemaining diagnostics:\n{diagnostics}"
+    )
+}

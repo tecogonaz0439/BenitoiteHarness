@@ -14,12 +14,7 @@ pub(super) fn execute(context: &ToolContext, arguments: &Value) -> Result<ToolOu
     let limit = number(arguments, "limit", 2000, false)?.min(2000);
     let mut opened = context.open_file(Path::new(path), false)?;
     let metadata = opened.file.metadata()?;
-    if metadata.len() > MAX_FILE_BYTES {
-        return Err(ToolError::InvalidArguments(text::READ_TOO_LARGE.into()));
-    }
-    if is_image(&opened.real_path) {
-        return Err(ToolError::NotText);
-    }
+    check_text_file(&opened.real_path, &metadata)?;
     let version = FileVersion::from_metadata(&metadata);
     let mut lines = ReadLines::new(offset, limit, LineStyle::Numbered);
     let mut buffer = [0; 8192];
@@ -31,46 +26,9 @@ pub(super) fn execute(context: &ToolContext, arguments: &Value) -> Result<ToolOu
             break;
         }
         let part = buffer.get(..count).unwrap_or_default();
-        if bytes_read < 8192
-            && binary(
-                part.get(
-                    ..8192usize
-                        .saturating_sub(usize::try_from(bytes_read).unwrap_or(8192))
-                        .min(count),
-                )
-                .unwrap_or_default(),
-            )
-        {
-            return Err(ToolError::NotText);
-        }
-        bytes_read = bytes_read.saturating_add(u64::try_from(count).unwrap_or(u64::MAX));
-        if bytes_read > MAX_FILE_BYTES {
-            return Err(ToolError::InvalidArguments(text::READ_TOO_LARGE.into()));
-        }
+        bytes_read = check_text_chunk(part, bytes_read)?;
         pending.extend_from_slice(part);
-        // 塊の境の未完の UTF-8 だけを次へ回し、置換文字を余分に作らない。
-        // 長い行も先頭の 2,000 文字だけを保つ（設計書 01-03「read」）。
-        let mut end = pending.len();
-        let mut checked = 0usize;
-        while let Some(rest) = pending.get(checked..) {
-            match std::str::from_utf8(rest) {
-                Ok(_) => break,
-                Err(error) => {
-                    checked = checked.saturating_add(error.valid_up_to());
-                    match error.error_len() {
-                        Some(length) => checked = checked.saturating_add(length),
-                        None => {
-                            end = checked;
-                            break;
-                        }
-                    }
-                }
-            }
-        }
-        for ch in String::from_utf8_lossy(pending.get(..end).unwrap_or_default()).chars() {
-            lines.character(ch);
-        }
-        pending.drain(..end);
+        decode_prefix(&mut pending, |ch| lines.character(ch));
     }
     for ch in String::from_utf8_lossy(&pending).chars() {
         lines.character(ch);
@@ -279,4 +237,147 @@ fn is_image(path: &Path) -> bool {
             ]
             .contains(&ext.to_ascii_lowercase().as_str())
         })
+}
+
+fn check_text_file(path: &Path, metadata: &std::fs::Metadata) -> Result<(), ToolError> {
+    if metadata.len() > MAX_FILE_BYTES {
+        return Err(ToolError::InvalidArguments(text::READ_TOO_LARGE.into()));
+    }
+    if is_image(path) {
+        return Err(ToolError::NotText);
+    }
+    Ok(())
+}
+
+fn check_text_chunk(part: &[u8], previous: u64) -> Result<u64, ToolError> {
+    if previous < 8192
+        && binary(
+            part.get(
+                ..8192usize
+                    .saturating_sub(usize::try_from(previous).unwrap_or(8192))
+                    .min(part.len()),
+            )
+            .unwrap_or_default(),
+        )
+    {
+        return Err(ToolError::NotText);
+    }
+    let total = previous.saturating_add(u64::try_from(part.len()).unwrap_or(u64::MAX));
+    if total > MAX_FILE_BYTES {
+        return Err(ToolError::InvalidArguments(text::READ_TOO_LARGE.into()));
+    }
+    Ok(total)
+}
+
+// 塊の境の未完の UTF-8 だけを次へ回す。read と診断で置換文字の規則を揃える。
+fn decode_prefix(pending: &mut Vec<u8>, mut character: impl FnMut(char)) {
+    let mut end = pending.len();
+    let mut checked = 0usize;
+    while let Some(rest) = pending.get(checked..) {
+        match std::str::from_utf8(rest) {
+            Ok(_) => break,
+            Err(error) => {
+                checked = checked.saturating_add(error.valid_up_to());
+                match error.error_len() {
+                    Some(length) => checked = checked.saturating_add(length),
+                    None => {
+                        end = checked;
+                        break;
+                    }
+                }
+            }
+        }
+    }
+    for ch in String::from_utf8_lossy(pending.get(..end).unwrap_or_default()).chars() {
+        character(ch);
+    }
+    pending.drain(..end);
+}
+
+/// 診断の一行を read と同じテキストの判定で読み、読んだ版は記録しない。
+pub(super) fn diagnostic_line(
+    mut opened: super::paths::OpenedFile,
+    requested: u64,
+) -> Result<Option<crate::benitoite::diagnostics::SourceLine>, ToolError> {
+    if requested == 0 {
+        return Ok(None);
+    }
+    let metadata = opened.file.metadata()?;
+    check_text_file(&opened.real_path, &metadata)?;
+    let version = FileVersion::from_metadata(&metadata);
+    let mut line = DiagnosticLineReader::new(requested);
+    let mut buffer = [0u8; 8192];
+    let mut pending = Vec::new();
+    let mut bytes_read = 0u64;
+    loop {
+        let count = opened.file.read(&mut buffer)?;
+        if count == 0 {
+            break;
+        }
+        let part = buffer.get(..count).unwrap_or_default();
+        bytes_read = check_text_chunk(part, bytes_read)?;
+        pending.extend_from_slice(part);
+        decode_prefix(&mut pending, |ch| line.character(ch));
+        // 最初の 8 KiB のバイナリ判定は、欲しい行より後も read と同じく行う。
+        if line.complete && bytes_read >= 8192 {
+            break;
+        }
+    }
+    for ch in String::from_utf8_lossy(&pending).chars() {
+        line.character(ch);
+    }
+    if version != FileVersion::from_metadata(&opened.file.metadata()?) {
+        return Err(ToolError::Changed);
+    }
+    Ok(line.output())
+}
+
+struct DiagnosticLineReader {
+    requested: u64,
+    number: u64,
+    prefix: String,
+    chars: usize,
+    last_cr: bool,
+    complete: bool,
+}
+impl DiagnosticLineReader {
+    fn new(requested: u64) -> Self {
+        Self {
+            requested,
+            number: 1,
+            prefix: String::new(),
+            chars: 0,
+            last_cr: false,
+            complete: false,
+        }
+    }
+    fn character(&mut self, ch: char) {
+        if self.complete {
+            return;
+        }
+        if ch == '\n' {
+            if self.number == self.requested {
+                if self.last_cr {
+                    if self.chars <= 2000 {
+                        self.prefix.pop();
+                    }
+                    self.chars = self.chars.saturating_sub(1);
+                }
+                self.complete = true;
+            }
+            self.number = self.number.saturating_add(1);
+        } else if self.number == self.requested {
+            self.chars = self.chars.saturating_add(1);
+            if self.chars <= 2000 {
+                self.prefix.push(ch);
+            }
+            self.last_cr = ch == '\r';
+        }
+    }
+    fn output(self) -> Option<crate::benitoite::diagnostics::SourceLine> {
+        (self.complete || self.chars > 0).then_some(crate::benitoite::diagnostics::SourceLine {
+            text: self.prefix,
+            truncated: self.chars > 2000,
+        })
+    }
 }

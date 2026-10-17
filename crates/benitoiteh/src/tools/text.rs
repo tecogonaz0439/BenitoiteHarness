@@ -362,3 +362,43 @@ pub fn missing_code(code: &str) -> String {
 pub fn reference_line_truncated(line: usize) -> String {
     format!("\n[Line {line} truncated to fit the 50 KiB output limit.]\n")
 }
+
+pub const BENITOITE_CHECK: (&str, &str) =
+    prompt_parts(include_str!("../../prompts/tools/benitoite_check.md"));
+pub const CHECK_TESTS: &str =
+    "Check without running tests and without requiring main, like benitoite test --check.";
+pub const CHECK_OK: &str = "ok";
+pub fn check_failure(path: &str, reason: &str) -> String {
+    format!(
+        "Could not check {path} with the Benitoite processor: {}.",
+        reason.trim_end_matches('.')
+    )
+}
+pub fn after_check(path: &str, ok: bool) -> String {
+    if ok {
+        format!("Check of {path} after this change: ok")
+    } else {
+        format!("Check of {path} after this change:")
+    }
+}
+pub fn after_check_incomplete(path: &str, reason: &str) -> String {
+    format!(
+        "Check of {path} after this change did not complete: {}.",
+        reason.trim_end_matches('.')
+    )
+}
+pub fn not_checked_outside(path: &str) -> String {
+    format!("Not checked automatically: {path} is outside the project directory.")
+}
+pub fn not_checked_nested(path: &str) -> String {
+    format!("Not checked automatically: {path} is in a nested package.")
+}
+pub fn other_diagnostics(count: usize) -> String {
+    if count == 1 {
+        "1 diagnostic in another file. Use benitoite_check with tests=true on the project directory to see it.".into()
+    } else {
+        format!(
+            "{count} diagnostics in other files. Use benitoite_check with tests=true on the project directory to see them."
+        )
+    }
+}

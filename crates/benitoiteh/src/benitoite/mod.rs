@@ -1,5 +1,6 @@
 //! 処理系を探して機能を確かめ、スクリプトを実行しない問い合わせを起動する（設計書 04-01）。
 
+pub mod diagnostics;
 mod executable;
 mod query;
 pub mod skill;
@@ -14,7 +15,12 @@ use std::sync::atomic::AtomicBool;
 
 pub use executable::{discover, validate_executable};
 pub(crate) use query::{QueryContext, QueryLauncher};
-pub use query::{QueryLimits, QueryOutput};
+pub use query::{QueryLimits, QueryOutput, StderrLimit};
+
+/// スクリプトを実行しない検査の問い合わせの口。
+pub type CheckQuery = dyn Fn(&[std::ffi::OsString], QueryLimits, &AtomicBool) -> Result<QueryOutput, BenitoiteError>
+    + Send
+    + Sync;
 
 /// システムプロンプトとの対応を確かめた処理系の版。
 pub const PROMPT_VERIFIED_VERSION: &str = "0.0.7";
@@ -38,6 +44,8 @@ pub enum BenitoiteError {
     Cancelled,
     /// 標準出力の上限。
     OutputLimit,
+    /// 検査の標準エラー出力の上限。
+    DiagnosticsLimit,
 }
 impl fmt::Display for BenitoiteError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -50,6 +58,7 @@ impl fmt::Display for BenitoiteError {
             Self::TimedOut => f.write_str(text::TIMED_OUT),
             Self::Cancelled => f.write_str(text::CANCELLED),
             Self::OutputLimit => f.write_str(text::OUTPUT_LIMIT),
+            Self::DiagnosticsLimit => f.write_str(text::DIAGNOSTICS_LIMIT),
         }
     }
 }

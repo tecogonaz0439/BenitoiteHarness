@@ -112,6 +112,7 @@ fn user_configuration_reads_the_design_example_and_rejects_invalid_fields() -> T
 
     for (input, field) in [
         ("unexpected = true", Some("unexpected")),
+        ("[limits]\nmax_check_fix=0", Some("max_check_fix")),
         ("[normal]\nnetwrok = true", Some("netwrok")),
         (
             "[providers.p]\nkind='openai-chat'\nmodel='m'\ncapabilities={strcit_tools=true}",
@@ -222,6 +223,12 @@ fn exec_resolution_applies_options_project_user_and_defaults_in_order() -> TestR
         model: Some("project".to_owned()),
         ..ProjectConfig::default()
     };
+    let zero = user.resolve_exec(
+        &ExecArgs::parse(["--max-check-fix", "0", "request"])?,
+        &project,
+        &fixture.0,
+    );
+    assert!(zero.is_err_and(|error| error.to_string().contains("must be at least 1")));
     let normal = user.resolve_exec(&ExecArgs::parse(["request"])?, &project, &fixture.0)?;
     assert_eq!(normal.mode, Mode::Normal);
     assert_eq!(normal.effort, "low");
