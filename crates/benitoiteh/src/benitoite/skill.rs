@@ -298,3 +298,18 @@ pub(crate) fn check_reason(error: &BenitoiteError) -> String {
     };
     super::diagnostics::one_line(&reason)
 }
+
+/// 実行前の報告の問い合わせに失敗した理由。
+pub(crate) fn report_reason(error: &BenitoiteError) -> String {
+    match error {
+        BenitoiteError::Exit { code, .. } => text::skill_exit(*code),
+        BenitoiteError::Io(_)
+        | BenitoiteError::Invalid(_)
+        | BenitoiteError::Sandbox(_)
+        | BenitoiteError::Run(_)
+        | BenitoiteError::TimedOut
+        | BenitoiteError::Cancelled
+        | BenitoiteError::OutputLimit
+        | BenitoiteError::DiagnosticsLimit => super::diagnostics::one_line(&error.to_string()),
+    }
+}

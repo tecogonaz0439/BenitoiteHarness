@@ -475,6 +475,7 @@ fn tool_checkpoints_are_written_only_at_execution_and_cancelled_capture_stops_wr
         &call,
         ApprovalStatus::Unapproved,
         Invocation {
+            confirmed_effects: &std::collections::BTreeMap::new(),
             session_domains: &Default::default(),
             call_id: "cancelled",
             cancelled: &cancelled,
@@ -853,6 +854,7 @@ fn cancellation_during_capture_prevents_writes_and_bash_and_does_not_record_exec
                         &call,
                         ApprovalStatus::Approved,
                         Invocation {
+                            confirmed_effects: &std::collections::BTreeMap::new(),
                             session_domains: &Default::default(),
                             call_id: "cancel-mid-capture",
                             cancelled: &worker_cancelled,

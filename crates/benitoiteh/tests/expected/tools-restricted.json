@@ -151,6 +151,37 @@
     "name": "benitoite_check"
   },
   {
+    "description": "Run a Benitoite script in the sandbox after benitoiteh inspects the effects of `main` and asks the user to confirm them.",
+    "input_schema": {
+      "properties": {
+        "args": {
+          "description": "Arguments passed to the Benitoite script.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "path": {
+          "description": "Project-relative or absolute path.",
+          "type": "string"
+        },
+        "stdin": {
+          "description": "Text written to the script's standard input; empty when omitted.",
+          "type": "string"
+        },
+        "timeout": {
+          "description": "Time limit in seconds (1-600; default 120).",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "path"
+      ],
+      "type": "object"
+    },
+    "name": "benitoite_run"
+  },
+  {
     "description": "Explain a Benitoite diagnostic code, such as E0405, W0501, or R0101.",
     "input_schema": {
       "properties": {

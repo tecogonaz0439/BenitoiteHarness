@@ -644,3 +644,37 @@ fn restricted_check_limit_emits_full_safe_diagnostics_and_flat_summary() -> Test
     server.shutdown()?;
     Ok(())
 }
+
+// 関門: exec が実行の要求を拒んでも、JSON Lines と記録に問い合わせの回数を残す。
+#[test]
+fn exec_denies_every_first_run_until_noninteractive_effect_permissions_are_implemented()
+-> TestResult {
+    let mut server = MockProvider::start(vec![
+        ResponseScript::sse(Protocol::Chat.response(
+            Some(("run", "benitoite_run", json!({"path":"main.bnt"}))),
+            "",
+            false,
+        )),
+        ResponseScript::sse(Protocol::Chat.response(None, "declined", false)),
+    ])?;
+    let f = Fixture::restricted(Protocol::Chat, &server)?;
+    fs::write(
+        f.root.join("project/main.bnt"),
+        "import Benitoite.Unofficial.IO.File\nfunction main() -> Unit uses File.Write\n bind _ <- File.writeText(path: \"MUST_NOT_EXIST\", text: \"ran\")\nend function\n",
+    )?;
+    let output = Running::start(f.command("run").arg("--json"))?.finish()?;
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(!f.root.join("project/MUST_NOT_EXIST").exists());
+    let events = lines(&output.stdout)?;
+    let summary = events.last().ok_or("summary")?;
+    assert_eq!(summary.get("checks"), Some(&json!(1)));
+    assert_eq!(summary.pointer("/approvals/policy_denied"), Some(&json!(1)));
+    let (_, records) = f.records()?;
+    assert!(records.iter().any(|r|r.get("type")==Some(&json!("tool_result")) && r.pointer("/result/text")==Some(&json!("Tool call was denied by the never approval policy: running a Benitoite script requires confirming its effects. Stop and report."))));
+    server.shutdown()?;
+    Ok(())
+}

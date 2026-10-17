@@ -130,3 +130,40 @@ pub fn omitted_edits(count: usize) -> String {
         format!("    [{count} suggested edits not shown.]")
     }
 }
+
+// 報告を空の集合と誤認させず、一行の理由として返す（設計書 04-01）。
+pub const REPORT_JSON: &str = "the inspection report is not one complete JSON object";
+pub const REPORT_SCHEMA: &str = "the inspection report schemaVersion is not 1";
+pub const REPORT_KIND: &str = "the inspection report kind does not match the request";
+pub const REPORT_DIAGNOSTICS: &str = "the inspection report has invalid diagnostics";
+pub const REPORT_STATUS: &str = "the inspection report status is not ok";
+pub const REPORT_INCOMPLETE: &str = "the inspection report is not complete";
+pub const REPORT_EXECUTED: &str =
+    "the inspection report does not confirm that execution was skipped";
+pub const REPORT_AGGREGATE: &str = "the inspection report has no aggregate effects";
+pub const REPORT_BASIS: &str = "the inspection report effect basis is not declaredUpperBound";
+pub const REPORT_EFFECTS: &str = "the inspection report contains invalid or unknown effect names";
+pub const REPORT_TARGETS: &str = "the inspection report has invalid targets";
+pub const REPORT_SOURCES: &str = "the inspection report has invalid sources";
+pub const EFFECTS_CHANGED: &str = "The script changed after the effects were confirmed and now declares more effects. Call the tool again to inspect it and ask the user.";
+pub fn inspection_failure(path: &str, reason: &str) -> String {
+    format!(
+        "Could not inspect {path} with the Benitoite processor: {}.",
+        super::diagnostics::one_line(reason)
+    )
+}
+
+// 信頼しない診断を読む段階と、位置を解決する段階の上限。
+pub const DIAGNOSTIC_ARRAY: &str = "an array of diagnostic items";
+pub const DIAGNOSTICS_CANCELLED: &str = "[Diagnostic rendering was cancelled.]";
+pub fn unresolved_diagnostics(count: usize) -> String {
+    format!(
+        "[{count} diagnostics were not inspected. Resolution is limited to the first 1000 diagnostics.]"
+    )
+}
+pub fn omitted_notes(count: usize) -> String {
+    format!("  [{count} notes not shown.]")
+}
+pub fn omitted_helps(count: usize) -> String {
+    format!("  [{count} helps not shown.]")
+}

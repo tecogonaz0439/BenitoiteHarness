@@ -125,7 +125,17 @@ fn resume_starts_with_empty_session_command_approvals() -> Result<(), Box<dyn st
         .open(&log)?
         .write_all(b"{\"type\":")?;
     let before = std::fs::read(&log)?;
-    let session = Session::open(&paths, &id)?;
+    // 並行するテストの fork が継承した錠は exec まで残る。Locked だけを短時間待ち、
+    // ほかの誤りや錠を放さない退行は隠さない（設計書 07-01）。
+    let started = std::time::Instant::now();
+    let session = loop {
+        match Session::open(&paths, &id) {
+            Err(session::SessionError::Locked) if started.elapsed() < Duration::from_secs(2) => {
+                std::thread::sleep(Duration::from_millis(20));
+            }
+            result => break result?,
+        }
+    };
     let state = session::ResumeState::read(session.directory())?;
     let mut invalid = state.clone();
     invalid.reasoning.clear();

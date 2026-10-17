@@ -316,6 +316,7 @@ fn query_errors_are_tool_errors_and_failed_documents_are_retried() -> TestResult
         }
         if calls.fetch_add(1, Ordering::SeqCst) == 0 {
             return Err(BenitoiteError::Exit {
+                stdout: Vec::new(),
                 code: Some(2),
                 stderr: b"untrusted".to_vec(),
             });

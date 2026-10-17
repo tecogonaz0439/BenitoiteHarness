@@ -439,6 +439,7 @@ fn traversal_limits_return_partial_results_and_cancellation() -> TestResult {
             Invocation {
                 call_id: "cancel-search",
                 cancelled: &AtomicBool::new(true),
+                confirmed_effects: &std::collections::BTreeMap::new(),
                 session_domains: &std::collections::BTreeSet::new(),
             },
         );

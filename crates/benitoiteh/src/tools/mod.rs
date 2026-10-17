@@ -3,10 +3,12 @@
 mod bash;
 mod benitoite_check;
 mod benitoite_reference;
+mod benitoite_run;
 mod definitions;
 mod edit;
 pub mod exclude;
 mod paths;
+mod process_output;
 mod read;
 mod search;
 mod search_notices;
@@ -55,6 +57,8 @@ pub enum ToolId {
     BenitoiteExplain,
     /// スクリプトとテストの静的検査。
     BenitoiteCheck,
+    /// 確認したエフェクトでスクリプトを実行する。
+    BenitoiteRun,
     /// 処理系の Skill の文書。
     BenitoiteReference,
     /// HTTPS の本文の取得。
@@ -72,6 +76,7 @@ impl ToolId {
             Self::Edit => "edit",
             Self::Bash => "bash",
             Self::BenitoiteCheck => "benitoite_check",
+            Self::BenitoiteRun => "benitoite_run",
             Self::BenitoiteExplain => "benitoite_explain",
             Self::BenitoiteReference => "benitoite_reference",
             Self::WebFetch => "web_fetch",
@@ -131,6 +136,8 @@ pub struct ToolSet {
 pub struct Invocation<'a> {
     pub call_id: &'a str,
     pub cancelled: &'a AtomicBool,
+    /// 信頼するループが単位ごとに確認したエフェクト。
+    pub confirmed_effects: &'a BTreeMap<ConfirmKey, BTreeSet<crate::benitoite::Effect>>,
     /// 信頼するループがこのセッションで許したドメイン。
     pub session_domains: &'a BTreeSet<String>,
 }
@@ -151,7 +158,10 @@ impl ToolSet {
         tools.definitions.retain(|tool| {
             !matches!(
                 tool.id,
-                ToolId::BenitoiteExplain | ToolId::BenitoiteReference | ToolId::BenitoiteCheck
+                ToolId::BenitoiteExplain
+                    | ToolId::BenitoiteReference
+                    | ToolId::BenitoiteCheck
+                    | ToolId::BenitoiteRun
             )
         });
         tools
@@ -209,6 +219,7 @@ impl ToolSet {
                     call_id: &format!("direct-{}", self.direct_id.fetch_add(1, Ordering::Relaxed)),
                     cancelled: &AtomicBool::new(false),
                     session_domains: &BTreeSet::new(),
+                    confirmed_effects: &BTreeMap::new(),
                 },
             ),
             Err(error) => ToolOutput::error(error.to_string()),
@@ -235,6 +246,9 @@ impl ToolSet {
             ToolId::Write => write::execute(context, &call.arguments, approval, invocation),
             ToolId::Edit => edit::execute(context, &call.arguments, approval, invocation),
             ToolId::Bash => bash::execute(context, &call.arguments, approval, invocation),
+            ToolId::BenitoiteRun => {
+                benitoite_run::execute(context, &call.arguments, approval, invocation)
+            }
             ToolId::BenitoiteCheck => {
                 benitoite_check::execute(context, &call.arguments, invocation)
             }
@@ -322,6 +336,7 @@ pub struct ToolContext {
     pub benitoite: Option<Arc<crate::benitoite::Processor>>,
     pub skill: Option<Arc<crate::benitoite::skill::SkillDocuments>>,
     pub check_query: Option<Arc<crate::benitoite::CheckQuery>>,
+    pub run: Option<crate::benitoite::RunContext>,
     pub shell: Option<ShellContext>,
     pub web_fetch: WebFetchContext,
     pub session: Option<Session>,
@@ -376,6 +391,7 @@ impl ToolContext {
             skill: None,
             check_query: None,
             shell: None,
+            run: None,
             web_fetch: WebFetchContext::default(),
             session: None,
             read_versions: Mutex::new(BTreeMap::new()),
@@ -399,6 +415,12 @@ impl ToolContext {
     /// 起動時の処理系の検査の口を共有する。
     pub fn with_check_query(mut self, query: Arc<crate::benitoite::CheckQuery>) -> Self {
         self.check_query = Some(query);
+        self
+    }
+
+    /// 制限モードの実行に要る、起動時に固定した値を渡す。
+    pub fn with_run_context(mut self, run: crate::benitoite::RunContext) -> Self {
+        self.run = Some(run);
         self
     }
 
@@ -531,6 +553,9 @@ pub struct ToolOutput {
     pub spill: Option<SpillInfo>,
     pub check_launch: Option<CheckLaunch>,
     pub check: Option<CheckOutcome>,
+    pub processor_launches: u64,
+    pub stderr_spill: Option<SpillInfo>,
+    pub stop_run: Option<String>,
 }
 
 impl ToolOutput {
@@ -545,6 +570,9 @@ impl ToolOutput {
             spill: None,
             check_launch: None,
             check: None,
+            processor_launches: 0,
+            stderr_spill: None,
+            stop_run: None,
         }
     }
 
@@ -567,6 +595,9 @@ impl ToolOutput {
             spill: None,
             check_launch: None,
             check: None,
+            processor_launches: 0,
+            stderr_spill: None,
+            stop_run: None,
         }
     }
 }
@@ -621,5 +652,24 @@ impl From<SafeFsError> for ToolError {
 impl From<io::Error> for ToolError {
     fn from(error: io::Error) -> Self {
         Self::Io(error)
+    }
+}
+
+/// 会話と記録の再開から独立した、確認の単位。
+#[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
+pub enum ConfirmKey {
+    /// スクリプトの絶対の実のパス。
+    Run(PathBuf),
+    /// テストの対象の並び（P2-12）。
+    Test(Vec<PathBuf>),
+}
+impl ConfirmKey {
+    /// 道具とループで同じ事実から単位を得る。
+    pub fn from_facts(kind: ApprovalKind, facts: &ApprovalFacts) -> Option<Self> {
+        if kind == ApprovalKind::Effects {
+            facts.targets.first().cloned().map(Self::Run)
+        } else {
+            None
+        }
     }
 }

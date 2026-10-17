@@ -128,6 +128,20 @@ pub(super) fn definitions(mode: crate::config::Mode) -> Vec<ToolDefinition> {
         ],
         true,
     ));
+    if mode == crate::config::Mode::Restricted {
+        tools.push(definition(
+            ToolId::BenitoiteRun,
+            text::BENITOITE_RUN,
+            &[text::BENITOITE_RUN.1],
+            vec![
+                arg("path", String, true),
+                arg_described("args", ArgumentType::StringArray, false, text::RUN_ARGS),
+                arg_described("stdin", String, false, text::RUN_STDIN),
+                arg("timeout", Integer, false),
+            ],
+            false,
+        ));
+    }
     tools.push(definition(
         ToolId::BenitoiteExplain,
         text::BENITOITE_EXPLAIN,

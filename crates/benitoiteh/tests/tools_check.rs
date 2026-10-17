@@ -282,10 +282,185 @@ fn fake_diagnostic(file: &str, line: u64, start: u64, end: u64) -> Value {
 fn fake_query(stderr: Vec<u8>) -> Arc<benitoiteh::benitoite::CheckQuery> {
     Arc::new(move |_, _, _| {
         Err(BenitoiteError::Exit {
+            stdout: Vec::new(),
             code: Some(2),
             stderr: stderr.clone(),
         })
     })
+}
+
+// 関門: 実の除外規則を通さなければ、後ろの部分と祖先の照合の増大を検出できない。
+// 既存の長いパスの検査と同じ別プロセスの期限で、new と render の共有予算も守る。
+#[test]
+fn adversarial_diagnostics_finish_within_ten_seconds() -> TestResult {
+    use std::sync::atomic::AtomicBool;
+    use std::time::Instant;
+    const CHILD: &str = "BH_DIAGNOSTIC_STRESS_CHILD";
+    const READY: &str = "BH_DIAGNOSTIC_STRESS_READY";
+    if std::env::var_os(CHILD).is_some() {
+        let mut f = Fixture::new(Mode::Restricted)?;
+        fs::write(f.project.join("main.bnt"), GOOD)?;
+        let parent = "a/".repeat(31);
+        fs::create_dir_all(f.project.join(&parent))?;
+        for i in 0..1000 {
+            fs::write(f.project.join(format!("{parent}file-{i}.bnt")), GOOD)?;
+        }
+        // ファイルの準備の速度を、診断の後処理の十秒に含めない。
+        let processing_started = Instant::now();
+        fs::write(std::env::var_os(READY).ok_or("ready path")?, b"ready")?;
+        let paths = DataPaths::from_values(Some(&f.root), None, None, Some(&f.root))?;
+        f.context.exclude = ExcludeRules::new(
+            &f.project,
+            &paths,
+            f.context.spill.real_path(),
+            &ReadConfig {
+                exclude: vec!["**/node_modules".into(), "*.secret".into()],
+            },
+            &ReadConfig::default(),
+        )?;
+        let stop = AtomicBool::new(false);
+        use benitoiteh::benitoite::diagnostics::{PreparedDiagnostics, parse};
+        let path = "a/".repeat(40_000) + "a.bnt";
+        let line = fake_diagnostic(&path, 1, 1, 2).to_string() + "\n";
+        let count = (16_usize * 1024 * 1024) / line.len();
+        let mut bytes = line.repeat(count).into_bytes();
+        bytes.resize(16 * 1024 * 1024, b' ');
+        let rendered = PreparedDiagnostics::new(parse(&bytes).diagnostics, &f.context, &stop)
+            .render(&f.context, None, &stop);
+        assert_eq!(rendered.unread, count);
+        // 以前の 4096 バイト・256 要素の上限には収まる、千件の異なるパス。
+        let lines = (0..1000)
+            .map(|i| {
+                fake_diagnostic(&("a/".repeat(254) + &format!("file-{i}.bnt")), 1, 1, 2).to_string()
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+        let rendered =
+            PreparedDiagnostics::new(parse(lines.as_bytes()).diagnostics, &f.context, &stop)
+                .render(&f.context, None, &stop);
+        assert_eq!(rendered.unread, 1000);
+        // 三十二要素の読める位置を千件解決すると予算が尽きる。次の呼び出しへは持ち越さない。
+        let mut primary_lines = Vec::new();
+        for i in 0..1000 {
+            let path = format!("{parent}file-{i}.bnt");
+            let mut diagnostic = fake_diagnostic(&path, 1, 1, 2);
+            *diagnostic.get_mut("message").ok_or("message")? = json!(format!("primary-{i}"));
+            primary_lines.push(diagnostic.to_string());
+        }
+        let rendered = PreparedDiagnostics::new(
+            parse(primary_lines.join("\n").as_bytes()).diagnostics,
+            &f.context,
+            &stop,
+        )
+        .render(&f.context, None, &stop);
+        assert!(
+            rendered.unread > 0 && rendered.unread < 1000,
+            "{rendered:?}"
+        );
+        let primary_unread = rendered.unread;
+        // primary がない二十件から、補助位置と置き換えで計八百の異なるパスを解決する。
+        let mut lines = Vec::new();
+        for i in 0..20 {
+            let mut value = fake_diagnostic("main.bnt", 1, 1, 2);
+            *value.get_mut("primary").ok_or("primary")? = Value::Null;
+            *value.get_mut("message").ok_or("message")? = json!(format!("diagnostic-{i}"));
+            let mut secondary = Vec::new();
+            let mut edits = Vec::new();
+            for j in 0..40 {
+                let path = format!("{parent}aux-{i}-{j}.bnt");
+                let span = fake_diagnostic(&path, 1, 1, 2)
+                    .get("primary")
+                    .ok_or("primary")?
+                    .clone();
+                if j < 20 {
+                    secondary.push(span);
+                } else {
+                    let mut edit = span;
+                    edit.as_object_mut()
+                        .ok_or("edit")?
+                        .insert("replacement".into(), json!("x"));
+                    edits.push(edit);
+                }
+            }
+            *value.get_mut("secondary").ok_or("secondary")? = json!(secondary);
+            *value.get_mut("helps").ok_or("helps")? = json!([{"message":"help", "edits":edits}]);
+            lines.push(value.to_string());
+        }
+        let rendered = PreparedDiagnostics::new(
+            parse(lines.join("\n").as_bytes()).diagnostics,
+            &f.context,
+            &stop,
+        )
+        .render(&f.context, None, &stop);
+        assert!(rendered.unread > 0, "{rendered:?}");
+        // new で使い切った予算を render で初期化すると、先頭の補助位置が表示されてしまう。
+        let mixed = lines
+            .iter()
+            .chain(primary_lines.iter())
+            .cloned()
+            .collect::<Vec<_>>()
+            .join("\n");
+        let rendered =
+            PreparedDiagnostics::new(parse(mixed.as_bytes()).diagnostics, &f.context, &stop)
+                .render(&f.context, None, &stop);
+        assert_eq!(rendered.unread, primary_unread);
+        assert!(!rendered.text.contains("help:"));
+        let deep = format!("{parent}a/deep.bnt");
+        fs::create_dir_all(f.project.join(format!("{parent}a")))?;
+        fs::write(f.project.join(&deep), GOOD)?;
+        let rendered = PreparedDiagnostics::new(
+            parse(fake_diagnostic(&deep, 1, 1, 2).to_string().as_bytes()).diagnostics,
+            &f.context,
+            &stop,
+        )
+        .render(&f.context, None, &stop);
+        assert_eq!(rendered.unread, 1);
+        let rendered = PreparedDiagnostics::new(
+            parse(fake_diagnostic("main.bnt", 1, 1, 2).to_string().as_bytes()).diagnostics,
+            &f.context,
+            &stop,
+        )
+        .render(&f.context, None, &stop);
+        assert_eq!(rendered.unread, 0);
+        assert!(rendered.text.contains("main.bnt"));
+        println!(
+            "Diagnostic processing elapsed: {:.3} seconds",
+            processing_started.elapsed().as_secs_f64()
+        );
+        return Ok(());
+    }
+    let directory = Fixture::new(Mode::Restricted)?;
+    let ready = directory.root.join("ready");
+    let mut child = std::process::Command::new(std::env::current_exe()?)
+        .args([
+            "--exact",
+            "adversarial_diagnostics_finish_within_ten_seconds",
+            "--nocapture",
+        ])
+        .env(CHILD, "1")
+        .env(READY, &ready)
+        .current_dir(&directory.root)
+        .spawn()?;
+    let start = Instant::now();
+    let mut processing = None;
+    loop {
+        if let Some(status) = child.try_wait()? {
+            assert!(status.success(), "diagnostic worker failed: {status}");
+            break;
+        }
+        if processing.is_none() && ready.exists() {
+            processing = Some(Instant::now());
+        }
+        let timed_out =
+            processing.is_some_and(|started: Instant| started.elapsed() >= Duration::from_secs(10));
+        if timed_out || (processing.is_none() && start.elapsed() >= Duration::from_secs(5)) {
+            child.kill()?;
+            let _status = child.wait()?;
+            return Err("diagnostic processing exceeded ten seconds".into());
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    Ok(())
 }
 
 // 関門: 診断の file を信用した親による代理読み取りと、全文を読んだことにする

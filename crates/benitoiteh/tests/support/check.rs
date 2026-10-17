@@ -18,6 +18,7 @@ pub fn checks(project: PathBuf) -> Result<Arc<CheckQuery>, Box<dyn std::error::E
             .output()?;
         if !output.status.success() {
             return Err(BenitoiteError::Exit {
+                stdout: output.stdout,
                 code: output.status.code(),
                 stderr: output.stderr,
             });

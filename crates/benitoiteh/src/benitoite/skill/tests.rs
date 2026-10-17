@@ -170,6 +170,7 @@ fn cache_retries_failed_and_cancelled_queries() -> TestResult {
                 if is_list == fail_list && attempts.fetch_add(1, Ordering::SeqCst) == 0 {
                     return Err(if failure == "exit" {
                         BenitoiteError::Exit {
+                            stdout: Vec::new(),
                             code: Some(2),
                             stderr: Vec::new(),
                         }

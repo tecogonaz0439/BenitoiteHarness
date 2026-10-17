@@ -96,13 +96,13 @@ fi
 begin_stage linux
 if ! "$inside_codex"; then
     # aarch64 は container の中で走らせる。container の既定のカーネルは Landlock を持たないので、
-    # Landlock を要する sandbox_linux を除き、x86_64 の機械で確かめる（実装プラン 00-common「検査」）。
+    # Landlock を要する統合テストを除き、x86_64 の機械で確かめる（実装プラン 00-common「検査」）。
     cargo test --workspace --target aarch64-unknown-linux-musl --lib --bins
     for manifest in crates/*/Cargo.toml; do
         test_args=()
         for test_file in "${manifest%/Cargo.toml}"/tests/*.rs; do
             test_name=${test_file##*/}
-            if [[ "$test_name" == sandbox_linux.rs || "$test_name" == sandbox_benitoite.rs || "$test_name" == sandbox_exec_restricted.rs ]]; then
+            if [[ "$test_name" == sandbox_linux.rs || "$test_name" == sandbox_benitoite.rs || "$test_name" == sandbox_exec_restricted.rs || "$test_name" == sandbox_benitoite_run.rs ]]; then
                 aarch64_skipped+=("${test_file}: the container kernel lacks Landlock")
                 continue
             fi

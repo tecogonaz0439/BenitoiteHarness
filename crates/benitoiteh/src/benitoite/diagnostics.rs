@@ -2,11 +2,16 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Mutex, PoisonError};
 
 use serde::{Deserialize, Deserializer};
 
 use super::text;
+
+/// 診断の解決と実行中の保持に共通の上限。
+pub(crate) const MAX_RESOLVED_DIAGNOSTICS: usize = 1000;
+const MAX_EXCLUSION_WORK: usize = 100_000;
 
 /// JSON で与えられる、1 から数える行・桁とバイト位置。
 #[derive(Clone, Debug, Deserialize, Eq, Ord, PartialEq, PartialOrd)]
@@ -38,7 +43,7 @@ pub struct Edit {
 #[derive(Clone, Debug, Deserialize)]
 pub struct Help {
     pub message: String,
-    pub edits: Vec<Edit>,
+    pub edits: DiagnosticItems<Edit>,
 }
 
 /// 必須の欄と型を検証した一件の診断。
@@ -51,9 +56,107 @@ pub struct Diagnostic {
     pub message: String,
     #[serde(deserialize_with = "nullable")]
     pub primary: Option<Span>,
-    pub secondary: Vec<Span>,
-    pub notes: Vec<String>,
-    pub helps: Vec<Help>,
+    pub secondary: DiagnosticItems<Span>,
+    pub notes: DiagnosticItems<String>,
+    pub helps: DiagnosticItems<Help>,
+}
+
+/// 診断の配列は先頭二十件だけを保持し、残りを構築せずに読み捨てる。
+#[derive(Clone, Debug)]
+pub struct DiagnosticItems<T> {
+    values: Vec<T>,
+    /// 保持せずに読み捨てた要素の件数。
+    pub omitted: usize,
+}
+impl<T> std::ops::Deref for DiagnosticItems<T> {
+    type Target = [T];
+    fn deref(&self) -> &Self::Target {
+        &self.values
+    }
+}
+impl<'de, T: Deserialize<'de>> Deserialize<'de> for DiagnosticItems<T> {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        struct Items<T>(std::marker::PhantomData<T>);
+        impl<'de, T: Deserialize<'de>> serde::de::Visitor<'de> for Items<T> {
+            type Value = DiagnosticItems<T>;
+            fn expecting(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                formatter.write_str(text::DIAGNOSTIC_ARRAY)
+            }
+            fn visit_seq<A: serde::de::SeqAccess<'de>>(
+                self,
+                mut seq: A,
+            ) -> Result<Self::Value, A::Error> {
+                let mut values = Vec::new();
+                while values.len() < 20 {
+                    let Some(value) = seq.next_element::<T>()? else {
+                        return Ok(DiagnosticItems { values, omitted: 0 });
+                    };
+                    values.push(value);
+                }
+                let mut omitted = 0usize;
+                while seq.next_element::<serde::de::IgnoredAny>()?.is_some() {
+                    omitted = omitted.saturating_add(1);
+                }
+                Ok(DiagnosticItems { values, omitted })
+            }
+        }
+        deserializer.deserialize_seq(Items(std::marker::PhantomData))
+    }
+}
+
+/// 位置の文字列を解決する前の固定の上限。
+pub(crate) fn bounded_path(file: &str) -> bool {
+    file.len() <= 4096 && Path::new(file).components().take(257).count() <= 256
+}
+
+/// パスを一度だけ正規化し、後ろの部分は文字列の借用だけで比べる。
+pub(crate) fn relative_text(path: &Path) -> Option<String> {
+    path.components()
+        .map(|component| component.as_os_str().to_str())
+        .collect::<Option<Vec<_>>>()
+        .map(|parts| parts.join("/"))
+}
+
+/// 要素の境界を指すバイト位置から、後ろの部分を借用する。
+pub(crate) fn suffixes(file: &str) -> impl Iterator<Item = &str> {
+    file.match_indices('/')
+        .filter_map(|(at, _)| file.get(at.saturating_add(1)..))
+        .filter(|part| !part.is_empty())
+}
+
+fn unread_file(file: &str) -> DiagnosticFile {
+    DiagnosticFile {
+        path: file.into(),
+        display: None,
+        exists: false,
+        relative: None,
+    }
+}
+
+fn bounded_diagnostic(diagnostic: &Diagnostic) -> bool {
+    diagnostic
+        .primary
+        .iter()
+        .chain(diagnostic.secondary.iter())
+        .all(|span| bounded_path(&span.file))
+        && diagnostic
+            .helps
+            .iter()
+            .flat_map(|help| help.edits.iter())
+            .all(|edit| bounded_path(&edit.file))
+}
+
+/// 一行がオブジェクトであることを確かめ、Value の木を構築せずに読む。
+pub fn parse_line(line: &[u8]) -> Option<Diagnostic> {
+    if line
+        .iter()
+        .copied()
+        .find(|byte| !byte.is_ascii_whitespace())
+        != Some(b'{')
+    {
+        return None;
+    }
+    serde_json::from_slice::<Diagnostic>(line).ok()
 }
 
 // Option の通常の読み方では欠けた欄まで null と同じになるため、必須として読む。
@@ -76,10 +179,7 @@ pub struct DiagnosticOutput {
 pub fn parse(bytes: &[u8]) -> DiagnosticOutput {
     let mut output = DiagnosticOutput::default();
     for line in bytes.split(|byte| *byte == b'\n') {
-        let diagnostic = serde_json::from_slice::<serde_json::Value>(line)
-            .ok()
-            .filter(serde_json::Value::is_object)
-            .and_then(|value| serde_json::from_value::<Diagnostic>(value).ok());
+        let diagnostic = parse_line(line);
         match diagnostic {
             Some(diagnostic) => output.diagnostics.push(diagnostic),
             None => output
@@ -144,11 +244,12 @@ pub fn one_line(reason: &str) -> String {
         .to_owned()
 }
 
-/// read と同じ判定を通した実のパス。開けない場合も存在の判定を保持する。
+/// read と同じ判定を通した実のパス。開けない場合は存在を調べない。
 #[derive(Clone, Debug)]
 pub struct DiagnosticFile {
     pub path: PathBuf,
     pub display: Option<PathBuf>,
+    /// 読めるファイルの存在。重複の判定には使わない。
     pub exists: bool,
     /// 処理系が示したパスの、プロジェクトからの相対の形。
     pub relative: Option<PathBuf>,
@@ -163,6 +264,10 @@ pub struct SourceLine {
 
 /// tools へ依存せずに、モードの読み取りの規則を受け取る境界。
 pub trait DiagnosticSources {
+    /// 照合に要る量。None は後ろの部分を調べる上限を超えたパスを表す。
+    fn exclusion_cost(&self, _file: &str) -> Option<usize> {
+        Some(0)
+    }
     /// 相対のパスを処理系の作業ディレクトリから解き、read の可否を判定する。
     fn resolve(&self, file: &str) -> DiagnosticFile;
     /// 記述子を安全に開き直して一行だけを読む。読んだ版を記録しない。
@@ -174,28 +279,60 @@ struct ResolvedDiagnostic {
     file: Option<DiagnosticFile>,
 }
 
-/// 同じ診断と、BH-029 の存在しない表示パスの重複を除いた診断。
+/// 同じ診断と、BH-029 の後ろの部分が重なる表示パスの重複を除いた診断。
 pub struct PreparedDiagnostics {
     diagnostics: Vec<ResolvedDiagnostic>,
-    files: Mutex<BTreeMap<String, DiagnosticFile>>,
+    files: Mutex<ResolutionState>,
+    unread: usize,
+    unresolved: usize,
+    unresolved_failed: bool,
+}
+
+struct ResolutionState {
+    files: BTreeMap<String, DiagnosticFile>,
+    limited: BTreeSet<String>,
+    // 深い表示パスを大量に与えても、道具の時間上限の外で照合を続けない。
+    remaining: usize,
 }
 
 // 同じ表示パスを何度も開かず、補助位置と置き換えにも同じ判定を使う。
 // キャッシュは一回の検査の結果だけが持ち、次の書き込みへ持ち越さない。
 struct CachedSources<'a, S> {
     source: &'a S,
-    files: &'a Mutex<BTreeMap<String, DiagnosticFile>>,
+    files: &'a Mutex<ResolutionState>,
+    cancelled: &'a AtomicBool,
+    refused: std::cell::Cell<bool>,
 }
 impl<S: DiagnosticSources> DiagnosticSources for CachedSources<'_, S> {
     fn resolve(&self, file: &str) -> DiagnosticFile {
-        let mut files = self.files.lock().unwrap_or_else(PoisonError::into_inner);
-        files
-            .entry(file.into())
-            .or_insert_with(|| self.source.resolve(file))
-            .clone()
+        if self.cancelled.load(Ordering::Acquire) || !bounded_path(file) {
+            return unread_file(file);
+        }
+        let mut state = self.files.lock().unwrap_or_else(PoisonError::into_inner);
+        if state.limited.contains(file) {
+            self.refused.set(true);
+        }
+        if let Some(cached) = state.files.get(file) {
+            return cached.clone();
+        }
+        let cost = self.source.exclusion_cost(file);
+        let resolved = if let Some(cost) = cost.filter(|cost| *cost <= state.remaining) {
+            state.remaining = state.remaining.saturating_sub(cost);
+            self.source.resolve(file)
+        } else {
+            self.refused.set(true);
+            state.limited.insert(file.into());
+            unread_file(file)
+        };
+        state.files.insert(file.into(), resolved.clone());
+        resolved
     }
     fn line(&self, file: &Path, line: u64) -> Option<SourceLine> {
-        self.source.line(file, line)
+        if self.cancelled.load(Ordering::Acquire) {
+            None
+        } else {
+            self.source.line(file, line)
+        }
     }
 }
 
@@ -210,37 +347,69 @@ pub struct RenderedDiagnostics {
 }
 
 impl PreparedDiagnostics {
-    /// 全体を解決してから重複を除く。存在する位置が後で出ても同じ扱いにする。
-    pub fn new(diagnostics: Vec<Diagnostic>, sources: &impl DiagnosticSources) -> Self {
-        let files = Mutex::new(BTreeMap::new());
+    /// 先頭千件までを解決してから重複を除く。読まないパスの存在には依存しない。
+    pub fn new(
+        diagnostics: Vec<Diagnostic>,
+        sources: &impl DiagnosticSources,
+        cancelled: &AtomicBool,
+    ) -> Self {
+        let total = diagnostics.len();
+        let files = Mutex::new(ResolutionState {
+            files: BTreeMap::new(),
+            limited: BTreeSet::new(),
+            remaining: MAX_EXCLUSION_WORK,
+        });
         let cached = CachedSources {
             source: sources,
             files: &files,
+            cancelled,
+            refused: std::cell::Cell::new(false),
         };
-        let resolved: Vec<_> = diagnostics
-            .into_iter()
-            .map(|diagnostic| {
-                let file = diagnostic
-                    .primary
-                    .as_ref()
-                    .map(|span| cached.resolve(&span.file));
-                ResolvedDiagnostic { diagnostic, file }
-            })
-            .collect();
-        let mut relative_paths: BTreeMap<LocationKey, BTreeSet<PathBuf>> = BTreeMap::new();
+        let mut resolved = Vec::new();
+        let mut unread = 0usize;
+        let mut inspected = 0usize;
+        let mut unresolved_failed = false;
+        for diagnostic in diagnostics {
+            if inspected >= MAX_RESOLVED_DIAGNOSTICS || cancelled.load(Ordering::Acquire) {
+                unresolved_failed |= diagnostic.severity == "error";
+                continue;
+            }
+            inspected = inspected.saturating_add(1);
+            if !bounded_diagnostic(&diagnostic) {
+                unread = unread.saturating_add(1);
+                continue;
+            }
+            let file = diagnostic
+                .primary
+                .as_ref()
+                .map(|span| cached.resolve(&span.file));
+            resolved.push(ResolvedDiagnostic { diagnostic, file });
+        }
+        let mut relative_paths: BTreeMap<LocationKey, BTreeSet<String>> = BTreeMap::new();
         for entry in &resolved {
-            if let Some(relative) = entry.file.as_ref().and_then(|file| file.relative.as_ref()) {
+            if cancelled.load(Ordering::Acquire) {
+                break;
+            }
+            if let Some(relative) = entry
+                .file
+                .as_ref()
+                .and_then(|file| file.relative.as_ref())
+                .and_then(|path| relative_text(path))
+            {
                 relative_paths
                     .entry(location_key(&entry.diagnostic))
                     .or_default()
-                    .insert(relative.clone());
+                    .insert(relative);
             }
         }
-        // 実在する偽の表示先も重複になる。先頭を落とした側へ寄せてから、
-        // 存在しない表示先の回避を当てる（BH-029、設計書 04-01）。
+        // ファイルの存在には依存せず、先頭を落とした側へ寄せる。
+        // 読まないパスの有無を件数から推測させない（BH-029、設計書 04-01）。
         let resolved: Vec<_> = resolved
             .into_iter()
             .filter(|entry| {
+                if cancelled.load(Ordering::Acquire) {
+                    return false;
+                }
                 let Some(relative) = entry.file.as_ref().and_then(|file| file.relative.as_ref())
                 else {
                     return true;
@@ -248,24 +417,17 @@ impl PreparedDiagnostics {
                 let Some(paths) = relative_paths.get(&location_key(&entry.diagnostic)) else {
                     return true;
                 };
-                !(1..relative.components().count()).any(|skip| {
-                    paths.contains(&relative.components().skip(skip).collect::<PathBuf>())
+                relative_text(relative).is_none_or(|relative| {
+                    !suffixes(&relative).any(|suffix| paths.contains(suffix))
                 })
             })
-            .collect();
-        let existing: BTreeSet<_> = resolved
-            .iter()
-            .filter(|d| d.file.as_ref().is_some_and(|f| f.exists))
-            .map(|d| location_key(&d.diagnostic))
             .collect();
         let mut seen = BTreeSet::new();
         let mut diagnostics = Vec::new();
         for resolved in resolved {
             let d = &resolved.diagnostic;
-            if resolved.file.as_ref().is_some_and(|f| !f.exists)
-                && existing.contains(&location_key(d))
-            {
-                continue;
+            if cancelled.load(Ordering::Acquire) {
+                break;
             }
             let key = (
                 d.severity.clone(),
@@ -283,7 +445,13 @@ impl PreparedDiagnostics {
         }
         // sort_by_key は安定なので、同じ重さの出力順を保つ。
         diagnostics.sort_by_key(|d| d.diagnostic.severity != "error");
-        Self { diagnostics, files }
+        Self {
+            diagnostics,
+            files,
+            unread,
+            unresolved: total.saturating_sub(inspected),
+            unresolved_failed,
+        }
     }
 
     /// only があるときは、そのファイルと位置のない診断だけを本文にする。
@@ -291,21 +459,27 @@ impl PreparedDiagnostics {
         &self,
         sources: &impl DiagnosticSources,
         only: Option<&Path>,
+        cancelled: &AtomicBool,
     ) -> RenderedDiagnostics {
         let cached = CachedSources {
             source: sources,
             files: &self.files,
+            cancelled,
+            refused: std::cell::Cell::new(false),
         };
         let mut result = RenderedDiagnostics {
             text: String::new(),
             other: 0,
-            unread: 0,
+            unread: self.unread,
             selected: 0,
-            failed: false,
+            failed: self.unresolved_failed,
         };
         let mut shown = 0usize;
         let mut visible = 0usize;
         for entry in &self.diagnostics {
+            if cancelled.load(Ordering::Acquire) {
+                break;
+            }
             let selected =
                 only.is_none_or(|path| entry.file.as_ref().is_none_or(|f| f.path == path));
             if selected {
@@ -321,14 +495,18 @@ impl PreparedDiagnostics {
             } else if !selected {
                 result.other = result.other.saturating_add(1);
             } else {
-                visible = visible.saturating_add(1);
                 if shown < 20 {
-                    push_line(
-                        &mut result.text,
-                        &render_one(&entry.diagnostic, entry.file.as_ref(), &cached),
-                    );
+                    cached.refused.set(false);
+                    let rendered =
+                        render_one(&entry.diagnostic, entry.file.as_ref(), &cached, cancelled);
+                    if cached.refused.get() {
+                        result.unread = result.unread.saturating_add(1);
+                        continue;
+                    }
+                    push_line(&mut result.text, &rendered);
                     shown = shown.saturating_add(1);
                 }
+                visible = visible.saturating_add(1);
             }
         }
         if visible > shown {
@@ -336,6 +514,15 @@ impl PreparedDiagnostics {
                 &mut result.text,
                 &text::more_diagnostics(visible.saturating_sub(shown)),
             );
+        }
+        if self.unresolved > 0 {
+            push_line(
+                &mut result.text,
+                &text::unresolved_diagnostics(self.unresolved),
+            );
+        }
+        if cancelled.load(Ordering::Acquire) {
+            push_line(&mut result.text, text::DIAGNOSTICS_CANCELLED);
         }
         result
     }
@@ -366,6 +553,7 @@ fn render_one(
     d: &Diagnostic,
     file: Option<&DiagnosticFile>,
     sources: &impl DiagnosticSources,
+    cancelled: &AtomicBool,
 ) -> String {
     let location = d.primary.as_ref().zip(file).and_then(|(span, file)| {
         file.display
@@ -410,6 +598,9 @@ fn render_one(
         }
     }
     for span in d.secondary.iter().take(20) {
+        if cancelled.load(Ordering::Acquire) {
+            break;
+        }
         if let Some(path) = sources.resolve(&span.file).display {
             push_line(
                 &mut output,
@@ -417,20 +608,30 @@ fn render_one(
             );
         }
     }
-    if d.secondary.len() > 20 {
-        push_line(
-            &mut output,
-            &text::omitted_secondary(d.secondary.len().saturating_sub(20)),
-        );
+    if d.secondary.omitted > 0 {
+        push_line(&mut output, &text::omitted_secondary(d.secondary.omitted));
     }
-    for note in &d.notes {
+    for note in d.notes.iter() {
+        if cancelled.load(Ordering::Acquire) {
+            break;
+        }
         push_line(&mut output, &text::diagnostic_note(note));
+    }
+    if d.notes.omitted > 0 {
+        push_line(&mut output, &text::omitted_notes(d.notes.omitted));
     }
     let mut edits = 0usize;
     let mut omitted = 0usize;
-    for help in &d.helps {
+    for help in d.helps.iter() {
+        if cancelled.load(Ordering::Acquire) {
+            break;
+        }
+        omitted = omitted.saturating_add(help.edits.omitted);
         push_line(&mut output, &text::diagnostic_help(&help.message));
-        for edit in &help.edits {
+        for edit in help.edits.iter() {
+            if cancelled.load(Ordering::Acquire) {
+                break;
+            }
             if edits >= 20 {
                 omitted = omitted.saturating_add(1);
                 continue;
@@ -450,6 +651,9 @@ fn render_one(
                 );
             }
         }
+    }
+    if d.helps.omitted > 0 {
+        push_line(&mut output, &text::omitted_helps(d.helps.omitted));
     }
     if omitted > 0 {
         push_line(&mut output, &text::omitted_edits(omitted));

@@ -332,6 +332,7 @@ fn normal_mode_requests_approval_before_any_mutation_and_accepts_trusted_approva
             &call,
             ApprovalStatus::Approved,
             Invocation {
+                confirmed_effects: &std::collections::BTreeMap::new(),
                 session_domains: &Default::default(),
                 call_id: "write-test",
                 cancelled: &std::sync::atomic::AtomicBool::new(false),
@@ -352,6 +353,7 @@ fn normal_mode_requests_approval_before_any_mutation_and_accepts_trusted_approva
             &call,
             ApprovalStatus::Approved,
             Invocation {
+                confirmed_effects: &std::collections::BTreeMap::new(),
                 session_domains: &Default::default(),
                 call_id: "write-test",
                 cancelled: &std::sync::atomic::AtomicBool::new(false),

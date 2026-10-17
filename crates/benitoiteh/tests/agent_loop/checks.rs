@@ -26,6 +26,7 @@ fn query(responses: Vec<Response>) -> Arc<CheckQuery> {
         let diagnostic = json!({"kind":"check", "severity":if matches!(response, Response::Warning) {"warning"} else {"error"}, "code":"E0301", "message":"last diagnostic", "primary":{"file":file,"start":{"line":1,"column":1,"offset":0},"end":{"line":1,"column":2,"offset":1},"label":"here"}, "secondary":[],"notes":[],"helps":[]}).to_string().into_bytes();
         match response {
             Response::Failed => Err(BenitoiteError::Exit {
+                stdout: Vec::new(),
                 code: Some(2),
                 stderr: diagnostic,
             }),
@@ -38,6 +39,7 @@ fn query(responses: Vec<Response>) -> Arc<CheckQuery> {
                 stderr: vec![],
             }),
             Response::Usage => Err(BenitoiteError::Exit {
+                stdout: Vec::new(),
                 code: Some(2),
                 stderr: b"error: usage".to_vec(),
             }),
@@ -313,7 +315,7 @@ fn check_limit_error_retains_diagnostics_before_tool_output_truncation() -> Test
     let note = "long diagnostic note ".repeat(4000);
     let expected = note.clone();
     let query: Arc<CheckQuery> = Arc::new(move |_, _, _| {
-        Err(BenitoiteError::Exit { code: Some(2), stderr: json!({"kind":"check","severity":"error","code":"E0101","message":"discovery failed","primary":null,"secondary":[],"notes":[note],"helps":[]}).to_string().into_bytes() })
+        Err(BenitoiteError::Exit { stdout: Vec::new(), code: Some(2), stderr: json!({"kind":"check","severity":"error","code":"E0101","message":"discovery failed","primary":null,"secondary":[],"notes":[note],"helps":[]}).to_string().into_bytes() })
     });
     let (mut agent, _) = f.agent_with_check(config, None, Some(query))?;
     let (report, events) = complete(&mut agent)?;
@@ -326,5 +328,90 @@ fn check_limit_error_retains_diagnostics_before_tool_output_truncation() -> Test
     assert!(events.iter().any(|event| matches!(event, AgentEvent::Error { kind, message } if kind == "limit" && message.contains(&expected) && !message.contains("[Output truncated:"))));
     assert!(!report.summary.reason.contains('\n'));
     server.shutdown()?;
+    Ok(())
+}
+
+// 関門: 非対話の拒否でも一度目の問い合わせを数え、道具の本文で確認を偽れない契約。
+#[test]
+fn restricted_runs_need_trusted_approval_and_count_inspections_even_when_denied() -> TestResult {
+    for (approval, answer, message) in [
+        (Approval::Never, ApprovalOutcome::Approved, None),
+        (Approval::OnRequest, ApprovalOutcome::Denied, None),
+        (
+            Approval::OnRequest,
+            ApprovalOutcome::DeniedWithMessage,
+            Some("wait"),
+        ),
+    ] {
+        let f = Fixture::new()?;
+        fs::write(
+            f.project.join("a.bnt"),
+            "function main() -> Unit\n return ()\nend function\n",
+        )?;
+        let mut server = MockProvider::start(vec![
+            ResponseScript::sse(calls(
+                &[("benitoite_run", json!({"path":"a.bnt"}))],
+                "tool_calls",
+            )),
+            final_text(),
+        ])?;
+        let mut config = f.config(&server, AdapterKind::OpenAiChat);
+        config.mode = Mode::Restricted;
+        let (agent, directory) =
+            f.agent_with_check(config, None, Some(support::checks(f.project.clone())?))?;
+        let requests = Arc::new(Mutex::new(Vec::new()));
+        let mut agent = agent.with_approvals(
+            Box::new(ScriptedApprover {
+                requests: Arc::clone(&requests),
+                answer: ApprovalAnswer {
+                    outcome: answer,
+                    message: message.map(str::to_owned),
+                },
+            }),
+            ApprovalPolicy {
+                approval,
+                sandbox: Sandbox::WorkspaceWrite,
+                sandboxed: true,
+            },
+        );
+        let (report, events) = complete(&mut agent)?;
+        assert_eq!(report.summary.checks, 1);
+        assert_eq!(report.summary.fixes, 0);
+        assert_eq!(report.summary.after_write_checks, 0);
+        let outputs = results(&agent);
+        let result = outputs.first().ok_or("result")?;
+        assert!(result.is_error);
+        if approval == Approval::Never {
+            assert_eq!(report.summary.approvals.policy_denied, 1);
+            assert_eq!(
+                result.text,
+                "Tool call was denied by the never approval policy: running a Benitoite script requires confirming its effects. Stop and report."
+            );
+            assert!(requests.lock().map_err(|_| "requests")?.is_empty());
+        } else {
+            assert!(
+                result
+                    .text
+                    .starts_with("The user declined to run a.bnt with effects: none.")
+            );
+            assert_eq!(
+                result.text.contains("Message from the user: wait"),
+                message.is_some()
+            );
+            let records = read_records(&directory)?;
+            assert_eq!(
+                records
+                    .iter()
+                    .filter(
+                        |r| matches!(r,Record::Approval {facts,..} if !facts.sources.is_empty())
+                    )
+                    .count(),
+                2
+            );
+            assert!(events.iter().any(|e|matches!(e,AgentEvent::ApprovalRequest {kind:ApprovalKind::Effects,facts,..} if !facts.sources.is_empty())));
+        }
+        assert!(!read_records(&directory)?.iter().any(|r|matches!(r,Record::Checkpoint(c) if c.reason==benitoiteh::rewind::CheckpointReason::BenitoiteRun)));
+        server.shutdown()?;
+    }
     Ok(())
 }

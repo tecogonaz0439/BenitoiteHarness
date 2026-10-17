@@ -10,7 +10,7 @@ mod resume_tests;
 mod retry;
 mod rewind;
 mod status;
-mod text;
+pub(crate) mod text;
 pub use rewind::RewindPreview;
 pub use status::{AgentStatus, SessionSafety};
 mod transport;
@@ -130,6 +130,8 @@ pub enum AgentError {
     Limit(&'static str),
     /// 同じ実のパスで検査が続けて失敗した。
     CheckFixLimit(String),
+    /// スクリプトの子孫が残っている可能性がある。
+    LeftoverProcesses(String),
     /// 設定と実行器の不一致。
     InvalidConfiguration,
     /// イベントの受け手が終了した。
@@ -151,7 +153,7 @@ impl fmt::Display for AgentError {
             Self::Provider(error) => error.fmt(f),
             Self::Refusal(category) => f.write_str(&text::refusal(category)),
             Self::Limit(message) => f.write_str(message),
-            Self::CheckFixLimit(message) => f.write_str(message),
+            Self::CheckFixLimit(message) | Self::LeftoverProcesses(message) => f.write_str(message),
             Self::InvalidConfiguration => f.write_str(text::INVALID_CONFIGURATION),
             Self::ReceiverClosed => f.write_str(text::CHANNEL_CLOSED),
             Self::Worker => f.write_str(text::WORKER_FAILED),
@@ -193,7 +195,7 @@ impl AgentError {
             Self::Provider(ProviderError::ContextOverflow) => "context_overflow",
             Self::Provider(_) => "provider",
             Self::Refusal(_) => "refusal",
-            Self::Limit(_) | Self::CheckFixLimit(_) => "limit",
+            Self::Limit(_) | Self::CheckFixLimit(_) | Self::LeftoverProcesses(_) => "limit",
             Self::InvalidConfiguration => "configuration",
             Self::ReceiverClosed => "event_receiver",
             Self::Worker => "worker",
@@ -227,6 +229,8 @@ pub struct Agent {
     session_safety: SessionSafety,
     allowed_commands: BTreeSet<String>,
     session_domains: BTreeSet<String>,
+    confirmed_effects: BTreeMap<crate::tools::ConfirmKey, BTreeSet<crate::benitoite::Effect>>,
+    stop_run: Option<String>,
     started: bool,
     turn: u64,
     repeated: Option<(String, serde_json::Value, u64)>,
@@ -370,6 +374,8 @@ impl Agent {
             session_safety: SessionSafety::default(),
             allowed_commands: BTreeSet::new(),
             session_domains: BTreeSet::new(),
+            confirmed_effects: BTreeMap::new(),
+            stop_run: None,
             started: false,
             turn: 0,
             repeated: None,
@@ -767,6 +773,9 @@ impl Agent {
                     usage: response.usage,
                 },
             )?;
+            if let Some(message) = self.stop_run.take() {
+                return Err(AgentError::LeftoverProcesses(message));
+            }
             if let Some((key, diagnostics)) = std::mem::take(&mut self.check_limit)
                 .into_iter()
                 .find(|(key, _)| {

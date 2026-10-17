@@ -88,3 +88,6 @@ pub fn check_fix_limit(path: &str, count: u64, max: u64, diagnostics: &str) -> S
         "The run stopped because checks of {path} failed {count} {times} without passing (limit: {max}; change it with --max-check-fix or limits.max_check_fix).\nRemaining diagnostics:\n{diagnostics}"
     )
 }
+
+pub const LEFTOVER_PROCESSES: &str =
+    "The run stopped because processes started by the script may still be running.";

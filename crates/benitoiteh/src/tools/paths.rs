@@ -114,27 +114,41 @@ impl ToolContext {
 }
 
 impl crate::benitoite::diagnostics::DiagnosticSources for ToolContext {
+    fn exclusion_cost(&self, file: &str) -> Option<usize> {
+        self.exclude
+            .diagnostic_cost(&self.requested_path(Path::new(file)))
+    }
     fn resolve(&self, file: &str) -> crate::benitoite::diagnostics::DiagnosticFile {
+        use crate::benitoite::diagnostics::{bounded_path, relative_text};
+        if !bounded_path(file) || self.exclusion_cost(file).is_none() {
+            return crate::benitoite::diagnostics::DiagnosticFile {
+                path: file.into(),
+                display: None,
+                exists: false,
+                relative: None,
+            };
+        }
         let requested = self.requested_path(Path::new(file));
-        let exists = !std::fs::symlink_metadata(&requested)
-            .is_err_and(|error| error.kind() == std::io::ErrorKind::NotFound);
         let relative = requested
             .strip_prefix(self.project.real_path())
             .ok()
             .map(Path::to_path_buf);
-        let hidden_suffix = relative.as_ref().is_some_and(|relative| {
-            (1..relative.components().count()).any(|skip| {
-                let suffix: PathBuf = relative.components().skip(skip).collect();
-                let candidate = self.project.real_path().join(suffix);
-                // 存在しない候補は BH-029 の判定に使わない。存在を調べられない
-                // 場合も開けなければ、内容の推測を返さない側へ倒す。
-                !std::fs::symlink_metadata(&candidate)
-                    .is_err_and(|error| error.kind() == std::io::ErrorKind::NotFound)
-                    && self.open_file(&candidate, false).is_err()
-            })
-        });
+        // 除外した候補の存在は調べない。後ろの部分も読み取りの設定だけで判定する。
+        // （設計書 04-01「終了状態と診断の受け渡し」、BH-029）。
+        let relative_string = relative.as_ref().and_then(|path| relative_text(path));
+        if self
+            .exclude
+            .diagnostic_hidden(&requested, relative_string.as_deref())
+        {
+            return crate::benitoite::diagnostics::DiagnosticFile {
+                path: requested,
+                display: None,
+                exists: false,
+                relative,
+            };
+        }
         match self.open_file(&requested, false) {
-            Ok(opened) if !hidden_suffix => {
+            Ok(opened) => {
                 let display = opened
                     .real_path
                     .strip_prefix(self.project.real_path())
@@ -143,14 +157,14 @@ impl crate::benitoite::diagnostics::DiagnosticSources for ToolContext {
                 crate::benitoite::diagnostics::DiagnosticFile {
                     path: opened.real_path,
                     display: Some(display),
-                    exists,
+                    exists: true,
                     relative,
                 }
             }
-            Ok(_) | Err(_) => crate::benitoite::diagnostics::DiagnosticFile {
+            Err(_) => crate::benitoite::diagnostics::DiagnosticFile {
                 path: requested,
                 display: None,
-                exists,
+                exists: false,
                 relative,
             },
         }

@@ -70,7 +70,9 @@ impl Agent {
         }
         let mut remaining = prepared.as_slice();
         while let Some(first) = remaining.first() {
-            let suppressed = if cancelled.load(Ordering::Acquire) {
+            let suppressed = if self.stop_run.is_some() {
+                Some(text::LEFTOVER_PROCESSES)
+            } else if cancelled.load(Ordering::Acquire) {
                 Some(text::CANCELLED)
             } else if *finish == FinishReason::OutputLimit {
                 Some(text::OUTPUT_LIMIT)
@@ -98,6 +100,7 @@ impl Agent {
                 let tools = &self.tools;
                 let context = &self.tool_context;
                 let session_domains = &self.session_domains;
+                let confirmed_effects = &self.confirmed_effects;
                 let outputs = thread::scope(|scope| {
                     let mut workers = Vec::new();
                     let mut failed = false;
@@ -118,6 +121,7 @@ impl Agent {
                                         call_id: &prepared.call.id,
                                         cancelled,
                                         session_domains,
+                                        confirmed_effects,
                                     },
                                 )
                             }
@@ -161,6 +165,7 @@ impl Agent {
                                 call_id: &first.call.id,
                                 cancelled,
                                 session_domains: &self.session_domains,
+                                confirmed_effects: &self.confirmed_effects,
                             },
                         );
                         self.approve(&first.call, validated, output, cancelled, events, summary)?
@@ -186,6 +191,7 @@ impl Agent {
         let Some(request) = output.approval else {
             return Ok(output);
         };
+        summary.checks = summary.checks.saturating_add(output.processor_launches);
         match approval::decide_in_mode(
             self.config.mode,
             &self.approval_policy,
@@ -233,13 +239,14 @@ impl Agent {
         };
         answer.remember_command(&record, &mut self.allowed_commands);
         answer.remember_domain(&record, &mut self.session_domains);
+        answer.remember_effects(&record, &mut self.confirmed_effects);
         summary.add_approval(answer.outcome);
         self.emit(
             events,
             AgentEvent::ApprovalResult {
                 call_id: record.call_id,
                 kind: record.kind,
-                facts: record.facts,
+                facts: record.facts.clone(),
                 justification: record.justification,
                 summary: record.summary,
                 decision: answer.outcome,
@@ -250,11 +257,16 @@ impl Agent {
             ApprovalOutcome::Approved | ApprovalOutcome::ApprovedForSession => {
                 self.execute_approved(call, validated, cancelled)
             }
-            ApprovalOutcome::Denied => {
-                ToolOutput::error(approval::user_denial_message(record.kind, None))
-            }
+            ApprovalOutcome::Denied => ToolOutput::error(approval::user_denial_message(
+                record.kind,
+                &record.facts,
+                self.tool_context.project.real_path(),
+                None,
+            )),
             ApprovalOutcome::DeniedWithMessage => ToolOutput::error(approval::user_denial_message(
                 record.kind,
+                &record.facts,
+                self.tool_context.project.real_path(),
                 answer.message.as_deref(),
             )),
             ApprovalOutcome::Cancelled => ToolOutput::error(text::CANCELLED),
@@ -278,6 +290,7 @@ impl Agent {
                     call_id: &call.id,
                     cancelled,
                     session_domains: &self.session_domains,
+                    confirmed_effects: &self.confirmed_effects,
                 },
             )
         }
@@ -291,6 +304,10 @@ impl Agent {
         summary: &mut Summary,
     ) -> Result<(), AgentError> {
         self.checkpoint_notices(events)?;
+        summary.checks = summary.checks.saturating_add(output.processor_launches);
+        if let Some(message) = output.stop_run.take() {
+            self.stop_run = Some(message);
+        }
         if let Some(launch) = output.check_launch {
             summary.checks = summary.checks.saturating_add(1);
             if launch == crate::tools::CheckLaunch::AfterWrite {
@@ -344,6 +361,7 @@ impl Agent {
             name: call.name.clone(),
             result: result.clone(),
             spill: output.spill,
+            stderr_spill: output.stderr_spill,
         })?;
         self.emit(
             events,

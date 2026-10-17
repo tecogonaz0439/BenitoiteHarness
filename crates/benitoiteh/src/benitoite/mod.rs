@@ -1,7 +1,10 @@
 //! 処理系を探して機能を確かめ、スクリプトを実行しない問い合わせを起動する（設計書 04-01）。
 
 pub mod diagnostics;
+pub mod effects;
 mod executable;
+pub mod report;
+pub use effects::Effect;
 mod query;
 pub mod skill;
 pub(crate) mod text;
@@ -37,7 +40,11 @@ pub enum BenitoiteError {
     /// 子プロセスの起動または回収の失敗。
     Run(sandbox::run::RunError),
     /// 終了状態が成功でない。
-    Exit { code: Option<i32>, stderr: Vec<u8> },
+    Exit {
+        code: Option<i32>,
+        stdout: Vec<u8>,
+        stderr: Vec<u8>,
+    },
     /// 時間の上限。
     TimedOut,
     /// 呼び出し元の取り消し。
@@ -176,3 +183,16 @@ fn version_report(bytes: &[u8]) -> Result<(String, Value), BenitoiteError> {
 
 #[cfg(test)]
 mod tests;
+
+/// 制限モードの実行用に起動時に固定した値（設計書 03-02、04-01）。
+#[derive(Clone, Debug)]
+pub struct RunContext {
+    pub processor: PathBuf,
+    pub helper: PathBuf,
+    pub scratch: PathBuf,
+    pub placeholders: PathBuf,
+    pub env: std::collections::BTreeMap<std::ffi::OsString, std::ffi::OsString>,
+    pub locations: crate::config::writable::WritableLocations,
+    pub denied_candidates: Vec<PathBuf>,
+    pub allowed_programs: Vec<PathBuf>,
+}

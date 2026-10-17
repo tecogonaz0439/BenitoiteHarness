@@ -208,6 +208,7 @@ impl Processor {
         if !outcome.status.success() {
             return Err(BenitoiteError::Exit {
                 code: outcome.status.code(),
+                stdout,
                 stderr,
             });
         }

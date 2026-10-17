@@ -45,6 +45,8 @@ pub struct CheckpointStats {
 pub enum CheckpointReason {
     Request,
     Bash,
+    /// 制限モードのスクリプトの実行前。
+    BenitoiteRun,
     Write,
     Edit,
     BeforeRewind,
