@@ -86,6 +86,7 @@ pub(super) fn execute(
             .spill_writer(invocation.call_id)
             .map_err(|e| failure(&e))?,
     )));
+    context.checkpoint_before(crate::rewind::CheckpointReason::Bash, None, &invocation)?;
     let outcome = run::run(
         launch,
         Vec::new(),

@@ -192,8 +192,8 @@ impl ToolSet {
             ToolId::Read => read::execute(context, &call.arguments).map(ToolOutput::success),
             ToolId::Glob => search::glob(context, &call.arguments).map(ToolOutput::success),
             ToolId::Grep => search::grep(context, &call.arguments).map(ToolOutput::success),
-            ToolId::Write => write::execute(context, &call.arguments, approval),
-            ToolId::Edit => edit::execute(context, &call.arguments, approval),
+            ToolId::Write => write::execute(context, &call.arguments, approval, invocation),
+            ToolId::Edit => edit::execute(context, &call.arguments, approval, invocation),
             ToolId::Bash => bash::execute(context, &call.arguments, approval, invocation),
         };
         match result {
@@ -264,6 +264,7 @@ pub struct ToolContext {
     pub shell: Option<ShellContext>,
     pub session: Option<Session>,
     read_versions: Mutex<BTreeMap<PathBuf, FileVersion>>,
+    pub checkpoints: Option<crate::rewind::CheckpointRecorder>,
 }
 
 impl ToolContext {
@@ -284,6 +285,7 @@ impl ToolContext {
             shell: None,
             session: None,
             read_versions: Mutex::new(BTreeMap::new()),
+            checkpoints: None,
         }
     }
 
@@ -297,6 +299,46 @@ impl ToolContext {
     pub fn with_session(mut self, session: Session) -> Self {
         self.session = Some(session);
         self
+    }
+
+    /// 書き戻した場所の読んだ版を消し、次の edit で読み直させる。
+    pub fn clear_read_version(&self, path: &Path) -> Result<(), ToolError> {
+        self.read_versions
+            .lock()
+            .map_err(|_| ToolError::State)?
+            .remove(path);
+        Ok(())
+    }
+
+    /// 実行する側だけが呼ぶ。保存の失敗で道具は止めず、取り消しでは実行しない。
+    pub fn checkpoint_before(
+        &self,
+        reason: crate::rewind::CheckpointReason,
+        path: Option<&Path>,
+        invocation: &Invocation<'_>,
+    ) -> Result<(), ToolError> {
+        if let Some(recorder) = &self.checkpoints
+            && path.is_none_or(|path| recorder.contains(path))
+        {
+            let _recorded =
+                recorder.capture(reason, Some(invocation.call_id), None, invocation.cancelled);
+        }
+        if invocation.cancelled.load(Ordering::Acquire) {
+            return Err(ToolError::InvalidArguments(
+                text::CHECKPOINT_CANCELLED.into(),
+            ));
+        }
+        if let (Some(session), Some(real_path)) = (&self.session, path) {
+            // 記録を保存できなくても道具を止めない。不足した行は巻き戻しの判定で
+            // 保守的に「戻せない」と扱う（設計書 01-05「不完全な時点」）。
+            let _recorded = session.writer().and_then(|mut writer| {
+                writer.append(&crate::session::Record::WriteTarget {
+                    call_id: invocation.call_id.into(),
+                    real_path: real_path.into(),
+                })
+            });
+        }
+        Ok(())
     }
 
     /// read または書き込みを終えた実のパスの版を記録する。

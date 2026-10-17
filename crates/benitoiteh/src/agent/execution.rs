@@ -282,6 +282,7 @@ impl Agent {
         mut output: ToolOutput,
         events: &SyncSender<AgentEvent>,
     ) -> Result<(), AgentError> {
+        self.checkpoint_notices(events)?;
         let arguments = self
             .tools
             .validate(&call.name, call.arguments.clone())

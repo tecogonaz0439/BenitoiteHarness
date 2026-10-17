@@ -10,6 +10,7 @@ pub(super) fn execute(
     context: &ToolContext,
     arguments: &Value,
     approval: ApprovalStatus,
+    invocation: super::Invocation<'_>,
 ) -> Result<ToolOutput, ToolError> {
     let path = string(arguments, "path")?;
     let contents = string(arguments, "content")?;
@@ -24,6 +25,11 @@ pub(super) fn execute(
     } else {
         Vec::new()
     };
+    context.checkpoint_before(
+        crate::rewind::CheckpointReason::Write,
+        Some(&target.real_path),
+        &invocation,
+    )?;
     target.write(context, previous, contents.as_bytes())?;
     Ok(output(path, &String::from_utf8_lossy(&before), contents))
 }

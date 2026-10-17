@@ -218,3 +218,5 @@ pub fn bash_truncated(
     };
     format!("[Showing last lines {first}-{last} of {total}. {location}]")
 }
+
+pub const CHECKPOINT_CANCELLED: &str = "Tool execution was cancelled while recording a checkpoint.";

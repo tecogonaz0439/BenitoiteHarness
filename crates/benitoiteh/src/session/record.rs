@@ -239,6 +239,8 @@ pub enum Record {
         #[serde(flatten)]
         call: ToolCall,
     },
+    /// 書く直前に確定した実のパス。後のリンクの差し替えに左右されず効果を分類する。
+    WriteTarget { call_id: String, real_path: PathBuf },
     /// LLM に渡した結果と、全体または先頭を保存した場所。
     ToolResult {
         turn: u64,
@@ -287,6 +289,8 @@ pub enum Record {
     ProjectDirChanged { project_dir: PathBuf },
     /// 後の段階で使う、残す会話の項目数と記録時点。
     Rewind { items: usize, checkpoint: String },
+    /// 道具または依頼の前のファイルの時点。
+    Checkpoint(crate::rewind::Checkpoint),
     /// 圧縮後の会話を起点として保持する。後続の行だけをこの後へ加える。
     Compaction {
         conversation: Conversation,

@@ -112,6 +112,15 @@ pub enum AgentEvent {
         estimate_before: u64,
         estimate_after: u64,
     },
+    /// すでに保存した時点。不完全な理由も画面に示す。
+    Checkpoint {
+        checkpoint: crate::rewind::Checkpoint,
+    },
+    /// まだ示していなかったハードリンクのパス。
+    HardLinks {
+        #[serde(with = "super::event_paths")]
+        paths: Vec<PathBuf>,
+    },
     /// 同じ要求のやり直し。
     Retry {
         attempt: u64,
@@ -224,7 +233,9 @@ impl AgentEvent {
             | Self::ReasoningDelta { .. }
             | Self::ToolCall { .. }
             | Self::ToolResult { .. }
-            | Self::Compaction { .. } => return None,
+            | Self::Compaction { .. }
+            | Self::Checkpoint { .. }
+            | Self::HardLinks { .. } => return None,
         })
     }
 }

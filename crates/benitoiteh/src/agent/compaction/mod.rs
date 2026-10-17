@@ -318,6 +318,9 @@ impl Agent {
             summarized_items: count,
             kept_items: kept,
         })?;
+        if let Some(recorder) = &self.tool_context.checkpoints {
+            recorder.advance_generation()?;
+        }
         self.conversation = conversation;
         self.last_usage = None;
         self.added_bytes = 0;

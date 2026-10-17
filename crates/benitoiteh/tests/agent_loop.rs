@@ -283,6 +283,7 @@ fn read_then_text_orders_events_records_environment_and_summary() -> TestResult 
         types(values),
         [
             "session_start",
+            "checkpoint",
             "turn_start",
             "tool_call",
             "tool_result",
@@ -304,6 +305,7 @@ fn read_then_text_orders_events_records_environment_and_summary() -> TestResult 
         [
             "header",
             "session_start",
+            "checkpoint",
             "user",
             "turn_start",
             "assistant",
@@ -414,7 +416,10 @@ fn read_batches_preserve_response_order_and_writes_separate_them() -> TestResult
         .position(|r| matches!(r, Record::ToolStart { .. }))
         .ok_or_else(|| io::Error::from(io::ErrorKind::InvalidData))?;
     assert!(
-        matches!(records.get(start.saturating_add(1)), Some(Record::ToolResult { name, .. }) if name == "write")
+        matches!(records.get(start.saturating_add(1)), Some(Record::Checkpoint(point)) if point.reason == benitoiteh::rewind::CheckpointReason::Write)
+    );
+    assert!(
+        matches!(records.iter().skip(start.saturating_add(1)).find(|record| matches!(record, Record::ToolResult { .. })), Some(Record::ToolResult { name, .. }) if name == "write")
     );
     let requests = server.requests()?;
     let messages = requests

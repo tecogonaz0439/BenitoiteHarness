@@ -17,3 +17,6 @@ pub const BENEATH_UNSUPPORTED: &str =
 pub const UNIQUE_UNSUPPORTED: &str = "The OS did not enforce O_UNIQUE; cannot start safely.";
 pub const TEMPORARY_COLLISIONS: &str =
     "Could not create an exclusive temporary file after repeated name collisions.";
+
+pub const NOFOLLOW_UNSUPPORTED: &str =
+    "The operating system does not enforce no-symlink resolution.";
