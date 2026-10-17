@@ -1,11 +1,13 @@
 //! 画面と exec に渡すイベント（設計書 01-01「イベント」、実装プラン P1-09）。
 
+use std::path::PathBuf;
+
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::approval::{ApprovalKind, ApprovalOutcome};
 use crate::provider::{FinishReason, ProviderError, Usage};
-use crate::session::{ApprovalPhase, Record, RecordedMode};
+use crate::session::{ApprovalPhase, Record, RecordedMode, SkippedInstruction};
 
 /// 一連の処理の終了状態。
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -43,6 +45,10 @@ pub enum AgentEvent {
         host: String,
         benitoiteh_version: String,
         notice: Option<String>,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        instruction_files: Vec<PathBuf>,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        skipped_instructions: Vec<SkippedInstruction>,
     },
     /// 番の開始。
     TurnStart { turn: u64 },
@@ -110,6 +116,8 @@ impl AgentEvent {
                 host,
                 benitoiteh_version,
                 notice,
+                instruction_files,
+                skipped_instructions,
             } => Record::SessionStart {
                 session_id: session_id.clone(),
                 mode: *mode,
@@ -118,6 +126,8 @@ impl AgentEvent {
                 host: host.clone(),
                 benitoiteh_version: benitoiteh_version.clone(),
                 notice: notice.clone(),
+                instruction_files: instruction_files.clone(),
+                skipped_instructions: skipped_instructions.clone(),
             },
             Self::TurnStart { turn } => Record::TurnStart { turn: *turn },
             Self::TurnEnd {

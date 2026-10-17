@@ -166,6 +166,15 @@ pub struct SpillInfo {
     pub discarded_bytes: u64,
 }
 
+/// 読まなかった指示の探索時のパスと理由。
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct SkippedInstruction {
+    /// 探索時の絶対パス。
+    pub path: PathBuf,
+    /// 利用者へ示す除外理由。
+    pub reason: String,
+}
+
 /// 一行ずつ追記する記録。ストリームの差分や認証の型には依存しない。
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
@@ -181,6 +190,10 @@ pub enum Record {
         host: String,
         benitoiteh_version: String,
         notice: Option<String>,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        instruction_files: Vec<PathBuf>,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        skipped_instructions: Vec<SkippedInstruction>,
     },
     /// 番の開始。
     TurnStart { turn: u64 },

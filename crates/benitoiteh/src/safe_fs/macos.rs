@@ -33,17 +33,30 @@ pub(super) fn open(
 
 pub(super) fn metadata_file(parent: &File, name: &Path) -> Result<File, SafeFsError> {
     // O_SYMLINK はリンク自体を開く。O_NOFOLLOW を同時に付けるとリンクを拒否してしまう。
-    // O_EVTONLY は読み取り権限や FIFO の相手を必要としない（設計書 01-05「巻き戻し」）。
-    open(parent, name, EVENT_ONLY | OFlags::SYMLINK, Mode::empty())
+    // macOS 27.0.1 では O_EVTONLY だけでは FIFO の相手を待ったため、NONBLOCK も付ける。
+    // 信頼しないファイルの種類の確認で待たないためである（設計書 01-03「道具の定義の共通の規則」）。
+    open(
+        parent,
+        name,
+        EVENT_ONLY | OFlags::SYMLINK | OFlags::NONBLOCK,
+        Mode::empty(),
+    )
 }
 
 pub(super) fn write_target(parent: &File, name: &Path) -> Result<File, SafeFsError> {
     // name は単独の要素で NOFOLLOW も付くため、NOTCAPABLE は UNIQUE の拒否を表す。
     // 判定のために開くときも切り詰めない（設計書 01-03「書く道具のパスの規則」）。
+    // O_EVTONLY だけでは FIFO を待つため、種類を調べて拒否する前にも NONBLOCK が要る
+    // （設計書 01-03「道具の定義の共通の規則」）。
     fs::openat(
         parent,
         name,
-        EVENT_ONLY | UNIQUE | RESOLVE_BENEATH | OFlags::NOFOLLOW | OFlags::CLOEXEC,
+        EVENT_ONLY
+            | UNIQUE
+            | RESOLVE_BENEATH
+            | OFlags::NOFOLLOW
+            | OFlags::NONBLOCK
+            | OFlags::CLOEXEC,
         Mode::empty(),
     )
     .map(File::from)

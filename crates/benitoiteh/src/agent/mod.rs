@@ -256,6 +256,13 @@ impl Agent {
                     model: self.config.destination.model.clone(),
                     host: host.clone(),
                     benitoiteh_version: env!("CARGO_PKG_VERSION").into(),
+                    instruction_files: self
+                        .environment
+                        .project_instructions()
+                        .iter()
+                        .map(|file| file.path.clone())
+                        .collect(),
+                    skipped_instructions: self.environment.skipped_instructions().to_vec(),
                     notice: Some(context::transmission_notice(
                         &self.config.destination.provider,
                         &self.config.destination.model,
