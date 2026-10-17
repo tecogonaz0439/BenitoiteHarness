@@ -223,6 +223,16 @@ P0-04 で作った型: 方針の入力 `PolicyConfig`（`readable: ReadAccess`�
 - `ToolOutput` に `check_launch: Option<CheckLaunch>`・`check: Option<CheckOutcome { key, failed, diagnostics }>`。回数は `agent/execution.rs` の `Agent::result` で数え、`AgentError::CheckFixLimit` で止める。`Summary.checks`・`after_write_checks`・`fixes`。
 - 道具 `benitoite_check`（`bash` の後、`benitoite_explain` の前。`without_benitoite` は除く）。書いた後の検査は `write`・`edit` の結果の `text` にだけ加える。
 
+### 実行の前の検査とスクリプトの実行（P2-08）
+
+- `benitoite::effects`: `Effect`（13 の名前。`name()`・`from_name()`）、`names(effects, include_assert)`（綴りの順）、`restricted_access(effects, processor, allowed) -> RestrictedAccess`。
+- `benitoite::report`: `parse(bytes, status, ReportKind { Run, Test }) -> Result<InspectionReport { effects, shell_reference, sources }, ReportError { Check(Vec<Diagnostic>), Invalid(String) }>`（`report/decode.rs` で型を付けて直接読む）。`ApprovalSource { display_path, content_hash: ContentHash { algorithm, value } }`。
+- `benitoite::RunContext { processor, helper, scratch, placeholders, env, locations, denied_candidates, allowed_programs }`、`ToolContext::with_run_context`（`ToolContext.run`）。`BenitoiteError::Exit` に `stdout`。
+- `tools`: `ConfirmKey { Run(PathBuf), Test(Vec<PathBuf>) }`・`ConfirmKey::from_facts(kind, facts)`、`Invocation.confirmed_effects`、`ToolOutput` の `processor_launches`・`stderr_spill`・`stop_run`、`tools/process_output.rs`（`bash` と共有する末尾の保ち方）。`ToolId::BenitoiteRun`。
+- `approval`: `ApprovalKind::Effects`、`ApprovalFacts` の `targets`・`effects`・`added_effects`・`shell_reference`・`sources`（`serde(default, skip_serializing_if)`）、`effects_summary(facts, project)`、`user_denial_message(kind, facts, project, message)`。確認した集合は `Approved` のときだけ広がる。
+- `agent`: `AgentError::LeftoverProcesses`、`CheckpointReason::BenitoiteRun`、`Record::ToolResult.stderr_spill`。
+- 診断の部品（P2-07）は、長すぎるパス（4096 バイトか 256 要素を超える）と、後ろの部分の判定の予算を超えたものを「読まない」に数え、解決は先頭の 1,000 件までとする。読まないパスの重なりの判定は存在を調べない。
+
 ### `provider`（P1-01、P1-02）
 
 - 共通の形（`provider::types`、`provider` から再公開）: `Destination { provider, base_url, model }`、`AdapterKind`、`Conversation { items }`、`Item::{UserMessage, AssistantTurn, ToolResult}`、`UserMessage { parts: Vec<UserPart> }`（`UserPartKind::{Environment, Request, Steering}`）、`AssistantTurn { parts, raw_items, finish_reason, usage }`、`AssistantPart::{Text, Reasoning, ToolCall}`、`RawItems { destination, adapter, items }`、`ToolCall { id, provider_id, provider_item_id, name, arguments, raw_arguments }`、`ToolResult { id, provider_id, text, is_error }`、`Usage`（各項目 `Option<u64>` と `raw`）、`FinishReason::{Completed, ToolCalls, OutputLimit, Refusal(String), Error, Cancelled, Disconnected}`、`StreamEvent`、`ProviderError`、`Capabilities`。
