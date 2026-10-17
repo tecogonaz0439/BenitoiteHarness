@@ -28,6 +28,8 @@
 - 一時的なスクリプトの根は一時ディレクトリなので、プロジェクトのモジュールを取り込めないことを、道具の説明に書く。道具の説明の英文を `prompts/tools/benitoite_scratch.md` に置く（案を報告に書き、オーケストレータが取り込む前に見直す）。
 - 制限モードの `ToolSet` に、01-03 の表の順（`benitoite_test` の後）で加える。期待のファイルを作り直す。
 
+- `/new`（P4-08）は、安全に関わる値を今のセッションの値に固定する（`SessionOverrides`）。この作業で `restricted.scratch_auto_effects` を使い始めるので、`/new` ではこの値も固定し、読み直した設定で置き換えない。テストを加える。
+
 ## 触るファイル
 
 - `crates/benitoiteh/src/tools/`（`benitoite_scratch.rs`（新）、`mod.rs`、`definitions.rs`、`text.rs`）
