@@ -3,6 +3,7 @@
 pub mod anthropic;
 pub mod ids;
 pub mod openai_chat;
+pub mod openai_responses;
 pub mod sse;
 mod text;
 pub mod tool_schema;

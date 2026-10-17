@@ -191,7 +191,7 @@ fn capabilities_use_official_defaults_only_at_the_exact_official_destination() -
     );
     let responses = provider(&config, "responses")?;
     assert_eq!(responses.base_url(), "https://api.openai.com/v1");
-    assert!(!responses.resolved_capabilities().strict_tools);
+    assert!(responses.resolved_capabilities().strict_tools);
     Ok(())
 }
 
