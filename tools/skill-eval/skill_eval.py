@@ -18,9 +18,11 @@ import os
 import re
 import shutil
 import signal
+import statistics
 import subprocess
 import sys
 import tempfile
+import time
 from typing import Dict, List, Optional, Tuple
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -45,6 +47,7 @@ COUNTED_COMMANDS = ('check', 'run', 'test')
 RUN_TIMEOUT = 60
 # 一回のハーネスの起動の時間の上限（秒）
 HARNESS_TIMEOUT = 30 * 60
+TERM_GRACE = 30
 
 # crates/benitoiteh/src/agent/text.rs の同名の定数から写した終了理由。
 TURN_LIMIT = 'The run reached the maximum number of turns.'
@@ -111,7 +114,7 @@ def find_benitoite(given: Optional[str]) -> str:
     found = shutil.which('benitoite')
     if found and os.path.dirname(os.path.abspath(found)) != WRAPPER_DIR:
         return found
-    raise SystemExit('benitoite not found; build it with `cargo build` or pass --benitoite')
+    raise SystemExit('benitoite not found; pass --benitoite <path to benitoite v0.0.7>')
 
 
 def find_benitoiteh(given: Optional[str]) -> str:
@@ -235,13 +238,21 @@ def benitoiteh_output(out: str, harness_exit: int) -> Tuple[Dict[str, object], s
         return fields, 'benitoiteh produced no summary (exit %d)' % harness_exit, ''.join(final)
     calls = last.get('tool_calls', {})
     tokens = last.get('tokens', {})
+    if not all(isinstance(value, dict) for value in (calls, tokens, last.get('approvals', {}))):
+        raise ValueError('invalid summary fields')
+    if any(type(value) is not int or value < 0 for value in calls.values()):
+        raise ValueError('invalid tool call counts')
+    if any(value is not None and (type(value) is not int or value < 0) for value in tokens.values()):
+        raise ValueError('invalid token counts')
+    input_tokens, output_tokens = tokens.get('input', 0), tokens.get('output', 0)
     fields.update(turns=last.get('turns'), tool_calls=calls,
                   attempts=sum(calls.get(name, 0) for name in PROCESS_TOOLS),
                   after_write_checks=last.get('after_write_checks'), checks=last.get('checks'), fixes=last.get('fixes'),
                   policy_denied=last.get('approvals', {}).get('policy_denied', 0),
                   input_tokens=tokens.get('input', 0), cache_read_tokens=tokens.get('cache_read', 0),
                   cache_write_tokens=tokens.get('cache_write', 0), output_tokens=tokens.get('output', 0),
-                  total_tokens=tokens.get('input', 0) + tokens.get('output', 0))
+                  total_tokens=input_tokens + output_tokens if input_tokens is not None and output_tokens is not None
+                  else None)
     reason = str(last.get('reason', ''))
     if outcome in ('completed', 'cancelled'):
         fields['end'] = outcome
@@ -277,6 +288,8 @@ def benitoiteh_results(directory: str) -> Tuple[List[List[str]], bool]:
         for line in f:
             value = json_object(line)
             if value is not None and value.get('type') == 'spilled':
+                if not isinstance(value['parts'], list):
+                    raise TypeError('parts must be a list')
                 # UTF-8 の文字の途中で分かれた部分も、バイト列を繋いでから復元する。
                 restored = b''.join(session_file(directory, part) for part in value['parts'])
                 value = json_object(restored.decode('utf-8', 'replace'))
@@ -284,11 +297,15 @@ def benitoiteh_results(directory: str) -> Tuple[List[List[str]], bool]:
                 continue
             if value.get('type') == 'tool_call':
                 call = value['call']
+                if not isinstance(call, dict) or not isinstance(call.get('arguments', {}), dict):
+                    raise TypeError('invalid tool call')
                 calls[call['id']] = call.get('arguments', {})
             if value.get('type') != 'tool_result':
                 continue
             name = value.get('name')
             result = value['result']
+            if not isinstance(result, dict):
+                raise TypeError('invalid tool result')
             text = result['text']
             if name in PROCESS_TOOLS:
                 arguments = calls.get(result['id'], {})
@@ -298,6 +315,8 @@ def benitoiteh_results(directory: str) -> Tuple[List[List[str]], bool]:
                 for key in ('spill', 'stderr_spill'):
                     spill = value.get(key)
                     if spill is not None:
+                        if not isinstance(spill, dict):
+                            raise TypeError('invalid spill')
                         saved = session_file(directory, spill['path']).decode('utf-8', 'replace')
                         shell_seen = bool(SHELL_OUTPUT.search(saved)) or shell_seen
             elif name in ('write', 'edit'):
@@ -343,6 +362,102 @@ def run_command(command: List[str], cwd: str, env: Dict[str, str], timeout: int 
         process.communicate()
         return -1, '', 'timed out after %d seconds' % timeout
     return process.returncode, out.decode('utf-8', 'replace'), err.decode('utf-8', 'replace')
+
+
+def harness_environment() -> Tuple[Dict[str, str], List[str]]:
+    """親の対話とキーを評価の対象に渡さない（設計書 07-02「評価の手順」）。"""
+    keys = {'DEEPSEEK_API_KEY', 'GEMINI_API_KEY', 'GOOGLE_API_KEY', 'OPENAI_API_KEY'}
+    removed = sorted(name for name in os.environ if name != 'CLAUDE_CONFIG_DIR'
+                     and (name.startswith(('CLAUDE', 'ANTHROPIC')) or name in keys))
+    return {name: value for name, value in os.environ.items() if name not in removed}, removed
+
+
+def signal_group(process: subprocess.Popen, sig: int) -> None:
+    try:
+        os.killpg(process.pid, sig)
+    except (ProcessLookupError, PermissionError):
+        # macOS では、回収前のゾンビだけの群れも EPERM になる。
+        pass
+
+
+def stop_harness(process: subprocess.Popen, grace: float) -> None:
+    signal_group(process, signal.SIGTERM)
+    try:
+        process.wait(timeout=grace)
+    except subprocess.TimeoutExpired:
+        pass
+    finally:
+        # 先頭が終わっていても、同じ群れに残った子を止める（P5-03 の補足 2）。
+        signal_group(process, signal.SIGKILL)
+        if process.poll() is None:
+            try:
+                process.kill()
+            except ProcessLookupError:
+                pass
+        process.wait()
+
+
+def run_harness(command: List[str], cwd: str, env: Dict[str, str], timeout: float,
+                stdout_path: str, stderr_path: str, grace: float = TERM_GRACE) -> Tuple[int, bool, float]:
+    """出力を直接残し、時間切れと中断では集計を書く猶予を与えて群れを止める。"""
+    started = time.monotonic()
+    with open(stdout_path, 'wb') as out, open(stderr_path, 'wb') as err:
+        try:
+            process = subprocess.Popen(command, cwd=cwd, env=env, stdout=out, stderr=err,
+                                       start_new_session=True)
+        except OSError as error:
+            err.write(('cannot start %s: %s' % (command[0] if command else '', error)).encode('utf-8', 'replace'))
+            return -2, False, 0.0
+        timed_out = False
+        pgid_path = os.path.join(os.path.dirname(stdout_path), 'harness.pgid')
+        try:
+            with open(pgid_path, 'w', encoding='utf-8') as f:
+                f.write(str(process.pid) + '\n')
+            try:
+                process.wait(timeout=timeout)
+            except subprocess.TimeoutExpired:
+                timed_out = True
+                stop_harness(process, grace)
+        except BaseException:
+            # 別セッションの子には端末の Ctrl-C が届かないため、送り直す前に止める。
+            stop_harness(process, grace)
+            raise
+        finally:
+            if process.poll() is not None:
+                try:
+                    os.unlink(pgid_path)
+                except FileNotFoundError:
+                    pass
+    return process.returncode, timed_out, round(time.monotonic() - started, 1)
+
+
+def estimate_cost(row: Dict[str, object], harness: Dict[str, object]) -> Optional[float]:
+    price = harness.get('price')
+    keys = ('input_tokens', 'cache_read_tokens', 'cache_write_tokens', 'output_tokens')
+    if not isinstance(price, dict) or any(row.get(key) is None for key in keys):
+        return None
+    uncached = max(0, row['input_tokens'] - row['cache_read_tokens'] - row['cache_write_tokens'])
+    return (uncached * price['input'] + row['cache_read_tokens'] * price['cache_read']
+            + row['cache_write_tokens'] * price['cache_write'] + row['output_tokens'] * price['output']) / 1000000
+
+
+class CostBudget(object):
+    """一回の道具の起動だけの累計を、項目をまたいで保つ。"""
+    def __init__(self, limit: Optional[float]) -> None:
+        self.limit = limit
+        self.totals = {}  # type: Dict[str, float]
+        self.message = ''
+
+    def add(self, row: Dict[str, object]) -> bool:
+        billing = str(row.get('billing', 'none'))
+        cost = row.get('cost_usd')
+        if self.limit is not None and billing != 'none' and cost is None:
+            self.message = 'stopped: cost unknown for %s' % billing
+        if billing != 'none' and cost is not None:
+            self.totals[billing] = self.totals.get(billing, 0) + cost
+            if self.limit is not None and self.totals[billing] >= self.limit:
+                self.message = 'stopped: estimated cost reached %g USD for %s' % (self.limit, billing)
+        return bool(self.message)
 
 
 def same_file(expected: str, actual: str) -> bool:
@@ -398,7 +513,7 @@ def judge(task: Task, script_text: str, benitoite: str, http_base: Optional[str]
     エージェントが作業ディレクトリの入力を書き換えていても判定が変わらないよう、作業ディレクトリでは実行しない。
     判定のための起動は包みのコマンドを通さないので、検査と修正の回数に数えない。
     """
-    env = dict(os.environ)
+    env, _removed = harness_environment()
     if http_base is not None:
         env[http_server.BASE_VARIABLE] = http_base
     for text in task.require_text:
@@ -589,7 +704,12 @@ def install_skill(benitoite: str, harness: Dict[str, object], workspace: str, sk
 def load_harnesses() -> Dict[str, Dict[str, object]]:
     with open(HARNESSES_FILE, encoding='utf-8') as f:
         data = json.load(f)
-    return {k: v for k, v in data.items() if not k.startswith('_')}
+    harnesses = {k: v for k, v in data.items() if not k.startswith('_')}
+    for name, harness in harnesses.items():
+        if ('price' in harness or (harness.get('kind') == 'benitoiteh' and not harness.get('mock'))):
+            if not harness.get('billing'):
+                raise ValueError('harness %s requires billing' % name)
+    return harnesses
 
 
 def render(template: List[str], values: Dict[str, str]) -> List[str]:
@@ -637,13 +757,15 @@ def run_trial(task: Task, trial_dir: str, benitoite: str, harness_name: str, har
     for name, text in dict(harness.get('files', {})).items():  # type: ignore
         with open(os.path.join(workspace, name), 'w', encoding='utf-8') as f:
             f.write(str(text))
-    env = dict(os.environ)
+    env, _removed = harness_environment()
     env['PATH'] = tools_dir + os.pathsep + env.get('PATH', '')
     env['SKILL_EVAL_LOG'] = log
     env['SKILL_EVAL_REAL_BENITOITE'] = benitoite
     is_benitoiteh = harness.get('kind') == 'benitoiteh' and not dry_run
     fields = dict.fromkeys(BH_FIELDS)
     allow = task_allow(task, benitoite) if is_benitoiteh else None
+    if is_benitoiteh:
+        fields.update(kind='benitoiteh', allow=allow)
     server = None
     mock = None
     http_base = None
@@ -674,6 +796,7 @@ def run_trial(task: Task, trial_dir: str, benitoite: str, harness_name: str, har
             run_command(command, workspace, env)
             harness_exit = 0
             err = ''
+            timed_out, wall_seconds = False, None
         else:
             if is_benitoiteh:
                 options = harness['options']
@@ -689,34 +812,48 @@ def run_trial(task: Task, trial_dir: str, benitoite: str, harness_name: str, har
                 values.update(workspace=workspace, model=model, prompt=PROMPT.format(limit=task.attempt_limit))
                 command = render(list(harness['start']), values)  # type: ignore
                 cwd = str(harness.get('cwd', '{workspace}')).format(**values)
-            harness_exit, out, err = run_command(command, cwd, env, HARNESS_TIMEOUT)
-            # 生の対話の記録はリポジトリの外（試行のディレクトリ）に置く
-            with open(os.path.join(trial_dir, 'harness.stdout'), 'w', encoding='utf-8') as f:
-                f.write(out)
-            with open(os.path.join(trial_dir, 'harness.stderr'), 'w', encoding='utf-8') as f:
-                f.write(err)
+            stdout_path = os.path.join(trial_dir, 'harness.stdout')
+            stderr_path = os.path.join(trial_dir, 'harness.stderr')
+            harness_exit, timed_out, wall_seconds = run_harness(
+                command, cwd, env, harness.get('options', {}).get('harness_timeout', HARNESS_TIMEOUT),
+                stdout_path, stderr_path)
         entries = read_log(log)
         attempts = count_attempts(entries)
         end_reason = ''
         no_summary = False
-        if is_benitoiteh:
-            fields, end_reason, final = benitoiteh_output(out, harness_exit)
-            fields['allow'] = allow
-            attempts = fields['attempts']
-            no_summary = end_reason.startswith('benitoiteh produced no summary ')
-            session_id = fields['session_id']
-            entries = []
-            if session_id:
-                sessions = os.path.join(env['XDG_STATE_HOME'], 'benitoiteh', 'sessions')
-                directory = os.path.join(sessions, str(session_id))
-                if os.path.dirname(os.path.realpath(directory)) != os.path.realpath(sessions):
-                    raise ValueError('invalid session_id')
-                entries, seen = benitoiteh_results(directory)
-                fields['shell_output_seen'] = seen if task.name == 'process_shell' else False
+        unreadable = ''
+        final = None
+        try:
+            if not dry_run:
+                with open(stdout_path, encoding='utf-8', errors='replace') as f:
+                    out = f.read()
+                with open(stderr_path, encoding='utf-8', errors='replace') as f:
+                    err = f.read()
+            if is_benitoiteh:
+                fields, end_reason, final = benitoiteh_output(out, harness_exit)
+                fields['allow'] = allow
+                attempts = fields['attempts']
+                no_summary = end_reason.startswith('benitoiteh produced no summary ')
+                session_id = fields['session_id']
+                entries = []
+                if session_id:
+                    sessions = os.path.join(env['XDG_STATE_HOME'], 'benitoiteh', 'sessions')
+                    directory = os.path.join(sessions, str(session_id))
+                    if os.path.dirname(os.path.realpath(directory)) != os.path.realpath(sessions):
+                        raise ValueError('invalid session_id')
+                    entries, seen = benitoiteh_results(directory)
+                    fields['shell_output_seen'] = seen if task.name == 'process_shell' else False
+        except (OSError, ValueError, KeyError, TypeError) as error:
+            unreadable = 'unreadable session record: %s' % type(error).__name__
+        if is_benitoiteh and final is not None:
             with open(os.path.join(trial_dir, 'final.txt'), 'w', encoding='utf-8') as f:
                 f.write(final)
+        if timed_out:
+            fields['end'] = 'timeout'
         script_path = os.path.join(workspace, task.script)
-        if no_summary:
+        if unreadable:
+            verdict = Verdict(False, unreadable)
+        elif no_summary:
             verdict = Verdict(False, end_reason)
         elif harness_exit == -2:
             verdict = Verdict(False, 'the harness could not be started: %s' % first_line(err))
@@ -725,7 +862,7 @@ def run_trial(task: Task, trial_dir: str, benitoite: str, harness_name: str, har
             verdict = Verdict(False, 'WARNING: no counted benitoite command in the wrapper log')
         else:
             verdict = judge_trial_script(task, script_path, benitoite, http_base, attempts)
-        if is_benitoiteh and not no_summary and fields['end'] != 'completed':
+        if is_benitoiteh and not unreadable and not no_summary and fields['end'] != 'completed':
             verdict.reason += '; %s: %s' % (fields['end'], end_reason)
         if fields['shell_output_seen']:
             verdict.reason = 'SAFETY: shell output seen; ' + verdict.reason
@@ -744,7 +881,9 @@ def run_trial(task: Task, trial_dir: str, benitoite: str, harness_name: str, har
         'log_exists': os.path.isfile(log), 'skill': os.path.relpath(skill_path, workspace),
         'tests_passed': verdict.tests_passed, 'harness_exit': harness_exit, 'trial_dir': trial_dir,
         'diagnostics': diagnostic_stats(entries), 'final_codes': verdict.final_codes, 'harness': harness_name,
-        'model': model,
+        'model': model, 'timed_out': timed_out, 'wall_seconds': wall_seconds,
+        'cost_usd': estimate_cost(fields, harness) if is_benitoiteh else None,
+        'billing': harness.get('billing', 'none'),
     }
     row.update(fields)
     return row
@@ -895,21 +1034,97 @@ def diagnostics_section(rows: List[Dict[str, object]]) -> List[str]:
     return lines
 
 
-def write_record(path: str, header: Dict[str, str], rows: List[Dict[str, object]], tasks: List[Task]) -> None:
-    """記録（Markdown）を書く。生の対話の記録は含めず、試行のディレクトリのパスだけを残す。"""
+def path_prefixes(root: str) -> List[str]:
+    """macOS の別名も集め、出力側のパスの綴りに依存させない。"""
+    paths = set()
+    if root:
+        for path in (os.path.abspath(root), os.path.realpath(root)):
+            if path == os.path.sep:
+                continue
+            paths.add(path)
+            for public in ('/var', '/tmp', '/etc'):
+                private = '/private' + public
+                if path == private or path.startswith(private + '/'):
+                    paths.add(path[len('/private'):])
+                elif path == public or path.startswith(public + '/'):
+                    paths.add('/private' + path)
+    return sorted(paths, key=len, reverse=True)
+
+
+def redact_record(value: object, work_root: Optional[str]) -> object:
+    """保存する写しだけを再帰して置き換え、試行後に使う実のパスを保つ。"""
+    prefixes = {}
+    home = os.environ.get('HOME', '')
+    username = os.path.basename(os.path.normpath(home)) if home else ''
+    for root, replacement in ((tempfile.gettempdir(), '<tmp>'), (home, '~'),
+                              (REPO, '<repo>'), (work_root, '<work-root>')):
+        if root:
+            for path in path_prefixes(root):
+                prefixes[path] = replacement
+    def replace(item: object) -> object:
+        if isinstance(item, str):
+            for prefix in sorted(prefixes, key=len, reverse=True):
+                pattern = re.escape(prefix) + (r'(?![A-Za-z0-9._-])' if prefixes[prefix] == '~' else '')
+                item = re.sub(pattern, lambda match: prefixes[prefix], item)
+            if username and username not in ('.', '..', os.path.sep):
+                item = re.sub(r'(?<=/)' + re.escape(username) + r'(?![A-Za-z0-9._-])', '<user>', item)
+            return item
+        if isinstance(item, dict):
+            return {replace(key): replace(part) for key, part in item.items()}
+        if isinstance(item, (list, tuple)):
+            return [replace(part) for part in item]
+        return item
+    return replace(value)
+
+
+def record_value(value: object, pattern: str = '%s') -> str:
+    return '-' if value is None else pattern % value
+
+
+def write_record(path: str, header: Dict[str, object], rows: List[Dict[str, object]], tasks: List[Task],
+                 work_root: Optional[str] = None) -> None:
+    """公開する記録だけにパスの置換を掛け、生の対話は含めない。"""
+    header = redact_record(header, work_root)
+    rows = redact_record(rows, work_root)
     lines = ['# Skill の評価の記録', '']
+    for row in rows:
+        if row.get('shell_output_seen'):
+            lines.append('SAFETY: shell output seen in %s trial %s' %
+                         (row['task'], os.path.basename(str(row['trial_dir']))))
     for key, value in header.items():
         lines.append('- %s: %s' % (key, value))
-    lines += ['', '| 課題 | 成功 / 試行 | 成功した試行の検査と修正の回数 |', '|---|---|---|']
+    unknown = sum(1 for row in rows if row.get('billing', 'none') != 'none' and row.get('cost_usd') is None)
+    if unknown:
+        lines.append('- cost unknown: %d trials' % unknown)
+    lines += ['', '| 課題 | 成功 / 試行 | 成功した試行の検査と修正の回数 | 時間の中央値 (秒) | トークンの中央値 | 上限で停止 |',
+              '|---|---|---|---|---|---|']
     for task in tasks:
         mine = [r for r in rows if r['task'] == task.name]
         wins = [r for r in mine if r['success']]
         counts = ', '.join(str(r['attempts']) for r in wins) or '-'
-        lines.append('| %s | %d / %d | %s |' % (task.name, len(wins), len(mine), counts))
-    lines += ['', '## 試行ごとの結果', '', '| 課題 | 成功 | 回数 | 理由 |', '|---|---|---|---|']
+        medians = []
+        for key, pattern in (('wall_seconds', '%.1f'), ('total_tokens', '%g')):
+            values = [r[key] for r in wins if r.get(key) is not None]
+            medians.append(record_value(statistics.median(values) if values else None, pattern))
+        limits = sum(1 for r in mine if r.get('end') in ('max_turns', 'max_tokens', 'timeout'))
+        lines.append('| %s | %d / %d | %s | %s | %s | %d |' %
+                     (task.name, len(wins), len(mine), counts, medians[0], medians[1], limits))
+    costs = [r['cost_usd'] for r in rows if r.get('cost_usd') is not None]
+    lines += ['', '費用の見積もりの合計: %s USD（費用を取得できた試行の合計）' %
+              record_value(sum(costs) if costs else None, '%.6f'), '', '## 試行ごとの結果', '',
+              '| 課題 | 試行 | 成功 | 番 | 検査と修正 (書いた後の検査) | トークン (キャッシュ読み取り) | 時間 (秒) | 終わり方 | 費用 (USD) | 理由 |',
+              '|---|---|---|---|---|---|---|---|---|---|']
     for row in rows:
-        lines.append('| %s | %s | %s | %s |' % (row['task'], 'yes' if row['success'] else 'no', row['attempts'],
-                                               str(row['reason']).replace('|', '\\|')))
+        attempts = record_value(row.get('attempts'))
+        if row.get('kind') == 'benitoiteh':
+            attempts += ' (%s)' % record_value(row.get('after_write_checks'))
+        tokens = record_value(row.get('total_tokens'))
+        if row.get('total_tokens') is not None:
+            tokens += ' (%s)' % record_value(row.get('cache_read_tokens'))
+        cells = [row['task'], os.path.basename(str(row['trial_dir'])), 'yes' if row['success'] else 'no',
+                 record_value(row.get('turns')), attempts, tokens, record_value(row.get('wall_seconds'), '%.1f'),
+                 record_value(row.get('end')), record_value(row.get('cost_usd'), '%.6f'), row['reason']]
+        lines.append('| ' + ' | '.join(str(cell).replace('|', '\\|').replace('\n', ' ') for cell in cells) + ' |')
     lines += diagnostics_section(rows)
     os.makedirs(os.path.dirname(os.path.abspath(path)), exist_ok=True)
     with open(path, 'w', encoding='utf-8') as f:
@@ -919,7 +1134,23 @@ def write_record(path: str, header: Dict[str, str], rows: List[Dict[str, object]
             f.write(json.dumps(row, ensure_ascii=False) + '\n')
 
 
+def interrupt_evaluation(signum: int, frame: object) -> None:
+    """端末以外からの終了も、子を止めて記録を残す中断へ揃える。"""
+    raise KeyboardInterrupt()
+
+
 def main(argv: Optional[List[str]] = None) -> int:
+    previous = {}
+    try:
+        for sig in (signal.SIGTERM, signal.SIGHUP):
+            previous[sig] = signal.signal(sig, interrupt_evaluation)
+        return evaluate_main(argv)
+    finally:
+        for sig, handler in previous.items():
+            signal.signal(sig, handler)
+
+
+def evaluate_main(argv: Optional[List[str]] = None) -> int:
     parser = argparse.ArgumentParser(description='Evaluate the bundled Benitoite Agent Skill.')
     mode = parser.add_mutually_exclusive_group(required=True)
     mode.add_argument('--self-test', action='store_true', help='run the reference scripts (no LLM)')
@@ -937,14 +1168,21 @@ def main(argv: Optional[List[str]] = None) -> int:
     parser.add_argument('--allow-unverified', action='store_true',
                         help='start a harness whose settings are not verified (harnesses.json "verified": false)')
     parser.add_argument('--record', help='record file (default: results/<date>-<harness>.md)')
+    parser.add_argument('--stop-cost', type=float, help='stop after estimated USD per billing provider')
     args = parser.parse_args(argv)
+    if args.stop_cost is not None and (not 0 <= args.stop_cost < float('inf')):
+        parser.error('--stop-cost must be a finite nonnegative amount')
+    ALL_ROWS.clear()
 
     tasks = load_tasks(args.task)
     benitoite = find_benitoite(args.benitoite)
     if args.self_test:
         return self_test(tasks, benitoite)
 
-    harnesses = load_harnesses()
+    try:
+        harnesses = load_harnesses()
+    except ValueError as error:
+        raise SystemExit(str(error))
     if args.harness == 'default':
         names = sorted(n for n, h in harnesses.items() if h.get('default', False))
     elif args.harness:
@@ -955,8 +1193,8 @@ def main(argv: Optional[List[str]] = None) -> int:
         if name not in harnesses:
             raise SystemExit('unknown harness: %s (available: %s)' % (name, ', '.join(sorted(harnesses))))
         if args.harness and not harnesses[name].get('verified', False) and not args.allow_unverified:
-            raise SystemExit('the settings of harness %s are not verified; check them with the designer (skill '
-                             '`skill-eval`) and pass --allow-unverified' % name)
+            raise SystemExit('the settings of harness %s are not verified; check tools/skill-eval/'
+                             'SOURCE.md with the designer and pass --allow-unverified' % name)
     if len(names) > 1 and (args.record or args.model):
         raise SystemExit('--record and --model need a single harness')
     skill_dir = os.path.abspath(args.skill_dir) if args.skill_dir else None
@@ -965,80 +1203,119 @@ def main(argv: Optional[List[str]] = None) -> int:
     work_root = os.path.realpath(args.work_root) if args.work_root else tempfile.mkdtemp(prefix='skill-eval-')
     if os.path.commonpath([work_root, os.path.realpath(REPO)]) == os.path.realpath(REPO):
         raise SystemExit('--work-root must be outside the repository (raw logs are not kept in it)')
+    # 利用者が指定した別名も保存時の置換に含める（macOS の /var と /private/var など）。
+    args.work_root = os.path.abspath(args.work_root) if args.work_root else work_root
+    budget = CostBudget(args.stop_cost)
+    headers = {}
     status = 0
-    for name in names:
-        root = os.path.join(work_root, name) if len(names) > 1 else work_root
-        status = max(status, evaluate(args, tasks, benitoite, name, harnesses[name], skill_dir, root))
-    if len(names) > 1:
-        # ハーネスとモデルの組をまたぐ全体の集計
-        directory = work_root if args.dry_run else RESULTS_DIR
-        record = os.path.join(directory, '%s-overall.md' % datetime.datetime.now().strftime('%Y-%m-%d-%H%M'))
-        write_record(record, {'ハーネス': ', '.join(names), '生の記録': work_root}, ALL_ROWS, tasks)
-        print('overall record: %s' % record)
+    try:
+        for name in names:
+            root = os.path.join(work_root, name) if len(names) > 1 else work_root
+            status = max(status, evaluate(args, tasks, benitoite, name, harnesses[name], skill_dir, root,
+                                          budget, headers))
+            if budget.message:
+                break
+    finally:
+        if len(names) > 1 and ALL_ROWS:
+            # 中断でも、それまでに終わった項目を全体の記録に残す。
+            directory = work_root if args.dry_run else RESULTS_DIR
+            record = os.path.join(directory, '%s-overall.md' % datetime.datetime.now().strftime('%Y-%m-%d-%H%M'))
+            header = {'ハーネス': ', '.join(names), '生の記録': work_root, '項目': headers}
+            if budget.message:
+                header['停止'] = budget.message
+            write_record(record, header, ALL_ROWS, tasks, args.work_root)
+            print('overall record: %s' % record)
     return status
 
 
-def evaluate(args: argparse.Namespace, tasks: List[Task], benitoite: str, harness_name: str,
-             harness: Dict[str, object], skill_dir: Optional[str], work_root: str) -> int:
-    """一つのハーネスで全課題を試し、--dry-run でなければ記録を書く。"""
-    model = args.model or str(harness['model'])
-    rows = []
-    for task in tasks:
-        for trial in range(1, args.trials + 1):
-            # 同じ --work-root で再び実行しても前の試行を消さないよう、空いた番号のディレクトリを使う
-            number = trial
-            while os.path.exists(os.path.join(work_root, task.name, str(number))):
-                number += args.trials
-            trial_dir = os.path.join(work_root, task.name, str(number))
-            os.makedirs(trial_dir)
-            try:
-                row = run_trial(task, trial_dir, benitoite, harness_name, harness, model, skill_dir, args.dry_run,
-                                args.benitoiteh)
-            except ValueError as error:
-                raise SystemExit(str(error))
-            rows.append(row)
-            print('%s %-16s trial %d: %s, attempts %d, %s' % (
-                harness_name, task.name, trial, 'success' if row['success'] else 'failure', row['attempts'],
-                row['reason']), flush=True)
-    wins = sum(1 for r in rows if r['success'])
-    print('%s: %d of %d trials succeeded; workspaces in %s' % (harness_name, wins, len(rows), work_root))
+def evaluation_header(args: argparse.Namespace, benitoite: str, harness_name: str,
+                      harness: Dict[str, object], skill_dir: Optional[str], work_root: str,
+                      rows: List[Dict[str, object]]) -> Dict[str, object]:
+    first = rows[0]
+    first_trial = str(first['trial_dir'])
+    first_skill = os.path.join(first_trial, 'workspace', str(harness['skill_parent']), 'benitoite')
+    version_env, removed = harness_environment()
     if args.dry_run:
-        # 試しの実行の記録は results/ でなく作業ディレクトリに書く（集計の節が出ることを確かめるため）
-        record = os.path.join(work_root, 'record.md')
-        write_record(record, {'種類': 'dry-run', 'ハーネス': harness_name}, rows, tasks)
-        bad = [r for r in rows if not (r['success'] and r['log_exists'] and r['attempts'] >= 1)]
-        with open(record, encoding='utf-8') as f:
-            if '## 診断のコードの集計' not in f.read():
-                bad.append({'reason': 'no diagnostics section'})
-        print('record: %s' % record)
-        ALL_ROWS.extend(rows)
-        return 1 if bad else 0
-
-    ALL_ROWS.extend(rows)
-    first_skill = os.path.join(str(rows[0]['trial_dir']), 'workspace', str(harness['skill_parent']), 'benitoite')
-    if harness.get('kind') == 'benitoiteh':
-        first_trial = str(rows[0]['trial_dir'])
-        version_env = dict(os.environ, XDG_CONFIG_HOME=os.path.join(first_trial, 'bh/config'),
+        harness_version = 'not started (dry-run)'
+    elif harness.get('kind') == 'benitoiteh':
+        version_env.update(XDG_CONFIG_HOME=os.path.join(first_trial, 'bh/config'),
                            XDG_STATE_HOME=os.path.join(first_trial, 'bh/state'),
                            TMPDIR=os.path.join(first_trial, 'tmp'))
-        harness_version = version_of([args.benitoiteh, '--version'], version_env)
+        # 版の問い合わせも、普段の設定に触れない環境で行う。
+        for variable in ('XDG_CONFIG_HOME', 'XDG_STATE_HOME', 'TMPDIR'):
+            os.makedirs(version_env[variable], exist_ok=True)
+        harness_version = first.get('benitoiteh_version') or version_of([args.benitoiteh, '--version'], version_env)
     else:
-        harness_version = version_of(list(harness['version']))  # type: ignore
+        harness_version = version_of(list(harness['version']), version_env)
+    with open(benitoite, 'rb') as f:
+        processor_hash = hashlib.sha256(f.read()).hexdigest()
+    options = harness.get('options', {})
     header = {
         '日時': datetime.datetime.now().strftime('%Y-%m-%d %H:%M'),
-        '処理系': version_of([benitoite, '--version']),
+        '処理系': version_of([benitoite, '--version']), '処理系 SHA-256': processor_hash,
         'Skill': ('%s（--skill-dir %s）' % (skill_version(first_skill), args.skill_dir)) if skill_dir
         else skill_version(first_skill),
         'ハーネス': '%s（%s）' % (harness_name, harness_version),
-        'モデル': '%s %s' % (model, json.dumps(harness.get('options', {}), ensure_ascii=False)),
-        '試行の回数': str(args.trials),
-        '生の記録': work_root + '（リポジトリの外）',
+        '提供者': harness.get('provider', {}), 'モデル': args.model or str(harness['model']),
+        'effort': harness.get('effort', options.get('effort', options.get('reasoning_effort', '-'))),
+        'max_turns': options.get('max_turns', '-'), 'max_run_tokens': options.get('max_run_tokens', '-'),
+        'HARNESS_TIMEOUT': options.get('harness_timeout', HARNESS_TIMEOUT),
+        '除いた環境変数': ', '.join(removed) or '-',
+        'CLAUDE_CONFIG_DIR': 'retained' if 'CLAUDE_CONFIG_DIR' in version_env else 'not set',
+        '試行の回数': str(args.trials), '生の記録': work_root + '（リポジトリの外）',
     }
-    record = args.record or os.path.join(
-        RESULTS_DIR, '%s-%s.md' % (datetime.datetime.now().strftime('%Y-%m-%d-%H%M'), harness_name))
-    write_record(record, header, rows, tasks)
-    print('record: %s' % record)
-    return 0
+    if harness.get('kind') == 'benitoiteh':
+        for key in ('benitoiteh_version', 'system_prompt_sha256', 'tools_sha256'):
+            header[key] = record_value(first.get(key))
+    return header
+
+
+def evaluate(args: argparse.Namespace, tasks: List[Task], benitoite: str, harness_name: str,
+             harness: Dict[str, object], skill_dir: Optional[str], work_root: str,
+             budget: CostBudget, headers: Dict[str, object]) -> int:
+    """試行が終わるたびに累計し、途中で止まっても完了した試行を記録する。"""
+    model = args.model or str(harness['model'])
+    rows = []
+    try:
+        for task in tasks:
+            for trial in range(1, args.trials + 1):
+                number = trial
+                while os.path.exists(os.path.join(work_root, task.name, str(number))):
+                    number += args.trials
+                trial_dir = os.path.join(work_root, task.name, str(number))
+                os.makedirs(trial_dir)
+                try:
+                    row = run_trial(task, trial_dir, benitoite, harness_name, harness, model, skill_dir, args.dry_run,
+                                    args.benitoiteh)
+                except ValueError as error:
+                    raise SystemExit(str(error))
+                row['billing'] = harness.get('billing', 'none')
+                rows.append(row)
+                ALL_ROWS.append(row)
+                print('%s %-16s trial %d: %s, attempts %d, %s' % (
+                    harness_name, task.name, trial, 'success' if row['success'] else 'failure', row['attempts'],
+                    row['reason']), flush=True)
+                if budget.add(row):
+                    print(budget.message, file=sys.stderr)
+                    return 3
+        wins = sum(1 for r in rows if r['success'])
+        print('%s: %d of %d trials succeeded; workspaces in %s' % (harness_name, wins, len(rows), work_root))
+        if args.dry_run:
+            bad = [r for r in rows if not (r['success'] and r['log_exists'] and r['attempts'] >= 1)]
+            return 1 if bad else 0
+        return 0
+    finally:
+        if rows:
+            header = evaluation_header(args, benitoite, harness_name, harness, skill_dir, work_root, rows)
+            if args.dry_run:
+                header['種類'] = 'dry-run'
+            if budget.message:
+                header['停止'] = budget.message
+            headers[harness_name] = header
+            record = (os.path.join(work_root, 'record.md') if args.dry_run else args.record or os.path.join(
+                RESULTS_DIR, '%s-%s.md' % (datetime.datetime.now().strftime('%Y-%m-%d-%H%M'), harness_name)))
+            write_record(record, header, rows, tasks, args.work_root)
+            print('record: %s' % record)
 
 
 if __name__ == '__main__':

@@ -162,8 +162,9 @@ import sys
 with open(sys.argv[1], encoding='utf-8') as f:
     rows = [json.loads(line) for line in f if line.strip()]
 if len(rows) != 11 or any(row.get('success') is not True or row.get('end') != 'completed'
-                          or row.get('shell_output_seen') is not False for row in rows):
-    raise SystemExit('Expected 11 successful, completed mock trials without shell output.')
+                          or row.get('shell_output_seen') is not False or row.get('cost_usd') != 0
+                          or not isinstance(row.get('wall_seconds'), (int, float)) for row in rows):
+    raise SystemExit('Expected 11 successful, completed mock trials without shell output, with zero cost and measured time.')
 EOF
 fi
 

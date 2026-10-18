@@ -20,6 +20,8 @@ class MockServer(ThreadingHTTPServer):
 
 
 class Handler(BaseHTTPRequestHandler):
+    timeout = 10
+
     def send_body(self, status: int, body: bytes, content_type: str) -> None:
         self.send_response(status)
         self.send_header('Content-Type', content_type)
@@ -43,7 +45,13 @@ class Handler(BaseHTTPRequestHandler):
             self.problem(400, 'expected POST /v1/messages')
             return
         try:
-            length = int(self.headers.get('Content-Length') or '0')
+            length = int(self.headers.get('Content-Length', ''))
+            if length < 0 or length > 8 * 1024 * 1024:
+                raise ValueError('invalid Content-Length')
+        except ValueError:
+            self.problem(400, 'Content-Length must be between 0 and 8 MiB')
+            return
+        try:
             request = json.loads(self.rfile.read(length))
         except (ValueError, UnicodeDecodeError):
             self.problem(400, 'request is not JSON')
