@@ -61,7 +61,7 @@
 | [P4-11](tasks/P4-11-create-project.md) | 制限モードの道具 `create_project`（雛形、確認、プロジェクトの切り替え、`--project-parent`） | P4-08、P2-12 | 完了 |
 | [P4-12](tasks/P4-12-doctor-wording.md) | `doctor` と起動の、プロジェクトの場所の誤りの文言 | P4-10、P4-11 | 完了 |
 | [P5-01](tasks/P5-01-skill-eval-import.md) | 評価の道具（`v0.0.8` のタグから写した `tools/skill-eval/`）を本リポジトリで動かし、LLM を呼ばない確かめを検査に加える | — | 完了 |
-| [P5-02](tasks/P5-02-benitoiteh-harness.md) | 評価の道具に `benitoiteh` を加え、集計を読み取り、模擬の提供者で 11 課題を通す | P5-01 | 未着手 |
+| [P5-02](tasks/P5-02-benitoiteh-harness.md) | 評価の道具に `benitoiteh` を加え、集計を読み取り、模擬の提供者で 11 課題を通す | P5-01 | 完了 |
 | [P5-03](tasks/P5-03-records-and-cost.md) | 評価の道具の記録の欄、子の環境、時間の上限、費用の見積もりと上限、本物の提供者の項目 | P5-02 | 未着手 |
 
 P1 の作業は P0-04・P0-05（OS のサンドボックス）の結果に依らないので、P0-04・P0-05 が設計者の判断を待つ間に先に進めてよい。
