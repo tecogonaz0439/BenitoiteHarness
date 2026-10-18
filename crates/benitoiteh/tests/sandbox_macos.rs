@@ -741,15 +741,68 @@ fn sandboxed_timeout_delivers_the_requested_signal() -> TestResult {
     Ok(())
 }
 
+#[path = "support/processor.rs"]
+mod processor;
+
 #[path = "support/doctor.rs"]
 mod doctor_support;
+
+// 作成時の関門: 本物のサンドボックスと CLI を通し、選んだ実行ファイルの
+// 無限の標準出力を上限で止め、使えないと報告することを確かめる。
+#[test]
+fn doctor_stops_a_processor_that_exceeds_the_stdout_limit() -> TestResult {
+    let fixture = doctor_support::Fixture::new()?;
+    fixture.write_config("default_provider = 'local'\n[providers.local]\nkind = 'openai-chat'\nbase_url = 'http://127.0.0.1:1/v1'\nmodel = 'local'\ncontext_window = 4096\n[benitoite]\npath = '/usr/bin/yes'\n")?;
+    let started = std::time::Instant::now();
+    let output = fixture.command().arg("--json").output()?;
+    assert!(started.elapsed() < std::time::Duration::from_secs(5));
+    assert_eq!(output.status.code(), Some(1), "{output:?}");
+    assert!(output.stderr.is_empty());
+    let rows = String::from_utf8(output.stdout)?
+        .lines()
+        .map(serde_json::from_str::<serde_json::Value>)
+        .collect::<Result<Vec<_>, _>>()?;
+    for (name, status) in [
+        ("benitoite.discovery", "ok"),
+        ("benitoite.executable", "ok"),
+        ("sandbox.restricted_rule", "unavailable"),
+        ("benitoite.version", "unchecked"),
+        ("benitoite.skill", "unchecked"),
+    ] {
+        let row = rows
+            .iter()
+            .find(|row| row.get("name").and_then(serde_json::Value::as_str) == Some(name))
+            .ok_or("Missing doctor item")?;
+        assert_eq!(
+            row.get("status"),
+            Some(&serde_json::Value::from(status)),
+            "{row}"
+        );
+        if name == "sandbox.restricted_rule" {
+            assert_eq!(
+                row.get("detail").and_then(serde_json::Value::as_str),
+                Some(
+                    "The sandbox rule check exceeded the 1 MiB stdout limit; the child was stopped."
+                )
+            );
+        }
+    }
+    assert_eq!(
+        rows.last().and_then(|row| row.get("restricted_sandbox")),
+        Some(&serde_json::Value::from(false))
+    );
+    assert_eq!(fs::read_dir(&fixture.project)?.count(), 0);
+    assert_eq!(fs::read_dir(fixture.root.join("state"))?.count(), 0);
+    assert_eq!(fs::read_dir(fixture.root.join("tmp"))?.count(), 0);
+    Ok(())
+}
 
 // 作成時の関門: 正負の本物の起動を CLI につなぎ、機能の一覧だけから
 // 制限モードを使えると表示する退行を捕まえる。Codex 内では走らせない。
 #[test]
 fn doctor_verifies_restricted_and_normal_sandboxes() -> TestResult {
     let fixture = doctor_support::Fixture::new()?;
-    fixture.write_config("default_provider = 'local'\n[providers.local]\nkind = 'openai-chat'\nbase_url = 'http://127.0.0.1:1/v1'\nmodel = 'local'\ncontext_window = 4096\n")?;
+    fixture.write_config(&format!("default_provider = 'local'\n[providers.local]\nkind = 'openai-chat'\nbase_url = 'http://127.0.0.1:1/v1'\nmodel = 'local'\ncontext_window = 4096\n[benitoite]\npath = '{}'\n", processor::benitoite()?.display()))?;
     let output = fixture.command().arg("--json").output()?;
     assert_eq!(output.status.code(), Some(0), "{output:?}");
     assert!(output.stderr.is_empty(), "{output:?}");
@@ -770,14 +823,33 @@ fn doctor_verifies_restricted_and_normal_sandboxes() -> TestResult {
         summary.get("exit_status"),
         Some(&serde_json::Value::from(0))
     );
+    for name in [
+        "benitoite.discovery",
+        "benitoite.executable",
+        "benitoite.version",
+        "benitoite.skill",
+    ] {
+        assert!(
+            items
+                .iter()
+                .any(|item| item.get("name").and_then(serde_json::Value::as_str) == Some(name)),
+            "Missing {name}"
+        );
+    }
+    assert!(
+        items
+            .iter()
+            .any(|item| item.get("name").and_then(serde_json::Value::as_str)
+                == Some("sandbox.restricted_rule")
+                && item.get("detail").and_then(serde_json::Value::as_str)
+                    == Some("benitoite --version=json succeeded and /bin/sh was denied."))
+    );
     for item in items {
         let name = item
             .get("name")
             .and_then(serde_json::Value::as_str)
             .ok_or("Missing doctor item name")?;
-        let expected = if name == "benitoite" {
-            "unchecked"
-        } else if name == "sandbox.linux_scope" {
+        let expected = if name == "sandbox.linux_scope" {
             "warning"
         } else {
             "ok"

@@ -1,5 +1,7 @@
 //! doctor の CLI 契約と、秘密・利用者の設定・ファイルシステムの保護を確かめる（設計書 05-01「doctor」、07-01「安全の性質のテスト」）。
 
+#[path = "support/processor.rs"]
+mod processor;
 #[path = "support/doctor.rs"]
 mod support;
 
@@ -77,6 +79,17 @@ fn invalid_user_config_and_missing_home_leave_dependent_checks_unchecked() -> Te
             item(&rows, "provider")?.get("status"),
             Some(&Value::from("unchecked"))
         );
+        for name in [
+            "benitoite.discovery",
+            "benitoite.executable",
+            "benitoite.version",
+            "benitoite.skill",
+        ] {
+            assert_eq!(
+                item(&rows, name)?.get("status"),
+                Some(&Value::from("unchecked"))
+            );
+        }
         assert!(!String::from_utf8_lossy(&output.stdout).contains("secret-config-value"));
         if missing_home {
             for name in [
@@ -327,9 +340,19 @@ fn json_contract_and_project_selection_leave_no_files_behind() -> TestResult {
         }
     }
     assert_eq!(
-        item(&rows, "benitoite")?.get("status"),
-        Some(&Value::from("unchecked"))
+        item(&rows, "benitoite.discovery")?.get("status"),
+        Some(&Value::from("unavailable"))
     );
+    for name in [
+        "benitoite.executable",
+        "benitoite.version",
+        "benitoite.skill",
+    ] {
+        assert_eq!(
+            item(&rows, name)?.get("status"),
+            Some(&Value::from("unchecked"))
+        );
+    }
     assert_eq!(
         item(&rows, "config.project")?.get("status"),
         Some(&Value::from("warning"))
@@ -377,6 +400,17 @@ fn temporary_roots_inside_project_or_data_are_rejected_before_creation() -> Test
             .output()?;
         let rows = records(&output)?;
         assert_eq!(output.status.code(), Some(1));
+        for name in [
+            "benitoite.discovery",
+            "benitoite.executable",
+            "benitoite.version",
+            "benitoite.skill",
+        ] {
+            assert_eq!(
+                item(&rows, name)?.get("status"),
+                Some(&Value::from("unchecked"))
+            );
+        }
         let rule = item(&rows, "sandbox.restricted_rule")?;
         assert_eq!(rule.get("status"), Some(&Value::from("unavailable")));
         assert!(
@@ -387,6 +421,140 @@ fn temporary_roots_inside_project_or_data_are_rejected_before_creation() -> Test
         );
         assert_eq!(fs::read_dir(&fixture.project)?.count(), 0);
         assert_eq!(fs::read_dir(data)?.count(), 0);
+    }
+    Ok(())
+}
+
+// 作成時の関門: 探索・形の規則自体は benitoite のテストが持つ。この入口では
+// 利用者の設定と PATH の受け渡し、診断の項目と終了状態への反映を確かめる。
+#[test]
+fn processor_discovery_and_executable_failures_exit_one() -> TestResult {
+    for case in ["missing", "shebang", "project-config", "project-path"] {
+        let fixture = Fixture::new()?;
+        let binary = if case == "shebang" {
+            let script = fixture.root.join("processor.sh");
+            fs::write(&script, "#!/bin/sh\nexit 0\n")?;
+            fs::set_permissions(&script, fs::Permissions::from_mode(0o700))?;
+            script
+        } else {
+            let path = fixture.project.join("benitoite");
+            if case != "missing" {
+                fs::copy(processor::benitoite()?, &path)?;
+            }
+            path
+        };
+        let configured = matches!(case, "shebang" | "project-config");
+        fixture.write_config(&if configured {
+            format!("{LOCAL}\n[benitoite]\npath = '{}'\n", binary.display())
+        } else {
+            LOCAL.to_owned()
+        })?;
+        let output = fixture
+            .command()
+            .env(
+                "PATH",
+                if case == "project-path" {
+                    fixture.project.as_os_str()
+                } else {
+                    std::ffi::OsStr::new("")
+                },
+            )
+            .arg("--json")
+            .output()?;
+        assert_eq!(output.status.code(), Some(1), "{case}: {output:?}");
+        let rows = records(&output)?;
+        let (discovery, executable) = if configured {
+            ("ok", "unavailable")
+        } else {
+            ("unavailable", "unchecked")
+        };
+        for (name, expected) in [
+            ("benitoite.discovery", discovery),
+            ("benitoite.executable", executable),
+            ("benitoite.version", "unchecked"),
+            ("benitoite.skill", "unchecked"),
+        ] {
+            assert_eq!(
+                item(&rows, name)?.get("status"),
+                Some(&Value::from(expected)),
+                "{case}: {rows:?}"
+            );
+        }
+        let detail = item(&rows, "benitoite.discovery")?
+            .get("detail")
+            .and_then(Value::as_str)
+            .ok_or("Missing discovery detail")?;
+        assert!(detail.contains(if configured {
+            "source=config.benitoite.path"
+        } else {
+            "source=PATH"
+        }));
+        if configured {
+            assert!(detail.contains(&binary.display().to_string()));
+        }
+        assert_eq!(fs::read_dir(fixture.root.join("tmp"))?.count(), 0);
+    }
+    Ok(())
+}
+
+// 作成時の関門: 本物の処理系を設定または PATH のリンクから選び、実のパスと
+// ハッシュを示すことを確かめる。サンドボックスが使えないときも未検査を保つ。
+#[test]
+fn real_processor_reports_discovery_hash_and_sandbox_dependent_queries() -> TestResult {
+    let binary = processor::benitoite()?;
+    for configured in [true, false] {
+        let fixture = Fixture::new()?;
+        let bin = fixture.root.join("bin");
+        fs::create_dir(&bin)?;
+        let link = bin.join("benitoite");
+        symlink(&binary, &link)?;
+        fixture.write_config(&if configured {
+            format!("{LOCAL}\n[benitoite]\npath = '{}'\n", link.display())
+        } else {
+            LOCAL.to_owned()
+        })?;
+        let output = fixture.command().env("PATH", &bin).arg("--json").output()?;
+        let rows = records(&output)?;
+        for name in ["benitoite.discovery", "benitoite.executable"] {
+            assert_eq!(
+                item(&rows, name)?.get("status"),
+                Some(&Value::from("ok")),
+                "{rows:?}"
+            );
+            assert!(
+                item(&rows, name)?
+                    .get("detail")
+                    .and_then(Value::as_str)
+                    .is_some_and(|detail| detail.contains(&binary.display().to_string()))
+            );
+        }
+        let hash = item(&rows, "benitoite.executable")?
+            .get("detail")
+            .and_then(Value::as_str)
+            .and_then(|detail| detail.split_once("sha256=").map(|(_, hash)| hash))
+            .ok_or("Missing SHA-256")?;
+        use sha2::{Digest, Sha256};
+        let expected_hash: String = Sha256::digest(fs::read(&binary)?)
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect();
+        assert_eq!(hash, expected_hash);
+        let available = rows
+            .last()
+            .and_then(|row| row.get("restricted_sandbox"))
+            .and_then(Value::as_bool)
+            .ok_or("Missing sandbox summary")?;
+        for name in ["benitoite.version", "benitoite.skill"] {
+            assert_eq!(
+                item(&rows, name)?.get("status"),
+                Some(&Value::from(if available { "ok" } else { "unchecked" })),
+                "{rows:?}"
+            );
+        }
+        assert_eq!(output.status.code(), Some(if available { 0 } else { 1 }));
+        assert_eq!(fs::read_dir(&fixture.project)?.count(), 0);
+        assert_eq!(fs::read_dir(fixture.root.join("state"))?.count(), 0);
+        assert_eq!(fs::read_dir(fixture.root.join("tmp"))?.count(), 0);
     }
     Ok(())
 }
