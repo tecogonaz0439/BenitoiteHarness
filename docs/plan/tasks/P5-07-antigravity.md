@@ -127,3 +127,22 @@
    - `agy` が終わった後、そのプロセスのグループに SIGKILL を一度送る（背後の処理を残さないため）。
 9. **走らせる前の確かめに加えるもの**: `~/.gemini/antigravity-cli/hooks.json`、`~/.gemini/config/` の `skills.json`・`plugins.json`・`agents/`・`workflows/`・`global_workflows/`・`workflows.json`・`sidecars/`、`settings.json`・`config.json`・`projects/*.json` の、名前に `permission` を含む鍵（大文字と小文字を区別しない）、作業ディレクトリ自身と祖先の `GEMINI.md`・`AGENTS.md`、祖先の `.gemini/` の下の `GEMINI.md`・`AGENTS.md`。確かめは、P5-04 の `claude-code` と同じく試行の準備で行い、見出しに通ったことを一行書く。
 10. **小さな点**: `antigravity-gpt-oss` の項目は変えない。`harnesses.json` の `_comment` を改める。`SOURCE.md` の「写した後に加えたファイル」に `agy_gate.py` を加える。`--print-timeout 1800s` の書き方は受け付けられる（`--help` の既定が `0s`）。
+
+## 補足 2（2026-10-19、最初の試しの走行の後）
+
+本節は、上の各節と補足に優先する。設計者の了承（2026-10-19）を得て、`json_summary` を 1 回走らせた（`agy` 1.4.0、記録は `tools/skill-eval/results/2026-10-19-0642-antigravity-gemini-trial.md`）。分かったことと、直すことを次に書く。
+
+### 分かったこと
+
+- **フックは読み込まれる**: `-p` と `--mode accept-edits` のもとで、作業ディレクトリの `.agents/hooks.json` の門が、すべての道具の呼び出し（26 回）で起動された。
+- **門の `allow` は、非対話の既定の拒否に優先しない**: 門が `benitoite check main.bnt` に `allow` を返しても、`agy` は「command」の権限が要るとして断り（`denied_actions` に `command`）、標準エラー出力に `no output produced — a tool required the "command" permission that headless mode cannot prompt for, so it was auto-denied` と書いて、走行を終えた（最後の応答は空）。門が `deny` を返した `ls -la` では、走行は続いた。
+- **道具の引数の名前**: `view_file` は `AbsolutePath`・`StartLine`・`EndLine`・`ContentOffset`、`write_to_file` は `TargetFile`・`CodeContent`・`Description`・`Overwrite`、`run_command` は `CommandLine`・`Cwd`・`WaitMsBeforeAsync` だった。どの道具にも `toolAction`・`toolSummary` が加わる。
+- **自動の更新は止まらない**: 子の環境に `AGY_CLI_DISABLE_AUTO_UPDATE=1` を置いても、`agy` は背後の更新のプロセスを起動し（`auto_updater.go` の `Spawned background update process`）、走行の開始の 9 秒後に `~/.local/bin/agy` が 1.4.2 に置き換わった。文書にある止め方はない。
+- 利用者の設定（`~/.gemini/config/` と `~/.gemini/antigravity-cli/settings.json`）は変わらなかった。
+
+### 直すこと
+
+1. **許可の形**: `agy_gate.py` の `PERMISSION_OVERRIDES` を `True` にする。`allow` のときの応答は `{"decision": "allow", "reason": ..., "permissionOverrides": ["command(<CommandLine>)"]}` とし、`<CommandLine>` は門が確かめた文字列そのものとする。テストを合わせる。
+2. **利用者の設定の書き換えの確かめ**: 試行の前と後で、`~/.gemini/config/config.json`・`~/.gemini/config/mcp_config.json`・`~/.gemini/config/projects/*.json`・`~/.gemini/antigravity-cli/settings.json` の SHA-256 と、`~/.gemini/config/` の直下の項目の一覧を比べる。違えば、理由の先頭に `SAFETY: user Antigravity settings changed` を加え、その後の試行を始めない（`--stop-cost` の停止と同じく、それまでの記録を書いて終了状態 3 で終える）。`permissionOverrides` の許可が `config.json` に残る（変更の記録 1.3.4 の「Always allow」の保存）場合に、これで気付く。
+3. **版の変化の検知**（設計者の決定、2026-10-19）: 自動の更新は止めず、試行ごとに、起動の前と後に `agy --version` を問い合わせ、行に `harness_version_start` と `harness_version_end` を書く。二つが違えば、理由に `WARNING: harness version changed <前> -> <後>` を加え、その後の試行を始めない（2 と同じ止め方）。記録の見出しの版は、最初の試行の前の版とする。利用者の実行ファイルには手を加えない。
+4. **`SOURCE.md`**: 「分かったこと」を、確かめた事実として書き、前の「確かめていないこと」のうち確かめた項目を改める。自動の更新は止められないことと、版の変化を検知して止める扱いを書く。
