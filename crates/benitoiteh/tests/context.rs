@@ -27,26 +27,43 @@ fn llm_context_matches_reviewed_files_in_both_modes() -> Result<(), Box<dyn Erro
         (
             Mode::Restricted,
             true,
+            true,
             include_str!("expected/system-restricted.txt"),
             include_str!("expected/tools-restricted.json"),
         ),
         (
             Mode::Normal,
             true,
+            true,
             include_str!("expected/system-normal.txt"),
             include_str!("expected/tools-normal.json"),
         ),
     ];
-    for (mode, enabled, expected_system, expected_tools) in cases.into_iter().chain([(
-        Mode::Normal,
-        false,
-        include_str!("expected/system-normal-without-benitoite.txt"),
-        include_str!("expected/tools-normal-without-benitoite.json"),
-    )]) {
+    for (mode, enabled, line_numbers, expected_system, expected_tools) in cases.into_iter().chain([
+        (
+            Mode::Normal,
+            false,
+            true,
+            include_str!("expected/system-normal-without-benitoite.txt"),
+            include_str!("expected/tools-normal-without-benitoite.json"),
+        ),
+        (
+            Mode::Restricted,
+            true,
+            false,
+            include_str!("expected/system-restricted-read-plain.txt"),
+            include_str!("expected/tools-restricted-read-plain.json"),
+        ),
+    ]) {
         let tools = if enabled {
             ToolSet::new(mode)
         } else {
             ToolSet::without_benitoite(mode)
+        };
+        let tools = if line_numbers {
+            tools
+        } else {
+            tools.plain_read()
         };
         let context = SystemContext::new(&tools, enabled.then_some(skill.as_ref()))?;
         if mode == Mode::Restricted {

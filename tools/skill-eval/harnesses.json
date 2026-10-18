@@ -234,6 +234,172 @@
     "verified": false,
     "default": false
   },
+  "benitoiteh-deepseek-no-after-write-check": {
+    "kind": "benitoiteh",
+    "agent": "codex",
+    "skill_parent": ".agents/skills",
+    "model": "deepseek-flash",
+    "effort": "high",
+    "provider": {
+      "kind": "anthropic-messages",
+      "api_key": {
+        "command": [
+          "/usr/bin/security",
+          "find-generic-password",
+          "-s",
+          "benitoiteh-deepseek",
+          "-w"
+        ]
+      },
+      "capabilities": {
+        "cache_control": false,
+        "strict_tools": false,
+        "eager_input_streaming": false,
+        "reasoning_replay": "same-destination"
+      },
+      "base_url": "https://api.deepseek.com/anthropic"
+    },
+    "options": {
+      "max_turns": 50,
+      "max_run_tokens": 2000000
+    },
+    "price": {
+      "input": 0.3,
+      "cache_read": 0.006,
+      "cache_write": 0.3,
+      "output": 1.2
+    },
+    "billing": "deepseek",
+    "verified": false,
+    "default": false,
+    "config": {
+      "restricted": {
+        "after_write_check": false
+      }
+    }
+  },
+  "benitoiteh-deepseek-no-line-numbers": {
+    "kind": "benitoiteh",
+    "agent": "codex",
+    "skill_parent": ".agents/skills",
+    "model": "deepseek-flash",
+    "effort": "high",
+    "provider": {
+      "kind": "anthropic-messages",
+      "api_key": {
+        "command": [
+          "/usr/bin/security",
+          "find-generic-password",
+          "-s",
+          "benitoiteh-deepseek",
+          "-w"
+        ]
+      },
+      "capabilities": {
+        "cache_control": false,
+        "strict_tools": false,
+        "eager_input_streaming": false,
+        "reasoning_replay": "same-destination"
+      },
+      "base_url": "https://api.deepseek.com/anthropic"
+    },
+    "options": {
+      "max_turns": 50,
+      "max_run_tokens": 2000000
+    },
+    "price": {
+      "input": 0.3,
+      "cache_read": 0.006,
+      "cache_write": 0.3,
+      "output": 1.2
+    },
+    "billing": "deepseek",
+    "verified": false,
+    "default": false,
+    "config": {
+      "read": {
+        "line_numbers": false
+      }
+    }
+  },
+  "benitoiteh-deepseek-effort-low": {
+    "kind": "benitoiteh",
+    "agent": "codex",
+    "skill_parent": ".agents/skills",
+    "model": "deepseek-flash",
+    "effort": "low",
+    "provider": {
+      "kind": "anthropic-messages",
+      "api_key": {
+        "command": [
+          "/usr/bin/security",
+          "find-generic-password",
+          "-s",
+          "benitoiteh-deepseek",
+          "-w"
+        ]
+      },
+      "capabilities": {
+        "cache_control": false,
+        "strict_tools": false,
+        "eager_input_streaming": false,
+        "reasoning_replay": "same-destination"
+      },
+      "base_url": "https://api.deepseek.com/anthropic"
+    },
+    "options": {
+      "max_turns": 50,
+      "max_run_tokens": 2000000
+    },
+    "price": {
+      "input": 0.3,
+      "cache_read": 0.006,
+      "cache_write": 0.3,
+      "output": 1.2
+    },
+    "billing": "deepseek",
+    "verified": false,
+    "default": false
+  },
+  "benitoiteh-deepseek-effort-max": {
+    "kind": "benitoiteh",
+    "agent": "codex",
+    "skill_parent": ".agents/skills",
+    "model": "deepseek-flash",
+    "effort": "max",
+    "provider": {
+      "kind": "anthropic-messages",
+      "api_key": {
+        "command": [
+          "/usr/bin/security",
+          "find-generic-password",
+          "-s",
+          "benitoiteh-deepseek",
+          "-w"
+        ]
+      },
+      "capabilities": {
+        "cache_control": false,
+        "strict_tools": false,
+        "eager_input_streaming": false,
+        "reasoning_replay": "same-destination"
+      },
+      "base_url": "https://api.deepseek.com/anthropic"
+    },
+    "options": {
+      "max_turns": 50,
+      "max_run_tokens": 2000000
+    },
+    "price": {
+      "input": 0.3,
+      "cache_read": 0.006,
+      "cache_write": 0.3,
+      "output": 1.2
+    },
+    "billing": "deepseek",
+    "verified": false,
+    "default": false
+  },
   "benitoiteh-gemini": {
     "kind": "benitoiteh",
     "agent": "codex",

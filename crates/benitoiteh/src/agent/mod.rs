@@ -312,6 +312,11 @@ impl Agent {
         } else {
             ToolSet::without_benitoite(config.mode)
         };
+        let tools = if tool_context.read_line_numbers {
+            tools
+        } else {
+            tools.plain_read()
+        };
         let skill = tool_context
             .skill
             .as_ref()
@@ -347,6 +352,8 @@ impl Agent {
                 }),
                 system_prompt_sha256: context::system_prompt_hash(&system.system_prompt),
                 tools_sha256: context::tool_definitions_hash(&system.tools)?,
+                after_write_check: (!tool_context.after_write_check).then_some(false),
+                read_line_numbers: (!tool_context.read_line_numbers).then_some(false),
             }))?;
         }
         let mut approval_policy = ApprovalPolicy {

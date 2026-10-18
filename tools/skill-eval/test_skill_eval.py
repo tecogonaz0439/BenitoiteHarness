@@ -264,6 +264,62 @@ class SessionTests(unittest.TestCase):
 
 
 class ConfigTests(unittest.TestCase):
+    # 関門: 比較用の値が別の項目や提供者の表に入る退行と、有料の起動前に
+    # 誤った設定を拒めない退行を、項目の読み取りと生成する TOML の境界で守る。
+    def test_evaluation_variants_config_generation_and_header(self):
+        harnesses = evaluation.load_harnesses()
+        base = harnesses['benitoiteh-deepseek']
+        for suffix, difference in (
+            ('no-after-write-check', {'config': {'restricted': {'after_write_check': False}}}),
+            ('no-line-numbers', {'config': {'read': {'line_numbers': False}}}),
+            ('effort-low', {'effort': 'low'}),
+            ('effort-max', {'effort': 'max'}),
+        ):
+            with self.subTest(suffix=suffix):
+                harness = harnesses['benitoiteh-deepseek-' + suffix]
+                self.assertEqual(harness, dict(base, verified=False, default=False, **difference))
+                text = evaluation.benitoiteh_config(harness, harness['model'], '/processor')
+                self.assertIn('effort = "%s"' % harness['effort'], text)
+        harness = copy.deepcopy(base)
+        harness['config'] = {'restricted': {'after_write_check': False}, 'read': {'line_numbers': False}}
+        text = evaluation.benitoiteh_config(harness, harness['model'], '/processor')
+        self.assertTrue(text.endswith('[restricted]\nallowed_programs = ["/usr/bin/sort"]\n'
+                                      'after_write_check = false\n\n[read]\nline_numbers = false\n'))
+        with tempfile.TemporaryDirectory(prefix='skill-eval-config-header-') as directory:
+            processor = os.path.join(directory, 'processor')
+            with open(processor, 'wb') as f:
+                f.write(b'processor')
+            args = evaluation.argparse.Namespace(dry_run=True, model=None, trials=1, skill_dir=None)
+            for item, expected in ((harness, '{"read": {"line_numbers": false}, "restricted": {"after_write_check": false}}'),
+                                   (base, '-')):
+                with mock.patch.object(evaluation, 'version_of', return_value='test-version'):
+                    header = evaluation.evaluation_header(args, processor, 'test', item, None, directory,
+                                                          [{'trial_dir': directory}])
+                self.assertEqual(header['config'], expected)
+
+    def test_invalid_evaluation_config_is_rejected_while_loading(self):
+        with tempfile.TemporaryDirectory(prefix='skill-eval-invalid-config-') as directory:
+            path = os.path.join(directory, 'harnesses.json')
+            for kind, config in (
+                ('external', {}),
+                ('benitoiteh', None),
+                ('benitoiteh', []),
+                ('benitoiteh', {'normal': {}}),
+                ('benitoiteh', {'read': False}),
+                ('benitoiteh', {'read': {'after_write_check': False}}),
+                ('benitoiteh', {'restricted': {'line_numbers': False}}),
+                ('benitoiteh', {'restricted': {'allowed_programs': []}}),
+                ('benitoiteh', {'read': {'line_numbers': 0}}),
+                ('benitoiteh', {'read': {'line_numbers': 1}}),
+                ('benitoiteh', {'read': {'line_numbers': 'false'}}),
+                ('benitoiteh', {'restricted': {'after_write_check': None}}),
+            ):
+                with self.subTest(kind=kind, config=config):
+                    with open(path, 'w', encoding='utf-8') as f:
+                        json.dump({'test': {'kind': kind, 'mock': True, 'config': config}}, f)
+                    with mock.patch.object(evaluation, 'HARNESSES_FILE', path), self.assertRaises(ValueError):
+                        evaluation.load_harnesses()
+
     def test_config_and_rejected_values(self):
         harness = evaluation.load_harnesses()['benitoiteh-mock']
         text = evaluation.benitoiteh_config(harness, 'override-model', '/trial/real/benitoite', 1234)

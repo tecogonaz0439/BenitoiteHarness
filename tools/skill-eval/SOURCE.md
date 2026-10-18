@@ -86,6 +86,12 @@ python3 -I tools/skill-eval/skill_eval.py \
 
 評価の道具に SIGTERM または SIGHUP が届いたときも、子の停止と完了済みの記録の保存を行う。ハーネスの起動中は、試行のディレクトリの `harness.pgid` にプロセスのグループの番号を残し、終了を確認したら消す。評価の道具自体を SIGKILL で止めた場合は後始末ができないので、残った `harness.pgid` の番号が残存するハーネスのグループであることを確認し、`kill -TERM -<pgid>` で止める。必要な猶予を待っても残る場合は `kill -KILL -<pgid>` で止め、終了を確認してから `harness.pgid` を消す。別セッションの道具の子が残る制約は、この手動の後始末でも同じである。
 
+### 評価で決める選択肢の切り替え
+
+`harnesses.json` の `kind: benitoiteh` の項目には、利用者の設定に足す `config` を指定できる。受け付けるのは `{"restricted": {"after_write_check": false}}` と `{"read": {"line_numbers": false}}` の二つの表と鍵であり、値は真偽に限る。両方を同じ項目に指定することもできる。知らない表・鍵、真偽以外の値、ほかの kind の項目への指定は、`--dry-run` を含め、項目を読むときに誤りにする。`[restricted]` の `allowed_programs` は残し、`[read]` は指定されたときに加える。記録の見出しの `config` には指定した辞書を、指定がなければ `-` を書く。
+
+比較用の項目は `benitoiteh-deepseek-no-after-write-check`、`benitoiteh-deepseek-no-line-numbers`、`benitoiteh-deepseek-effort-low`、`benitoiteh-deepseek-effort-max` である。いずれも `benitoiteh-deepseek` と同じ接続先・モデル・上限・単価を使い、一つの値だけを替える。起動には `--harness <項目の名前> --allow-unverified` を指定する。DeepSeek の `/anthropic` の口が `output_config.effort` の `low`・`max` を受け付け、その値で振る舞いを変えるかは未検証であり、評価の最初に確かめる。比較する回数の割り振りは、走らせる前に設計者に諮る。
+
 ## 写した後に加えたファイル
 
 | ファイル | 内容 |
@@ -132,3 +138,9 @@ python3 -I tools/skill-eval/skill_eval.py \
 - `test_skill_eval.py` に、出力の文字列と偽の実行ファイルによる検証を加えた。DeepSeek Harness と Claude Code、本物の LLM、利用者のキーチェーンは起動・参照せず、本物の Benitoite の処理系で包みのコマンドと課題の判定を確かめる。
 
 - セキュリティの所見に従い、漏れの走査を試行全体へ広げ、読めないファイルがあっても試行の行を残すようにした。子エージェントと workflow の費用を不明として扱い、共有の `/tmp` の作業領域と処理系の写しの変更を拒む。Claude Code の課金・許可に関わる設定を事前確認に加え、DeepSeek の起動環境から `NODE_*` をすべて除く。退行テストは修正前に失敗することを確かめた。
+
+### P5-06 評価で決める選択肢を切り替える口
+
+- `kind: benitoiteh` の項目の `config` を読み取り時に検証し、試行の設定ファイルの `[restricted]` と `[read]` に鍵を加える。記録の見出しにも `config` を残す。
+- 書いた後の検査、read の行の番号、effort の low・max を一つずつ比べる四項目を加えた。すべて `verified: false`、`default: false` とし、effort の効果の確認と試行回数の決定を評価前に残した。
+- `test_skill_eval.py` に、設定の生成、許さない入力の拒否、四項目の読み取り、記録の見出しのテストを加えた。本物の提供者は呼んでいない。

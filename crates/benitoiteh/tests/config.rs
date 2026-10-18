@@ -211,6 +211,8 @@ fn exec_resolution_applies_options_project_user_and_defaults_in_order() -> TestR
     assert_eq!(defaults.limits.max_turns, 200);
     assert_eq!(defaults.limits.max_check_fix, 10);
     assert_eq!(defaults.limits.max_run_tokens, None);
+    assert!(defaults.restricted.after_write_check);
+    assert!(defaults.read.line_numbers);
     assert!(
         defaults
             .resolve_exec(
@@ -602,6 +604,55 @@ fn child_process_environment_removes_all_provider_keys_and_replaces_inherited_ma
                 .any(|line| line == "BENITOITEH_SANDBOX_NETWORK_DISABLED=1"),
             sandbox.is_some_and(|(_, ip)| !ip)
         );
+    }
+    Ok(())
+}
+
+// 関門: 利用者だけが切り替えられ、省略時に true が保たれる契約。
+// 除外規則の結合も公開の設定 API で確認し、型の共有による信頼境界の退行を捕まえる。
+#[test]
+fn evaluation_switches_are_user_only_and_preserve_read_exclusions() -> TestResult {
+    use benitoiteh::safe_fs::ScopeRoot;
+    let f = Fixture::new()?;
+    let project_dir = f.dir("project")?;
+    fs::create_dir(project_dir.join(".benitoiteh"))?;
+    for input in ["", "[read]\nexclude=[]\n[restricted]\nallowed_programs=[]"] {
+        let config = UserConfig::parse(input)?;
+        assert!(config.restricted.after_write_check);
+        assert!(config.read.line_numbers);
+    }
+    let user = UserConfig::parse(
+        "default_provider='p'\n[providers.p]\nkind='openai-chat'\nmodel='m'\n[restricted]\nafter_write_check=false\n[read]\nline_numbers=false\nexclude=['user.*']",
+    )?;
+    assert!(!user.restricted.after_write_check);
+    assert!(!user.read.line_numbers);
+    let root = ScopeRoot::open(&project_dir)?;
+    let path = project_dir.join(".benitoiteh/config.toml");
+    fs::write(&path, "[read]\nexclude=['project.*']")?;
+    let loaded = ProjectConfig::load(&root);
+    assert!(loaded.error.is_none());
+    let resolved =
+        user.resolve_exec(&ExecArgs::parse(["request"])?, &loaded.config, &project_dir)?;
+    assert!(!resolved.read_line_numbers);
+    assert_eq!(resolved.read.exclude, ["user.*", "project.*"]);
+    for (input, field) in [
+        ("[read]\nline_numbers=false", "line_numbers"),
+        ("[restricted]\nafter_write_check=false", "restricted"),
+    ] {
+        fs::write(&path, input)?;
+        let loaded = ProjectConfig::load(&root);
+        assert!(loaded.read);
+        let error = loaded.error.ok_or("accepted project evaluation switch")?;
+        assert_eq!(
+            error.to_string(),
+            format!("unknown configuration field `{field}`")
+        );
+    }
+    for input in [
+        "[read]\nline_numbers=0",
+        "[restricted]\nafter_write_check='false'",
+    ] {
+        assert!(UserConfig::parse(input).is_err());
     }
     Ok(())
 }

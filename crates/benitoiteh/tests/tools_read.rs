@@ -1159,3 +1159,66 @@ fn common_truncation_preserves_head_tail_and_utf8_and_reports_omitted_bytes() {
     assert!(result.contains("bytes omitted from the middle"));
     assert!(!result.contains('\u{fffd}'));
 }
+
+// 関門: 行番号だけを外し、範囲・長い行の印・表示の件数・読んだ版を失わない契約。
+// Reference と誤って共用する退行は、既存の番号付き read だけでは捕まらない。
+#[test]
+fn plain_read_preserves_ranges_truncation_and_screen_lines_in_both_modes() -> TestResult {
+    for mode in [Mode::Restricted, Mode::Normal] {
+        let f = Fixture::new()?;
+        let context = f.context(mode)?.with_eval_switches(true, false);
+        let tools = ToolSet::new(mode).plain_read();
+        let file = f.project.join("plain.bnt");
+        fs::write(&file, "one\ntwo\nthree\nfour\n")?;
+        let result = tools.execute(
+            &context,
+            "read",
+            json!({"path":"plain.bnt","offset":2,"limit":2}),
+        );
+        assert!(!result.is_error, "{}", result.text);
+        assert_eq!(
+            result.text,
+            "two\nthree\n[Showing lines 2-3 of 4. Use offset=4 to continue.]"
+        );
+        assert_eq!(result.screen.as_deref(), Some("2 lines"));
+        assert_eq!(
+            context.read_version(&file)?,
+            Some(FileVersion::from_metadata(&fs::metadata(&file)?))
+        );
+        let result = tools.execute(&context, "read", json!({"path":"plain.bnt","offset":4}));
+        assert_eq!(result.text, "four\n");
+        assert_eq!(result.screen.as_deref(), Some("1 lines"));
+        let result = tools.execute(&context, "read", json!({"path":"plain.bnt","offset":5}));
+        assert!(result.is_error);
+        assert_eq!(
+            result.text,
+            "Offset 5 is beyond end of file (4 lines total)."
+        );
+        fs::write(&file, format!("{}\r\n", "界".repeat(2001)).repeat(20))?;
+        let result = tools.execute(&context, "read", json!({"path":"plain.bnt"}));
+        assert!(!result.is_error);
+        assert!(result.text.starts_with(&"界".repeat(2000)));
+        assert!(
+            result
+                .text
+                .contains("[line 1 truncated: 2001 chars. Use grep to find text in this line.]")
+        );
+        assert!(
+            result
+                .text
+                .ends_with("[Showing lines 1-8 of 20. Use offset=9 to continue.]")
+        );
+        assert_eq!(result.screen.as_deref(), Some("8 lines"));
+        assert!(result.text.len() <= 50 * 1024);
+        assert!(!result.text.contains('\t'));
+        fs::write(&file, "short\n".repeat(2001))?;
+        let result = tools.execute(&context, "read", json!({"path":"plain.bnt","limit":9000}));
+        assert!(
+            result
+                .text
+                .ends_with("[Showing lines 1-2000 of 2001. Use offset=2001 to continue.]")
+        );
+        assert_eq!(result.screen.as_deref(), Some("2000 lines"));
+    }
+    Ok(())
+}

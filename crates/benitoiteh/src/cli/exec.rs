@@ -537,6 +537,10 @@ pub(super) fn prepare(
             ScopeRoot::open(&spill).map_err(StartupError::SafeFs)?,
             exclude,
         )
+        .with_eval_switches(
+            user.restricted.after_write_check,
+            resolved.read_line_numbers,
+        )
         .with_project_creation(paths.clone(), helper.clone())
         .with_benitoite(processor.clone())
         .with_session(session.clone())

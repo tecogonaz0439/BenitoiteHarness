@@ -67,6 +67,10 @@ pub struct Header {
     pub benitoite: Option<RecordedBenitoite>,
     pub system_prompt_sha256: String,
     pub tools_sha256: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub after_write_check: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub read_line_numbers: Option<bool>,
 }
 
 /// 利用者の入力を記録するときの用途（操縦の綴りは記録では steer）。
