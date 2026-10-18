@@ -78,3 +78,30 @@
 
 - `scripts/check.sh --inside-codex` が通る（`BENITOITEH_TEST_BENITOITE` を設定して）。
 - 完了の報告に、二つの設定の既定と `false` のときの振る舞いの例（`read` の結果の先頭の数行と、`write` の結果）を書く。
+
+## 補足（2026-10-18、始める前の点検）
+
+本節は、上の各節に優先する。
+
+1. **設定の型**: `ReadConfig { exclude }` は、利用者の設定・プロジェクトの設定（`ProjectConfig.read`）・`ExcludeRules`・`ResolvedExec.read` が共有している。`line_numbers` を `ReadConfig` に加えると、プロジェクトの設定ファイルの `read.line_numbers` を受け付けてしまう。`ReadConfig` は変えず、利用者の設定の `read` の型として `UserReadConfig { exclude: Vec<String>, line_numbers: bool }`（`deny_unknown_fields`）を加える。`resolve_exec` は、利用者とプロジェクトの `exclude` から今のとおり `ReadConfig { exclude }` を作り、新しい `ResolvedExec.read_line_numbers` を設定する。`restricted` は `ProjectConfig` にないので、`after_write_check` はプロジェクトの設定ファイルで今のとおり誤りになる。
+2. **既定の値**: `RestrictedConfig` と新しい `UserReadConfig` の `Default` は、`Limits` と同じく手で書き、二つの真偽の既定を `true` にする（`#[derive(Default)]` では `false` になる）。serde の欄の既定も `true` にする。
+3. **認める型の変更**（「この作業が認める型の変更」に加える）:
+   - `ResolvedExec.read_line_numbers: bool`。
+   - `ToolContext` の `pub(crate) after_write_check: bool` と `pub(crate) read_line_numbers: bool`。`ToolContext::new` では `true` とし、組み立ての関数 `with_eval_switches(after_write_check, read_line_numbers)` を加え、`cli/exec.rs` の準備の処理が利用者の設定と `ResolvedExec` から呼ぶ。
+   - `ToolSet` の組み立ての関数（例 `ToolSet::plain_read(self)`。`read` の説明を `text::READ_PLAIN` に替える）。`Agent::new`（`agent/mod.rs`）で `!tool_context.read_line_numbers` のときに使い、`ToolSet::new(mode)` の形は変えない。
+   - `Header` の二つの欄（7）。
+4. **システムプロンプトのハッシュも変わる**: `read` の要約はシステムプロンプトにも現れる（`tests/expected/system-restricted.txt` の `read: Read a text file with line numbers.`）。`line_numbers = false` のときは、`system_prompt_sha256` と `tools_sha256` の両方が変わる。`tests/expected/system-restricted-read-plain.txt` と `tools-restricted-read-plain.json` を加え、`tests/context.rs` と `examples/update_context_expected.rs` に同じ場合を加える。システムプロンプトの中の要約は `read-plain.md` の一行目（`Read a text file.`）になる。
+5. **長い行の切り詰め**: `read.rs` の 2,000 文字の切り詰めと `long_line` の印は、`LineStyle::Numbered` のときだけ働く。`LineStyle::Plain` を加え、行の番号を付けない（`text::numbered` を通さない）ことのほかは `Numbered` と同じに振る舞わせる。`benitoite_reference` は `Reference` のままとする。
+6. **書いた後の検査を止める箇所**: `!context.after_write_check` のときは、`benitoite_check::after_write` の先頭で `output` をそのまま返す。`Not checked automatically: …` の注記も加えない。処理系を起動しないので、`after_write_checks` と `checks` は増えない。
+7. **セッションの記録のヘッダ**: `Header` に `#[serde(default, skip_serializing_if = "Option::is_none")] pub after_write_check: Option<bool>` と `read_line_numbers: Option<bool>` を加え、`false` のときだけ `Some(false)` を書く。形式の版（`FORMAT_VERSION`）は 1 のままとする（`Header` は知らない欄を拒まないので、欄を加えても前の記録を読める）。再開は、そのときの利用者の設定を使い、ヘッダは開始のときの値を残す（ヘッダは書き直さない。設計書 01-05）。テストの `Header` の組み立てに新しい欄を加える。
+8. **評価の道具**:
+   - `config` は、`benitoiteh_config` でなく `load_harnesses` で確かめる（`--dry-run` は `benitoiteh_config` を呼ばないので、綴りの誤りが有料の走行まで見つからない）。`kind` が `benitoiteh` でない項目の `config` は誤りとする。値は `type(v) is bool` のときだけ受け付ける。
+   - 生成する設定には今 `[read]` の表がないので、`[read]` の表を新しく書く。`[restricted]` には、`allowed_programs` の後に鍵の名前の順で加える。`toml_value` の辞書（行内の表）の形では書かない。
+   - 記録の見出しには、`json.dumps(config, sort_keys=True)` か、ないときは `-` を書く。
+9. **effort の値**: DeepSeek の `/anthropic` の口が `output_config.effort` の `low`・`max` を受け付けて効かせるかは確かめていない（`verified: false`）。評価で最初に確かめることとして、`SOURCE.md` に書く。比べる回数の割り振りは、走らせる前に設計者に諮る（この作業では決めない）。
+10. **テストに加えるもの**:
+    - プロジェクトの設定ファイルの `[read] line_numbers = false` が誤りになること。
+    - 新しい欄のないヘッダを読めること、既定の走行ではどちらの鍵も書かないこと。
+    - `tests/agent_loop/checks.rs` の偽の `query(...)` で起動を数え、切り替えを止めたときに `write` でも `edit` でも 0 回であること、一時ディレクトリの `.bnt` に `Not checked…` の注記が付かないこと。
+    - 通常モードが影響を受けないこと。
+    - 行の番号のない `read` でも `[line N truncated…]` の印と `screen_lines` が残ること。
