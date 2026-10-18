@@ -36,6 +36,93 @@ fn item<'a>(records: &'a [Value], name: &str) -> Result<&'a Value, Box<dyn Error
 
 const LOCAL: &str = "default_provider = 'local'\n[providers.local]\nkind = 'openai-chat'\nmodel = 'local-model'\nbase_url = 'http://127.0.0.1:1/v1'\ncontext_window = 4096\n";
 
+// 作成時の関門: ホーム内の隠しディレクトリでの拒否を、処理系の探索失敗と
+// 取り違える退行を CLI で捕まえる。既存の追加ルートの拒否では場所の選択元を試せない。
+#[test]
+fn unusable_project_explains_selection_and_leaves_processor_unchecked() -> TestResult {
+    for explicit in [false, true] {
+        let fixture = Fixture::new()?;
+        fixture.write_config(LOCAL)?;
+        let project = fixture.root.join("home/.config");
+        fs::create_dir(&project)?;
+        let mut command = fixture.command();
+        if explicit {
+            command.arg("--project").arg(&project);
+        } else {
+            command.current_dir(&project);
+        }
+        let output = command.arg("--json").output()?;
+        assert_eq!(output.status.code(), Some(1));
+        let rows = records(&output)?;
+        let writable = item(&rows, "writable")?;
+        assert_eq!(writable.get("status"), Some(&Value::from("unavailable")));
+        let detail = writable
+            .get("detail")
+            .and_then(Value::as_str)
+            .ok_or("Missing detail")?;
+        for expected in [
+            "The project directory ",
+            if explicit {
+                "(from --project)"
+            } else {
+                "(the current directory)"
+            },
+            "cannot be used:",
+            "writable root is inside a home dot directory",
+            "Run doctor in a project directory or pass --project <dir>.",
+        ] {
+            assert!(detail.contains(expected), "{detail}");
+        }
+        for name in [
+            "benitoite.discovery",
+            "benitoite.executable",
+            "benitoite.version",
+            "benitoite.skill",
+        ] {
+            let processor = item(&rows, name)?;
+            assert_eq!(processor.get("status"), Some(&Value::from("unchecked")));
+            assert!(
+                processor
+                    .get("detail")
+                    .and_then(Value::as_str)
+                    .is_some_and(|detail| detail
+                        .contains("Requires a usable project directory; see the writable item.")),
+                "{processor}"
+            );
+        }
+        let available = rows
+            .last()
+            .and_then(|row| row.get("restricted_sandbox"))
+            .and_then(Value::as_bool)
+            .ok_or("Missing sandbox summary")?;
+        let mut command = fixture.command();
+        if explicit {
+            command.arg("--project").arg(&project);
+        } else {
+            command.current_dir(&project);
+        }
+        let plain = command.output()?;
+        assert_eq!(plain.status.code(), Some(1));
+        let stdout = String::from_utf8(plain.stdout)?;
+        if available {
+            assert!(
+                stdout.contains("checked with benitoiteh itself; Benitoite was not checked"),
+                "{stdout}"
+            );
+        } else {
+            assert!(
+                stdout.contains("Restricted mode sandbox: unavailable."),
+                "{stdout}"
+            );
+        }
+        assert!(
+            !stdout.contains("Benitoite was not found or failed validation"),
+            "{stdout}"
+        );
+    }
+    Ok(())
+}
+
 // 作成時の関門: CLI の解釈と実際に開けるプロジェクトの契約。内部の parser は重ねて試さない。
 #[test]
 fn invalid_arguments_and_inaccessible_projects_exit_two() -> TestResult {
@@ -85,12 +172,32 @@ fn invalid_user_config_and_missing_home_leave_dependent_checks_unchecked() -> Te
             "benitoite.version",
             "benitoite.skill",
         ] {
+            let processor = item(&rows, name)?;
+            assert_eq!(processor.get("status"), Some(&Value::from("unchecked")));
             assert_eq!(
-                item(&rows, name)?.get("status"),
-                Some(&Value::from("unchecked"))
+                processor.get("detail").and_then(Value::as_str),
+                Some("Requires readable user configuration and data paths.")
             );
         }
         assert!(!String::from_utf8_lossy(&output.stdout).contains("secret-config-value"));
+        let mut command = fixture.command();
+        if missing_home {
+            command.env_remove("HOME");
+        }
+        let plain = command.output()?;
+        let stdout = String::from_utf8(plain.stdout)?;
+        if rows
+            .last()
+            .and_then(|row| row.get("restricted_sandbox"))
+            .and_then(Value::as_bool)
+            == Some(true)
+        {
+            assert!(stdout.contains("Benitoite was not checked"), "{stdout}");
+        }
+        assert!(
+            !stdout.contains("Benitoite was not found or failed validation"),
+            "{stdout}"
+        );
         if missing_home {
             for name in [
                 "writable",
@@ -621,6 +728,16 @@ fn normal_mode_reports_configuration_and_rejects_unsafe_writable_roots() -> Test
             assert_eq!(
                 item(&rows, "writable")?.get("status"),
                 Some(&Value::from("unavailable"))
+            );
+            let detail = item(&rows, "writable")?
+                .get("detail")
+                .and_then(Value::as_str)
+                .ok_or("Missing detail")?;
+            assert!(
+                detail.starts_with(
+                    "writable root is the filesystem root, home, or an ancestor of home:"
+                ),
+                "{detail}"
             );
         } else {
             assert_eq!(

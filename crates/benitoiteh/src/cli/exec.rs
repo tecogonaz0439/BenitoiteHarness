@@ -309,7 +309,18 @@ pub(super) fn prepare(
             additional,
             &helper,
         )
-        .map_err(StartupError::Writable)?;
+        .map_err(|error| match &error {
+            WritableError::Rejected { path, .. } if path == root.real_path() => {
+                StartupError::Io(io::Error::other(text::project_startup_error(
+                    root.real_path(),
+                    args.project.is_some(),
+                    &error,
+                )))
+            }
+            WritableError::Resolve { .. } | WritableError::Rejected { .. } => {
+                StartupError::Writable(error)
+            }
+        })?;
         if let Some(fixed) = overrides
             && (locations.project != fixed.project
                 || locations.additional != fixed.safety.writable_roots)

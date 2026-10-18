@@ -10,7 +10,7 @@ use super::{Item, Status, probe::Probe, text};
 use crate::benitoite::skill::{self, SkillDocument, SkillDocuments};
 use crate::benitoite::{self, BenitoiteError, Processor, QueryContext, QueryLauncher, display};
 use crate::config::paths::DataPaths;
-use crate::config::writable::validate_writable_with_executable;
+use crate::config::writable::{WritableError, validate_writable_with_executable};
 use crate::config::{UserConfig, child_environment};
 
 /// 形を検査した処理系と、規則の検査・問い合わせで共有する方針の入力。
@@ -35,7 +35,14 @@ pub(super) fn prepare(
         let probe = probe.map_err(str::to_owned)?;
         let locations =
             validate_writable_with_executable(paths, project, &probe.write, &[], &probe.helper)
-                .map_err(|error| error.to_string())?;
+                .map_err(|error| match &error {
+                    WritableError::Rejected { path, .. } if path == project => {
+                        text::PROJECT_REQUIRED.to_owned()
+                    }
+                    WritableError::Resolve { .. } | WritableError::Rejected { .. } => {
+                        error.to_string()
+                    }
+                })?;
         Ok((
             config,
             QueryContext {
