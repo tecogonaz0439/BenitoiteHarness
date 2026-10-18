@@ -146,3 +146,14 @@
 2. **利用者の設定の書き換えの確かめ**: 試行の前と後で、`~/.gemini/config/config.json`・`~/.gemini/config/mcp_config.json`・`~/.gemini/config/projects/*.json`・`~/.gemini/antigravity-cli/settings.json` の SHA-256 と、`~/.gemini/config/` の直下の項目の一覧を比べる。違えば、理由の先頭に `SAFETY: user Antigravity settings changed` を加え、その後の試行を始めない（`--stop-cost` の停止と同じく、それまでの記録を書いて終了状態 3 で終える）。`permissionOverrides` の許可が `config.json` に残る（変更の記録 1.3.4 の「Always allow」の保存）場合に、これで気付く。
 3. **版の変化の検知**（設計者の決定、2026-10-19）: 自動の更新は止めず、試行ごとに、起動の前と後に `agy --version` を問い合わせ、行に `harness_version_start` と `harness_version_end` を書く。二つが違えば、理由に `WARNING: harness version changed <前> -> <後>` を加え、その後の試行を始めない（2 と同じ止め方）。記録の見出しの版は、最初の試行の前の版とする。利用者の実行ファイルには手を加えない。
 4. **`SOURCE.md`**: 「分かったこと」を、確かめた事実として書き、前の「確かめていないこと」のうち確かめた項目を改める。自動の更新は止められないことと、版の変化を検知して止める扱いを書く。
+
+## 補足 3（2026-10-19、2 回目の試しの走行の後）
+
+本節は、上の各節と補足 1・2 に優先する。2 回目の試しの走行（`agy` 1.4.2、記録は `tools/skill-eval/results/2026-10-19-0710-antigravity-gemini-trial2.md`）でも、門が `permissionOverrides` を添えて `allow` を返した `benitoite check main.bnt` を、`agy` は「command」の権限が要るとして断り、走行を終えた。変更の記録（1.1.3、1.1.5、1.0.12）によると、非対話でコマンドを許すには、利用者の設定（`~/.gemini/antigravity-cli/settings.json` か `~/.gemini/config/projects/` の設定）に許可の規則を書くか、`--dangerously-skip-permissions` を使う。設計者が後者を選んだ（設計書 07-02「比べる相手」、2026-10-19）。
+
+1. **起動の形**: `start` の `--mode`・`accept-edits` を `--dangerously-skip-permissions` に替える。ほか（`--print-timeout 1800s`、`--log-file`、`--output-format json`）は変えない。`harnesses.json` の `_comment` を改める。
+2. **`PERMISSION_OVERRIDES`** を `False` に戻す（すべての操作を自動で許す起動では要らず、許可が設定に残るかは確かめていない）。テストを合わせる。
+3. **フックの時間の上限**: `hooks.json` の門の `timeout` を 10 から 30（秒）にする（門の時間切れで道具が通るのを避ける）。
+4. **門の決定の突き合わせ**（門が失敗すると道具が通るため）: 試行の後、会話の記録の `PLANNER_RESPONSE` の `tool_calls` を道具の名前ごとに数え、`gate.log` の決定の行（`allow` と `deny`）を道具の名前ごとに数える。ある名前で会話の記録の数が `gate.log` の数より多ければ、理由の先頭に `SAFETY: tool calls without a gate decision (<数>)` を加える。会話の記録が読めなければ、理由の先頭に `SAFETY: gate coverage unverifiable` を加える。補足 1 の E（包みのコマンドの記録と `run_command` の `allow` の突き合わせ）は残す。
+5. **`SOURCE.md`**: 2 回目の試しで分かったこと（`permissionOverrides` も既定の拒否に優先しない）、起動の形を改めた理由、門が失敗したときに道具が通ることと 4 の突き合わせ、最初の試しで確かめること（すべての操作を自動で許す起動でも、門の `deny` が効くこと。`agy` 1.4.2 で）を書く。前の「accept-edits のもとで門が失敗するとコマンドは断られる」の記述を改める。
+6. テスト: 起動の形、`timeout`、4 の各場合（数が合う、足りない、会話の記録がない）。
