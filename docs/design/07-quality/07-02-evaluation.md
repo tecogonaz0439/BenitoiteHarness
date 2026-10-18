@@ -59,7 +59,8 @@
 - 【決定】Claude Code は、Claude の購読（サブスクリプション）で走らせ、API の利用料を使わない（2026-10-18 に設計者が決めた）。起動の環境から `ANTHROPIC_API_KEY` を除く。
 - 【決定】Codex CLI と Antigravity の CLI は、P5 では走らせない（2026-10-18 に設計者が決めた）。理由: 既定のモデルが比べる組のどれとも違い、走らせるには道具の側の直しも要る。
 - 【決定】Benitoite の過去の評価の記録は比較に引かず、どの相手も同じ時期に同じ処理系（`v0.0.7`）で走らせ直す（2026-10-18 に設計者が決めた。BH-073 を閉じた）。理由: 過去の記録は、処理系が公開前の版だったり試行が 1 回だけだったりして条件が揃わず、トークンの量と時間を記録していない。
-- 【方針】推論の深さは、主の比較では、DeepSeek Harness が DeepSeek-V4.1-Flash に既定で送る値に `benitoiteh` を揃える。Claude Code × Opus 5.5 と `benitoiteh` × Opus 5.5 は、Benitoite の Skill の評価の既定（`medium`）に揃える。`benitoiteh` × Gemini 3.8 Flash は `high` とする。理由: 比べる相手の既定を変えずに走らせると、相手の利用者が普段使う形で比べられる。DeepSeek の口は `low`・`high`・`max` だけを受け付けるので、`medium` に揃えられない。
+- 【方針】推論の深さは、主の比較では `high` とする。DeepSeek Harness が DeepSeek-V4.1-Flash に既定で送る値（`thinking` の `enabled` と `output_config.effort` の `high`）であり、`benitoiteh` の既定とも同じである（[DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) のコミット `687f282e`（`0.2.1-rc.2`）の `packages/llm/llm-deepseek/src/serialize.ts`。2026-10-18 に読んで確かめた）。Claude Code × Opus 5.5 と `benitoiteh` × Opus 5.5 は、Benitoite の Skill の評価の既定（`medium`）に揃える。`benitoiteh` × Gemini 3.8 Flash は `high` とする。理由: 比べる相手の既定を変えずに走らせると、相手の利用者が普段使う形で比べられる。
+- 【方針】DeepSeek Harness は、非対話の形（`--profile headless --json`）で、試行ごとに空の設定のディレクトリ（`DSH_HOME`・`DSH_AGENTS_HOME`）を指して起動する。設定の重ね書き（`--patch`）で、ウェブの道具、セッションの記録を DeepSeek に送る欄（`dsh_session_log`。既定で有効）、導入した部品の一覧を送る欄、会話の題を作る補助の LLM の呼び出しを止める。API のキーは、利用者のキーチェーンから読んで起動の環境変数で渡し、ファイルに書かない（同じコミットの `packages/bundle/headless/README.md` ほか）。理由: ほかの相手と同じく、インターネットと利用者の設定を使わせない。評価の対話の記録を、提供者に送る必要がない。
 
 費用をかけずに繰り返せる比較のために、手元の推論サーバで動くモデルでも評価する。使うモデルは BH-072 で決める。S の段では行わない。
 
@@ -79,7 +80,7 @@
 ほかの組（「比べる相手」の表）と合わせて 172 回とし、費用の見込みを合わせて約 $8〜19 とした（2026-10-18 の単価による）。
 
 - 【決定】一回の試行のトークンの量の上限を、どのモデルでも 200 万トークンとする（2026-10-18 に設計者が決めた）。`benitoiteh` では `--max-run-tokens 2000000` で掛ける。この量は、キャッシュから読んだ量と書いた量を含む入力と、出力の和である（[CLI と設定ファイル](../05-interface/05-01-cli.md)）。理由: 上限をモデルごとに変えると、上限で止まった試行の数を比べられない。DeepSeek-V4.1-Flash の試しでは、60 万トークンの上限で、正しいスクリプトを書いた後に止まった。
-- 【方針】番の数の上限は、`benitoiteh` では `--max-turns 50` とし、上限を設けられる相手には同じ値を設ける。
+- 【方針】番の数の上限は、`benitoiteh` では `--max-turns 50` とし、上限を設けられる相手には同じ値を設ける。DeepSeek Harness は番の数とトークンの量の上限を持たず、Claude Code はトークンの量の上限を持たないので、これらの相手は評価の道具の時間の上限（一回 30 分）で止め、トークンの量を記録して、200 万トークンを超えた試行を記録に示す。
 - 【決定】累計の費用は、試行ごとに記録のトークンの量と単価から計算し、提供者ごとに次の額に達したら、評価を止めて設計者に報告する（2026-10-18 に設計者が決めた）。Anthropic の分は $10、Google の分は $10、DeepSeek の分は残高の範囲とする。
 
 ### 測る項目
