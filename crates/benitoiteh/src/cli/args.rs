@@ -32,17 +32,13 @@ impl Request {
     }
 }
 
-/// 後の段階で有効にするオプション。現段階では指定を保持して誤りにする。
-#[derive(Clone, Debug, Default)]
-pub struct DeferredOptions {
-    pub project_parent: Option<PathBuf>,
-}
-
 /// P1 の exec が使う明示的な指定。既定の値は config で解決する。
 #[derive(Clone, Debug)]
 pub struct ExecArgs {
     /// 対話の形では依頼を省略できる。
     pub interactive: bool,
+    /// 非対話でプロジェクトの作成を許す親。起動時に実のパスへ変換する。
+    pub project_parent: Option<PathBuf>,
     pub allow: Option<BTreeSet<crate::benitoite::Effect>>,
     pub resume: Option<String>,
     pub continue_session: bool,
@@ -69,11 +65,6 @@ pub enum ArgsError {
     Invalid,
     /// 同じオプションを二度指定した。
     Duplicate(String),
-    /// 解釈したが、まだ使えないオプション。
-    Unavailable {
-        option: String,
-        values: Box<DeferredOptions>,
-    },
 }
 
 impl fmt::Display for ArgsError {
@@ -81,7 +72,6 @@ impl fmt::Display for ArgsError {
         match self {
             Self::Invalid => f.write_str(text::INVALID_ARGUMENTS),
             Self::Duplicate(option) => f.write_str(&text::duplicate_option(option)),
-            Self::Unavailable { option, .. } => f.write_str(&text::unavailable_option(option)),
         }
     }
 }
@@ -107,6 +97,7 @@ impl ExecArgs {
         let mut result = Self {
             interactive,
             allow: None,
+            project_parent: None,
             resume: None,
             continue_session: false,
             sandbox: None,
@@ -124,8 +115,6 @@ impl ExecArgs {
             output_last_message: None,
             request: Request::Stdin,
         };
-        let mut deferred = DeferredOptions::default();
-        let mut unavailable = None;
         let mut seen = BTreeSet::new();
         let mut request = None;
         let mut options = true;
@@ -240,27 +229,19 @@ impl ExecArgs {
                     }
                     result.allow = Some(effects);
                 }
-                "--project-parent" => deferred.project_parent = Some(PathBuf::from(value)),
+                "--project-parent" => result.project_parent = Some(PathBuf::from(value)),
                 "--resume" => result.resume = Some(string()?.to_owned()),
                 "--continue" => result.continue_session = true,
                 "--no-sandbox" => result.no_sandbox = true,
                 _ => return Err(ArgsError::Invalid),
             }
-            if option == "--project-parent" && unavailable.is_none() {
-                unavailable = Some(option.to_owned());
-            }
-        }
-        if let Some(option) = unavailable {
-            return Err(ArgsError::Unavailable {
-                option,
-                values: Box::new(deferred),
-            });
         }
         if result.resume.is_some() && result.continue_session {
             return Err(ArgsError::Invalid);
         }
         if interactive {
-            if result.allow.is_some()
+            if result.project_parent.is_some()
+                || result.allow.is_some()
                 || result.json
                 || result.output_last_message.is_some()
                 || request == Some(Request::Stdin)

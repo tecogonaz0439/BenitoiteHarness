@@ -299,6 +299,9 @@ impl Screen {
                 }
                 self.notice(&super::text::checkpoint(checkpoint))
             }
+            AgentEvent::ProjectDirChanged { project_dir } => {
+                self.notice(&super::text::project_changed(project_dir))
+            }
             AgentEvent::HardLinks { paths } => self.notice(&super::text::hard_links(paths)),
             AgentEvent::SessionEnd { outcome, reason } => {
                 self.flush_pending();

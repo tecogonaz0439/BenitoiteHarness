@@ -450,6 +450,7 @@ fn agent(
     resume: bool,
 ) -> Result<Agent, Box<dyn std::error::Error>> {
     let config = AgentConfig {
+        project_parent: None,
         allow_effects: None,
         mode: Mode::Restricted,
         destination: Destination {

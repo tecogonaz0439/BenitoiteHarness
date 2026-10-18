@@ -119,6 +119,9 @@ impl ExecOutput {
                 kept_items,
                 ..
             } => Some(text::compaction(*reason, *summarized_items, *kept_items)),
+            AgentEvent::ProjectDirChanged { project_dir } => {
+                Some(text::project_changed(project_dir))
+            }
             AgentEvent::Checkpoint { checkpoint } => Some(text::checkpoint(checkpoint)),
             AgentEvent::HardLinks { paths } => Some(text::hard_links(paths)),
             AgentEvent::Error { .. } => None,

@@ -6,6 +6,8 @@ mod allow;
 mod checks;
 #[path = "agent_loop/compaction.rs"]
 mod compaction;
+#[path = "agent_loop/create_project.rs"]
+mod create_project;
 #[path = "agent_loop/interaction.rs"]
 mod interaction;
 mod support;
@@ -72,6 +74,7 @@ impl Fixture {
 
     fn config(&self, server: &MockProvider, kind: AdapterKind) -> AgentConfig {
         AgentConfig {
+            project_parent: None,
             allow_effects: None,
             mode: Mode::Normal,
             destination: Destination {
@@ -137,7 +140,11 @@ impl Fixture {
                 &ReadConfig::default(),
             )?,
         )
-        .with_session(session.clone());
+        .with_session(session.clone())
+        .with_project_creation(
+            self.paths.clone(),
+            fs::canonicalize(env!("CARGO_BIN_EXE_benitoiteh"))?,
+        );
         if config.mode == Mode::Restricted || check_query.is_some() {
             context = context.with_skill(support::skills()?);
         }

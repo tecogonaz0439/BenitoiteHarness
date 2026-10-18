@@ -1107,3 +1107,74 @@ fn new_session_is_ended_without_activation_when_quit_or_signals_arrive_before_ol
     }
     Ok(())
 }
+
+// 関門: Agent の切り替えだけでは Worker が /new に古いプロジェクトを渡す退行を捕まえない。
+#[test]
+fn new_after_project_creation_uses_the_project_from_the_event() -> TestResult {
+    use benitoiteh::approval::{ApprovalPolicy, InteractiveApprover};
+    use benitoiteh::config::{Approval, Sandbox};
+    let f = Fixture::new()?;
+    let destination = f.root.join("created");
+    let mut server = MockProvider::start(vec![
+        ResponseScript::sse(response(
+            json!({"tool_calls":[{"index":0,"id":"create","type":"function","function":{"name":"create_project","arguments":json!({"path":destination}).to_string()}}]}),
+            "tool_calls",
+        )),
+        ResponseScript::sse(response(json!({"content":"Creation finished"}), "stop")),
+    ])?;
+    let mut prepared = f.new_session_in_mode(&server, Mode::Restricted)?;
+    let (approver, requests) = InteractiveApprover::channel();
+    prepared.agent = prepared.agent.with_approvals(
+        Box::new(approver),
+        ApprovalPolicy {
+            approval: Approval::OnRequest,
+            sandbox: Sandbox::WorkspaceWrite,
+            sandboxed: true,
+        },
+    );
+    let worker = Worker::start(prepared.agent, prepared.session)?.with_approval_requests(requests);
+    let mut screen = Screen::new((160, 30), status());
+    let mut output = Output::default();
+    let mut input = Driver::new(
+        output.clone(),
+        vec![
+            ("", send("Create")),
+            (
+                "[y] create and switch to this project",
+                vec![key(KeyCode::Char('y'), KeyModifiers::NONE)],
+            ),
+            ("Creation finished", send("/new")),
+            ("New session started.", send("/quit")),
+        ],
+    );
+    let mut called = false;
+    run(
+        &mut screen,
+        worker,
+        &mut input,
+        &mut output,
+        &AtomicBool::new(false),
+        |_| {},
+        &mut |current| {
+            assert_eq!(current.project, destination);
+            called = true;
+            let next = std::mem::ManuallyDrop::new(Fixture {
+                root: f.root.clone(),
+                project: destination.clone(),
+                paths: f.paths.clone(),
+            });
+            let mut prepared = next
+                .new_session_in_mode(&server, Mode::Restricted)
+                .map_err(|error| error.to_string())?;
+            prepared.diagnostics.push("New session started.".into());
+            Ok(prepared)
+        },
+    )?;
+    assert!(called);
+    assert!(
+        safe_output(&output.0.borrow())?
+            .contains(&format!("Project changed to {}.", destination.display()))
+    );
+    server.shutdown()?;
+    Ok(())
+}

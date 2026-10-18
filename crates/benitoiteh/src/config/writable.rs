@@ -19,6 +19,8 @@ pub enum WritableRule {
     ProjectTemporary,
     /// 自身の実行ファイルを含む。
     Executable,
+    /// 作成先が守る名前の中にある。
+    ProtectedName,
 }
 
 /// 実パスへの変換の失敗、または拒否した規則と場所。
@@ -45,6 +47,7 @@ impl fmt::Display for WritableError {
                     WritableRule::ConfigOrData => text::CONFIG_OR_DATA,
                     WritableRule::ProjectTemporary => text::PROJECT_TEMP,
                     WritableRule::Executable => text::WRITABLE_EXECUTABLE,
+                    WritableRule::ProtectedName => text::WRITABLE_PROTECTED_NAME,
                 };
                 write!(f, "{message}: {} ({})", path.display(), other.display())
             }
@@ -88,9 +91,6 @@ pub fn validate_writable_with_executable(
             path: executable.to_path_buf(),
             source,
         })?;
-    let home = real_existing(&paths.home)?;
-    let config = real_future(&paths.config_dir)?;
-    let data = real_future(&paths.data_dir)?;
     let locations = WritableLocations {
         project: real_existing(project)?,
         temporary: real_future(temporary)?,
@@ -99,6 +99,46 @@ pub fn validate_writable_with_executable(
             .map(|path| real_existing(path))
             .collect::<Result<_, _>>()?,
     };
+    validate_locations(paths, locations, &executable)
+}
+
+/// 開いた実の親と未作成の名前に、起動時と同じ書ける場所の規則を当てる。
+pub fn validate_project_candidate(
+    paths: &DataPaths,
+    candidate: &Path,
+    temporary: &Path,
+    executable: &Path,
+) -> Result<WritableLocations, WritableError> {
+    if candidate.components().any(|part| {
+        let name = part.as_os_str().as_encoded_bytes();
+        name.eq_ignore_ascii_case(b".git") || name.eq_ignore_ascii_case(b".benitoiteh")
+    }) {
+        return Err(reject(WritableRule::ProtectedName, candidate, candidate));
+    }
+    let executable =
+        std::fs::canonicalize(executable).map_err(|source| WritableError::Resolve {
+            path: executable.into(),
+            source,
+        })?;
+    validate_locations(
+        paths,
+        WritableLocations {
+            project: candidate.into(),
+            temporary: real_future(temporary)?,
+            additional: Vec::new(),
+        },
+        &executable,
+    )
+}
+
+fn validate_locations(
+    paths: &DataPaths,
+    locations: WritableLocations,
+    executable: &Path,
+) -> Result<WritableLocations, WritableError> {
+    let home = real_existing(&paths.home)?;
+    let config = real_future(&paths.config_dir)?;
+    let data = real_future(&paths.data_dir)?;
     for path in std::iter::once(&locations.project)
         .chain(std::iter::once(&locations.temporary))
         .chain(&locations.additional)
@@ -128,7 +168,7 @@ pub fn validate_writable_with_executable(
         .chain(&locations.additional)
     {
         if executable.starts_with(path) {
-            return Err(reject(WritableRule::Executable, path, &executable));
+            return Err(reject(WritableRule::Executable, path, executable));
         }
     }
     if overlaps(&locations.project, &locations.temporary) {

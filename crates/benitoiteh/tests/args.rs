@@ -82,6 +82,7 @@ fn exec_arguments_reject_duplicates_invalid_values_and_unavailable_options() {
     for option in [
         "--mode",
         "--project",
+        "--project-parent",
         "--provider",
         "--model",
         "--effort",
@@ -128,9 +129,13 @@ fn exec_arguments_reject_duplicates_invalid_values_and_unavailable_options() {
     ] {
         assert!(ExecArgs::parse(args.clone()).is_err(), "{args:?}");
     }
+    assert!(
+        ExecArgs::parse(["--project-parent", "/project", "request"])
+            .is_ok_and(|args| args.project_parent == Some(PathBuf::from("/project")))
+    );
     assert!(matches!(
-        ExecArgs::parse(["--project-parent", "/project", "request"]),
-        Err(ArgsError::Unavailable { .. })
+        ExecArgs::parse_interactive(["--project-parent", "/project"]),
+        Err(ArgsError::Invalid)
     ));
 }
 

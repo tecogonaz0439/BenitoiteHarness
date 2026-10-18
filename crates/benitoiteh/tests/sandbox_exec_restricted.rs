@@ -833,3 +833,109 @@ fn exec_allows_assert_check_without_permissions_and_stops_three_effect_denials()
     }
     Ok(())
 }
+
+// 関門: 記述子での切り替えだけでは、問い合わせと実行の古い OS の根・continue の誤照合を捕まえない。
+#[test]
+fn created_project_replaces_query_run_and_continue_roots() -> TestResult {
+    let script = "import Benitoite.Unofficial.IO.File\nimport Benitoite.Unofficial.IO.Console\nfunction main() -> Unit uses File.Write, Console.Write\n  bind local <- File.writeText(path: \"local.txt\", text: \"allowed\")\n  bind old <- File.writeText(path: \"../forbidden.txt\", text: \"forbidden\")\n  Console.writeLine(\"attempted\")\nend function\n";
+    let mut server = MockProvider::start(vec![
+        ResponseScript::sse(Protocol::Chat.response(
+            Some(("create", "create_project", json!({"path":"created"}))),
+            "",
+            false,
+        )),
+        ResponseScript::sse(Protocol::Chat.response(
+            Some(("check", "benitoite_check", json!({"path":"main.bnt"}))),
+            "",
+            false,
+        )),
+        ResponseScript::sse(Protocol::Chat.response(
+            Some(("run", "benitoite_run", json!({"path":"main.bnt"}))),
+            "",
+            false,
+        )),
+        ResponseScript::sse(Protocol::Chat.response(
+            Some((
+                "write",
+                "write",
+                json!({"path":"writer.bnt","content":script}),
+            )),
+            "",
+            false,
+        )),
+        ResponseScript::sse(Protocol::Chat.response(
+            Some(("writer", "benitoite_run", json!({"path":"writer.bnt"}))),
+            "",
+            false,
+        )),
+        ResponseScript::sse(Protocol::Chat.response(None, "Created and checked", false)),
+        ResponseScript::sse(Protocol::Chat.response(None, "Continued from new project", false)),
+    ])?;
+    let f = Fixture::restricted(Protocol::Chat, &server)?;
+    let old = f.root.join("project");
+    let new = old.join("created");
+    let output = Running::start(
+        f.command("Create")
+            .args([
+                "--json",
+                "--allow",
+                "Console.Write,File.Write",
+                "--project-parent",
+            ])
+            .arg(&old),
+    )?
+    .finish()?;
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(fs::read_to_string(new.join("local.txt"))?, "allowed");
+    assert!(!old.join("forbidden.txt").exists());
+    let events = lines(&output.stdout)?;
+    assert!(events.iter().any(
+        |event| event.get("type") == Some(&json!("project_dir_changed"))
+            && event.get("project_dir") == Some(&json!(new))
+    ));
+    let (directory, records) = f.records()?;
+    let results = records
+        .iter()
+        .filter(|r| r.get("type") == Some(&json!("tool_result")))
+        .collect::<Vec<_>>();
+    assert_eq!(results.len(), 5);
+    assert!(
+        results
+            .iter()
+            .all(|r| r.pointer("/result/is_error") == Some(&json!(false))),
+        "{results:?}"
+    );
+    assert!(results.iter().any(|r| {
+        r.pointer("/result/text")
+            .and_then(Value::as_str)
+            .is_some_and(|s| s.contains("hello, world."))
+    }));
+    let previous =
+        Running::start(f.command("Continue old").args(["--continue", "--json"]))?.finish()?;
+    assert_eq!(previous.status.code(), Some(2));
+    assert!(String::from_utf8_lossy(&previous.stderr).contains("No resumable session"));
+    let continued = Running::start(
+        f.command("Continue new")
+            .current_dir(&new)
+            .args(["--continue", "--json"]),
+    )?
+    .finish()?;
+    assert!(
+        continued.status.success(),
+        "{}",
+        String::from_utf8_lossy(&continued.stderr)
+    );
+    assert_eq!(
+        lines(&continued.stdout)?
+            .first()
+            .and_then(|e| e.get("session_id")),
+        Some(&json!(id(&directory)?))
+    );
+    assert_eq!(server.requests()?.len(), 7);
+    server.shutdown()?;
+    Ok(())
+}

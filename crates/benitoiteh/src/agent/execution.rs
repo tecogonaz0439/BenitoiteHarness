@@ -17,6 +17,13 @@ struct Prepared {
     parallel: bool,
 }
 
+struct ProjectChange {
+    tools: crate::tools::PreparedProjectSwitch,
+    checkpoints: Option<crate::rewind::CheckpointRecorder>,
+    environment: crate::context::Environment,
+    environment_changes: Option<String>,
+}
+
 impl Agent {
     pub(super) fn execute_calls(
         &mut self,
@@ -201,6 +208,24 @@ impl Agent {
             return Ok(output);
         };
         summary.checks = summary.checks.saturating_add(output.processor_launches);
+        if request.kind == approval::ApprovalKind::CreateProject && self.tool_context.noninteractive
+        {
+            let permitted = self.config.project_parent.as_deref().is_some_and(|parent| {
+                request
+                    .facts
+                    .path
+                    .as_deref()
+                    .and_then(std::path::Path::parent)
+                    == Some(parent)
+            });
+            if permitted {
+                return Ok(self.execute_approved(call, validated, cancelled));
+            }
+            summary.approvals.policy_denied = summary.approvals.policy_denied.saturating_add(1);
+            return Ok(ToolOutput::error(approval::policy_denial_message(
+                request.kind,
+            )));
+        }
         if matches!(
             request.kind,
             approval::ApprovalKind::Effects | approval::ApprovalKind::TestEffects
@@ -365,6 +390,37 @@ impl Agent {
         }
     }
 
+    fn prepare_project_change(
+        &self,
+        root: crate::safe_fs::ScopeRoot,
+    ) -> Result<ProjectChange, AgentError> {
+        let writable = vec![
+            root.real_path().into(),
+            self.tool_context.temporary.real_path().into(),
+        ];
+        let environment = self
+            .environment
+            .clone()
+            .with_project(root.real_path(), &writable)?;
+        let environment_changes = environment.changes_since(&self.environment);
+        let tools = self
+            .tool_context
+            .prepare_project_switch(root)
+            .map_err(|_| AgentError::Worker)?;
+        let checkpoints = self
+            .tool_context
+            .checkpoints
+            .as_ref()
+            .map(|recorder| recorder.prepare_restart(&tools.project, tools.exclude.clone()))
+            .transpose()?;
+        Ok(ProjectChange {
+            tools,
+            checkpoints,
+            environment,
+            environment_changes,
+        })
+    }
+
     fn result(
         &mut self,
         call: &ToolCall,
@@ -372,6 +428,41 @@ impl Agent {
         events: &SyncSender<AgentEvent>,
         summary: &mut Summary,
     ) -> Result<(), AgentError> {
+        if let Some(root) = self
+            .tool_context
+            .take_created_project(&call.id)
+            .map_err(|_| AgentError::Worker)?
+        {
+            self.confirmed_effects.clear();
+            self.check_failures.clear();
+            self.check_limit.clear();
+            let project_dir = root.real_path().to_path_buf();
+            match self.prepare_project_change(root) {
+                Ok(prepared) => {
+                    let event = AgentEvent::ProjectDirChanged { project_dir };
+                    if let Some(record) = event.record() {
+                        self.writer.append(&record)?;
+                    }
+                    // 準備の失敗では、元の根・時点・環境を保つ。出来事を記録した後は
+                    // Result を返さない状態の置き換えだけを行う（設計書 01-03「create_project（制限モード）」）。
+                    self.tool_context.switch_project(prepared.tools);
+                    self.tool_context.checkpoints = prepared.checkpoints;
+                    self.environment = prepared.environment;
+                    self.environment_changes = prepared.environment_changes;
+                    // 受信側が閉じても、記録と内部のプロジェクトは一致したまま終える。
+                    events.send(event).map_err(|_| AgentError::ReceiverClosed)?;
+                }
+                Err(error) => {
+                    output = ToolOutput::error(crate::tools::text::project_switch_failed(
+                        &project_dir,
+                        &error,
+                    ));
+                }
+            }
+        }
+        if output.policy_denied {
+            summary.approvals.policy_denied = summary.approvals.policy_denied.saturating_add(1);
+        }
         self.checkpoint_notices(events)?;
         summary.checks = summary.checks.saturating_add(output.processor_launches);
         if call.name == "benitoite_scratch" {
@@ -451,6 +542,206 @@ impl Agent {
             self.files.add_call(call);
         }
         self.push_item(Item::ToolResult(result));
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::config::{Limits, Mode, ReadConfig, paths::DataPaths};
+    use crate::context::Environment;
+    use crate::http::HttpTimeouts;
+    use crate::provider::{AdapterKind, Capabilities, Destination};
+    use crate::safe_fs::ScopeRoot;
+    use crate::session::{Session, SessionId, read_records};
+    use crate::tools::{FileVersion, ToolContext, exclude::ExcludeRules};
+    use std::error::Error;
+    use std::fs;
+    use std::path::PathBuf;
+    use std::sync::mpsc;
+    use std::time::{Duration, SystemTime};
+
+    struct Fixture(PathBuf);
+    impl Drop for Fixture {
+        fn drop(&mut self) {
+            let _removed = fs::remove_dir_all(&self.0);
+        }
+    }
+    struct RestoreLimit(rustix::process::Rlimit);
+    impl Drop for RestoreLimit {
+        fn drop(&mut self) {
+            let _restored = rustix::process::setrlimit(rustix::process::Resource::Nofile, self.0);
+        }
+    }
+
+    // 関門: 実際の記述子不足で restart を失敗させる。記録後の半端な切り替えと、
+    // 失敗を道具の結果にせず番を止める退行を、結果・根・版・時点・記録で検出する。
+    #[test]
+    fn project_switch_preparation_failure_keeps_the_previous_project() -> Result<(), Box<dyn Error>>
+    {
+        const CHILD: &str = "BENITOITEH_TEST_PROJECT_SWITCH_FAILURE";
+        if std::env::var_os(CHILD).is_none() {
+            let output = std::process::Command::new(std::env::current_exe()?)
+                .args(["--exact", "agent::execution::tests::project_switch_preparation_failure_keeps_the_previous_project", "--nocapture"])
+                .env(CHILD, "1").output()?;
+            assert!(
+                output.status.success(),
+                "{}\n{}",
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr)
+            );
+            return Ok(());
+        }
+        let id = SessionId::generate(SystemTime::now())?;
+        let root = std::env::temp_dir().join(format!("bh-switch-failure-{id}"));
+        fs::create_dir(&root)?;
+        let f = Fixture(root.canonicalize()?);
+        for name in ["home", "project", "tmp", "created"] {
+            fs::create_dir(f.0.join(name))?;
+        }
+        let paths = DataPaths::from_values(
+            Some(&f.0.join("home")),
+            Some(&f.0.join("config")),
+            Some(&f.0.join("data")),
+            Some(&f.0.join("tmp")),
+        )?;
+        let session = Session::create(&paths, id)?;
+        let project = f.0.join("project");
+        let created = f.0.join("created");
+        fs::write(project.join("old.bnt"), "old")?;
+        fs::write(created.join("main.bnt"), "created")?;
+        let spill = session.directory().join("spill");
+        let context = ToolContext::new(
+            Mode::Normal,
+            ScopeRoot::open(&project)?,
+            ScopeRoot::open(session.temporary_dir())?,
+            ScopeRoot::open(&spill)?,
+            ExcludeRules::new(
+                &project,
+                &paths,
+                &spill,
+                &ReadConfig::default(),
+                &ReadConfig::default(),
+            )?,
+        );
+        let config = crate::agent::AgentConfig {
+            project_parent: None,
+            allow_effects: None,
+            mode: Mode::Normal,
+            destination: Destination {
+                provider: "mock".into(),
+                base_url: "https://mock.invalid".into(),
+                model: "mock".into(),
+            },
+            kind: AdapterKind::OpenAiChat,
+            capabilities: Capabilities::default(),
+            effort: "high".into(),
+            limits: Limits::default(),
+            http_timeouts: HttpTimeouts::default(),
+            retry_initial: Duration::from_millis(1),
+        };
+        let environment = Environment::capture(
+            &project,
+            Mode::Normal,
+            &[project.clone(), session.temporary_dir().into()],
+            false,
+            SystemTime::now(),
+        )?;
+        let mut agent = Agent::new(
+            config,
+            String::new(),
+            context,
+            environment.clone(),
+            session.clone(),
+        )?;
+        let version = FileVersion::from_metadata(&fs::metadata(project.join("old.bnt"))?);
+        agent
+            .tool_context
+            .record_read_version(project.join("old.bnt"), version.clone())?;
+        let checkpoint = agent
+            .tool_context
+            .checkpoints
+            .as_ref()
+            .ok_or("recorder")?
+            .capture(
+                crate::rewind::CheckpointReason::Request,
+                None,
+                Some(0),
+                &AtomicBool::new(false),
+            )?;
+        let call = ToolCall {
+            id: "create".into(),
+            provider_id: Some("create".into()),
+            provider_item_id: None,
+            name: "create_project".into(),
+            arguments: serde_json::json!({"path":created}),
+            raw_arguments: String::new(),
+        };
+        // 作成と承認の試験は道具の境界が守る。ここでは、作成済みの根を受けた切り替えを確かめる。
+        agent
+            .tool_context
+            .created_projects
+            .lock()
+            .map_err(|_| "created projects")?
+            .insert(call.id.clone(), ScopeRoot::open(&created)?);
+        let (sender, receiver) = mpsc::sync_channel(64);
+        let mut summary = Summary::default();
+        let limit = RestoreLimit(rustix::process::getrlimit(
+            rustix::process::Resource::Nofile,
+        ));
+        rustix::process::setrlimit(
+            rustix::process::Resource::Nofile,
+            rustix::process::Rlimit {
+                current: Some(0),
+                maximum: limit.0.maximum,
+            },
+        )?;
+        let result = agent.result(&call, ToolOutput::success("created"), &sender, &mut summary);
+        drop(limit);
+        result?;
+        // Linux では、UTF-8 にできない一時領域の実パスで環境の準備も失敗させる。
+        // 失敗の口を本番へ加えず、準備が受け取る本物の値で確かめる。
+        #[cfg(target_os = "linux")]
+        {
+            use std::os::unix::ffi::OsStringExt;
+            let raw = f.0.join(std::ffi::OsString::from_vec(vec![b't', 0xff]));
+            fs::create_dir(&raw)?;
+            agent.tool_context.temporary = ScopeRoot::open(&raw)?;
+            agent
+                .tool_context
+                .created_projects
+                .lock()
+                .map_err(|_| "created projects")?
+                .insert(call.id.clone(), ScopeRoot::open(&created)?);
+            agent.result(&call, ToolOutput::success("created"), &sender, &mut summary)?;
+        }
+        assert_eq!(agent.status().project, project);
+        assert_eq!(agent.environment, environment);
+        assert_eq!(
+            agent.tool_context.read_version(&project.join("old.bnt"))?,
+            Some(version)
+        );
+        assert!(
+            agent
+                .checkpoints()?
+                .iter()
+                .any(|c| c.checkpoint.id == checkpoint.id)
+        );
+        assert_eq!(fs::read_to_string(created.join("main.bnt"))?, "created");
+        let records = read_records(session.directory())?;
+        assert!(
+            !records
+                .iter()
+                .any(|r| matches!(r, Record::ProjectDirChanged { .. }))
+        );
+        assert!(records.iter().any(|r| matches!(r, Record::ToolResult { result, .. } if result.is_error && result.text.contains("could not switch") && result.text.contains("current project is unchanged"))));
+        drop(sender);
+        assert!(
+            !receiver
+                .into_iter()
+                .any(|event| matches!(event, AgentEvent::ProjectDirChanged { .. }))
+        );
         Ok(())
     }
 }

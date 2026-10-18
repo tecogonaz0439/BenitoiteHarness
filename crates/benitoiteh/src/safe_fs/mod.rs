@@ -423,14 +423,57 @@ impl ScopeRoot {
     /// 親も最後の名前もリンクを辿らず、0600 の新しいファイルだけを作る。
     /// 既存の名前は種類にかかわらず AlreadyExists とし、置き換えない。
     pub fn create_new(&self, path: &ScopeRelPath) -> Result<File, SafeFsError> {
+        self.create_new_with_mode(path, 0o600)
+    }
+
+    /// 親も最後もリンクを辿らず、umask に従う指定の権限で新しいファイルを作る。
+    pub fn create_new_with_mode(
+        &self,
+        path: &ScopeRelPath,
+        mode: u32,
+    ) -> Result<File, SafeFsError> {
+        if mode & !0o777 != 0 {
+            return Err(SafeFsError::InvalidPath);
+        }
         let strict = self.no_follow()?;
         let (parent, name) = strict.parent(path, false)?;
         os::open(
             &parent,
             &name,
             OFlags::WRONLY | OFlags::CREATE | OFlags::EXCL | OFlags::NOFOLLOW | OFlags::CLOEXEC,
-            Mode::from_raw_mode(0o600),
+            Mode::from_raw_mode(mode as _),
         )
+    }
+
+    /// 開いた親が、確認の前に開いた親と同じディレクトリかを調べる。
+    pub(crate) fn same_directory(&self, other: &Self) -> Result<bool, SafeFsError> {
+        let left = self.directory.metadata()?;
+        let right = other.directory.metadata()?;
+        Ok(left.dev() == right.dev() && left.ino() == right.ino())
+    }
+
+    /// 新しい一要素だけを作り、リンクを辿らず開き、持ち主・空・実のパスを確かめる。
+    /// 戻す根は、プロジェクト内の相対リンクを辿れる性質とする（設計書 01-03「create_project（制限モード）」）。
+    pub fn create_dir_root(&self, name: &ScopeRelPath) -> Result<Self, SafeFsError> {
+        if name.as_path().components().count() != 1 {
+            return Err(SafeFsError::InvalidPath);
+        }
+        self.create_dir(name)?;
+        let result = (|| {
+            let mut root = self.no_follow()?.open_dir(name)?;
+            if root.directory.metadata()?.uid() != rustix::process::getuid().as_raw()
+                || root.real_path != self.real_path.join(name.as_path())
+                || !root.read_dir(None)?.is_empty()
+            {
+                return Err(SafeFsError::OutsideScope);
+            }
+            root.no_follow = false;
+            Ok(root)
+        })();
+        if result.is_err() {
+            let _cleanup = self.remove_dir(name);
+        }
+        result
     }
 
     /// 新しいディレクトリを作る。すでにある場合は誤りにする。

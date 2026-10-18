@@ -266,6 +266,22 @@
     "name": "benitoite_reference"
   },
   {
+    "description": "Create a new Benitoite project and switch this session to it after approval.",
+    "input_schema": {
+      "properties": {
+        "path": {
+          "description": "Project-relative or absolute path.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "path"
+      ],
+      "type": "object"
+    },
+    "name": "create_project"
+  },
+  {
     "description": "Fetch an HTTPS URL and return its text content.",
     "input_schema": {
       "properties": {

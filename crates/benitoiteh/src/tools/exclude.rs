@@ -40,6 +40,13 @@ impl ExcludeRules {
         })
     }
 
+    /// 起動時の除外の型を保ち、相対の規則の基点だけを切り替える。
+    pub fn rebased(&self, project: &Path) -> Self {
+        let mut rules = self.clone();
+        rules.project = project.into();
+        rules
+    }
+
     /// 開いたものの実のパスについて、除外の理由を返す。
     pub fn reason(&self, real_path: &Path) -> Option<String> {
         self.default_reason(real_path)

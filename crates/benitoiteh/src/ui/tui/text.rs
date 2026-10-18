@@ -133,6 +133,7 @@ pub const COMPACTED_HISTORY: &str = "Earlier conversation was compacted.";
 pub fn approval_title(kind: crate::approval::ApprovalKind) -> &'static str {
     use crate::approval::ApprovalKind;
     match kind {
+        ApprovalKind::CreateProject => "╭─ Create Benitoite project?",
         ApprovalKind::Command => "╭─ Run command?",
         ApprovalKind::Escalate => "╭─ Run outside the sandbox?",
         ApprovalKind::WriteScope => "╭─ Write outside the allowed scope?",
@@ -145,6 +146,9 @@ pub fn approval_title(kind: crate::approval::ApprovalKind) -> &'static str {
 pub fn answer_keys(kind: Option<crate::approval::ApprovalKind>) -> &'static str {
     use crate::approval::ApprovalKind;
     match kind {
+        Some(ApprovalKind::CreateProject) => {
+            "[y] create and switch to this project  [n] decline  [m] decline with a message"
+        }
         Some(ApprovalKind::Command) => {
             "[y] run  [a] allow this exact command for this session  [n] decline  [m] decline with a message"
         }

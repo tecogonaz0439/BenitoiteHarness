@@ -7,6 +7,7 @@ mod benitoite_reference;
 mod benitoite_run;
 mod benitoite_scratch;
 mod benitoite_test;
+mod create_project;
 mod definitions;
 mod edit;
 pub mod exclude;
@@ -67,6 +68,8 @@ pub enum ToolId {
     BenitoiteScratch,
     /// 処理系の Skill の文書。
     BenitoiteReference,
+    /// 新しいプロジェクトを作って切り替える。
+    CreateProject,
     /// HTTPS の本文の取得。
     WebFetch,
 }
@@ -88,6 +91,7 @@ impl ToolId {
             Self::BenitoiteExplain => "benitoite_explain",
             Self::BenitoiteReference => "benitoite_reference",
             Self::WebFetch => "web_fetch",
+            Self::CreateProject => "create_project",
         }
     }
 }
@@ -275,6 +279,9 @@ impl ToolSet {
             ToolId::BenitoiteReference => {
                 benitoite_reference::reference(context, &call.arguments, invocation.cancelled)
             }
+            ToolId::CreateProject => {
+                create_project::execute(context, &call.arguments, approval, invocation)
+            }
             ToolId::WebFetch => web_fetch::execute(context, &call.arguments, approval, invocation),
         };
         let mut output = match result {
@@ -350,6 +357,7 @@ pub struct WebFetchContext {
 /// 最大八つの道具が共有する文脈。変わる版の記録だけを Mutex で守る。
 pub struct ToolContext {
     pub(crate) noninteractive: bool,
+    pub(crate) project_parent: Option<PathBuf>,
     pub mode: Mode,
     pub project: ScopeRoot,
     pub temporary: ScopeRoot,
@@ -366,6 +374,16 @@ pub struct ToolContext {
     pub checkpoints: Option<crate::rewind::CheckpointRecorder>,
     search_limits: SearchLimits,
     scratch_state: Mutex<benitoite_scratch::ScratchState>,
+    project_creation: Option<(crate::config::paths::DataPaths, PathBuf)>,
+    pub(crate) project_candidates: Mutex<BTreeMap<String, create_project::Candidate>>,
+    pub(crate) created_projects: Mutex<BTreeMap<String, ScopeRoot>>,
+}
+
+/// 現在の根に触れずに準備した、道具のプロジェクトの状態。
+pub(crate) struct PreparedProjectSwitch {
+    pub(crate) project: ScopeRoot,
+    pub(crate) exclude: ExcludeRules,
+    run: Option<crate::benitoite::RunContext>,
 }
 
 impl fmt::Debug for ToolContext {
@@ -406,6 +424,10 @@ impl ToolContext {
     ) -> Self {
         Self {
             noninteractive: false,
+            project_parent: None,
+            project_creation: None,
+            project_candidates: Mutex::new(BTreeMap::new()),
+            created_projects: Mutex::new(BTreeMap::new()),
             mode,
             project,
             temporary,
@@ -422,6 +444,59 @@ impl ToolContext {
             checkpoints: None,
             search_limits: SearchLimits::default(),
             scratch_state: Mutex::new(benitoite_scratch::ScratchState::default()),
+        }
+    }
+
+    /// 作る前の書ける場所の検査に使う、起動時のデータの場所と実行ファイル。
+    pub fn with_project_creation(
+        mut self,
+        paths: crate::config::paths::DataPaths,
+        executable: PathBuf,
+    ) -> Self {
+        self.project_creation = Some((paths, executable));
+        self
+    }
+
+    pub(crate) fn take_created_project(
+        &self,
+        call_id: &str,
+    ) -> Result<Option<ScopeRoot>, ToolError> {
+        self.project_candidates
+            .lock()
+            .map_err(|_| ToolError::State)?
+            .remove(call_id);
+        Ok(self
+            .created_projects
+            .lock()
+            .map_err(|_| ToolError::State)?
+            .remove(call_id))
+    }
+
+    pub(crate) fn prepare_project_switch(
+        &self,
+        root: ScopeRoot,
+    ) -> Result<PreparedProjectSwitch, ToolError> {
+        // 版の状態の誤りも、出来事の記録より先に検知する。
+        drop(self.read_versions.lock().map_err(|_| ToolError::State)?);
+        let exclude = self.exclude.rebased(root.real_path());
+        let mut run = self.run.clone();
+        if let Some(run) = &mut run {
+            run.locations.project = root.real_path().into();
+        }
+        Ok(PreparedProjectSwitch {
+            project: root,
+            exclude,
+            run,
+        })
+    }
+
+    pub(crate) fn switch_project(&mut self, prepared: PreparedProjectSwitch) {
+        self.project = prepared.project;
+        self.exclude = prepared.exclude;
+        self.read_versions = Mutex::new(BTreeMap::new());
+        self.run = prepared.run;
+        if let Some(processor) = &self.benitoite {
+            processor.set_project(self.project.real_path());
         }
     }
 
@@ -569,6 +644,8 @@ pub struct CheckOutcome {
 /// LLM の結果、画面用の文、実行前の確認の要求。
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ToolOutput {
+    /// 信頼する道具側で、存在の検査より先に方針によって拒否した。
+    pub policy_denied: bool,
     pub text: String,
     pub is_error: bool,
     pub display: Option<String>,
@@ -587,6 +664,7 @@ impl ToolOutput {
     /// 成功の結果にも共通の 64 KiB の上限を掛ける。
     pub fn success(text: impl Into<String>) -> Self {
         Self {
+            policy_denied: false,
             text: truncate::cap_middle(&text.into()),
             is_error: false,
             display: None,
@@ -613,6 +691,7 @@ impl ToolOutput {
     pub fn needs_approval(request: ApprovalRequest) -> Self {
         Self {
             text: truncate::cap_middle(&request.summary),
+            policy_denied: false,
             approval: Some(request),
             is_error: false,
             display: None,
@@ -700,6 +779,7 @@ impl ConfirmKey {
                 Some(Self::Test(targets))
             }
             ApprovalKind::TestEffects
+            | ApprovalKind::CreateProject
             | ApprovalKind::WriteScope
             | ApprovalKind::Command
             | ApprovalKind::Escalate

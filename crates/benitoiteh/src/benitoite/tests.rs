@@ -65,7 +65,7 @@ impl Fixture {
             sha256,
             version: String::new(),
             build: Value::Null,
-            context: self.context(),
+            context: self.context().into(),
         })
     }
 }

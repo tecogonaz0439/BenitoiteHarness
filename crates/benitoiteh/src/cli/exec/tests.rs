@@ -1148,3 +1148,114 @@ fn skill_query_failures_use_document_wording_at_startup() -> Result<(), Box<dyn 
     }
     Ok(())
 }
+
+// 関門: 構文の解釈だけでは、設定で解いたモードと実の親の検証・Agent への渡し忘れを捕まえない。
+#[test]
+fn project_parent_is_resolved_only_for_restricted_exec_and_used_by_the_agent()
+-> Result<(), Box<dyn Error>> {
+    use crate::agent::AgentEvent;
+    use crate::provider::Item;
+    use crate::provider::UserPartKind;
+    use crate::session::Record;
+    use crate::session::ResumeState;
+    #[allow(dead_code, clippy::duplicate_mod)]
+    #[path = "../../../tests/support/mock_provider.rs"]
+    mod mock;
+    use mock::{MockProvider, ResponseScript};
+    let f = Fixture::new()?;
+    let paths = f.paths("")?;
+    fs::create_dir(f.0.join("parent"))?;
+    std::os::unix::fs::symlink(f.0.join("parent"), f.0.join("alias"))?;
+    for (mode, interactive, parent, reason) in [
+        ("normal", false, "parent", text::PROJECT_PARENT_RESTRICTED),
+        (
+            "restricted",
+            true,
+            "parent",
+            text::PROJECT_PARENT_RESTRICTED,
+        ),
+        (
+            "restricted",
+            false,
+            "missing",
+            text::PROJECT_PARENT_DIRECTORY,
+        ),
+    ] {
+        let mut args = f.args(&["--mode", mode])?;
+        args.interactive = interactive;
+        args.project_parent = Some(f.0.join(parent));
+        let error = prepare(&args, None, &paths, |_, _| Ok(()), &mut |_| false)
+            .err()
+            .ok_or("accepted invalid parent")?;
+        assert_eq!(error.to_string(), reason);
+        let shown = text::startup_error(&error);
+        assert_eq!(shown.matches("benitoiteh:").count(), 1, "{shown}");
+        assert_eq!(shown, format!("benitoiteh: {reason}"));
+        assert!(!paths.sessions_dir.exists());
+    }
+    let body = format!(
+        "data: {}\n\ndata: [DONE]\n\n",
+        serde_json::json!({"choices":[{"delta":{"tool_calls":[{"index":0,"id":"create","type":"function","function":{"name":"create_project","arguments":serde_json::json!({"path":f.0.join("parent/new")}).to_string()}}]},"finish_reason":"tool_calls"}]})
+    );
+    let done = format!(
+        "data: {}\n\ndata: [DONE]\n\n",
+        serde_json::json!({"choices":[{"delta":{"content":"Done"},"finish_reason":"stop"}]})
+    );
+    let mut server =
+        MockProvider::start(vec![ResponseScript::sse(body), ResponseScript::sse(done)])?;
+    let config = fs::read_to_string(&paths.config_file)?.replace(
+        "kind = 'openai-chat'",
+        &format!("kind = 'openai-chat'\nbase_url = '{}'", server.base_url()),
+    );
+    fs::write(&paths.config_file, config)?;
+    let mut args = f.args(&["--mode", "restricted"])?;
+    args.project_parent = Some(f.0.join("alias"));
+    let mut prepared = prepare(&args, None, &paths, |_, _| Ok(()), &mut |_| false)
+        .map_err(|error| error.to_string())?;
+    let (sender, receiver) = mpsc::sync_channel(64);
+    assert_eq!(
+        prepared
+            .agent
+            .run("Create".into(), Arc::new(AtomicBool::new(false)), sender)?
+            .outcome,
+        crate::agent::Outcome::Completed
+    );
+    assert!(receiver.into_iter().any(|event| matches!(event, AgentEvent::ProjectDirChanged { project_dir } if project_dir == f.0.join("parent/new"))));
+    assert!(f.0.join("parent/new/main.bnt").is_file());
+    let records = session::read_records(prepared.session.directory())?;
+    assert!(
+        records
+            .iter()
+            .any(|r| matches!(r, Record::ProjectDirChanged { .. }))
+    );
+    // イベントを記録した後、環境の通知を送る前に終わっても、再開が不足分を補う。
+    let record_path = prepared.session.directory().join("session.jsonl");
+    let changed = records
+        .iter()
+        .position(|r| matches!(r, Record::ProjectDirChanged { .. }))
+        .ok_or("changed")?;
+    let prefix = records.get(..=changed).ok_or("prefix")?;
+    let mut serialized = String::new();
+    for record in prefix {
+        serialized.push_str(&serde_json::to_string(record)?);
+        serialized.push('\n');
+    }
+    fs::write(&record_path, serialized)?;
+    let id = prepared.session.id().to_string();
+    drop(prepared);
+    args.resume = Some(id);
+    args.project = None;
+    let mut resumed = prepare(&args, None, &paths, |_, _| Ok(()), &mut |_| false)
+        .map_err(|error| error.to_string())?;
+    assert_eq!(
+        ResumeState::read(resumed.session.directory())?.project_dir,
+        f.0.join("parent/new")
+    );
+    let (sender, _receiver) = mpsc::sync_channel(64);
+    resumed
+        .agent
+        .run("Resume".into(), Arc::new(AtomicBool::new(true)), sender)?;
+    assert!(resumed.agent.conversation().items.iter().any(|item| matches!(item, Item::UserMessage(message) if message.parts.iter().any(|part| part.kind == UserPartKind::Environment && part.text.contains(&format!("<project_directory>{}</project_directory>", f.0.join("parent/new").display()))))));
+    server.shutdown()?;
+    Ok(())
+}

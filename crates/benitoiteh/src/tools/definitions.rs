@@ -189,6 +189,15 @@ pub(super) fn definitions(mode: crate::config::Mode) -> Vec<ToolDefinition> {
         ],
         true,
     ));
+    if mode == crate::config::Mode::Restricted {
+        tools.push(definition(
+            ToolId::CreateProject,
+            text::CREATE_PROJECT,
+            &[text::CREATE_PROJECT.1],
+            vec![arg("path", String, true)],
+            false,
+        ));
+    }
     tools.push(definition(
         ToolId::WebFetch,
         text::WEB_FETCH,

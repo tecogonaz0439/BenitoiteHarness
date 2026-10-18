@@ -243,6 +243,20 @@ pub(super) fn prepare(
         if resolved.mode == Mode::Normal && args.allow.is_some() {
             return Err(StartupError::Invalid(text::ALLOW_RESTRICTED));
         }
+        let project_parent = match &args.project_parent {
+            Some(parent) => {
+                if args.interactive || resolved.mode != Mode::Restricted {
+                    return Err(StartupError::Invalid(text::PROJECT_PARENT_RESTRICTED));
+                }
+                Some(
+                    ScopeRoot::open(parent)
+                        .map_err(|_| StartupError::Invalid(text::PROJECT_PARENT_DIRECTORY))?
+                        .real_path()
+                        .to_path_buf(),
+                )
+            }
+            None => None,
+        };
         if let Some(state) = &resume
             && state.mode == crate::session::RecordedMode::Restricted
             && resolved.mode == Mode::Normal
@@ -512,6 +526,7 @@ pub(super) fn prepare(
             ScopeRoot::open(&spill).map_err(StartupError::SafeFs)?,
             exclude,
         )
+        .with_project_creation(paths.clone(), helper.clone())
         .with_benitoite(processor.clone())
         .with_session(session.clone())
         .with_web_fetch(crate::tools::WebFetchContext {
@@ -599,6 +614,7 @@ pub(super) fn prepare(
         };
         let normal_network = resolved.mode == Mode::Normal && user.normal.network;
         let mut config: crate::agent::AgentConfig = resolved.into();
+        config.project_parent = project_parent;
         config.allow_effects = (!args.interactive && config.mode == Mode::Restricted)
             .then(|| args.allow.clone().unwrap_or_default());
         let mut agent = match resume {

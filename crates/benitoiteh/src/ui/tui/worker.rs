@@ -309,6 +309,9 @@ impl Worker {
         if matches!(event, AgentEvent::Steered { .. }) {
             self.pending_steering.pop_front();
         }
+        if let AgentEvent::ProjectDirChanged { project_dir } = &event {
+            self.status.project = project_dir.clone();
+        }
         screen.event(&event);
     }
 
