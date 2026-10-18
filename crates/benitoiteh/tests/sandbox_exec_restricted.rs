@@ -16,6 +16,84 @@ use std::os::unix::fs::symlink;
 mod shared;
 use shared::*;
 
+// 関門: 形の検査だけでは、exec が誤りを無視して依頼の記録や API への要求へ進む退行を捕まえない。
+// 本物の処理系と同じ場所の条件を用意し、拒否の理由まで入口で確かめる（設計書 03-02）。
+#[test]
+fn invalid_processor_shapes_stop_before_conversation_and_provider_requests() -> TestResult {
+    for shape in ["shebang", "project", "dynamic-elf"] {
+        let mut server = MockProvider::start(vec![])?;
+        let f = Fixture::restricted(Protocol::Chat, &server)?;
+        let path = if shape == "project" {
+            let path = f.root.join("project/benitoite");
+            fs::copy(support::benitoite()?, &path)?;
+            path
+        } else {
+            let path = f.root.join("invalid-benitoite");
+            let bytes = if shape == "shebang" {
+                b"#!/bin/sh\nexit 0\n".to_vec()
+            } else {
+                // ELF64 little-endian、対象の CPU、ET_DYN、PT_INTERP の一つだけを持つ。
+                let mut elf = vec![0u8; 120];
+                for (offset, bytes) in [
+                    (0usize, b"\x7fELF\x02\x01".as_slice()),
+                    (16, &[3]),
+                    (
+                        18,
+                        &u16::to_le_bytes(if cfg!(target_arch = "aarch64") {
+                            183
+                        } else {
+                            62
+                        }),
+                    ),
+                    (32, &[64]),
+                    (54, &[56]),
+                    (56, &[1]),
+                    (64, &[3]),
+                ] {
+                    elf.get_mut(offset..offset.saturating_add(bytes.len()))
+                        .ok_or("ELF fixture range")?
+                        .copy_from_slice(bytes);
+                }
+                elf
+            };
+            fs::write(&path, bytes)?;
+            fs::set_permissions(&path, fs::Permissions::from_mode(0o700))?;
+            path
+        };
+        let config = f.root.join("config/benitoiteh/config.toml");
+        fs::write(
+            &config,
+            fs::read_to_string(&config)?.replace(
+                &serde_json::to_string(&support::benitoite()?)?,
+                &serde_json::to_string(&path)?,
+            ),
+        )?;
+        let request = "request: invalid processor must stop before recording this input";
+        let output = Running::start(f.command(request).args(["--mode", "restricted", "--json"]))?
+            .finish()?;
+        assert_eq!(output.status.code(), Some(2), "{shape}");
+        assert!(output.stdout.is_empty(), "{shape}");
+        let stderr = String::from_utf8(output.stderr)?;
+        assert!(stderr.contains("The program must be a native executable outside writable locations (statically linked on Linux)."), "{shape}: {stderr}");
+        // 処理系の問い合わせにはセッションの一時領域が要る。依頼と会話がまだ記録されないことを守る。
+        let (_, records) = f.records()?;
+        assert!(
+            !serde_json::to_string(&records)?.contains(request),
+            "{shape}: request recorded: {records:?}"
+        );
+        assert!(
+            records.iter().all(|record| !matches!(
+                record.get("type").and_then(Value::as_str),
+                Some("user" | "assistant" | "tool_call" | "tool_result" | "compaction")
+            )),
+            "{shape}: conversation recorded: {records:?}"
+        );
+        assert!(server.requests()?.is_empty(), "{shape}");
+        server.shutdown()?;
+    }
+    Ok(())
+}
+
 // 作成時の関門: 設定の default_mode による昇格、会話・推論の欠落、番の再利用、
 // 切れた末尾の連結は、引数や session の試験だけでは起動全体を保証できない。
 #[test]
