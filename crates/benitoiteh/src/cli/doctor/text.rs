@@ -2,7 +2,18 @@
 
 use std::path::Path;
 
-pub const BENITOITE: &str = "Not checked until Benitoite integration is implemented.";
+pub const PROBE_OUTPUT_LIMIT: &str =
+    "The sandbox rule check exceeded the 1 MiB stdout limit; the child was stopped.";
+pub const PROCESSOR_CHANGED: &str = "The Benitoite executable changed during the doctor checks (SHA-256 mismatch); version and Skill results were rejected.";
+pub const PROCESSOR_REQUIRED: &str = "Requires a discovered and validated Benitoite executable.";
+pub const PROCESSOR_SANDBOX_REQUIRED: &str =
+    "Requires a successful restricted mode sandbox rule check; Benitoite was not queried.";
+pub const PROCESSOR_VERSION_REQUIRED: &str =
+    "Requires a successful Benitoite version and formats check.";
+pub const PROCESSOR_RULE_OK: &str = "benitoite --version=json succeeded and /bin/sh was denied.";
+pub const PROCESSOR_POSITIVE_FAILED: &str = "The allowed benitoite --version=json check failed.";
+pub const FALLBACK_RULE: &str = "This checks benitoiteh itself, not Benitoite.";
+pub const UNKNOWN: &str = "unknown";
 pub const DEFAULTS: &str = "No configuration file; using defaults.";
 pub const LOADED: &str = "Configuration loaded.";
 pub const CONFIG_REQUIRED: &str = "Requires readable user configuration and data paths.";
@@ -54,12 +65,42 @@ pub const DIRECTORY_MISSING: &str = "Not created yet.";
 pub const STORAGE_REQUIRED: &str = "Requires a safe sessions directory.";
 pub const TEMPORARY_LOCATION: &str =
     "The doctor temporary directory must be outside the project and data directories.";
-pub const RESTRICTED_OK: &str = "Restricted mode sandbox: available (Benitoite not checked).";
-pub const RESTRICTED_UNAVAILABLE: &str =
-    "Restricted mode sandbox: unavailable (Benitoite not checked).";
+pub const RESTRICTED_FALLBACK_OK: &str = "Restricted mode sandbox: available (checked with benitoiteh itself; Benitoite was not found or failed validation).";
+pub const RESTRICTED_OK: &str = "Restricted mode sandbox: available.";
+pub const RESTRICTED_UNAVAILABLE: &str = "Restricted mode sandbox: unavailable.";
 pub const NORMAL_ENABLED: &str = "Normal mode sandbox: enabled.";
 pub const NORMAL_DISABLED: &str = "Normal mode sandbox: disabled by configuration.";
 pub const NORMAL_UNAVAILABLE: &str = "Normal mode sandbox: unavailable.";
+
+/// 探索の出どころと、設定があればそのパスも示す。
+pub fn discovery(configured: Option<&Path>, result: &str) -> String {
+    match configured {
+        Some(path) => format!(
+            "source=config.benitoite.path; configured={}; {result}",
+            path.display()
+        ),
+        None => format!("source=PATH; {result}"),
+    }
+}
+
+/// 形の検査を通った実行ファイルの実のパスとハッシュを示す。
+pub fn executable(path: &Path, sha256: &str) -> String {
+    #[cfg(target_os = "linux")]
+    let format = "native executable; no shebang; outside writable roots; statically linked";
+    #[cfg(not(target_os = "linux"))]
+    let format = "native executable; no shebang; outside writable roots";
+    format!("{}; {format}; sha256={sha256}", path.display())
+}
+
+/// 処理系の自己申告の情報を示す。ハッシュによる同一性の検査とは区別する。
+pub fn version(version: &str, commit: &str, dirty: &str, target: &str) -> String {
+    format!("version={version}; build.commit={commit}; build.dirty={dirty}; build.target={target}")
+}
+
+/// 本文を出さず、検証した Skill のハッシュを示す。
+pub fn skill(hash: &str) -> String {
+    format!("SKILL.md verified; contentHash=sha256:{hash}")
+}
 
 /// プロジェクトの設定を一部も採用しないことを示す。
 pub fn ignored(error: &impl std::fmt::Display) -> String {
@@ -107,9 +148,9 @@ pub fn storage(bytes: u64, limit: u64) -> String {
     )
 }
 
-/// 信頼するサンドボックスの診断に、失敗した確かめの名前を添える。
+/// 子の診断で偽の行を作らせず、失敗した確かめの名前と長さを制限する。
 pub fn probe_failed(reason: &str, stderr: &str) -> String {
-    format!("{reason} {stderr}")
+    crate::benitoite::display::one_line(&format!("{reason} {stderr}"))
 }
 
 #[cfg(target_os = "linux")]

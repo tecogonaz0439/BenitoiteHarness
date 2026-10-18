@@ -1,6 +1,7 @@
 //! 設定・認証の参照・保存先とサンドボックスを通信せずに診断する（設計書 05-01「doctor」）。
 
 mod probe;
+mod processor;
 mod text;
 
 use std::collections::BTreeSet;
@@ -77,8 +78,22 @@ struct Summary {
     #[serde(rename = "type")]
     kind: &'static str,
     restricted_sandbox: bool,
+    #[serde(skip)]
+    processor_validated: bool,
     normal_sandbox: NormalSandbox,
     exit_status: u8,
+}
+
+impl Summary {
+    fn restricted_detail(&self) -> &'static str {
+        if !self.restricted_sandbox {
+            text::RESTRICTED_UNAVAILABLE
+        } else if self.processor_validated {
+            text::RESTRICTED_OK
+        } else {
+            text::RESTRICTED_FALLBACK_OK
+        }
+    }
 }
 
 /// 診断を一度行い、項目と要約を出力して終了状態を返す。
@@ -90,7 +105,7 @@ pub(super) fn run(args: impl Iterator<Item = OsString>) -> Result<u8, CliError> 
         .map_err(|error| CliError::Startup(StartupError::Io(error)))?;
     let root = ScopeRoot::open(&project)
         .map_err(|error| CliError::Startup(StartupError::SafeFs(error)))?;
-    let mut items = vec![Item::new("benitoite", Status::Unchecked, text::BENITOITE)];
+    let mut items = Vec::new();
     let paths = DataPaths::from_env();
     let config = match &paths {
         Ok(paths) => match UserConfig::load(&paths.config_file) {
@@ -145,8 +160,15 @@ pub(super) fn run(args: impl Iterator<Item = OsString>) -> Result<u8, CliError> 
         .as_ref()
         .map_err(ToString::to_string)
         .and_then(|paths| Probe::new(paths, root.real_path()).map_err(|error| error.to_string()));
+    let processor = processor::prepare(
+        &mut items,
+        paths.as_ref().ok(),
+        root.real_path(),
+        config.as_ref(),
+        probe.as_ref().map_err(String::as_str),
+    );
     let restricted = match &probe {
-        Ok(probe) => probe.check(&mut items),
+        Ok(probe) => probe.check(&mut items, processor.as_ref().ok()),
         Err(reason) => {
             #[cfg(target_os = "macos")]
             let names = ["sandbox.sandbox_exec"];
@@ -179,6 +201,8 @@ pub(super) fn run(args: impl Iterator<Item = OsString>) -> Result<u8, CliError> 
             false
         }
     };
+    let processor_validated = processor.is_ok();
+    processor::finish(&mut items, processor, restricted);
     let normal = match (&paths, &probe) {
         (Ok(paths), Ok(probe)) => normal(
             &mut items,
@@ -205,6 +229,7 @@ pub(super) fn run(args: impl Iterator<Item = OsString>) -> Result<u8, CliError> 
     let summary = Summary {
         kind: "summary",
         restricted_sandbox: restricted,
+        processor_validated,
         normal_sandbox: normal,
         exit_status: exit_status(items.iter().map(|item| item.status)),
     };
@@ -494,15 +519,7 @@ fn output(items: &[Item], summary: &Summary, json: bool) -> io::Result<()> {
         serde_json::to_writer(&mut stdout, summary).map_err(io::Error::other)?;
         writeln!(stdout)?;
     } else {
-        writeln!(
-            stdout,
-            "{}",
-            if summary.restricted_sandbox {
-                text::RESTRICTED_OK
-            } else {
-                text::RESTRICTED_UNAVAILABLE
-            }
-        )?;
+        writeln!(stdout, "{}", summary.restricted_detail())?;
         writeln!(
             stdout,
             "{}",
@@ -519,7 +536,57 @@ fn output(items: &[Item], summary: &Summary, json: bool) -> io::Result<()> {
 #[cfg(test)]
 mod tests {
     //! 環境の機能に依らない終了状態の契約（設計書 05-01「doctor」）。
-    use super::{Status, exit_status};
+    use super::{Item, NormalSandbox, Status, Summary, exit_status, text};
+
+    // 作成時の関門: 処理系を確かめていない成功を、通常の成功と区別する。
+    // JSON の restricted_sandbox と行の形は変えない。
+    #[test]
+    fn restricted_summary_distinguishes_the_self_probe_without_changing_json()
+    -> Result<(), serde_json::Error> {
+        for (restricted, processor_validated, expected) in [
+            (true, true, text::RESTRICTED_OK),
+            (true, false, text::RESTRICTED_FALLBACK_OK),
+            (false, false, text::RESTRICTED_UNAVAILABLE),
+        ] {
+            let summary = Summary {
+                kind: "summary",
+                restricted_sandbox: restricted,
+                processor_validated,
+                normal_sandbox: NormalSandbox::Unavailable,
+                exit_status: 1,
+            };
+            assert_eq!(summary.restricted_detail(), expected);
+            let json = serde_json::to_value(&summary)?;
+            assert_eq!(
+                json.get("restricted_sandbox"),
+                Some(&serde_json::Value::from(restricted))
+            );
+            assert_eq!(json.as_object().map(|object| object.len()), Some(4));
+            assert!(json.get("processor_validated").is_none());
+        }
+        Ok(())
+    }
+
+    // 作成時の関門: 一行の診断に U+2028・U+2029 や巨大な stderr を混ぜる退行を、
+    // 文と JSON に共通する項目の境界で捕まえる。
+    #[test]
+    fn processor_probe_failure_is_bounded_and_escapes_unicode_line_separators()
+    -> Result<(), serde_json::Error> {
+        let stderr = format!("a\u{2028}b\u{2029}c{}", "x".repeat(65536));
+        let item = Item::new(
+            "sandbox.restricted_rule",
+            Status::Unavailable,
+            text::probe_failed(text::PROCESSOR_POSITIVE_FAILED, &stderr),
+        );
+        let plain = text::item(item.status.name(), &item.name, &item.detail);
+        let json = serde_json::to_string(&item)?;
+        for output in [&plain, &json] {
+            assert!(!output.contains(['\u{2028}', '\u{2029}']));
+            assert!(output.len() < 9000);
+        }
+        assert!(plain.contains("a\\u{2028}b\\u{2029}c"));
+        Ok(())
+    }
 
     // 作成時の関門: 警告を失敗とする退行は、実機の成功試験だけでは拾えない。
     #[test]
