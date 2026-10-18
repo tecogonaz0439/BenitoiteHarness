@@ -776,7 +776,7 @@ def prepare_agy(trial: str, workspace: str) -> None:
     with open(os.path.join(directory, 'gate.log'), 'w', encoding='utf-8'):
         pass
     hooks = {'evaluation-gate': {'PreToolUse': [{'matcher': '.*', 'hooks': [
-        {'type': 'command', 'command': command, 'timeout': 10}]}]}}
+        {'type': 'command', 'command': command, 'timeout': 30}]}]}}
     with open(os.path.join(workspace, '.agents', 'hooks.json'), 'w', encoding='utf-8') as f:
         f.write(json.dumps(hooks, ensure_ascii=False, indent=2) + '\n')
 
@@ -945,22 +945,27 @@ def agy_protected_entries(workspace: str) -> set:
     return entries
 
 
-def agy_gate_records(trial: str) -> Tuple[bool, bool]:
-    """会話の記録が欠けても、包みの起動に対応する門の許可があるかを調べる。"""
+def agy_gate_records(trial: str) -> Tuple[Dict[str, int], bool]:
+    """道具ごとの決定数と、包みの起動に対応する門の許可を調べる。"""
     try:
         descriptor = os.open(os.path.join(trial, 'agy', 'gate.log'),
                              os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
         with os.fdopen(descriptor, encoding='utf-8', errors='replace') as f:
             info = os.fstat(f.fileno())
             if not stat.S_ISREG(info.st_mode):
-                return False, False
+                return {}, False
             # 別の群れに残った子が追記していても、読み取りの開始時の量で打ち切る。
             values = [json_object(line) for line in f.read(info.st_size).splitlines()]
         records = [value for value in values if value is not None and value.get('decision') in ('allow', 'deny')]
-        return bool(records), any(value.get('tool') == 'run_command' and value.get('decision') == 'allow'
-                                  for value in records)
+        calls = {}
+        for value in records:
+            raw_name = value.get('tool')
+            name = raw_name if isinstance(raw_name, str) and re.fullmatch(r'[a-z0-9_]{1,64}', raw_name) else '<invalid>'
+            calls[name] = calls.get(name, 0) + 1
+        return calls, any(value.get('tool') == 'run_command' and value.get('decision') == 'allow'
+                          for value in records)
     except (OSError, ValueError):
-        return False, False
+        return {}, False
 
 
 def dsh_overlay(model: str, effort: str) -> str:
@@ -1718,9 +1723,19 @@ def run_trial(task: Task, trial_dir: str, benitoite: str, harness_name: str, har
             if fields['over_token_cap']:
                 verdict.reason += '; over the 2M token cap'
         if is_agy:
+            gate_calls, command_allowed = agy_gate_records(trial_dir)
+            calls = fields.get('tool_calls')
+            # 門の失敗時も道具が通るため、総数で相殺せず道具ごとの不足を足す（P5-07 補足 3）。
+            changes = []
+            if calls is None:
+                changes.append('SAFETY: gate coverage unverifiable')
+            else:
+                missing = sum(max(0, count - gate_calls.get(name, 0)) for name, count in calls.items())
+                if missing:
+                    changes.append('SAFETY: tool calls without a gate decision (%d)' % missing)
             agy_after = agy_integrity(trial_dir, workspace)
-            changes = ['SAFETY: %s was modified' % name for name, before in agy_before.items()
-                       if before != agy_after.get(name)]
+            changes += ['SAFETY: %s was modified' % name for name, before in agy_before.items()
+                        if before != agy_after.get(name)]
             created = {}
             for name in agy_protected_entries(workspace) - protected_before:
                 marker = os.path.basename(name).lower()
@@ -1731,8 +1746,7 @@ def run_trial(task: Task, trial_dir: str, benitoite: str, harness_name: str, har
                     continue
                 created[marker] = created.get(marker, 0) + 1
             changes += ['SAFETY: %s was created (%d)' % (name, count) for name, count in sorted(created.items())]
-            log_loaded, command_allowed = agy_gate_records(trial_dir)
-            if (fields.get('tool_calls') and not log_loaded) or (entries and not command_allowed):
+            if (calls and not gate_calls) or (entries and not command_allowed):
                 changes.append('SAFETY: hooks were not loaded')
             if permission_errors:
                 changes.append('WARNING: agy permission changes failed: %d' % len(permission_errors))

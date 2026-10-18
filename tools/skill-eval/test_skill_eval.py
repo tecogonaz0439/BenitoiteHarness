@@ -1295,11 +1295,7 @@ class AgyTests(unittest.TestCase):
                 decision = json.loads(result.stdout)
                 self.assertEqual(decision['decision'], 'allow' if allow else 'deny')
                 self.assertTrue(decision['reason'])
-                if allow:
-                    command = json.loads(content)['toolCall']['args']['CommandLine']
-                    self.assertEqual(decision['permissionOverrides'], ['command(%s)' % command])
-                else:
-                    self.assertNotIn('permissionOverrides', decision)
+                self.assertNotIn('permissionOverrides', decision)
         with open(os.path.join(self.directory, 'agy/gate.log')) as f:
             records = [json.loads(line) for line in f]
         self.assertEqual(len(records), len(inputs))
@@ -1896,7 +1892,8 @@ class AgyTests(unittest.TestCase):
         task = evaluation.Task('json_summary')
         with open(task.path('reference.bnt')) as f:
             source = f.read()
-        self.transcript()
+        self.transcript(extra={'tool_calls': [{'name': 'run_command'}, {'name': 'view_file'},
+                                               {'name': 'search_web'}]})
         self.write(os.path.join(self.home, '.gemini/antigravity-cli/builtin/skills/product-skill/SKILL.md'), 'product')
         fake = os.path.join(self.directory, 'fake-bin/agy')
         script = ("#!%s\n" % sys.executable +
@@ -1909,23 +1906,42 @@ class AgyTests(unittest.TestCase):
             'version = Path(__file__).with_suffix(".version")\n'
             'if "--version" in sys.argv:\n print(version.read_text() if version.exists() else "fake agy 1.4.0")\n sys.exit(0)\n'
             'assert sys.argv[1] == "-p"\n'
-            'assert sys.argv[sys.argv.index("--mode")+1] == "accept-edits"\n'
-            'assert "--dangerously-skip-permissions" not in sys.argv\n'
+            'assert "--dangerously-skip-permissions" in sys.argv\n'
+            'assert "--mode" not in sys.argv and "accept-edits" not in sys.argv\n'
+            'assert sys.argv[sys.argv.index("--output-format")+1] == "json"\n'
             'assert sys.argv[sys.argv.index("--print-timeout")+1] == "1800s"\n'
             'assert Path(sys.argv[sys.argv.index("--log-file")+1]) == Path.cwd().parent / "agy/agy.log"\n'
             'hooks = json.loads(Path(".agents/hooks.json").read_text())\n'
             'assert len(hooks) == 1\n'
             'group = hooks["evaluation-gate"]["PreToolUse"]\n'
             'assert len(group) == 1 and group[0]["matcher"] == ".*"\n'
+            'assert group[0]["hooks"][0]["timeout"] == 30\n'
             'gate = group[0]["hooks"][0]["command"]\n'
             'assert shlex.split(gate)[2:] == [str(Path.cwd().parent / "agy/agy_gate.py"), str(Path.cwd())]\n'
             'payload = {"toolCall":{"name":"run_command","args":{"CommandLine":"benitoite check main.bnt","Cwd":str(Path.cwd())}}}\n'
             'result = subprocess.run(gate, shell=True, input=json.dumps(payload), text=True, capture_output=True, check=True)\n'
             'assert json.loads(result.stdout)["decision"] == "allow"\n'
-            'assert json.loads(result.stdout)["permissionOverrides"] == ["command(benitoite check main.bnt)"]\n'
+            'assert "permissionOverrides" not in json.loads(result.stdout)\n'
+            'payload = {"toolCall":{"name":"view_file","args":{"AbsolutePath":str(Path.cwd() / "task.md")}}}\n'
+            'result = subprocess.run(gate, shell=True, input=json.dumps(payload), text=True, capture_output=True, check=True)\n'
+            'assert json.loads(result.stdout)["decision"] == "allow"\n'
             'payload["toolCall"]["name"] = "search_web"\n'
             'result = subprocess.run(gate, shell=True, input=json.dumps(payload), text=True, capture_output=True, check=True)\n'
             'assert json.loads(result.stdout)["decision"] == "deny"\n'
+            'coverage = os.environ.get("EVAL_GATE_COVERAGE", "matching")\n'
+            'transcript = Path.home() / ".gemini/antigravity-cli/brain/fake-conversation/.system_generated/logs/transcript_full.jsonl"\n'
+            'events = [json.loads(line) for line in transcript.read_text().splitlines()]\n'
+            'if coverage == "missing": events[1]["tool_calls"] += [{"name":"run_command"}, {"name":"run_command"}]\n'
+            'if coverage == "different-tool": events[1]["tool_calls"][1] = {"name":"write_to_file"}\n'
+            'transcript.write_text("\\n".join(json.dumps(event) for event in events))\n'
+            'if coverage == "no-transcript": transcript.unlink()\n'
+            'if coverage == "broken-transcript": transcript.write_text("invalid json")\n'
+            'if coverage == "no-calls": transcript.write_text(json.dumps({"type":"PLANNER_RESPONSE"}))\n'
+            'log = Path.cwd().parent / "agy/gate.log"\n'
+            'if coverage == "extra":\n'
+            ' subprocess.run(gate, shell=True, input=json.dumps(payload), text=True, capture_output=True, check=True)\n'
+            'if coverage == "invalid-decisions":\n'
+            ' log.write_text("not json\\n" + json.dumps({"tool":"run_command","decision":"ask"}) + "\\n")\n'
             'Path("main.bnt").write_text(%r)\n' % source +
             'subprocess.run(["benitoite", "check", "main.bnt"], check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)\n'
             'change = calls.read_text().splitlines().count("trial") == int(os.environ.get("EVAL_CHANGE_ON_TRIAL", "1"))\n'
@@ -1950,6 +1966,29 @@ class AgyTests(unittest.TestCase):
         os.chmod(unused, 0o755)
         os.environ['PATH'] = os.path.dirname(fake) + os.pathsep + os.environ.get('PATH', '')
         return task, fake
+
+    @unittest.skipUnless(os.environ.get('BENITOITEH_TEST_BENITOITE'), 'BENITOITEH_TEST_BENITOITE is not set')
+    def test_gate_coverage_compares_tool_counts_and_requires_transcript(self):
+        harness = evaluation.load_harnesses()['antigravity-gemini']
+        cases = [('matching', None), ('extra', None), ('no-calls', None),
+                 ('missing', 'SAFETY: tool calls without a gate decision (2)'),
+                 ('different-tool', 'SAFETY: tool calls without a gate decision (1)'),
+                 ('invalid-decisions', 'SAFETY: tool calls without a gate decision (3)'),
+                 ('no-transcript', 'SAFETY: gate coverage unverifiable'),
+                 ('broken-transcript', 'SAFETY: gate coverage unverifiable')]
+        for coverage, expected in cases:
+            with self.subTest(coverage=coverage):
+                task, _ = self.fake_agy()
+                os.environ['EVAL_GATE_COVERAGE'] = coverage
+                row = evaluation.run_trial(task, os.path.join(self.directory, coverage),
+                    os.environ['BENITOITEH_TEST_BENITOITE'], 'antigravity-gemini', harness,
+                    str(harness['model']), None, False)
+                self.assertEqual(row['harness_exit'], 0, row['reason'])
+                self.assertTrue(row['success'], row['reason'])
+                if expected:
+                    self.assertTrue(row['reason'].startswith(expected), row['reason'])
+                else:
+                    self.assertNotIn('SAFETY:', row['reason'])
 
     @unittest.skipUnless(os.environ.get('BENITOITEH_TEST_BENITOITE'), 'BENITOITEH_TEST_BENITOITE is not set')
     def test_agy_settings_and_versions_stop_evaluation_and_preserve_records(self):
@@ -2059,6 +2098,8 @@ class AgyTests(unittest.TestCase):
                     self.assertIn('AGY_ERROR:', row['reason'])
                 if mutation:
                     self.assertTrue(row['reason'].startswith('SAFETY: %s was modified' % mutation), row['reason'])
+                elif unreadable:
+                    self.assertTrue(row['reason'].startswith('SAFETY: gate coverage unverifiable'), row['reason'])
                 else:
                     self.assertNotIn('SAFETY', row['reason'])
                 with open(record) as f:
