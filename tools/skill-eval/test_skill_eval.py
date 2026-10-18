@@ -1295,7 +1295,11 @@ class AgyTests(unittest.TestCase):
                 decision = json.loads(result.stdout)
                 self.assertEqual(decision['decision'], 'allow' if allow else 'deny')
                 self.assertTrue(decision['reason'])
-                self.assertNotIn('permissionOverrides', decision)
+                if allow:
+                    command = json.loads(content)['toolCall']['args']['CommandLine']
+                    self.assertEqual(decision['permissionOverrides'], ['command(%s)' % command])
+                else:
+                    self.assertNotIn('permissionOverrides', decision)
         with open(os.path.join(self.directory, 'agy/gate.log')) as f:
             records = [json.loads(line) for line in f]
         self.assertEqual(len(records), len(inputs))
@@ -1648,6 +1652,7 @@ class AgyTests(unittest.TestCase):
         executable = os.path.join(self.directory, 'fake-agy')
         text = ("#!%s\n" % sys.executable +
             'import json, os, stat, subprocess, sys\nfrom pathlib import Path\n'
+            'if "--version" in sys.argv:\n print("fake agy 1.4.0")\n sys.exit(0)\n'
             'ws = Path.cwd()\ntrial = ws.parent\n'
             'Path("main.bnt").write_text(%r)\n' % source +
             'subprocess.run(["benitoite", "check", "main.bnt"], check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)\n'
@@ -1685,6 +1690,7 @@ class AgyTests(unittest.TestCase):
         os.chmod(executable, 0o755)
         harness = copy.deepcopy(evaluation.load_harnesses()[harness_name])
         harness['start'] = [executable]
+        harness['version'] = [executable, '--version']
         return evaluation.run_trial(task, trial, os.environ['BENITOITEH_TEST_BENITOITE'], harness_name,
                                     harness, str(harness['model']), None, False, benitoiteh=executable)
 
@@ -1886,8 +1892,7 @@ class AgyTests(unittest.TestCase):
                             pass
                         os.unlink(pid_file)
 
-    @unittest.skipUnless(os.environ.get('BENITOITEH_TEST_BENITOITE'), 'BENITOITEH_TEST_BENITOITE is not set')
-    def test_fake_agy_trial_hooks_integrity_records_and_environment(self):
+    def fake_agy(self):
         task = evaluation.Task('json_summary')
         with open(task.path('reference.bnt')) as f:
             source = f.read()
@@ -1899,7 +1904,10 @@ class AgyTests(unittest.TestCase):
             'assert os.environ["AGY_CLI_DISABLE_AUTO_UPDATE"] == "1"\n'
             'assert all(n == "AGY_CLI_DISABLE_AUTO_UPDATE" or not n.startswith(("AGY_", "ANTIGRAVITY_", "JETSKI_", "GOOGLE_", "GEMINI_", "CLOUDSDK_")) for n in os.environ)\n'
             'assert Path(os.environ["TMPDIR"]).is_dir()\n'
-            'if "--version" in sys.argv:\n print("fake agy 1.4.0")\n sys.exit(0)\n'
+            'calls = Path(__file__).with_suffix(".calls")\n'
+            'with calls.open("a") as f: f.write("version\\n" if "--version" in sys.argv else "trial\\n")\n'
+            'version = Path(__file__).with_suffix(".version")\n'
+            'if "--version" in sys.argv:\n print(version.read_text() if version.exists() else "fake agy 1.4.0")\n sys.exit(0)\n'
             'assert sys.argv[1] == "-p"\n'
             'assert sys.argv[sys.argv.index("--mode")+1] == "accept-edits"\n'
             'assert "--dangerously-skip-permissions" not in sys.argv\n'
@@ -1914,11 +1922,19 @@ class AgyTests(unittest.TestCase):
             'payload = {"toolCall":{"name":"run_command","args":{"CommandLine":"benitoite check main.bnt","Cwd":str(Path.cwd())}}}\n'
             'result = subprocess.run(gate, shell=True, input=json.dumps(payload), text=True, capture_output=True, check=True)\n'
             'assert json.loads(result.stdout)["decision"] == "allow"\n'
+            'assert json.loads(result.stdout)["permissionOverrides"] == ["command(benitoite check main.bnt)"]\n'
             'payload["toolCall"]["name"] = "search_web"\n'
             'result = subprocess.run(gate, shell=True, input=json.dumps(payload), text=True, capture_output=True, check=True)\n'
             'assert json.loads(result.stdout)["decision"] == "deny"\n'
             'Path("main.bnt").write_text(%r)\n' % source +
             'subprocess.run(["benitoite", "check", "main.bnt"], check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)\n'
+            'change = calls.read_text().splitlines().count("trial") == int(os.environ.get("EVAL_CHANGE_ON_TRIAL", "1"))\n'
+            'setting = os.environ.get("EVAL_USER_SETTING") if change else None\n'
+            'if setting:\n'
+            ' p = Path.home() / ".gemini" / setting\n'
+            ' if os.environ.get("EVAL_DELETE_SETTING"): p.unlink()\n'
+            ' else: p.parent.mkdir(parents=True, exist_ok=True); p.write_text("private-setting-value")\n'
+            'if change and os.environ.get("EVAL_VERSION_CHANGE"): version.write_text("fake agy 1.4.2")\n'
             'mutation = os.environ.get("EVAL_MUTATION")\n'
             'targets = {"hooks.json":Path(".agents/hooks.json"), "benitoite Skill":Path(".agents/skills/benitoite/SKILL.md"), "bin/benitoite":Path.cwd().parent / "bin/benitoite", "agy/agy_gate.py":Path.cwd().parent / "agy/agy_gate.py"}\n'
             'if mutation == ".agents entries": Path(".agents").chmod(0o755); Path(".agents/new-file").write_text("added")\n'
@@ -1929,7 +1945,82 @@ class AgyTests(unittest.TestCase):
             'print("invalid" if outcome in ("unreadable", "print-timeout") else %r)\n' % json.dumps(agy_summary()))
         self.write(fake, script)
         os.chmod(fake, 0o755)
+        unused = self.write(os.path.join(os.path.dirname(fake), 'claude'),
+                            '#!%s\nraise SystemExit("unexpected later harness")\n' % sys.executable)
+        os.chmod(unused, 0o755)
         os.environ['PATH'] = os.path.dirname(fake) + os.pathsep + os.environ.get('PATH', '')
+        return task, fake
+
+    @unittest.skipUnless(os.environ.get('BENITOITEH_TEST_BENITOITE'), 'BENITOITEH_TEST_BENITOITE is not set')
+    def test_agy_settings_and_versions_stop_evaluation_and_preserve_records(self):
+        # 設定の保存や自動更新を見落とすと、次の試行を違う条件で走らせてしまう。
+        cases = [(path, False, False) for path in (
+            'config/config.json', 'config/mcp_config.json', 'config/projects/known.json',
+            'antigravity-cli/settings.json', 'config/projects/new.json', 'config/new-entry')]
+        cases += [(path, True, False) for path in (
+            'config/mcp_config.json', 'config/projects/known.json', 'antigravity-cli/settings.json')]
+        cases += [(None, False, False), (None, False, True), ('config/config.json', False, True)]
+        cases = [(setting, delete, change, 1) for setting, delete, change in cases]
+        cases += [('config/config.json', False, False, 2), (None, False, True, 2)]
+        for index, (setting, delete, version_change, change_on) in enumerate(cases):
+            with self.subTest(setting=setting, delete=delete, version_change=version_change, change_on=change_on):
+                shutil.rmtree(os.path.join(self.home, '.gemini'), ignore_errors=True)
+                task, fake = self.fake_agy()
+                for path, value in (('config/config.json', '{"userSettings":{}}'),
+                                    ('config/mcp_config.json', ''), ('config/projects/known.json', '{"id":"known"}'),
+                                    ('antigravity-cli/settings.json', '{"model":"gemini"}')):
+                    self.write(os.path.join(self.home, '.gemini', path), value)
+                for suffix in ('.calls', '.version'):
+                    path = os.path.splitext(fake)[0] + suffix
+                    if os.path.exists(path):
+                        os.unlink(path)
+                os.environ.update(EVAL_USER_SETTING=setting or '', EVAL_DELETE_SETTING='1' if delete else '',
+                                  EVAL_VERSION_CHANGE='1' if version_change else '', EVAL_CHANGE_ON_TRIAL=str(change_on))
+                root = os.path.join(self.directory, 'followup-%d' % index)
+                records = os.path.join(root, 'records')
+                stopped = setting is not None or version_change
+                # 後続の課題と項目にも進まないことを、本物の評価ループで確かめる。
+                names = 'antigravity-gemini,claude-code' if stopped else 'antigravity-gemini'
+                with mock.patch.object(evaluation, 'RESULTS_DIR', records), \
+                        contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+                    code = evaluation.main(['--harness', names, '--allow-unverified', '--task', task.name,
+                        '--task', 'json_convert', '--trials', '2', '--benitoite', os.environ['BENITOITEH_TEST_BENITOITE'],
+                        '--work-root', root])
+                self.assertEqual(code, 3 if stopped else 0)
+                count = change_on if stopped else 4
+                with open(os.path.splitext(fake)[0] + '.calls') as f:
+                    self.assertEqual(f.read().splitlines(), ['version', 'trial', 'version'] * count)
+                rows = evaluation.ALL_ROWS
+                self.assertEqual(len(rows), count)
+                row = rows[-1] if stopped else rows[0]
+                self.assertTrue(row['success'], row['reason'])
+                self.assertEqual(row['harness_version_start'], 'fake agy 1.4.0')
+                self.assertEqual(row['harness_version_end'], 'fake agy 1.4.2' if version_change else 'fake agy 1.4.0')
+                if setting:
+                    self.assertTrue(row['reason'].startswith('SAFETY: user Antigravity settings changed'), row['reason'])
+                if version_change:
+                    self.assertIn('WARNING: harness version changed fake agy 1.4.0 -> fake agy 1.4.2', row['reason'])
+                if stopped and change_on == 2:
+                    self.assertNotIn('settings changed', rows[0]['reason'])
+                    self.assertNotIn('version changed', rows[0]['reason'])
+                for name in os.listdir(records):
+                    with open(os.path.join(records, name)) as f:
+                        text = f.read()
+                    self.assertNotIn('private-setting-value', text)
+                    if name.endswith('.jsonl'):
+                        self.assertEqual(len(text.splitlines()), len(rows))
+                        saved = [json.loads(line) for line in text.splitlines()]
+                        self.assertEqual(saved[-1 if stopped else 0]['harness_version_end'], row['harness_version_end'])
+                    else:
+                        self.assertIn('antigravity-gemini（fake agy 1.4.0）', text)
+                        self.assertEqual('- 停止:' in text, stopped)
+                if stopped:
+                    self.assertFalse(os.path.exists(os.path.join(root, 'claude-code')))
+                self.assertEqual(len(os.listdir(records)), 4 if stopped else 2)
+
+    @unittest.skipUnless(os.environ.get('BENITOITEH_TEST_BENITOITE'), 'BENITOITEH_TEST_BENITOITE is not set')
+    def test_fake_agy_trial_hooks_integrity_records_and_environment(self):
+        task, fake = self.fake_agy()
         cases = [(mutation, 'completed') for mutation in (
             None, 'hooks.json', 'benitoite Skill', '.agents entries', 'bin/benitoite', 'agy/agy_gate.py')]
         cases += [(None, outcome) for outcome in ('unreadable', 'print-timeout', 'agy-error')]
