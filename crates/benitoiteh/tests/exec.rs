@@ -944,3 +944,52 @@ fn sigint_stops_a_running_bash_and_records_run_cancellation() -> TestResult {
     server.shutdown()?;
     Ok(())
 }
+
+// 関門: --mode の明示値だけを見て、設定と再開の通常モードに --allow を通してしまう退行。
+#[test]
+fn allow_is_rejected_for_explicit_default_and_resumed_normal_modes() -> TestResult {
+    let mut server = MockProvider::start(vec![ResponseScript::sse(
+        Protocol::Chat.response(None, "done", false),
+    )])?;
+    let f = Fixture::new(Protocol::Chat, &server)?;
+    for explicit in [false, true] {
+        let mut command = f.command("request");
+        command.args(["--allow", "File.Write"]);
+        if explicit {
+            command.args(["--mode", "normal"]);
+        }
+        let output = command.output()?;
+        assert_eq!(output.status.code(), Some(2));
+        assert!(
+            String::from_utf8(output.stderr)?
+                .contains("benitoiteh: --allow is available only in restricted mode.")
+        );
+    }
+    assert!(server.requests()?.is_empty());
+    let first = f.command("first").output()?;
+    assert!(
+        first.status.success(),
+        "{}",
+        String::from_utf8_lossy(&first.stderr)
+    );
+    let (directory, records) = f.records()?;
+    let config = f.root.join("config/benitoiteh/config.toml");
+    fs::write(
+        &config,
+        fs::read_to_string(&config)?
+            .replace("default_mode = 'normal'", "default_mode = 'restricted'"),
+    )?;
+    let id = directory.file_name().and_then(|s| s.to_str()).ok_or("id")?;
+    let output = f
+        .command("resume")
+        .args(["--resume", id, "--allow", "Assert.Check"])
+        .output()?;
+    assert_eq!(output.status.code(), Some(2));
+    assert!(
+        String::from_utf8(output.stderr)?.contains("--allow is available only in restricted mode.")
+    );
+    assert_eq!(server.requests()?.len(), 1);
+    assert_eq!(f.records()?.1.len(), records.len());
+    server.shutdown()?;
+    Ok(())
+}

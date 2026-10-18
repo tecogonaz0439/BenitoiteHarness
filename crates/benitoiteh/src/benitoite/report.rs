@@ -2,7 +2,7 @@
 
 use super::{Effect, diagnostics::Diagnostic, text};
 use serde::{Deserialize, Serialize};
-mod decode;
+pub(super) mod decode;
 use std::collections::BTreeSet;
 
 /// 記録にそのまま残すソースのハッシュ。

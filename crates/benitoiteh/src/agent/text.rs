@@ -91,3 +91,5 @@ pub fn check_fix_limit(path: &str, count: u64, max: u64, diagnostics: &str) -> S
 
 pub const LEFTOVER_PROCESSES: &str =
     "The run stopped because processes started by the script may still be running.";
+
+pub const EFFECTS_NOT_ALLOWED: &str = "The run stopped because benitoite_run or benitoite_test was refused 3 times in a row: the effects were outside --allow.";

@@ -7,11 +7,11 @@ use std::sync::{Mutex, PoisonError};
 
 use serde::{Deserialize, Deserializer};
 
-use super::text;
+use super::{display, text};
 
 /// 診断の解決と実行中の保持に共通の上限。
 pub(crate) const MAX_RESOLVED_DIAGNOSTICS: usize = 1000;
-const MAX_EXCLUSION_WORK: usize = 100_000;
+pub(super) const MAX_EXCLUSION_WORK: usize = 100_000;
 
 /// JSON で与えられる、1 から数える行・桁とバイト位置。
 #[derive(Clone, Debug, Deserialize, Eq, Ord, PartialEq, PartialOrd)]
@@ -272,6 +272,11 @@ pub trait DiagnosticSources {
     fn resolve(&self, file: &str) -> DiagnosticFile;
     /// 記述子を安全に開き直して一行だけを読む。読んだ版を記録しない。
     fn line(&self, file: &Path, line: u64) -> Option<SourceLine>;
+    /// read と同じ開き方と上限で元のバイトを読み、SHA-256 を小文字の十六進で返す。
+    /// 内容を読めない境界は、取り込みの確認を省略しない。
+    fn content_hash(&self, _file: &Path, _cancelled: &AtomicBool) -> Option<String> {
+        None
+    }
 }
 
 struct ResolvedDiagnostic {
@@ -288,20 +293,20 @@ pub struct PreparedDiagnostics {
     unresolved_failed: bool,
 }
 
-struct ResolutionState {
-    files: BTreeMap<String, DiagnosticFile>,
-    limited: BTreeSet<String>,
+pub(super) struct ResolutionState {
+    pub(super) files: BTreeMap<String, DiagnosticFile>,
+    pub(super) limited: BTreeSet<String>,
     // 深い表示パスを大量に与えても、道具の時間上限の外で照合を続けない。
-    remaining: usize,
+    pub(super) remaining: usize,
 }
 
 // 同じ表示パスを何度も開かず、補助位置と置き換えにも同じ判定を使う。
 // キャッシュは一回の検査の結果だけが持ち、次の書き込みへ持ち越さない。
-struct CachedSources<'a, S> {
-    source: &'a S,
-    files: &'a Mutex<ResolutionState>,
-    cancelled: &'a AtomicBool,
-    refused: std::cell::Cell<bool>,
+pub(super) struct CachedSources<'a, S> {
+    pub(super) source: &'a S,
+    pub(super) files: &'a Mutex<ResolutionState>,
+    pub(super) cancelled: &'a AtomicBool,
+    pub(super) refused: std::cell::Cell<bool>,
 }
 impl<S: DiagnosticSources> DiagnosticSources for CachedSources<'_, S> {
     fn resolve(&self, file: &str) -> DiagnosticFile {
@@ -498,7 +503,7 @@ impl PreparedDiagnostics {
                 if shown < 20 {
                     cached.refused.set(false);
                     let rendered =
-                        render_one(&entry.diagnostic, entry.file.as_ref(), &cached, cancelled);
+                        render_one_line(&entry.diagnostic, entry.file.as_ref(), &cached, cancelled);
                     if cached.refused.get() {
                         result.unread = result.unread.saturating_add(1);
                         continue;
@@ -549,22 +554,25 @@ pub fn push_line(output: &mut String, line: &str) {
     output.push_str(line);
 }
 
-fn render_one(
+pub(super) fn render_one_line(
     d: &Diagnostic,
     file: Option<&DiagnosticFile>,
     sources: &impl DiagnosticSources,
     cancelled: &AtomicBool,
 ) -> String {
     let location = d.primary.as_ref().zip(file).and_then(|(span, file)| {
-        file.display
-            .as_ref()
-            .map(|path| text::diagnostic_location(path, &span.start))
+        file.display.as_ref().map(|path| {
+            text::diagnostic_location(
+                Path::new(&display::one_line(&path.to_string_lossy())),
+                &span.start,
+            )
+        })
     });
     let mut output = text::diagnostic_header(
-        &d.severity,
-        d.code.as_deref(),
+        &display::one_line(&d.severity),
+        d.code.as_deref().map(display::one_line).as_deref(),
         location.as_deref(),
-        &d.message,
+        &display::one_line(&d.message),
     );
     if let Some((span, file)) = d.primary.as_ref().zip(file)
         && let Some(line) = sources.line(&file.path, span.start.line)
@@ -573,7 +581,7 @@ fn render_one(
         let line = line.text;
         push_line(
             &mut output,
-            &text::diagnostic_source(span.start.line, &line),
+            &text::diagnostic_source(span.start.line, &display::source_line(&line)),
         );
         let start = usize::try_from(span.start.column.saturating_sub(1)).unwrap_or(usize::MAX);
         let len = line.chars().count();
@@ -585,15 +593,25 @@ fn render_one(
                     .unwrap_or(usize::MAX)
                     .min(len)
             };
-            let prefix: String = line
+            let before = display::source_line(&line.chars().take(start).collect::<String>());
+            let through = display::source_line(&line.chars().take(end).collect::<String>());
+            let prefix: String = before
                 .chars()
-                .take(start)
                 .map(|ch| if ch == '\t' { '\t' } else { ' ' })
                 .collect();
-            let width = end.saturating_sub(start).max(1);
+            let width = through
+                .chars()
+                .count()
+                .saturating_sub(before.chars().count())
+                .max(1);
             push_line(
                 &mut output,
-                &text::diagnostic_marker(span.start.line, &prefix, width, &span.label),
+                &text::diagnostic_marker(
+                    span.start.line,
+                    &prefix,
+                    width,
+                    &display::one_line(&span.label),
+                ),
             );
         }
     }
@@ -604,7 +622,11 @@ fn render_one(
         if let Some(path) = sources.resolve(&span.file).display {
             push_line(
                 &mut output,
-                &text::diagnostic_secondary(&span.label, &path, &span.start),
+                &text::diagnostic_secondary(
+                    &display::one_line(&span.label),
+                    Path::new(&display::one_line(&path.to_string_lossy())),
+                    &span.start,
+                ),
             );
         }
     }
@@ -615,7 +637,10 @@ fn render_one(
         if cancelled.load(Ordering::Acquire) {
             break;
         }
-        push_line(&mut output, &text::diagnostic_note(note));
+        push_line(
+            &mut output,
+            &text::diagnostic_note(&display::one_line(note)),
+        );
     }
     if d.notes.omitted > 0 {
         push_line(&mut output, &text::omitted_notes(d.notes.omitted));
@@ -627,7 +652,10 @@ fn render_one(
             break;
         }
         omitted = omitted.saturating_add(help.edits.omitted);
-        push_line(&mut output, &text::diagnostic_help(&help.message));
+        push_line(
+            &mut output,
+            &text::diagnostic_help(&display::one_line(&help.message)),
+        );
         for edit in help.edits.iter() {
             if cancelled.load(Ordering::Acquire) {
                 break;
@@ -639,11 +667,14 @@ fn render_one(
             edits = edits.saturating_add(1);
             if let Some(path) = sources.resolve(&edit.file).display {
                 let same = file.and_then(|f| f.display.as_ref()) == Some(&path);
-                let replacement = serde_json::Value::String(edit.replacement.clone()).to_string();
+                let replacement = display::quoted(&edit.replacement);
                 push_line(
                     &mut output,
                     &text::diagnostic_edit(
-                        (!same).then_some(path.as_path()),
+                        (!same)
+                            .then(|| display::one_line(&path.to_string_lossy()))
+                            .as_deref()
+                            .map(Path::new),
                         &edit.start,
                         &edit.end,
                         &replacement,
@@ -663,3 +694,92 @@ fn render_one(
 
 #[cfg(test)]
 mod tests;
+
+/// 診断の構造体と、保持している文字列・配列の確保量。
+pub(super) fn retained_bytes(d: &Diagnostic) -> usize {
+    fn span(s: &Span) -> usize {
+        s.file.capacity().saturating_add(s.label.capacity())
+    }
+    let mut bytes = std::mem::size_of::<Diagnostic>()
+        .saturating_add(d.kind.capacity())
+        .saturating_add(d.severity.capacity())
+        .saturating_add(d.code.as_ref().map_or(0, String::capacity))
+        .saturating_add(d.message.capacity());
+    bytes = bytes
+        .saturating_add(d.secondary.storage_bytes())
+        .saturating_add(d.notes.storage_bytes())
+        .saturating_add(d.helps.storage_bytes());
+    for s in d.primary.iter().chain(d.secondary.iter()) {
+        bytes = bytes.saturating_add(span(s));
+    }
+    for note in d.notes.iter() {
+        bytes = bytes.saturating_add(note.capacity());
+    }
+    for help in d.helps.iter() {
+        bytes = bytes
+            .saturating_add(help.message.capacity())
+            .saturating_add(help.edits.storage_bytes());
+        for edit in help.edits.iter() {
+            bytes = bytes
+                .saturating_add(edit.file.capacity())
+                .saturating_add(edit.replacement.capacity());
+        }
+    }
+    bytes
+}
+impl<T> DiagnosticItems<T> {
+    pub(super) fn storage_bytes(&self) -> usize {
+        self.values
+            .capacity()
+            .saturating_mul(std::mem::size_of::<T>())
+    }
+}
+/// 読まない利用者のソースを、診断と同じ予算・BH-029 の判定と内容の照合で数える。
+pub(crate) fn unread_imports(
+    sources: &[super::report::ApprovalSource],
+    resolver: &impl DiagnosticSources,
+    cancelled: &AtomicBool,
+) -> usize {
+    let state = Mutex::new(ResolutionState {
+        files: BTreeMap::new(),
+        limited: BTreeSet::new(),
+        remaining: MAX_EXCLUSION_WORK,
+    });
+    let cached = CachedSources {
+        source: resolver,
+        files: &state,
+        cancelled,
+        refused: std::cell::Cell::new(false),
+    };
+    let mut seen = BTreeSet::new();
+    sources
+        .iter()
+        .filter(|s| {
+            seen.insert((
+                s.display_path.as_str(),
+                s.content_hash.algorithm.as_str(),
+                s.content_hash.value.as_str(),
+            ))
+        })
+        .enumerate()
+        .filter(|(n, s)| {
+            if *n >= MAX_RESOLVED_DIAGNOSTICS
+                || s.content_hash.algorithm != "sha256"
+                || s.content_hash.value.len() != 64
+                || !s
+                    .content_hash
+                    .value
+                    .bytes()
+                    .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+            {
+                return true;
+            }
+            let resolved = cached.resolve(&s.display_path);
+            // BH-029 の表示パスが読める囮と一致しても、検査した元の内容とは
+            // 区別する（設計書 04-01「実行の前の検査の報告」）。
+            resolved.display.is_none()
+                || resolver.content_hash(&resolved.path, cancelled).as_deref()
+                    != Some(s.content_hash.value.as_str())
+        })
+        .count()
+}

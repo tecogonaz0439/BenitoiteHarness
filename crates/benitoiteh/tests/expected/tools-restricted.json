@@ -182,6 +182,25 @@
     "name": "benitoite_run"
   },
   {
+    "description": "Run Benitoite tests in .bnt files or directories in the sandbox after benitoiteh inspects their effects and asks the user to confirm them.",
+    "input_schema": {
+      "properties": {
+        "paths": {
+          "description": "Argument value.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "paths"
+      ],
+      "type": "object"
+    },
+    "name": "benitoite_test"
+  },
+  {
     "description": "Explain a Benitoite diagnostic code, such as E0405, W0501, or R0101.",
     "input_schema": {
       "properties": {

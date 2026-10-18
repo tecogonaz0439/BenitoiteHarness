@@ -189,9 +189,57 @@ impl Agent {
         summary: &mut Summary,
     ) -> Result<ToolOutput, AgentError> {
         let Some(request) = output.approval else {
+            if matches!(
+                validated.id(),
+                crate::tools::ToolId::BenitoiteRun | crate::tools::ToolId::BenitoiteTest
+            ) && output.processor_launches >= 2
+            {
+                self.effects_denied = 0;
+            }
             return Ok(output);
         };
         summary.checks = summary.checks.saturating_add(output.processor_launches);
+        if matches!(
+            request.kind,
+            approval::ApprovalKind::Effects | approval::ApprovalKind::TestEffects
+        ) && let Some(allowed) = &self.config.allow_effects
+        {
+            if request.facts.unread_imports > 0 {
+                summary.approvals.policy_denied = summary.approvals.policy_denied.saturating_add(1);
+                return Ok(ToolOutput::error(approval::unread_imports_denied(
+                    &request.facts,
+                    self.tool_context.project.real_path(),
+                )));
+            }
+            let effects = request
+                .facts
+                .effects
+                .iter()
+                .map(|s| crate::benitoite::Effect::from_name(s))
+                .collect::<Option<std::collections::BTreeSet<_>>>();
+            if effects.is_some_and(|set| {
+                set.iter().all(|effect| {
+                    *effect == crate::benitoite::Effect::AssertCheck || allowed.contains(effect)
+                })
+            }) {
+                let key = crate::tools::ConfirmKey::from_facts(request.kind, &request.facts)
+                    .ok_or(AgentError::Worker)?;
+                self.confirmed_effects
+                    .entry(key)
+                    .or_default()
+                    .extend(allowed.iter().copied());
+                self.effects_denied = 0;
+                return Ok(self.execute_approved(call, validated, cancelled));
+            }
+            self.effects_denied = self.effects_denied.saturating_add(1);
+            summary.approvals.policy_denied = summary.approvals.policy_denied.saturating_add(1);
+            return Ok(ToolOutput::error(approval::allow_denied(
+                request.kind,
+                &request.facts,
+                self.tool_context.project.real_path(),
+                allowed,
+            )));
+        }
         match approval::decide_in_mode(
             self.config.mode,
             &self.approval_policy,

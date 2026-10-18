@@ -437,3 +437,111 @@ pub fn run_diagnostics_omitted(count: usize, error: bool) -> String {
     };
     format!("[{count} {noun} not shown (limits: first 1000 diagnostics and 16 MiB).{errors}]")
 }
+
+pub const BENITOITE_TEST: (&str, &str) =
+    prompt_parts(include_str!("../../prompts/tools/benitoite_test.md"));
+pub const TEST_PATHS_EMPTY: &str = "paths must contain at least one .bnt file or directory.";
+pub const TEST_PATHS_LIMIT: &str = "paths must contain at most 100 entries.";
+pub const TEST_PATH: &str = "Each path must be a UTF-8 path to a .bnt file or a directory. Choose readable Benitoite tests.";
+pub const TEST_CONTEXT: &str =
+    "The Benitoite test execution context is unavailable. Stop and report.";
+pub const TEST_NO_SUMMARY: &str = "No test summary from benitoite; the run may have stopped early.";
+pub const TEST_PASSED: &str = "All tests passed.";
+pub const TEST_EMPTY: &str = "No tests ran.";
+pub const TEST_INTERRUPTED: &str = "The test run was interrupted.";
+pub const TEST_CANCELLED: &str =
+    "[The tests were stopped because the user cancelled the tool call.]";
+pub const TEST_LEFTOVERS: &str = "[Processes started by the tests may still be running.]";
+pub fn test_timed_out(timeout: u64) -> String {
+    format!("[The tests timed out after {timeout} seconds and were stopped.]")
+}
+pub fn test_failure(error: &dyn std::fmt::Display) -> String {
+    format!(
+        "Could not run the Benitoite tests: {error}. Check the tests and the sandbox configuration, then try again."
+    )
+}
+pub fn tests_summary(passed: u64, failed: u64) -> String {
+    format!("Tests: {passed} passed, {failed} failed.")
+}
+pub fn test_files_not_run(n: u64) -> String {
+    if n == 1 {
+        "1 test file was not run.".into()
+    } else {
+        format!("{n} test files were not run.")
+    }
+}
+pub fn tests_unread(n: usize) -> String {
+    if n == 1 {
+        "1 failed test in a file that benitoiteh does not read is not shown.".into()
+    } else {
+        format!("{n} failed tests in files that benitoiteh does not read are not shown.")
+    }
+}
+pub fn tests_uninspected(n: usize) -> String {
+    let noun = if n == 1 {
+        "failed test was"
+    } else {
+        "failed tests were"
+    };
+    format!("[{n} {noun} not inspected because the user cancelled the tool call.]")
+}
+pub fn tests_long(n: usize) -> String {
+    let noun = if n == 1 {
+        "test result line was"
+    } else {
+        "test result lines were"
+    };
+    format!("[{n} {noun} too long to read.]")
+}
+pub fn tests_omitted(n: usize) -> String {
+    let noun = if n == 1 {
+        "failed test was"
+    } else {
+        "failed tests were"
+    };
+    format!("[{n} {noun} not retained (limits: first 1000 failed tests and 16 MiB).]")
+}
+pub fn tests_more(n: usize) -> String {
+    let noun = if n == 1 {
+        "failed test"
+    } else {
+        "failed tests"
+    };
+    format!("[{n} more {noun} not shown. Fix the ones above, then run the tests again.]")
+}
+pub fn test_output_truncated(first: usize, total: usize) -> String {
+    format!("[Showing last lines {first}-{total} of {total} of this test's output.]")
+}
+pub fn test_failed(
+    path: &std::path::Path,
+    line: u64,
+    column: u64,
+    name: &str,
+    reason: &str,
+    message: &str,
+) -> String {
+    format!(
+        "FAILED {}:{line}:{column} {name}: {reason}: {message}",
+        path.display()
+    )
+}
+pub fn test_value(side: &str, value: &str) -> String {
+    format!("  {side}: {value}")
+}
+
+pub const TEST_TRUNCATED: &str = "…[truncated]";
+
+pub const TEST_OUTPUT_OMITTED: &str =
+    "[This test's output was omitted: the combined 32 KiB output limit was reached.]";
+pub const TEST_DETAILS_OMITTED: &str =
+    "[Further failure details were omitted to keep all failure headings.]";
+pub const TEST_RESULT_TRUNCATED: &str =
+    "[Further process output and diagnostics were omitted to keep all failure headings.]";
+pub fn tests_invalid(n: usize) -> String {
+    let noun = if n == 1 {
+        "test result line could"
+    } else {
+        "test result lines could"
+    };
+    format!("[{n} {noun} not be read or saved.]")
+}

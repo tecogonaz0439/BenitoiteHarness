@@ -35,7 +35,6 @@ impl Request {
 /// 後の段階で有効にするオプション。現段階では指定を保持して誤りにする。
 #[derive(Clone, Debug, Default)]
 pub struct DeferredOptions {
-    pub allow: Option<Vec<String>>,
     pub project_parent: Option<PathBuf>,
 }
 
@@ -44,6 +43,7 @@ pub struct DeferredOptions {
 pub struct ExecArgs {
     /// 対話の形では依頼を省略できる。
     pub interactive: bool,
+    pub allow: Option<BTreeSet<crate::benitoite::Effect>>,
     pub resume: Option<String>,
     pub continue_session: bool,
     pub sandbox: Option<Sandbox>,
@@ -106,6 +106,7 @@ impl ExecArgs {
     ) -> Result<Self, ArgsError> {
         let mut result = Self {
             interactive,
+            allow: None,
             resume: None,
             continue_session: false,
             sandbox: None,
@@ -229,11 +230,15 @@ impl ExecArgs {
                     })
                 }
                 "--allow" => {
-                    let effects: Vec<String> = string()?.split(',').map(str::to_owned).collect();
-                    if effects.iter().any(String::is_empty) {
-                        return Err(ArgsError::Invalid);
+                    let mut effects = BTreeSet::new();
+                    for name in string()?.split(',') {
+                        let effect =
+                            crate::benitoite::Effect::from_name(name).ok_or(ArgsError::Invalid)?;
+                        if !effects.insert(effect) {
+                            return Err(ArgsError::Invalid);
+                        }
                     }
-                    deferred.allow = Some(effects);
+                    result.allow = Some(effects);
                 }
                 "--project-parent" => deferred.project_parent = Some(PathBuf::from(value)),
                 "--resume" => result.resume = Some(string()?.to_owned()),
@@ -241,7 +246,7 @@ impl ExecArgs {
                 "--no-sandbox" => result.no_sandbox = true,
                 _ => return Err(ArgsError::Invalid),
             }
-            if matches!(option, "--allow" | "--project-parent") && unavailable.is_none() {
+            if option == "--project-parent" && unavailable.is_none() {
                 unavailable = Some(option.to_owned());
             }
         }
@@ -255,7 +260,8 @@ impl ExecArgs {
             return Err(ArgsError::Invalid);
         }
         if interactive {
-            if result.json
+            if result.allow.is_some()
+                || result.json
                 || result.output_last_message.is_some()
                 || request == Some(Request::Stdin)
             {

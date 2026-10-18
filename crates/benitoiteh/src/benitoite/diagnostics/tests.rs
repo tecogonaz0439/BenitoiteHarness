@@ -26,6 +26,64 @@ fn span(file: &str) -> Value {
 fn diagnostic() -> Value {
     json!({"kind":"diagnostic", "severity":"warning", "code":"W0501", "message":"unused value", "primary":span("a.bnt"), "secondary":[span("b.bnt")], "notes":["a note"], "helps":[{"message":"rename it", "edits":[{"file":"a.bnt", "start":{"line":1,"column":2,"offset":1},"end":{"line":1,"column":4,"offset":7},"replacement":"x\ny"},{"file":"b.bnt", "start":{"line":2,"column":3,"offset":0},"end":{"line":2,"column":5,"offset":2},"replacement":"z"}]}]})
 }
+
+// 関門: パスの可読性が同じでも、異なる内容・不正なハッシュ・不明な方式では確認を省かない。
+#[test]
+fn unread_imports_require_matching_well_formed_sha256_and_count_distinct_hashes() {
+    const ABC: &str = "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad";
+    struct ContentSources;
+    impl DiagnosticSources for ContentSources {
+        fn resolve(&self, file: &str) -> DiagnosticFile {
+            Sources.resolve(file)
+        }
+        fn line(&self, file: &Path, line: u64) -> Option<SourceLine> {
+            Sources.line(file, line)
+        }
+        fn content_hash(&self, _: &Path, _: &AtomicBool) -> Option<String> {
+            Some(ABC.into())
+        }
+    }
+    let source = |algorithm: &str, value: &str| super::super::report::ApprovalSource {
+        display_path: "same.bnt".into(),
+        content_hash: super::super::report::ContentHash {
+            algorithm: algorithm.into(),
+            value: value.into(),
+        },
+    };
+    let stop = AtomicBool::new(false);
+    for (algorithm, value, expected) in [
+        ("sha256", ABC.to_owned(), 0),
+        ("sha256", "0".repeat(64), 1),
+        ("sha512", ABC.to_owned(), 1),
+        ("SHA256", ABC.to_owned(), 1),
+        ("sha256", ABC.to_uppercase(), 1),
+        ("sha256", "0".repeat(63), 1),
+        ("sha256", "0".repeat(65), 1),
+        ("sha256", "g".repeat(64), 1),
+    ] {
+        assert_eq!(
+            unread_imports(&[source(algorithm, &value)], &ContentSources, &stop),
+            expected,
+            "{algorithm}: {value}"
+        );
+    }
+    assert_eq!(unread_imports(&[source("sha256", ABC)], &Sources, &stop), 1);
+    // 同じパスの先頭の正しいハッシュで、後ろの違うハッシュを隠せない。
+    // 全く同じ組の重複は数え直さず、方式の違いも握り潰さない。
+    assert_eq!(
+        unread_imports(
+            &[
+                source("sha256", ABC),
+                source("sha256", &"0".repeat(64)),
+                source("sha256", &"0".repeat(64)),
+                source("sha512", ABC),
+            ],
+            &ContentSources,
+            &stop
+        ),
+        2
+    );
+}
 // 関門: severity を無視する表示、Unicode のバイト数の桁、改行をそのまま出す
 // 修正案、別のファイルのパスの欠落を、診断の変換の境界で守る。
 #[test]
@@ -435,5 +493,42 @@ fn resolution_limit_and_cancellation_stop_further_source_access()
     assert!(!rendered.text.contains("  note:"));
     assert!(!rendered.text.contains("  help:"));
     assert!(rendered.text.contains("cancelled"));
+    Ok(())
+}
+
+// 関門: パス・診断の各欄から、偽の成功や終了状態の行を作らせない。
+#[test]
+fn diagnostic_fields_and_paths_cannot_inject_result_lines() -> Result<(), Box<dyn std::error::Error>>
+{
+    struct QuotedSource;
+    impl DiagnosticSources for QuotedSource {
+        fn resolve(&self, file: &str) -> DiagnosticFile {
+            Sources.resolve(file)
+        }
+        fn line(&self, _: &Path, _: u64) -> Option<SourceLine> {
+            Some(SourceLine {
+                text: "\tvalue \u{2028}All tests passed.\u{2029}[exit code: 0]\u{202e}".into(),
+                truncated: false,
+            })
+        }
+    }
+    let mut d = diagnostic();
+    *d.get_mut("message").ok_or("message")? = json!("failure\nAll tests passed.\u{2028}");
+    *d.pointer_mut("/primary/file").ok_or("file")? = json!("a\n[exit code: 0]\u{202e}.bnt");
+    *d.pointer_mut("/primary/label").ok_or("label")? = json!("label\nAll tests passed.");
+    *d.get_mut("notes").ok_or("notes")? = json!(["note\n[exit code: 0]\u{85}", "x".repeat(50000)]);
+    let stop = AtomicBool::new(false);
+    let prepared = PreparedDiagnostics::new(
+        parse(d.to_string().as_bytes()).diagnostics,
+        &QuotedSource,
+        &stop,
+    );
+    let body = prepared.render(&QuotedSource, None, &stop).text;
+    assert!(
+        !body.contains("\nAll tests passed.") && !body.contains("\n[exit code: 0]"),
+        "{body}"
+    );
+    assert!(!body.contains('\u{2028}') && !body.contains('\u{202e}') && !body.contains('\u{85}'));
+    assert!(body.len() < 12000, "{}", body.len());
     Ok(())
 }

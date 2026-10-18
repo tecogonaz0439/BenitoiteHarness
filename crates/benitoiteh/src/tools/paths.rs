@@ -175,4 +175,12 @@ impl crate::benitoite::diagnostics::DiagnosticSources for ToolContext {
             .ok()
             .flatten()
     }
+
+    fn content_hash(
+        &self,
+        file: &Path,
+        cancelled: &std::sync::atomic::AtomicBool,
+    ) -> Option<String> {
+        super::read::content_hash(self.open_file(file, false).ok()?, cancelled).ok()
+    }
 }

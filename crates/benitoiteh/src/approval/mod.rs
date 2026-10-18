@@ -25,6 +25,8 @@ pub enum ApprovalKind {
     WebFetch,
     /// スクリプトのエフェクトの確認。
     Effects,
+    /// テストのエフェクトの確認。
+    TestEffects,
 }
 
 /// ハーネスが確かめた操作の事実。LLM の説明とは別に渡す。
@@ -48,6 +50,13 @@ pub struct ApprovalFacts {
     pub shell_reference: bool,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub sources: Vec<ApprovalSource>,
+    /// 読まない利用者のソースの件数。パスは画面に示さない。
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub unread_imports: usize,
+}
+
+fn is_zero(n: &usize) -> bool {
+    *n == 0
 }
 
 /// 起動時に選んだ方針と、実際のサンドボックスの有無。
@@ -92,7 +101,7 @@ pub fn decide(
         Approval::OnRequest | Approval::Never => Decision::Allow,
     };
     match kind {
-        ApprovalKind::Effects => match policy.approval {
+        ApprovalKind::Effects | ApprovalKind::TestEffects => match policy.approval {
             Approval::Never => Decision::Deny,
             Approval::OnRequest | Approval::Untrusted => Decision::Ask,
         },
@@ -133,7 +142,10 @@ pub fn decide_in_mode(
     domains: &BTreeSet<String>,
 ) -> Decision {
     if mode == crate::config::Mode::Restricted
-        && !matches!(kind, ApprovalKind::WebFetch | ApprovalKind::Effects)
+        && !matches!(
+            kind,
+            ApprovalKind::WebFetch | ApprovalKind::Effects | ApprovalKind::TestEffects
+        )
     {
         Decision::Deny
     } else {
@@ -233,6 +245,7 @@ pub fn policy_denial_message(kind: ApprovalKind) -> &'static str {
         ApprovalKind::Escalate => text::POLICY_ESCALATE_DENIED,
         ApprovalKind::WebFetch => text::POLICY_WEB_DENIED,
         ApprovalKind::Effects => text::POLICY_EFFECTS_DENIED,
+        ApprovalKind::TestEffects => text::POLICY_TEST_EFFECTS_DENIED,
     }
 }
 
@@ -248,7 +261,9 @@ pub fn user_denial_message(
         ApprovalKind::Command => text::USER_COMMAND_DENIED.to_owned(),
         ApprovalKind::Escalate => text::USER_ESCALATE_DENIED.to_owned(),
         ApprovalKind::WebFetch => text::USER_WEB_DENIED.to_owned(),
-        ApprovalKind::Effects => text::effects_denied(facts, project),
+        ApprovalKind::Effects | ApprovalKind::TestEffects => {
+            text::effects_denied(kind, facts, project)
+        }
     };
     match message {
         Some(message) => text::with_user_message(&denial, message),
@@ -258,8 +273,27 @@ pub fn user_denial_message(
 
 /// 確認の事実から、LLM の説明と独立した要約を作る。
 pub fn effects_summary(facts: &ApprovalFacts, project: &Path) -> String {
-    text::effects_summary(facts, project)
+    text::effects_summary(ApprovalKind::Effects, facts, project)
 }
 
 #[cfg(test)]
 mod tests;
+
+/// テストのすべての対象を含む確認の要約。
+pub fn test_effects_summary(facts: &ApprovalFacts, project: &Path) -> String {
+    text::effects_summary(ApprovalKind::TestEffects, facts, project)
+}
+/// 非対話で許した範囲を超える実行の説明。
+pub fn allow_denied(
+    kind: ApprovalKind,
+    facts: &ApprovalFacts,
+    project: &Path,
+    allowed: &BTreeSet<crate::benitoite::Effect>,
+) -> String {
+    text::allow_denied(kind, facts, project, allowed)
+}
+
+/// 非対話ではエフェクトの許可と独立に、読まないソースの取り込みを断る。
+pub(crate) fn unread_imports_denied(facts: &ApprovalFacts, project: &Path) -> String {
+    text::unread_imports_denied(facts, project)
+}

@@ -66,6 +66,7 @@ fn resume_starts_with_empty_session_command_approvals() -> Result<(), Box<dyn st
     };
     let mut server = mock_provider::MockProvider::start(vec![response(), response()])?;
     let config = AgentConfig {
+        allow_effects: None,
         mode: Mode::Normal,
         destination: Destination {
             provider: "test".into(),
@@ -225,6 +226,7 @@ fn web_session_answers_are_remembered_by_the_loop_before_cancelled_execution()
                 "data: {response}\n\ndata: [DONE]\n\n"
             ))])?;
         let config = AgentConfig {
+            allow_effects: None,
             mode: Mode::Normal,
             destination: Destination {
                 provider: "test".into(),

@@ -46,6 +46,8 @@ const TICK: Duration = Duration::from_millis(10);
 /// exec が解決した設定と、通信・やり直しの時間の上限。
 #[derive(Clone, Debug)]
 pub struct AgentConfig {
+    /// Some は非対話で許す集合、None は対話の確認。
+    pub allow_effects: Option<BTreeSet<crate::benitoite::Effect>>,
     pub mode: Mode,
     pub destination: Destination,
     pub kind: AdapterKind,
@@ -60,6 +62,7 @@ pub struct AgentConfig {
 impl From<ResolvedExec> for AgentConfig {
     fn from(config: ResolvedExec) -> Self {
         Self {
+            allow_effects: None,
             mode: config.mode,
             destination: config.destination,
             kind: config.kind,
@@ -130,6 +133,8 @@ pub enum AgentError {
     Limit(&'static str),
     /// 同じ実のパスで検査が続けて失敗した。
     CheckFixLimit(String),
+    /// 非対話の許可の外の実行を続けて要求した。
+    EffectsNotAllowed(String),
     /// スクリプトの子孫が残っている可能性がある。
     LeftoverProcesses(String),
     /// 設定と実行器の不一致。
@@ -153,7 +158,9 @@ impl fmt::Display for AgentError {
             Self::Provider(error) => error.fmt(f),
             Self::Refusal(category) => f.write_str(&text::refusal(category)),
             Self::Limit(message) => f.write_str(message),
-            Self::CheckFixLimit(message) | Self::LeftoverProcesses(message) => f.write_str(message),
+            Self::CheckFixLimit(message)
+            | Self::EffectsNotAllowed(message)
+            | Self::LeftoverProcesses(message) => f.write_str(message),
             Self::InvalidConfiguration => f.write_str(text::INVALID_CONFIGURATION),
             Self::ReceiverClosed => f.write_str(text::CHANNEL_CLOSED),
             Self::Worker => f.write_str(text::WORKER_FAILED),
@@ -195,7 +202,10 @@ impl AgentError {
             Self::Provider(ProviderError::ContextOverflow) => "context_overflow",
             Self::Provider(_) => "provider",
             Self::Refusal(_) => "refusal",
-            Self::Limit(_) | Self::CheckFixLimit(_) | Self::LeftoverProcesses(_) => "limit",
+            Self::Limit(_)
+            | Self::CheckFixLimit(_)
+            | Self::EffectsNotAllowed(_)
+            | Self::LeftoverProcesses(_) => "limit",
             Self::InvalidConfiguration => "configuration",
             Self::ReceiverClosed => "event_receiver",
             Self::Worker => "worker",
@@ -231,6 +241,7 @@ pub struct Agent {
     session_domains: BTreeSet<String>,
     confirmed_effects: BTreeMap<crate::tools::ConfirmKey, BTreeSet<crate::benitoite::Effect>>,
     stop_run: Option<String>,
+    effects_denied: u64,
     started: bool,
     turn: u64,
     repeated: Option<(String, serde_json::Value, u64)>,
@@ -282,9 +293,13 @@ impl Agent {
         session: Session,
         state: Option<session::ResumeState>,
     ) -> Result<Self, AgentError> {
-        if config.mode != tool_context.mode || config.limits.max_check_fix == 0 {
+        if config.mode != tool_context.mode
+            || config.limits.max_check_fix == 0
+            || (config.mode == Mode::Normal && config.allow_effects.is_some())
+        {
             return Err(AgentError::InvalidConfiguration);
         }
+        tool_context.noninteractive = config.allow_effects.is_some();
         provider_host(&config.destination)?;
         let tools = if tool_context.skill.is_some() {
             ToolSet::new(config.mode)
@@ -376,6 +391,7 @@ impl Agent {
             session_domains: BTreeSet::new(),
             confirmed_effects: BTreeMap::new(),
             stop_run: None,
+            effects_denied: 0,
             started: false,
             turn: 0,
             repeated: None,
@@ -580,6 +596,7 @@ impl Agent {
         summary: &mut Summary,
     ) -> Result<Outcome, AgentError> {
         self.check_limit.clear();
+        self.effects_denied = 0;
         let cancelled = &*control.cancel_step;
         self.resuming = false;
         if self.resume_compaction {
@@ -775,6 +792,11 @@ impl Agent {
             )?;
             if let Some(message) = self.stop_run.take() {
                 return Err(AgentError::LeftoverProcesses(message));
+            }
+            if self.effects_denied >= 3 {
+                return Err(AgentError::EffectsNotAllowed(
+                    text::EFFECTS_NOT_ALLOWED.into(),
+                ));
             }
             if let Some((key, diagnostics)) = std::mem::take(&mut self.check_limit)
                 .into_iter()

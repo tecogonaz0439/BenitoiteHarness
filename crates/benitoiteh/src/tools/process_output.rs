@@ -1,7 +1,7 @@
 //! 子プロセスの出力を排出しつつ末尾と保存を管理する（設計書 01-03「出力の切り詰め」）。
 use crate::session::SpillWriter;
 use std::io::{self, Write};
-pub(super) struct Output {
+pub(crate) struct Output {
     max_bytes: usize,
     max_lines: usize,
     pub(super) writer: Option<SpillWriter>,
@@ -28,7 +28,25 @@ impl Output {
             closed: false,
         }
     }
-    pub(super) fn tail(&self) -> (String, usize, usize, bool) {
+    pub(crate) fn memory(max_bytes: usize, max_lines: usize) -> Self {
+        Self {
+            writer: None,
+            max_bytes,
+            max_lines,
+            bytes: Vec::new(),
+            total_bytes: 0,
+            partial_first: false,
+            newlines: 0,
+            retained_newlines: 0,
+            ends_newline: false,
+            closed: false,
+        }
+    }
+    // テスト結果の保持の予算には、捨てた出力でなく確保した末尾の領域を数える。
+    pub(crate) fn retained_bytes(&self) -> usize {
+        self.bytes.capacity()
+    }
+    pub(crate) fn tail(&self) -> (String, usize, usize, bool) {
         let total = self
             .newlines
             .saturating_add(usize::from(self.total_bytes != 0 && !self.ends_newline));

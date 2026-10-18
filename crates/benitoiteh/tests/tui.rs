@@ -1,5 +1,8 @@
 //! 画面の芯に模擬の端末と提供者をつなぐ（設計書 07-01、実装プラン P4-06）。
 
+#[allow(dead_code)]
+#[path = "support/benitoite_run.rs"]
+mod benitoite_fixture;
 #[path = "tui/commands.rs"]
 mod commands;
 #[path = "tui/interaction.rs"]
@@ -246,6 +249,7 @@ impl Fixture {
         let directory = session.directory().to_owned();
         let spill = directory.join("spill");
         let config = AgentConfig {
+            allow_effects: None,
             mode: Mode::Normal,
             destination: Destination {
                 provider: "mock".into(),

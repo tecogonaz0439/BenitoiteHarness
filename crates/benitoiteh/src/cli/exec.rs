@@ -237,6 +237,9 @@ pub(super) fn prepare(
             None => user.resolve_exec(args, &project.config, &cwd),
         }
         .map_err(StartupError::Config)?;
+        if resolved.mode == Mode::Normal && args.allow.is_some() {
+            return Err(StartupError::Invalid(text::ALLOW_RESTRICTED));
+        }
         if let Some(state) = &resume
             && state.mode == crate::session::RecordedMode::Restricted
             && resolved.mode == Mode::Normal
@@ -525,6 +528,7 @@ pub(super) fn prepare(
             && let Some(processor) = &processor
         {
             context = context.with_run_context(benitoite::RunContext {
+                test_timeout: std::time::Duration::from_secs(120),
                 processor: processor.path.clone(),
                 helper: helper.clone(),
                 scratch: scratch.clone(),
@@ -588,22 +592,19 @@ pub(super) fn prepare(
             estimate: 0,
         };
         let normal_network = resolved.mode == Mode::Normal && user.normal.network;
+        let mut config: crate::agent::AgentConfig = resolved.into();
+        config.allow_effects = (!args.interactive && config.mode == Mode::Restricted)
+            .then(|| args.allow.clone().unwrap_or_default());
         let mut agent = match resume {
             Some(state) => Agent::resume(
-                resolved.into(),
+                config,
                 api_key,
                 context,
                 environment,
                 session.clone(),
                 state,
             ),
-            None => Agent::new(
-                resolved.into(),
-                api_key,
-                context,
-                environment,
-                session.clone(),
-            ),
+            None => Agent::new(config, api_key, context, environment, session.clone()),
         }
         .map_err(StartupError::Agent)?;
         agent = agent
