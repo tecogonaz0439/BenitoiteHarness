@@ -151,6 +151,19 @@ pub(super) fn definitions(mode: crate::config::Mode) -> Vec<ToolDefinition> {
             false,
         ));
     }
+    if mode == crate::config::Mode::Restricted {
+        tools.push(definition(
+            ToolId::BenitoiteScratch,
+            text::BENITOITE_SCRATCH,
+            &[text::BENITOITE_SCRATCH.1],
+            vec![
+                arg("code", String, true),
+                arg_described("args", ArgumentType::StringArray, false, text::RUN_ARGS),
+                arg_described("stdin", String, false, text::RUN_STDIN),
+            ],
+            false,
+        ));
+    }
     tools.push(definition(
         ToolId::BenitoiteExplain,
         text::BENITOITE_EXPLAIN,

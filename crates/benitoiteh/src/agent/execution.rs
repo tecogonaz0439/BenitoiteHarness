@@ -191,7 +191,9 @@ impl Agent {
         let Some(request) = output.approval else {
             if matches!(
                 validated.id(),
-                crate::tools::ToolId::BenitoiteRun | crate::tools::ToolId::BenitoiteTest
+                crate::tools::ToolId::BenitoiteRun
+                    | crate::tools::ToolId::BenitoiteTest
+                    | crate::tools::ToolId::BenitoiteScratch
             ) && output.processor_launches >= 2
             {
                 self.effects_denied = 0;
@@ -211,23 +213,42 @@ impl Agent {
                     self.tool_context.project.real_path(),
                 )));
             }
+            let explicitly_allowed = allowed;
+            let mut allowed = allowed.clone();
+            if validated.id() == crate::tools::ToolId::BenitoiteScratch {
+                allowed.extend(
+                    self.tool_context
+                        .run
+                        .as_ref()
+                        .map(|run| run.scratch_auto_effects.clone())
+                        .unwrap_or_else(|| crate::benitoite::effects::scratch_auto_effects(&[])),
+                );
+            }
             let effects = request
                 .facts
                 .effects
                 .iter()
                 .map(|s| crate::benitoite::Effect::from_name(s))
                 .collect::<Option<std::collections::BTreeSet<_>>>();
-            if effects.is_some_and(|set| {
+            if let Some(effects) = effects.filter(|set| {
                 set.iter().all(|effect| {
                     *effect == crate::benitoite::Effect::AssertCheck || allowed.contains(effect)
                 })
             }) {
                 let key = crate::tools::ConfirmKey::from_facts(request.kind, &request.facts)
                     .ok_or(AgentError::Worker)?;
+                let confirmed = if validated.id() == crate::tools::ToolId::BenitoiteScratch {
+                    self.tool_context
+                        .remember_scratch_automatic(call.id.as_str(), &effects, explicitly_allowed)
+                        .map_err(|_| AgentError::Worker)?;
+                    effects.intersection(explicitly_allowed).copied().collect()
+                } else {
+                    allowed
+                };
                 self.confirmed_effects
                     .entry(key)
                     .or_default()
-                    .extend(allowed.iter().copied());
+                    .extend(confirmed);
                 self.effects_denied = 0;
                 return Ok(self.execute_approved(call, validated, cancelled));
             }
@@ -237,7 +258,7 @@ impl Agent {
                 request.kind,
                 &request.facts,
                 self.tool_context.project.real_path(),
-                allowed,
+                &allowed,
             )));
         }
         match approval::decide_in_mode(
@@ -353,6 +374,9 @@ impl Agent {
     ) -> Result<(), AgentError> {
         self.checkpoint_notices(events)?;
         summary.checks = summary.checks.saturating_add(output.processor_launches);
+        if call.name == "benitoite_scratch" {
+            self.tool_context.scratch_result(&call.id, &mut output);
+        }
         if let Some(message) = output.stop_run.take() {
             self.stop_run = Some(message);
         }

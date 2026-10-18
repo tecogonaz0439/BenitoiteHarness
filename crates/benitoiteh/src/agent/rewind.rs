@@ -238,7 +238,7 @@ impl Agent {
                 && let Record::ToolStart { call } = record
                 && matches!(
                     call.name.as_str(),
-                    "web_fetch" | "benitoite_run" | "benitoite_test"
+                    "web_fetch" | "benitoite_run" | "benitoite_test" | "benitoite_scratch"
                 )
             {
                 // 取得の成否では外への通信の有無を証明できないので保守的に示す。

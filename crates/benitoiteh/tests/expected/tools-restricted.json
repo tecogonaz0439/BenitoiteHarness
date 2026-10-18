@@ -201,6 +201,33 @@
     "name": "benitoite_test"
   },
   {
+    "description": "Write Benitoite code to a new temporary script in the session temporary directory, check it, and run it in the sandbox.",
+    "input_schema": {
+      "properties": {
+        "args": {
+          "description": "Arguments passed to the Benitoite script.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "code": {
+          "description": "Argument value.",
+          "type": "string"
+        },
+        "stdin": {
+          "description": "Text written to the script's standard input; empty when omitted.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "code"
+      ],
+      "type": "object"
+    },
+    "name": "benitoite_scratch"
+  },
+  {
     "description": "Explain a Benitoite diagnostic code, such as E0405, W0501, or R0101.",
     "input_schema": {
       "properties": {

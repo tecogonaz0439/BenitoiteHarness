@@ -9,6 +9,7 @@ edit: Replace matching text in a file.
 benitoite_check: Check a Benitoite script, or the main.bnt of a directory, without running it.
 benitoite_run: Run a Benitoite script in the sandbox after benitoiteh inspects the effects of `main` and asks the user to confirm them.
 benitoite_test: Run Benitoite tests in .bnt files or directories in the sandbox after benitoiteh inspects their effects and asks the user to confirm them.
+benitoite_scratch: Write Benitoite code to a new temporary script in the session temporary directory, check it, and run it in the sandbox.
 benitoite_explain: Explain a Benitoite diagnostic code, such as E0405, W0501, or R0101.
 benitoite_reference: Read a document of the Benitoite Skill that comes with the installed processor.
 web_fetch: Fetch an HTTPS URL and return its text content.
@@ -26,6 +27,9 @@ benitoite_run: Check the script with benitoite_check first. You do not choose th
 Pass script arguments in `args` and standard input in `stdin` (empty otherwise). `timeout` is in seconds (default 120, max 600).
 benitoite_test: Check them with benitoite_check with `tests` set to true first. You do not choose the allowed effects: benitoiteh passes the union of the selected tests' effects, including Assert.Check.
 A directory runs every .bnt file under it except package.bnt and nested packages.
+benitoite_scratch: benitoiteh runs it without asking when its effects stay within the automatic set (no effects, Console.Write, State, Process.Exit, and any the user added); otherwise the user confirms them as for benitoite_run. You do not choose the allowed effects.
+The script's root is the session temporary directory, so `import` cannot load project modules. The result shows the script's path; read it and write it into the project to keep it.
+Pass script arguments in `args` and standard input in `stdin` (empty otherwise). The time limit is 120 seconds.
 benitoite_explain: Pass the code shown in a diagnostic; the result is that code's section of `references/diagnostics.md`.
 benitoite_reference: Pass `name` as the path under references/ without `.md`, such as `idioms`, `grammar`, `common-mistakes`, `language-comparison`, `diagnostics`, `inspection`, or `stdlib/List`; `stdlib/index` lists the standard library modules.
 Omit `name` to list the available names. Long documents are returned in parts; use `offset` and `limit` to read on.
@@ -46,7 +50,7 @@ Use benitoite_check for `benitoite check`, benitoite_check with `tests` set to t
 Read `references/<name>.md` with benitoite_reference, passing `<name>` as `name` (for example, `idioms` or `stdlib/List`).
 Use benitoite_explain to look up a diagnostic code.
 Skip the "Check the version first" section, including `skill list` and `skill show`: benitoiteh has already checked the processor at startup, and benitoite_reference reads the Skill documents.
-benitoite_run and benitoite_test obtain the inspection report and pass `--allow-effects` themselves; you do not read the report or choose the allowed effects.
+benitoite_run, benitoite_test and benitoite_scratch obtain the inspection report and pass `--allow-effects` themselves; you do not read the report or choose the allowed effects.
 benitoiteh handles the "Before running" confirmation in its UI; you do not need to ask the user for confirmation yourself. You may explain what the effects mean in your response.
 
 # Benitoite

@@ -420,6 +420,19 @@ impl ScopeRoot {
         Ok(())
     }
 
+    /// 親も最後の名前もリンクを辿らず、0600 の新しいファイルだけを作る。
+    /// 既存の名前は種類にかかわらず AlreadyExists とし、置き換えない。
+    pub fn create_new(&self, path: &ScopeRelPath) -> Result<File, SafeFsError> {
+        let strict = self.no_follow()?;
+        let (parent, name) = strict.parent(path, false)?;
+        os::open(
+            &parent,
+            &name,
+            OFlags::WRONLY | OFlags::CREATE | OFlags::EXCL | OFlags::NOFOLLOW | OFlags::CLOEXEC,
+            Mode::from_raw_mode(0o600),
+        )
+    }
+
     /// 新しいディレクトリを作る。すでにある場合は誤りにする。
     pub fn create_dir(&self, path: &ScopeRelPath) -> Result<(), SafeFsError> {
         let (parent, name) = self.parent(path, false)?;

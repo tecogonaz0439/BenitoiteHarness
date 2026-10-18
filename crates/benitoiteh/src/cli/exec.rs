@@ -182,6 +182,9 @@ pub(super) fn prepare(
             user.restricted
                 .allowed_programs
                 .clone_from(&fixed.safety.allowed_programs);
+            user.restricted
+                .scratch_auto_effects
+                .clone_from(&fixed.safety.scratch_auto_effects);
             if fixed.mode == Mode::Normal {
                 args.sandbox = Some(fixed.sandbox);
                 args.no_sandbox = fixed.sandbox_disabled;
@@ -528,6 +531,9 @@ pub(super) fn prepare(
             && let Some(processor) = &processor
         {
             context = context.with_run_context(benitoite::RunContext {
+                scratch_auto_effects: benitoite::effects::scratch_auto_effects(
+                    &user.restricted.scratch_auto_effects,
+                ),
                 test_timeout: std::time::Duration::from_secs(120),
                 processor: processor.path.clone(),
                 helper: helper.clone(),
@@ -610,6 +616,11 @@ pub(super) fn prepare(
         agent = agent
             .with_approvals(Box::new(NonInteractiveApprover), approval_policy)
             .with_session_safety(crate::agent::SessionSafety {
+                scratch_auto_effects: if status.mode == Mode::Restricted {
+                    user.restricted.scratch_auto_effects.clone()
+                } else {
+                    vec![]
+                },
                 network: normal_network,
                 writable_roots: locations.additional,
                 allowed_programs,

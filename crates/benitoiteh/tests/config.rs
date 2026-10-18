@@ -136,6 +136,10 @@ fn user_configuration_reads_the_design_example_and_rejects_invalid_fields() -> T
             None,
         ),
         ("[restricted]\nscratch_auto_effects=['File.Write']", None),
+        ("[restricted]\nscratch_auto_effects=['Process.Run']", None),
+        ("[restricted]\nscratch_auto_effects=['Http.Connect']", None),
+        ("[restricted]\nscratch_auto_effects=['Console.Read']", None),
+        ("[restricted]\nscratch_auto_effects=['Http.Listen']", None),
         ("[restricted]\nallowed_programs=['relative/program']", None),
     ] {
         let error = UserConfig::parse(input)

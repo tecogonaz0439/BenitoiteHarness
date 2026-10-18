@@ -78,6 +78,7 @@ impl Fixture {
         std::fs::set_permissions(&placeholders, std::fs::Permissions::from_mode(0o700))?;
         let processor = crate::support::benitoite()?;
         self.context.run = Some(RunContext {
+            scratch_auto_effects: benitoiteh::benitoite::effects::scratch_auto_effects(&[]),
             test_timeout: std::time::Duration::from_secs(120),
             processor,
             helper: std::fs::canonicalize(env!("CARGO_BIN_EXE_benitoiteh"))?,
@@ -116,7 +117,17 @@ impl Fixture {
         id: &str,
         cancelled: &AtomicBool,
     ) -> ToolOutput {
-        let call = match self.tools.validate("benitoite_run", args) {
+        self.call_tool("benitoite_run", args, approved, id, cancelled)
+    }
+    pub fn call_tool(
+        &self,
+        name: &str,
+        args: Value,
+        approved: bool,
+        id: &str,
+        cancelled: &AtomicBool,
+    ) -> ToolOutput {
+        let call = match self.tools.validate(name, args) {
             Ok(c) => c,
             Err(e) => return ToolOutput::error(e.to_string()),
         };

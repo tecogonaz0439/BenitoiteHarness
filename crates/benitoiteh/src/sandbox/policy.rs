@@ -31,6 +31,15 @@ pub enum ProgramAccess {
 pub struct PolicyConfig {
     /// 読み取りを許す範囲。
     pub readable: ReadAccess,
+    /// 配下を含まず、そのパスだけの読み取り。Linux では通常のファイルに限る。
+    #[serde(default)]
+    pub readable_files: Vec<PathBuf>,
+    /// 配下のデータの読み取りだけを許し、実行可能なマッピングは許さない場所。
+    #[serde(default)]
+    pub readable_data_roots: Vec<PathBuf>,
+    /// macOS で配下を含まずメタデータだけを許すパス。Linux の stat は制限されない。
+    #[serde(default)]
+    pub readable_metadata: Vec<PathBuf>,
     /// 読み取りを拒む実のパス。
     pub denied_read: Vec<PathBuf>,
     /// 書き込みを許すディレクトリ。空にはできない。
@@ -56,6 +65,9 @@ impl PolicyConfig {
     pub fn new(writable: Vec<PathBuf>) -> Self {
         Self {
             readable: ReadAccess::All,
+            readable_files: Vec::new(),
+            readable_data_roots: Vec::new(),
+            readable_metadata: Vec::new(),
             denied_read: Vec::new(),
             writable,
             protected_names: vec![".git".into(), ".benitoiteh".into()],
@@ -114,6 +126,28 @@ impl SandboxPolicy {
             for path in roots {
                 canonical_path(path)?;
                 directory(path)?;
+            }
+        }
+        for path in &config.readable_data_roots {
+            canonical_path(path)?;
+            directory(path)?;
+        }
+        for path in &config.readable_files {
+            canonical_path(path)?;
+            #[cfg(target_os = "linux")]
+            if !fs::metadata(path).map_err(SandboxError::Io)?.is_file() {
+                return Err(SandboxError::InvalidPolicy(text::INVALID_PATH));
+            }
+        }
+        for path in &config.readable_metadata {
+            // /etc や /var のリンク自身にもメタデータを許す必要がある。
+            // 読み取りの根と違い、リンク先の内容を読む権限は与えない（実装プラン P2-09）。
+            canonical_syntax(path)?;
+            let kind = fs::symlink_metadata(path)
+                .map_err(SandboxError::Io)?
+                .file_type();
+            if !kind.is_symlink() && !kind.is_file() && !kind.is_dir() {
+                return Err(SandboxError::InvalidPolicy(text::INVALID_PATH));
             }
         }
         for path in &config.denied_read {

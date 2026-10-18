@@ -49,6 +49,8 @@ pub enum CheckpointReason {
     BenitoiteRun,
     /// 制限モードのテストの実行前。
     BenitoiteTest,
+    /// 一時スクリプトの実行前。
+    BenitoiteScratch,
     Write,
     Edit,
     BeforeRewind,

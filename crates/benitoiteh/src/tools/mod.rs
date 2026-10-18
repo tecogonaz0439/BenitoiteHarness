@@ -5,6 +5,7 @@ mod benitoite_check;
 mod benitoite_process;
 mod benitoite_reference;
 mod benitoite_run;
+mod benitoite_scratch;
 mod benitoite_test;
 mod definitions;
 mod edit;
@@ -63,6 +64,7 @@ pub enum ToolId {
     BenitoiteRun,
     /// 確認したエフェクトでテストを実行する。
     BenitoiteTest,
+    BenitoiteScratch,
     /// 処理系の Skill の文書。
     BenitoiteReference,
     /// HTTPS の本文の取得。
@@ -82,6 +84,7 @@ impl ToolId {
             Self::BenitoiteCheck => "benitoite_check",
             Self::BenitoiteRun => "benitoite_run",
             Self::BenitoiteTest => "benitoite_test",
+            Self::BenitoiteScratch => "benitoite_scratch",
             Self::BenitoiteExplain => "benitoite_explain",
             Self::BenitoiteReference => "benitoite_reference",
             Self::WebFetch => "web_fetch",
@@ -168,6 +171,7 @@ impl ToolSet {
                     | ToolId::BenitoiteCheck
                     | ToolId::BenitoiteRun
                     | ToolId::BenitoiteTest
+                    | ToolId::BenitoiteScratch
             )
         });
         tools
@@ -243,6 +247,7 @@ impl ToolSet {
         if self.mode != context.mode {
             return ToolOutput::error(text::MODE_MISMATCH);
         }
+        let call_id = invocation.call_id;
         let result = match call.id {
             ToolId::Read => read::execute(context, &call.arguments),
             ToolId::Glob => search::glob(context, &call.arguments, invocation.cancelled)
@@ -258,6 +263,9 @@ impl ToolSet {
             ToolId::BenitoiteTest => {
                 benitoite_test::execute(context, &call.arguments, approval, invocation)
             }
+            ToolId::BenitoiteScratch => {
+                benitoite_scratch::execute(context, &call.arguments, approval, invocation)
+            }
             ToolId::BenitoiteCheck => {
                 benitoite_check::execute(context, &call.arguments, invocation)
             }
@@ -269,10 +277,14 @@ impl ToolSet {
             }
             ToolId::WebFetch => web_fetch::execute(context, &call.arguments, approval, invocation),
         };
-        match result {
+        let mut output = match result {
             Ok(output) => output,
             Err(error) => ToolOutput::error(error.to_string()),
+        };
+        if call.id == ToolId::BenitoiteScratch {
+            context.scratch_result(call_id, &mut output);
         }
+        output
     }
 }
 
@@ -353,6 +365,7 @@ pub struct ToolContext {
     read_versions: Mutex<BTreeMap<PathBuf, FileVersion>>,
     pub checkpoints: Option<crate::rewind::CheckpointRecorder>,
     search_limits: SearchLimits,
+    scratch_state: Mutex<benitoite_scratch::ScratchState>,
 }
 
 impl fmt::Debug for ToolContext {
@@ -408,6 +421,7 @@ impl ToolContext {
             read_versions: Mutex::new(BTreeMap::new()),
             checkpoints: None,
             search_limits: SearchLimits::default(),
+            scratch_state: Mutex::new(benitoite_scratch::ScratchState::default()),
         }
     }
 

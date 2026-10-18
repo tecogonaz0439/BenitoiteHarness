@@ -545,3 +545,9 @@ pub fn tests_invalid(n: usize) -> String {
     };
     format!("[{n} {noun} not be read or saved.]")
 }
+
+pub const BENITOITE_SCRATCH: (&str, &str) =
+    prompt_parts(include_str!("../../prompts/tools/benitoite_scratch.md"));
+pub const SCRATCH_CODE: &str = "code must be at most 64 MiB and contain no NUL in its first 8 KiB.";
+pub const SCRATCH_NAMES: &str = "Could not create a new scratch script after 128 attempts.";
+pub const SCRATCH_COUNTER: &str = "The scratch script counter is exhausted.";
