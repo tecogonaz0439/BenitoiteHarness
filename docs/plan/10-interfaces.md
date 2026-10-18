@@ -255,6 +255,11 @@ P0-04 で作った型: 方針の入力 `PolicyConfig`（`readable: ReadAccess`�
 - `approval::ApprovalFacts.restricted: Option<RestrictedFacts>`（`serde(default, skip_serializing_if)`）。`RestrictedFacts { writable: Vec<PathBuf>, network: bool, programs: Vec<PathBuf>, process_run: bool }`。前の確認と今回の報告の和から `tools/benitoite_process.rs` で作る。`context.run` がなければ `None`。
 - `ui/tui/text.rs` の `effect_description(Effect)`（v0.0.7 の Skill の表の写し。`Process.Run` は ` (name them)` を除く）。事実の並びは `Targets` → 読まないファイルの取り込み → `Effects`（`+` を先に）→ `Sandbox` → `Programs`（`process_run` のとき）→ `Shell`。`Added effects` の行はない。確認の事実のパスは、改行とタブを `\x0a`・`\x09` にして一行にする。
 
+### `doctor` の処理系の項目（P4-10）
+
+- `cli/doctor/processor.rs`: 項目 `benitoite.discovery`・`benitoite.executable`（説明に `sha256=`）・`benitoite.version`（`version`、`build` の `commit`・`dirty`・`target`。`null` は `unknown`）・`benitoite.skill`（`contentHash`）。JSON の行の形は変えない。
+- 規則の確かめ（`probe.rs`）は `/bin/sh` を拒んだ後に処理系の `--version=json` を問い合わせと同じ `restricted_policy` で起動し、標準出力 1 MiB・標準エラー 64 KiB で打ち切る。処理系がないか形が通らないときだけ `benitoiteh` 自身で確かめ、要約の文でそのことを示す。版と Skill は規則の確かめが通ったときだけ `QueryLauncher::Sandboxed` で問い合わせ、示したハッシュと問い合わせた実行ファイルのハッシュが違えば `unavailable` にする。
+
 ### `provider`（P1-01、P1-02）
 
 - 共通の形（`provider::types`、`provider` から再公開）: `Destination { provider, base_url, model }`、`AdapterKind`、`Conversation { items }`、`Item::{UserMessage, AssistantTurn, ToolResult}`、`UserMessage { parts: Vec<UserPart> }`（`UserPartKind::{Environment, Request, Steering}`）、`AssistantTurn { parts, raw_items, finish_reason, usage }`、`AssistantPart::{Text, Reasoning, ToolCall}`、`RawItems { destination, adapter, items }`、`ToolCall { id, provider_id, provider_item_id, name, arguments, raw_arguments }`、`ToolResult { id, provider_id, text, is_error }`、`Usage`（各項目 `Option<u64>` と `raw`）、`FinishReason::{Completed, ToolCalls, OutputLimit, Refusal(String), Error, Cancelled, Disconnected}`、`StreamEvent`、`ProviderError`、`Capabilities`。
