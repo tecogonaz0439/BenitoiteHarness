@@ -124,3 +124,33 @@ P5 の比べる相手のうち、外部のハーネス二つ（DeepSeek Harness 
 
 - `scripts/check.sh --inside-codex` が通る（`BENITOITEH_TEST_BENITOITE` を設定して）。
 - 完了の報告に、`unittest` の結果の末尾と、二つの項目の行の欄の例（偽の出力から作ったもの）を書く。
+
+## 補足（2026-10-18、始める前の点検）
+
+本節は、上の各節に優先する。
+
+1. **DeepSeek Harness の番の数**: 用語集の「番」（LLM への一回の要求と、その道具の実行）は、DeepSeek Harness の `step` に当たる。`turns` は `step_end` の数とする。`turn_start` の数（DeepSeek Harness の「turn」は一連の処理に当たる）は `dsh_turns`（新しい欄）に書く。`steps` の欄は作らない。
+2. **終わり方**: `turn_end` の `reason` は文字列でなく、`{kind: completed|aborted|blocked|error|max-tokens|interrupted|forked, ...}` のオブジェクトである（`packages/core/session/src/types.ts` の `TurnEndReasonMap`）。番の中の失敗では `error` の行が出ず、`reason.error.{code,message}` だけが残り、`final` は空のことが多い（headless の README の Exit）。
+   - `end` は、時間の上限なら `timeout` とする。終了状態が 0 で、最後の `turn_end` の `reason.kind` が `completed` なら `completed` とする。ほかは `error` とする。
+   - `error` のときは、理由に `reason.kind` を添え、`kind` が `error` なら `reason.error.code: reason.error.message`（先頭 200 文字）も添える。`turn_end` がなければ、最後の `error` の行の `message`（先頭 200 文字）を添える。
+3. **DeepSeek Harness の費用**: `output` を持つ項目は、トークンを読めたら `cost_usd` を P5-03 の `estimate_cost` で求める（`price` を持つとき）。`usage_missing` が 0 でなければ `cost_usd` を `None` とし、P5-03 の補足 5 の「費用が分からない」として止まる。
+4. **受け継ぐ設定を除く**: DeepSeek Harness の子の環境から、名前が `DSH_`・`DEEPSEEK_` で始まる変数と `NODE_OPTIONS` を除いてから、2 の値を加える。理由: `DSH_PERMISSION_MODE=danger-full-access` はサンドボックスと確認を外し、`DSH_SYSTEM_PROMPT`・`DSH_TOOLS_MODE`・`DSH_BUNDLED_SKILL_DIR`・`DEEPSEEK_BASE_URL` なども振る舞いを変える。除いた名前（値は書かない）を見出しに書く。
+5. **キーの値の漏れの確かめ**: LLM のシェルは、同じ利用者のプロセスの環境を `ps -E` で読める（macOS で確かめた。サンドボックスは止めない）。試行の後、`harness.stdout`・`harness.stderr`・`final.txt`・`dsh-home/` の下のファイル・作業ディレクトリの下のファイルを、キーの値のバイト列で探す。見つかれば、値を書かずに、理由の先頭に `SAFETY: DeepSeek key value found in <試行からの相対パス>` を加え、標準エラー出力にキーの差し替えを促す文を書く。記録（Markdown、`.jsonl`）には、その行より後に値が入らないことを、書き出しの前にも確かめる。
+6. **200 万トークンの規則**（設計書 07-02「評価の規模と費用の上限」）: 外部の項目で `total_tokens` が 2000000 を超えた行は `over_token_cap` を真にし、理由に `over the 2M token cap` を添える。判定は変えない。
+7. **子のエージェント**: `tool_call` の `tool` が `subagent` で始まる呼び出しの数を `subagent_calls` に書き、0 でなければ理由に `usage excludes subagents` を添える。
+8. **重ね書きの書き方**: 値は `json.dumps` で引用して書く（YAML として正しい。YAML 1.1 では引用しない `off` が真偽になる）。effort は `{off, low, high, max}` のどれかであることを確かめ、モデルの名前は ASCII の英数字・`-`・`.` だけを受け付ける。
+9. **キーを読むコマンド**: `deepseek-harness` の項目に、`benitoiteh-deepseek` と同じ形の `"api_key": {"command": ["/usr/bin/security", "find-generic-password", "-s", "benitoiteh-deepseek", "-w"]}` を置き、道具はそのコマンドを起動する（テストで差し替えられるようにする）。コマンドは P5-03 の整理した環境で起動し、一回の `evaluate` で一度だけ読む（試行ごとにキーチェーンを読まない）。空の出力は誤りとする。`--dry-run` では読まない。
+10. **Claude Code の確かめの範囲**: 設定のディレクトリは、`CLAUDE_CONFIG_DIR` があればそれ、なければ `~/.claude` とする。次のどれかがあれば、試行を始めずに誤りとし、名前（内容でなく）を示す。設計書 07-02 の「利用者が自分で加えたもの」を外す決定と、「評価の手順」の、利用者の指示のファイルを読ませない定めに当たるものである。
+    - `skills/` の直下の、`synced` 以外の項目（ディレクトリかリンク）。2026-10-18 の時点では、`apple-container`・`japanese-tech-writing`・`rtk` の三つのリンクがある。
+    - `agents/`・`commands/`・`output-styles/` の下の項目。2026-10-18 の時点では、`agents/security-reviewer.md` がある。
+    - `CLAUDE.md`。
+    - `settings.json` の `enabledPlugins` の真の値、`hooks`、`outputStyle`。
+    - 作業ディレクトリの祖先（`/` まで）の `CLAUDE.md`・`CLAUDE.local.md`。
+    - 同期された Skill の名前は、`skills/synced/*/manifest.json` の `skills[].name` から読み、見出しに書く。
+    - `--dry-run` では確かめない。
+11. **P5-03 との食い違いの直し**: 1 の「集計が読めないとき」は、P5-03 の 7（その試行を失敗にする）と違い、評価を止めず、試行の判定は包みのコマンドの記録と書かれたスクリプトで通常どおり行い、`end` を `None`、トークンの欄を `None` とし、理由に `; harness summary unreadable` を添える。
+12. **小さな点**:
+    - 外部の項目の型板の置き換えに、どの項目でも `trial`（試行のディレクトリ）を加える（`cwd` の型板も含む）。
+    - `final.txt` の書き出しと、`end` が `completed` でないときの理由の添え書きは、`output` を持つ項目にも行う。
+    - `.git` の祖先の確かめは `realpath` で行い、`ValueError` を投げる（`evaluate` が評価を止める）。テストでは、`tempfile.gettempdir()` 自身に `.git` の祖先があれば `skipTest` とする。
+    - `SOURCE.md` に次を書く。評価の道具はサンドボックスの外で走らせる（入れ子の `sandbox-exec` は失敗し、DeepSeek Harness はシェルの呼び出しをすべて拒む）。`TMPDIR` の下の包みのコマンドの記録は、エージェントが書き換えうる（既知の制約）。Claude Code は、対話の記録を `~/.claude/projects/` に書く。
