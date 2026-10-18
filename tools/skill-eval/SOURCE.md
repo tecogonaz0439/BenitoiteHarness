@@ -29,6 +29,38 @@ python3 -I tools/skill-eval/skill_eval.py \
 
 `benitoiteh-gemini` と `benitoiteh-opus` も同じ形で指定する。三つとも未検証の項目なので `--allow-unverified` を要する。API のキーは、macOS のログインのキーチェーンから `/usr/bin/security find-generic-password` で読む。サービスの名前はそれぞれ `benitoiteh-deepseek`、`benitoiteh-gemini`、`benitoiteh-anthropic` である。キーの値は設定や記録に書かない。
 
+DeepSeek Harness は、次の形で走らせる。評価の道具はサンドボックスの外で起動する。macOS で `sandbox-exec` を入れ子にすると、DeepSeek Harness がシェルの呼び出しをすべて拒む。
+
+```sh
+python3 -I tools/skill-eval/skill_eval.py \
+  --harness deepseek-harness --trials 3 --allow-unverified \
+  --benitoite <path-to-benitoite-v0.0.7> \
+  --work-root <directory-outside-git-repositories> --stop-cost <USD>
+```
+
+DeepSeek Harness に大域のコマンドがないため、項目の `start` と `version` には、組み立て済みの `/Users/tecogonaz/src/deepseek-harness/apps/cli/lib/bin.js` を `node` で起動する手元のパスを書いてある。手元の DeepSeek Harness は `0.2.1-rc.2`、コミット `687f282e` である。ほかの機械ではこのパスを合わせる。起動は `--profile headless --patch <試行>/dsh-eval-overlay.yml --json <依頼>` の順とする。作業ディレクトリの実のパスから `/` までに `.git` があれば、上位の指示や Skill を読まないように、起動前に止める。`--model` でモデルを変えられる。重ね書きのモデル名は ASCII の英数字・`-`・`.` に限り、`options.effort` は `off`・`low`・`high`・`max` のいずれかとする。どちらも YAML で引用して書く。
+
+重ね書きでは、ウェブの道具（`tool-web`）、セッションの記録を要求に含める欄（`session-log-deepseek`）、導入した部品の一覧を送る欄（`plugin-package-inventory-deepseek`）、会話の題を作る補助の LLM の呼び出し（`session-title-llm`）を止める。`DSH_HOME` と `DSH_AGENTS_HOME` は試行ごとの空のディレクトリに向け、`DSH_TELEMETRY_DISABLED=1` を設定する。親の `DSH_*`・`DEEPSEEK_*`・`NODE_*` は除き、名前だけを記録する。API のキーはサービス `benitoiteh-deepseek` から一回の評価で一度だけ読み、ハーネスの起動の環境の `DEEPSEEK_API_KEY` だけに渡す。`--dry-run` ではキーを読まない。
+
+包みのコマンドの記録は、サンドボックスが書ける `<試行>/tmp/benitoite.log` に置く。この記録はエージェントが書き換えうる、という既知の制約がある。包みのコマンドと本物の処理系の写しは、それぞれ `<試行>/bin/` と `<試行>/real/` に置く。試行後も `<試行>/dsh-home/` は生の記録として残す。キーの値を、`bin/` と `real/` を除く試行のディレクトリ全体（`tmp/`・`agents-home/` を含む）から探し、見つかれば、値を示さず理由の先頭に `SAFETY: DeepSeek key value found in <相対パス>` を付け、標準エラー出力でキーの差し替えを促す。走査は `lstat` で通常のファイルだけを選び、リンクを辿らず、調べた時点の大きさまで読む。読めないファイルやディレクトリは `SAFETY: unscannable <相対パス>` と理由に加え、試行の行を残して評価を続ける。生のファイルはそのまま残すので、評価を行う者が取り扱う。Markdown と `.jsonl` は、保存する直前にもキーの値を除く。
+
+どの項目でも、作業の根の実のパスが `/tmp` または `/private/tmp` とその下なら、起動前に止める。これらはハーネスが書ける共有の領域なので、処理系の写しを置かない。判定の前に `<試行>/real/benitoite` の SHA-256 を元の処理系と比べ、違えば `SAFETY: the processor copy was modified` を理由とする失敗にする。判定には元の処理系を使う。
+
+Claude Code は、ほかの Claude Code のセッションを止め、利用者が加えたものを外してから、次の形で走らせる。普段のログインによる購読を使う。
+
+```sh
+python3 -I tools/skill-eval/skill_eval.py \
+  --harness claude-code --trials 3 \
+  --benitoite <path-to-benitoite-v0.0.7> \
+  --work-root <directory-outside-repository>
+```
+
+設定の場所は `CLAUDE_CONFIG_DIR` があればそれ、なければ `~/.claude` とする。評価の前に、`skills/` 直下の `synced` 以外のディレクトリとリンクを、評価を行う者が設定の外へ動かす。`agents/`・`commands/`・`output-styles/` の項目、`CLAUDE.md`、`settings.json` の有効な `enabledPlugins` と `hooks`・`outputStyle`・`apiKeyHelper`・`env`・`permissions.allow` も外す。設定の値は誤りの文に載せない。作業ディレクトリと祖先の `CLAUDE.md`・`CLAUDE.local.md` も読ませない。評価の道具は、これらが残っていれば名前を示して起動前に止め、利用者のファイルを動かさない。評価の後は、外したものを評価を行う者が戻す。`--dry-run` ではこの確認を行わない。記録には確認を通ったことと、`skills/synced/*/manifest.json` の `skills[].name` の値だけを載せる。Claude Code は普段の対話と同じく、対話の記録を `~/.claude/projects/`（`CLAUDE_CONFIG_DIR` があればその下）に書く。
+
+外部の二つの項目も、最後の応答を `<試行>/final.txt` に残す。DeepSeek Harness の番の数は `step_end` の数であり、`turn_start` の数は別の `dsh_turns` に書く。トークンは親セッションの分だけで、子エージェントの分を含まない。`subagent` または `workflow` で始まる道具の呼び出しを `subagent_calls` に数える。呼び出しがあれば理由に `usage excludes subagents` を添え、費用を不明にする。`--stop-cost` があれば、費用不明としてその試行の後に止める。これらの道具自体は止めない。`usage` のない `step_end` は `usage_missing` に数え、1 件でもあれば費用を不明とする。Claude Code は `modelUsage` の全モデルの和を使い、なければ `usage` を使う。どちらもキャッシュを含む入力に揃える。Claude Code の `total_cost_usd` は `claude_reported_cost_usd` にだけ保存し、購読の請求額として扱わない。`cost_usd` は空で、`billing: none` として費用上限の対象から外す。
+
+外部の集計が読めなければ、番・トークン・終わり方を空にし、理由に `harness summary unreadable` を付けて評価を続ける。時間切れなら終わり方は `timeout` とする。包みのコマンドの記録と、書かれたスクリプトによる判定は変えない。外部の項目はトークンの上限を掛けられないので、時間の上限で止め、200 万トークンを超えた試行には `over_token_cap: true` と理由を残す。
+
 本物の LLM を呼ばずに配線を確かめる場合は、模擬の提供者を使う。
 
 ```sh
@@ -91,3 +123,12 @@ python3 -I tools/skill-eval/skill_eval.py \
 - 読めないセッション記録の失敗を試行内に収め、取得済みのトークンと費用を残す。模擬の提供者は本文の大きさを8 MiBに制限し、ソケットの待機を10秒、模擬のハーネスの上限を120秒とした。
 - `test_skill_eval.py` に環境の整理、時間と費用の上限、記録の保存とパスの置換、壊れたセッション、要求の長さのテストを加えた。`scripts/check.sh` の通しでは、費用が0で時間が数であることも確かめる。
 - 取り込み前の修正で、macOS のパスの別名と一時ディレクトリ・利用者の名前の置換、SIGTERM・SIGHUP での後始末、`harness.pgid`、費用不明時の停止と `billing` の検証、判定用の環境の整理を加えた。
+
+### P5-04 DeepSeek Harness と Claude Code
+
+- `deepseek-harness` と `dsh-ndjson` の読み取り、既存の `claude-code` への `claude-json` の読み取りを加えた。起動の型板の `{trial}` は、起動コマンドと作業ディレクトリの両方で使える。DeepSeek の使用量が揃えば既存の単価で費用を見積もり、欠けたときは既存の費用不明時の停止に従う。
+- DeepSeek Harness の試行ごとの重ね書きと状態の場所、環境の整理、キーの取得と漏れの検査を加えた。Claude Code には利用者が加えた設定の事前確認と、同期された Skill の名前の記録を加えた。
+- DeepSeek Harness の出力と終了理由は、[deepseek-ai/deepseek-harness のコミット `687f282e`](https://github.com/deepseek-ai/deepseek-harness/tree/687f282e) の `packages/bundle/headless/src/json-stream.ts`、同ディレクトリの `README.md`、`packages/core/session/src/types.ts` の `TurnEndReasonMap` で確かめた。書ける範囲は `packages/sandbox/sandbox/src/roots.ts`、子の環境は `packages/subprocess/subprocess/src/index.ts`、Skill と指示の探索は `packages/skill/skill-filesystem/README.md` と `packages/context/agent-instructions/src/files.ts` を参照した。Claude Code の起動と結果の欄は、P5-04 の前提の事実（手元の `2.1.302` をオーケストレータが調べた記録）に従った。
+- `test_skill_eval.py` に、出力の文字列と偽の実行ファイルによる検証を加えた。DeepSeek Harness と Claude Code、本物の LLM、利用者のキーチェーンは起動・参照せず、本物の Benitoite の処理系で包みのコマンドと課題の判定を確かめる。
+
+- セキュリティの所見に従い、漏れの走査を試行全体へ広げ、読めないファイルがあっても試行の行を残すようにした。子エージェントと workflow の費用を不明として扱い、共有の `/tmp` の作業領域と処理系の写しの変更を拒む。Claude Code の課金・許可に関わる設定を事前確認に加え、DeepSeek の起動環境から `NODE_*` をすべて除く。退行テストは修正前に失敗することを確かめた。

@@ -18,6 +18,7 @@ import os
 import re
 import shutil
 import signal
+import stat
 import statistics
 import subprocess
 import sys
@@ -36,6 +37,8 @@ CODE_PATTERNS = (re.compile(r'(?:error|warning)\[([A-Z][0-9]{4})\]'), re.compile
 RESULTS_DIR = os.path.join(HERE, 'results')
 # 一回の起動の中のすべての試行（全体の集計に使う）
 ALL_ROWS = []  # type: List[Dict[str, object]]
+# キーは一回の評価のメモリにだけ保ち、公開する記録の直前にも値を除く。
+RECORD_SECRETS = []  # type: List[str]
 
 sys.path.insert(0, HERE)
 import http_server  # noqa: E402
@@ -61,6 +64,10 @@ SHELL_OUTPUT = re.compile(r'(?m)^components with errors: [0-9]+$')
 BH_FIELDS = ('kind', 'allow', 'session_id', 'benitoiteh_version', 'system_prompt_sha256', 'tools_sha256',
              'turns', 'tool_calls', 'after_write_checks', 'checks', 'fixes', 'policy_denied', 'input_tokens',
              'cache_read_tokens', 'cache_write_tokens', 'output_tokens', 'total_tokens', 'end', 'shell_output_seen')
+TOKEN_FIELDS = ('input_tokens', 'cache_read_tokens', 'cache_write_tokens', 'output_tokens', 'total_tokens')
+# deepseek-harness 687f282e: packages/core/session/src/types.ts の TurnEndReasonMap と
+# packages/bundle/headless/{src/json-stream.ts,README.md} の Exit mapping。
+DSH_COMPLETED = 'completed'
 
 # ハーネスに渡す依頼。課題の中身は task.md に書き、ここには進め方だけを書く
 PROMPT = (
@@ -267,6 +274,124 @@ def benitoiteh_output(out: str, harness_exit: int) -> Tuple[Dict[str, object], s
     return fields, reason, ''.join(final)
 
 
+def token_counts(usage: Dict[str, object], names: Tuple[str, ...]) -> Dict[str, int]:
+    """キャッシュを含まない外部の入力を、benitoiteh と同じ量に揃える。"""
+    values = [usage.get(name, 0) for name in names]
+    if any(type(value) is not int or value < 0 for value in values):
+        raise ValueError('invalid token counts')
+    uncached, read, write, output = values
+    return dict(zip(TOKEN_FIELDS, (uncached + read + write, read, write, output,
+                                   uncached + read + write + output)))
+
+
+def dsh_output(out: str, harness_exit: int) -> Tuple[Dict[str, object], str, str]:
+    """親セッションの step ごとの使用量を合計する（子エージェント分は含まない）。"""
+    fields = dict(turns=0, dsh_turns=0, usage_missing=0, tool_calls={}, subagent_calls=0)
+    tokens = dict.fromkeys(TOKEN_FIELDS, 0)
+    reason = None
+    error = None
+    final = ''
+    for line in out.splitlines():
+        value = json_object(line)
+        if value is None:
+            continue
+        event = value.get('type')
+        if event == 'status':
+            phase = value.get('phase')
+            if phase == 'turn_start':
+                fields['dsh_turns'] += 1
+            elif phase == 'step_end':
+                fields['turns'] += 1
+                if 'usage' not in value:
+                    fields['usage_missing'] += 1
+                else:
+                    usage = value['usage']
+                    if not isinstance(usage, dict):
+                        raise ValueError('invalid step usage')
+                    counts = token_counts(usage, ('inputTokens', 'cacheReadTokens', 'cacheWriteTokens', 'outputTokens'))
+                    for key, count in counts.items():
+                        tokens[key] += count
+            elif phase == 'turn_end':
+                reason = value.get('reason')
+                if not isinstance(reason, dict) or not isinstance(reason.get('kind'), str):
+                    raise ValueError('invalid turn reason')
+        elif event == 'tool_call':
+            tool = value.get('tool')
+            if not isinstance(tool, str):
+                raise ValueError('invalid tool name')
+            calls = fields['tool_calls']
+            calls[tool] = calls.get(tool, 0) + 1
+            fields['subagent_calls'] += int(tool.startswith(('subagent', 'workflow')))
+        elif event == 'error':
+            error = value.get('message')
+            if not isinstance(error, str):
+                raise ValueError('invalid error message')
+        elif event == 'final':
+            final = value.get('text')
+            if not isinstance(final, str):
+                raise ValueError('invalid final text')
+    if reason is None and error is None:
+        raise ValueError('no terminal event')
+    fields.update(tokens if fields['turns'] else dict.fromkeys(TOKEN_FIELDS))
+    kind = reason.get('kind') if reason is not None else 'error'
+    fields['end'] = 'completed' if harness_exit == 0 and kind == DSH_COMPLETED else 'error'
+    detail = str(kind)
+    if reason is not None and kind == 'error':
+        failure = reason.get('error')
+        if not isinstance(failure, dict) or not all(isinstance(failure.get(key), str) for key in ('code', 'message')):
+            raise ValueError('invalid turn error')
+        detail += ': ' + ('%s: %s' % (failure.get('code', ''), failure.get('message', '')))[:200]
+    elif reason is None:
+        detail += ': ' + error[:200]
+    if fields['subagent_calls']:
+        detail += '; usage excludes subagents'
+    return fields, detail, final
+
+
+def claude_output(out: str, harness_exit: int) -> Tuple[Dict[str, object], str, str]:
+    """購読の見かけの費用は、請求額として扱わず別の欄に保つ。"""
+    lines = [line for line in out.splitlines() if line.strip()]
+    result = json_object(lines[-1]) if lines else None
+    if result is None or result.get('type') != 'result':
+        raise ValueError('no result object')
+    turns, subtype, is_error = result.get('num_turns'), result.get('subtype'), result.get('is_error')
+    if type(turns) is not int or turns < 0 or not isinstance(subtype, str) or type(is_error) is not bool:
+        raise ValueError('invalid result fields')
+    fields = dict(turns=turns, tool_calls=None, claude_reported_cost_usd=result.get('total_cost_usd'))
+    models = result.get('modelUsage')
+    if models is not None:
+        if not isinstance(models, dict):
+            raise ValueError('invalid model usage')
+        usages = list(models.values())
+        names = ('inputTokens', 'cacheReadInputTokens', 'cacheCreationInputTokens', 'outputTokens')
+    else:
+        usages = [result.get('usage')]
+        names = ('input_tokens', 'cache_read_input_tokens', 'cache_creation_input_tokens', 'output_tokens')
+    if any(not isinstance(usage, dict) for usage in usages):
+        raise ValueError('missing usage')
+    counts = [token_counts(usage, names) for usage in usages]
+    fields.update({key: sum(count[key] for count in counts) for key in TOKEN_FIELDS})
+    fields['end'] = ('completed' if subtype == 'success' and not is_error else
+                     'max_turns' if subtype == 'error_max_turns' else 'error')
+    final = result.get('result', '')
+    if not isinstance(final, str):
+        raise ValueError('invalid result text')
+    return fields, subtype, final
+
+
+def external_output(output: str, out: str, harness_exit: int) -> Tuple[Dict[str, object], str, str]:
+    """集計の欠損を課題の不合格へ変えず、測れなかった欄を空にする。"""
+    try:
+        if output == 'dsh-ndjson':
+            return dsh_output(out, harness_exit)
+        if output == 'claude-json':
+            return claude_output(out, harness_exit)
+    except (ValueError, KeyError, TypeError):
+        pass
+    fields = dict.fromkeys(TOKEN_FIELDS + ('turns', 'tool_calls', 'end'))
+    return fields, 'harness summary unreadable', ''
+
+
 def session_file(directory: str, relative: str) -> bytes:
     # 記録のパスを辿って、試行の外のファイルを読み出さない。
     path = os.path.realpath(os.path.join(directory, relative))
@@ -370,6 +495,186 @@ def harness_environment() -> Tuple[Dict[str, str], List[str]]:
     removed = sorted(name for name in os.environ if name != 'CLAUDE_CONFIG_DIR'
                      and (name.startswith(('CLAUDE', 'ANTHROPIC')) or name in keys))
     return {name: value for name, value in os.environ.items() if name not in removed}, removed
+
+
+def dsh_environment() -> Tuple[Dict[str, str], List[str]]:
+    """外からサンドボックスや送信先を変える指定を受け継がない（P5-04 補足 4）。"""
+    env, removed = harness_environment()
+    extra = [name for name in env if name.startswith(('DSH_', 'DEEPSEEK_', 'NODE_'))]
+    for name in extra:
+        del env[name]
+    return env, sorted(removed + extra)
+
+
+def ancestors(directory: str) -> List[str]:
+    chain = []
+    current = os.path.realpath(directory)
+    while True:
+        chain.append(current)
+        parent = os.path.dirname(current)
+        if parent == current:
+            return chain
+        current = parent
+
+
+def dsh_overlay(model: str, effort: str) -> str:
+    if not re.fullmatch(r'[A-Za-z0-9.-]+', model) or effort not in ('off', 'low', 'high', 'max'):
+        raise ValueError('invalid DeepSeek model or effort')
+    return ('- id: agent-default-model\n  config:\n    provider: deepseek-official\n'
+            '    model: %s\n    reasoningEffort: %s\n'
+            '- id: session-log-deepseek\n  config:\n    enabled: false\n'
+            '- id: plugin-package-inventory-deepseek\n  disabled: true\n'
+            '- id: tool-web\n  disabled: true\n'
+            '- id: session-title-llm\n  disabled: true\n') % (json.dumps(model), json.dumps(effort))
+
+
+def check_dsh_workspace(workspace: str) -> None:
+    for directory in ancestors(workspace):
+        if os.path.lexists(os.path.join(directory, '.git')):
+            raise ValueError('DeepSeek workspace has a .git ancestor: %s' % directory)
+
+
+def check_claude_config(workspace: str) -> List[str]:
+    """普段のログインは保ち、利用者が加えた指示の名前だけを調べる。"""
+    config = os.environ.get('CLAUDE_CONFIG_DIR') or os.path.expanduser('~/.claude')
+    unwanted = []
+    skills = os.path.join(config, 'skills')
+    if os.path.isdir(skills):
+        for name in sorted(os.listdir(skills)):
+            path = os.path.join(skills, name)
+            if name != 'synced' and (os.path.isdir(path) or os.path.islink(path)):
+                unwanted.append('skills/' + name)
+    for name in ('agents', 'commands', 'output-styles'):
+        path = os.path.join(config, name)
+        if os.path.isdir(path):
+            unwanted += [name + '/' + child for child in sorted(os.listdir(path))]
+        elif os.path.lexists(path):
+            unwanted.append(name)
+    if os.path.lexists(os.path.join(config, 'CLAUDE.md')):
+        unwanted.append('CLAUDE.md')
+    settings_path = os.path.join(config, 'settings.json')
+    if os.path.exists(settings_path):
+        try:
+            with open(settings_path, encoding='utf-8') as f:
+                settings = json.load(f)
+            if (not isinstance(settings, dict) or not isinstance(settings.get('enabledPlugins', {}), dict)
+                    or not isinstance(settings.get('permissions', {}), dict)):
+                raise ValueError('invalid settings')
+        except (OSError, ValueError):
+            raise ValueError('cannot inspect Claude Code settings.json') from None
+        if any(settings.get('enabledPlugins', {}).values()):
+            unwanted.append('settings.json: enabledPlugins')
+        unwanted += ['settings.json: ' + name for name in ('hooks', 'outputStyle', 'apiKeyHelper', 'env')
+                     if name in settings]
+        if 'allow' in settings.get('permissions', {}):
+            unwanted.append('settings.json: permissions.allow')
+    for directory in ancestors(workspace):
+        for name in ('CLAUDE.md', 'CLAUDE.local.md'):
+            if os.path.lexists(os.path.join(directory, name)):
+                unwanted.append(os.path.join(directory, name))
+    if unwanted:
+        raise ValueError('remove user Claude Code configuration before evaluation: ' + ', '.join(unwanted))
+    names = []
+    synced = os.path.join(skills, 'synced')
+    if os.path.isdir(synced):
+        for child in sorted(os.listdir(synced)):
+            manifest = os.path.join(synced, child, 'manifest.json')
+            if not os.path.isfile(manifest):
+                continue
+            try:
+                with open(manifest, encoding='utf-8') as f:
+                    value = json.load(f)
+                for skill in value['skills']:
+                    name = skill['name']
+                    if not isinstance(name, str):
+                        raise ValueError('invalid skill name')
+                    names.append(name)
+            except (OSError, ValueError, KeyError, TypeError):
+                raise ValueError('cannot inspect synced Skill manifest: %s' % child) from None
+    return sorted(set(names))
+
+
+def read_dsh_key(harness: Dict[str, object]) -> str:
+    command = harness.get('api_key', {}).get('command')
+    if not isinstance(command, list) or not command or not all(isinstance(part, str) and part for part in command):
+        raise ValueError('DeepSeek api_key must reference a command')
+    env, _removed = dsh_environment()
+    code, out, _err = run_command(command, HERE, env)
+    key = out.rstrip('\r\n')
+    if code != 0 or not key:
+        raise ValueError('cannot read the DeepSeek key from the keychain (exit %d)' % code)
+    RECORD_SECRETS.append(key)
+    return key
+
+
+def redact_secrets(value: object) -> object:
+    if isinstance(value, dict):
+        return {redact_secrets(key): redact_secrets(item) for key, item in value.items()}
+    if isinstance(value, list):
+        return [redact_secrets(item) for item in value]
+    if isinstance(value, str):
+        for secret in RECORD_SECRETS:
+            value = value.replace(secret, '<redacted-key>')
+    return value
+
+
+def dsh_key_leaks(trial_dir: str, key: str) -> Tuple[List[str], List[str]]:
+    """試行全体を調べ、漏れと読めなかったパスを値を含めずに返す。"""
+    needle = key.encode('utf-8')
+    found = []
+    unscannable = []
+    def failed(error: OSError) -> None:
+        unscannable.append(os.path.relpath(error.filename or trial_dir, trial_dir))
+    for directory, dirs, files in os.walk(trial_dir, followlinks=False, onerror=failed):
+        if directory == trial_dir:
+            dirs[:] = [name for name in dirs if name not in ('bin', 'real')]
+        for name in files:
+            path = os.path.join(directory, name)
+            relative = os.path.relpath(path, trial_dir)
+            try:
+                info = os.lstat(path)
+                if not stat.S_ISREG(info.st_mode):
+                    continue
+                # lstat の後にリンクや FIFO に替えられても、辿ったり待ち続けたりしない。
+                descriptor = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+                with os.fdopen(descriptor, 'rb') as f:
+                    opened = os.fstat(f.fileno())
+                    if not stat.S_ISREG(opened.st_mode):
+                        continue
+                    # 読んでいる間に追記されても、走査の開始時の大きさで打ち切る。
+                    remaining = min(info.st_size, opened.st_size)
+                    tail = b''
+                    while remaining > 0:
+                        chunk = f.read(min(65536, remaining))
+                        if not chunk:
+                            break
+                        remaining -= len(chunk)
+                        content = tail + chunk
+                        if needle in content:
+                            found.append(relative)
+                            break
+                        tail = content[-(len(needle) - 1):] if len(needle) > 1 else b''
+            except OSError:
+                unscannable.append(relative)
+    return sorted(set(found)), sorted(set(unscannable))
+
+
+def file_sha256(path: str) -> str:
+    """処理系の写しを信用せず、判定の前に元の内容と比べるために使う。"""
+    digest = hashlib.sha256()
+    descriptor = os.open(path, os.O_RDONLY | os.O_NONBLOCK)
+    with os.fdopen(descriptor, 'rb') as f:
+        info = os.fstat(f.fileno())
+        if not stat.S_ISREG(info.st_mode):
+            raise ValueError('processor must be a regular file')
+        remaining = info.st_size
+        while remaining > 0:
+            chunk = f.read(min(1024 * 1024, remaining))
+            if not chunk:
+                break
+            digest.update(chunk)
+            remaining -= len(chunk)
+    return digest.hexdigest()
 
 
 def signal_group(process: subprocess.Popen, sig: int) -> None:
@@ -736,10 +1041,20 @@ def judge_trial_script(task: Task, script_path: str, benitoite: str, http_base: 
 
 def run_trial(task: Task, trial_dir: str, benitoite: str, harness_name: str, harness: Dict[str, object],
               model: str, skill_dir: Optional[str], dry_run: bool,
-              benitoiteh: Optional[str] = None) -> Dict[str, object]:
+              benitoiteh: Optional[str] = None, dsh_key: Optional[str] = None) -> Dict[str, object]:
     """一回の試行。作業ディレクトリ（workspace）と、エージェントに見せない記録（benitoite.log など）を分けて置く。"""
     workspace = os.path.join(trial_dir, 'workspace')
     log = os.path.join(trial_dir, 'benitoite.log')
+    is_dsh = harness.get('prepare') == 'dsh' and not dry_run
+    output = harness.get('output') if not dry_run else None
+    synced_skills = None
+    if is_dsh:
+        check_dsh_workspace(workspace)
+        overlay = dsh_overlay(model, harness.get('options', {}).get('effort', 'high'))
+        if not dsh_key:
+            raise ValueError('DeepSeek key must be read before starting trials')
+    if output == 'claude-json':
+        synced_skills = check_claude_config(workspace)
     # 包みのコマンドと本物の処理系は、試行のディレクトリ（リポジトリの外）に写して使う。リポジトリの中のパスを
     # PATH や環境変数に出すと、エージェントがそこから解のスクリプトや設計書に辿り着けるため（06-06）
     tools_dir = os.path.join(trial_dir, 'bin')
@@ -749,6 +1064,8 @@ def run_trial(task: Task, trial_dir: str, benitoite: str, harness_name: str, har
     wrapper_copy = os.path.join(tools_dir, 'benitoite')
     shutil.copy2(os.path.join(WRAPPER_DIR, 'benitoite'), wrapper_copy)
     real_copy = os.path.join(real_dir, 'benitoite')
+    original_benitoite = benitoite
+    original_digest = file_sha256(original_benitoite)
     shutil.copy2(benitoite, real_copy)
     benitoite = real_copy
     prepare_inputs(task, workspace)
@@ -757,7 +1074,15 @@ def run_trial(task: Task, trial_dir: str, benitoite: str, harness_name: str, har
     for name, text in dict(harness.get('files', {})).items():  # type: ignore
         with open(os.path.join(workspace, name), 'w', encoding='utf-8') as f:
             f.write(str(text))
-    env, _removed = harness_environment()
+    env, _removed = dsh_environment() if is_dsh else harness_environment()
+    if is_dsh:
+        for variable, name in (('DSH_HOME', 'dsh-home'), ('DSH_AGENTS_HOME', 'agents-home'), ('TMPDIR', 'tmp')):
+            env[variable] = os.path.join(trial_dir, name)
+            os.makedirs(env[variable])
+        env['DSH_TELEMETRY_DISABLED'] = '1'
+        log = os.path.join(env['TMPDIR'], 'benitoite.log')
+        with open(os.path.join(trial_dir, 'dsh-eval-overlay.yml'), 'w', encoding='utf-8') as f:
+            f.write(overlay)
     env['PATH'] = tools_dir + os.pathsep + env.get('PATH', '')
     env['SKILL_EVAL_LOG'] = log
     env['SKILL_EVAL_REAL_BENITOITE'] = benitoite
@@ -809,14 +1134,19 @@ def run_trial(task: Task, trial_dir: str, benitoite: str, harness_name: str, har
                 cwd = workspace
             else:
                 values = dict(harness.get('options', {}))  # type: ignore
-                values.update(workspace=workspace, model=model, prompt=PROMPT.format(limit=task.attempt_limit))
+                values.update(workspace=workspace, trial=trial_dir, model=model,
+                              prompt=PROMPT.format(limit=task.attempt_limit))
                 command = render(list(harness['start']), values)  # type: ignore
                 cwd = str(harness.get('cwd', '{workspace}')).format(**values)
             stdout_path = os.path.join(trial_dir, 'harness.stdout')
             stderr_path = os.path.join(trial_dir, 'harness.stderr')
+            if is_dsh:
+                env['DEEPSEEK_API_KEY'] = dsh_key
             harness_exit, timed_out, wall_seconds = run_harness(
                 command, cwd, env, harness.get('options', {}).get('harness_timeout', HARNESS_TIMEOUT),
                 stdout_path, stderr_path)
+            if is_dsh:
+                del env['DEEPSEEK_API_KEY']
         entries = read_log(log)
         attempts = count_attempts(entries)
         end_reason = ''
@@ -843,15 +1173,28 @@ def run_trial(task: Task, trial_dir: str, benitoite: str, harness_name: str, har
                         raise ValueError('invalid session_id')
                     entries, seen = benitoiteh_results(directory)
                     fields['shell_output_seen'] = seen if task.name == 'process_shell' else False
+            elif output:
+                external, end_reason, final = external_output(output, out, harness_exit)
+                fields.update(external)
         except (OSError, ValueError, KeyError, TypeError) as error:
-            unreadable = 'unreadable session record: %s' % type(error).__name__
-        if is_benitoiteh and final is not None:
+            if output:
+                fields.update(dict.fromkeys(TOKEN_FIELDS + ('end',)))
+                end_reason, final = 'harness summary unreadable', ''
+            else:
+                unreadable = 'unreadable session record: %s' % type(error).__name__
+        if (is_benitoiteh or output) and final is not None:
             with open(os.path.join(trial_dir, 'final.txt'), 'w', encoding='utf-8') as f:
                 f.write(final)
         if timed_out:
             fields['end'] = 'timeout'
         script_path = os.path.join(workspace, task.script)
-        if unreadable:
+        try:
+            processor_modified = file_sha256(real_copy) != original_digest
+        except (OSError, ValueError):
+            processor_modified = True
+        if processor_modified:
+            verdict = Verdict(False, 'SAFETY: the processor copy was modified')
+        elif unreadable:
             verdict = Verdict(False, unreadable)
         elif no_summary:
             verdict = Verdict(False, end_reason)
@@ -861,9 +1204,28 @@ def run_trial(task: Task, trial_dir: str, benitoite: str, harness_name: str, har
             # 包みのコマンドを通らずに処理系を使った（迂回した、サンドボックスが記録を書けない）試行を、成功と記録しない
             verdict = Verdict(False, 'WARNING: no counted benitoite command in the wrapper log')
         else:
-            verdict = judge_trial_script(task, script_path, benitoite, http_base, attempts)
+            verdict = judge_trial_script(task, script_path, original_benitoite, http_base, attempts)
         if is_benitoiteh and not unreadable and not no_summary and fields['end'] != 'completed':
             verdict.reason += '; %s: %s' % (fields['end'], end_reason)
+        if output:
+            if end_reason == 'harness summary unreadable':
+                verdict.reason += '; harness summary unreadable'
+            elif fields['end'] != 'completed':
+                verdict.reason += '; %s: %s' % (fields['end'], end_reason)
+            elif fields.get('subagent_calls'):
+                verdict.reason += '; usage excludes subagents'
+            fields['over_token_cap'] = (fields.get('total_tokens') or 0) > 2000000
+            if fields['over_token_cap']:
+                verdict.reason += '; over the 2M token cap'
+        if is_dsh:
+            leaks, unscannable = dsh_key_leaks(trial_dir, dsh_key)
+            if leaks:
+                verdict.reason = ('; '.join('SAFETY: DeepSeek key value found in ' + path for path in leaks)
+                                  + '; ' + verdict.reason)
+                print('SAFETY: DeepSeek key value found in trial files. Rotate the DeepSeek API key.', file=sys.stderr)
+            if unscannable:
+                verdict.reason += '; ' + '; '.join('SAFETY: unscannable ' + path for path in unscannable)
+            verdict.reason = redact_secrets(verdict.reason)
         if fields['shell_output_seen']:
             verdict.reason = 'SAFETY: shell output seen; ' + verdict.reason
     finally:
@@ -882,10 +1244,13 @@ def run_trial(task: Task, trial_dir: str, benitoite: str, harness_name: str, har
         'tests_passed': verdict.tests_passed, 'harness_exit': harness_exit, 'trial_dir': trial_dir,
         'diagnostics': diagnostic_stats(entries), 'final_codes': verdict.final_codes, 'harness': harness_name,
         'model': model, 'timed_out': timed_out, 'wall_seconds': wall_seconds,
-        'cost_usd': estimate_cost(fields, harness) if is_benitoiteh else None,
+        'cost_usd': estimate_cost(fields, harness) if (is_benitoiteh or output)
+        and not fields.get('usage_missing') and not fields.get('subagent_calls') else None,
         'billing': harness.get('billing', 'none'),
     }
     row.update(fields)
+    if synced_skills is not None:
+        row.update(claude_config_checked=True, claude_synced_skills=synced_skills)
     return row
 
 
@@ -1084,8 +1449,8 @@ def record_value(value: object, pattern: str = '%s') -> str:
 def write_record(path: str, header: Dict[str, object], rows: List[Dict[str, object]], tasks: List[Task],
                  work_root: Optional[str] = None) -> None:
     """公開する記録だけにパスの置換を掛け、生の対話は含めない。"""
-    header = redact_record(header, work_root)
-    rows = redact_record(rows, work_root)
+    header = redact_secrets(redact_record(header, work_root))
+    rows = redact_secrets(redact_record(rows, work_root))
     lines = ['# Skill の評価の記録', '']
     for row in rows:
         if row.get('shell_output_seen'):
@@ -1128,10 +1493,10 @@ def write_record(path: str, header: Dict[str, object], rows: List[Dict[str, obje
     lines += diagnostics_section(rows)
     os.makedirs(os.path.dirname(os.path.abspath(path)), exist_ok=True)
     with open(path, 'w', encoding='utf-8') as f:
-        f.write('\n'.join(lines) + '\n')
+        f.write(redact_secrets('\n'.join(lines)) + '\n')
     with open(os.path.splitext(path)[0] + '.jsonl', 'w', encoding='utf-8') as f:
         for row in rows:
-            f.write(json.dumps(row, ensure_ascii=False) + '\n')
+            f.write(redact_secrets(json.dumps(row, ensure_ascii=False)) + '\n')
 
 
 def interrupt_evaluation(signum: int, frame: object) -> None:
@@ -1173,6 +1538,7 @@ def evaluate_main(argv: Optional[List[str]] = None) -> int:
     if args.stop_cost is not None and (not 0 <= args.stop_cost < float('inf')):
         parser.error('--stop-cost must be a finite nonnegative amount')
     ALL_ROWS.clear()
+    RECORD_SECRETS.clear()
 
     tasks = load_tasks(args.task)
     benitoite = find_benitoite(args.benitoite)
@@ -1200,7 +1566,9 @@ def evaluate_main(argv: Optional[List[str]] = None) -> int:
     skill_dir = os.path.abspath(args.skill_dir) if args.skill_dir else None
     if not args.dry_run and any(harnesses[name].get('kind') == 'benitoiteh' for name in names):
         args.benitoiteh = find_benitoiteh(args.benitoiteh)
-    work_root = os.path.realpath(args.work_root) if args.work_root else tempfile.mkdtemp(prefix='skill-eval-')
+    work_root = os.path.realpath(args.work_root or tempfile.mkdtemp(prefix='skill-eval-'))
+    if any(os.path.commonpath([work_root, root]) == root for root in ('/tmp', '/private/tmp')):
+        raise SystemExit('--work-root must not be under /tmp (harnesses can write there)')
     if os.path.commonpath([work_root, os.path.realpath(REPO)]) == os.path.realpath(REPO):
         raise SystemExit('--work-root must be outside the repository (raw logs are not kept in it)')
     # 利用者が指定した別名も保存時の置換に含める（macOS の /var と /private/var など）。
@@ -1234,7 +1602,8 @@ def evaluation_header(args: argparse.Namespace, benitoite: str, harness_name: st
     first = rows[0]
     first_trial = str(first['trial_dir'])
     first_skill = os.path.join(first_trial, 'workspace', str(harness['skill_parent']), 'benitoite')
-    version_env, removed = harness_environment()
+    is_dsh = harness.get('prepare') == 'dsh'
+    version_env, removed = dsh_environment() if is_dsh else harness_environment()
     if args.dry_run:
         harness_version = 'not started (dry-run)'
     elif harness.get('kind') == 'benitoiteh':
@@ -1246,6 +1615,10 @@ def evaluation_header(args: argparse.Namespace, benitoite: str, harness_name: st
             os.makedirs(version_env[variable], exist_ok=True)
         harness_version = first.get('benitoiteh_version') or version_of([args.benitoiteh, '--version'], version_env)
     else:
+        if is_dsh:
+            version_env.update(DSH_HOME=os.path.join(first_trial, 'dsh-home'),
+                               DSH_AGENTS_HOME=os.path.join(first_trial, 'agents-home'),
+                               DSH_TELEMETRY_DISABLED='1', TMPDIR=os.path.join(first_trial, 'tmp'))
         harness_version = version_of(list(harness['version']), version_env)
     with open(benitoite, 'rb') as f:
         processor_hash = hashlib.sha256(f.read()).hexdigest()
@@ -1267,6 +1640,11 @@ def evaluation_header(args: argparse.Namespace, benitoite: str, harness_name: st
     if harness.get('kind') == 'benitoiteh':
         for key in ('benitoiteh_version', 'system_prompt_sha256', 'tools_sha256'):
             header[key] = record_value(first.get(key))
+    if is_dsh:
+        header['使用量の範囲'] = 'parent session only; usage excludes subagents'
+    if harness.get('output') == 'claude-json' and not args.dry_run:
+        header['Claude Code の利用者設定の確認'] = 'passed' if first.get('claude_config_checked') else 'not checked'
+        header['Claude Code の同期された Skill'] = first.get('claude_synced_skills', [])
     return header
 
 
@@ -1276,6 +1654,14 @@ def evaluate(args: argparse.Namespace, tasks: List[Task], benitoite: str, harnes
     """試行が終わるたびに累計し、途中で止まっても完了した試行を記録する。"""
     model = args.model or str(harness['model'])
     rows = []
+    dsh_key = None
+    if harness.get('prepare') == 'dsh' and not args.dry_run:
+        try:
+            check_dsh_workspace(work_root)
+            dsh_overlay(model, harness.get('options', {}).get('effort', 'high'))
+            dsh_key = read_dsh_key(harness)
+        except ValueError as error:
+            raise SystemExit(str(error)) from None
     try:
         for task in tasks:
             for trial in range(1, args.trials + 1):
@@ -1285,8 +1671,9 @@ def evaluate(args: argparse.Namespace, tasks: List[Task], benitoite: str, harnes
                 trial_dir = os.path.join(work_root, task.name, str(number))
                 os.makedirs(trial_dir)
                 try:
+                    extra = {'dsh_key': dsh_key} if dsh_key is not None else {}
                     row = run_trial(task, trial_dir, benitoite, harness_name, harness, model, skill_dir, args.dry_run,
-                                    args.benitoiteh)
+                                    args.benitoiteh, **extra)
                 except ValueError as error:
                     raise SystemExit(str(error))
                 row['billing'] = harness.get('billing', 'none')

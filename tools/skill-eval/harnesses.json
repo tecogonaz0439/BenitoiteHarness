@@ -131,7 +131,9 @@
     ],
     "files": {},
     "verified": true,
-    "default": true
+    "default": true,
+    "output": "claude-json",
+    "billing": "none"
   },
   "antigravity-gemini": {
     "agent": "codex",
@@ -298,5 +300,50 @@
     "billing": "anthropic",
     "verified": false,
     "default": false
+  },
+  "deepseek-harness": {
+    "agent": "codex",
+    "skill_parent": ".agents/skills",
+    "model": "deepseek-flash",
+    "options": {
+      "effort": "high"
+    },
+    "output": "dsh-ndjson",
+    "prepare": "dsh",
+    "price": {
+      "input": 0.3,
+      "cache_read": 0.006,
+      "cache_write": 0.3,
+      "output": 1.2
+    },
+    "billing": "deepseek",
+    "verified": false,
+    "default": false,
+    "start": [
+      "node",
+      "/Users/tecogonaz/src/deepseek-harness/apps/cli/lib/bin.js",
+      "--profile",
+      "headless",
+      "--patch",
+      "{trial}/dsh-eval-overlay.yml",
+      "--json",
+      "{prompt}"
+    ],
+    "cwd": "{workspace}",
+    "version": [
+      "node",
+      "/Users/tecogonaz/src/deepseek-harness/apps/cli/lib/bin.js",
+      "--version"
+    ],
+    "files": {},
+    "api_key": {
+      "command": [
+        "/usr/bin/security",
+        "find-generic-password",
+        "-s",
+        "benitoiteh-deepseek",
+        "-w"
+      ]
+    }
   }
 }
