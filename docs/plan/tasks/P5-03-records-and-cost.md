@@ -73,7 +73,22 @@ P5-02 で評価の道具に `benitoiteh` を加えた。この作業では、本
 - Markdown と `.jsonl` に書くすべての文字列で、`--work-root` の実のパス、リポジトリの実のパス、`HOME` の接頭辞を、それぞれ `<work-root>`・`<repo>`・`~` に置き換える（長い接頭辞から順に置き換える）。理由: `results/` の記録はリポジトリに入れて公開するので、利用者の名前を含むパスを残さない。対象には、今の「生の記録の置き場所」の行、`main()` の全体の記録（`<日時>-overall.md`）の `生の記録` の行、理由の欄（`error` の行の `message`、`first_line(err)` など）、`trial_dir`、`--skill-dir` を含む。
 - `.jsonl` の `trial_dir` などのパスの欄も同じく置き換える。
 
-### 7. 誤りの文と文書
+### 7. 試行の失敗を評価の全体に広げない
+
+P5-02 の点検で、次のことが分かった（2026-10-18 のセキュリティのレビュー）。
+
+- 記録の行が想定と違う形のとき、評価の全体が止まり、それまでの試行の行も記録に残らない。想定と違う形とは、`spill` のファイルがない、`parts` が文字列、`result.text` が `null`、`call` の鍵がない、などである。このとき `FileNotFoundError`・`TypeError`・`KeyError` は traceback で止まり、`ValueError` は `SystemExit` に変えられて止まる。本物の提供者で長い時間をかけた評価の結果を失いうる。
+- 模擬の提供者は、要求の本文を上限なく読み、ソケットに時間の上限がない。
+- 模擬の項目の試行にも、時間の上限の 30 分が掛かる。`benitoiteh` が固まると、完了の前の検査が長く止まる。
+
+これを次のとおり直す。
+
+- 一回の試行の中で、記録の読み取りと集計（`benitoiteh_output`、`benitoiteh_results`、`session_file`）の `OSError`・`ValueError`・`KeyError`・`TypeError` を捕らえ、その試行だけを `unreadable session record: <例外の種類>` を理由とする失敗にし、評価を続ける。`task_allow` の失敗（解の報告が読めない）は、今のとおり評価を止める（処理系か課題の誤りなので、続けても意味がない）。
+- 評価の途中で止まるとき（`--stop-cost`、`KeyboardInterrupt`、捕らえない例外）も、それまでの行で記録を書いてから終わる。
+- 模擬の提供者は、`Content-Length` がないか、負か、8 MiB を超える要求に 400 で答え、ハンドラに `timeout = 10`（秒）を置く。
+- 項目の `options` に `harness_timeout`（秒）を置けるようにし、`benitoiteh-mock` は 120 とする。ないときは `HARNESS_TIMEOUT` を使う。
+
+### 8. 誤りの文と文書
 
 - `find_benitoite` の誤りの文（`build it with cargo build`）を、`pass --benitoite <path to benitoite v0.0.7>` に変える。誤りの文が Benitoite のスキル `skill-eval` を示す箇所は、`tools/skill-eval/SOURCE.md` を示す形に変える。
 - `tools/skill-eval/SOURCE.md` に「本リポジトリでの使い方」の節を作る。先頭に、LLM を呼ぶ評価は設計者の了承を得てから行うこと（`AGENTS.md` の「LLM を呼ぶ作業」）を書く。そのあとに、`benitoiteh` の項目の走らせ方（`--harness benitoiteh-deepseek --trials 3 --allow-unverified --benitoite <v0.0.7> --benitoiteh <path> --work-root <リポジトリの外> --stop-cost <額>`）、模擬の提供者による通し、記録の欄、費用の見積もりの限り（単価は日付のもの、DeepSeek はピークの単価、書き込みの単価を置いたこと）を書く。
@@ -95,6 +110,7 @@ P5-02 で評価の道具に `benitoiteh` を加えた。この作業では、本
 - 費用の見積もり: キャッシュを含む `input_tokens` からキャッシュの分を引いて数えること（数値の例で）。
 - `--stop-cost`: 累計が達した後の試行を始めないこと、`billing` が `none` の項目を数えないこと、項目をまたいで累計を保つこと（ハーネスの起動を差し替えて確かめる）。
 - 記録に `--work-root`・リポジトリ・`HOME` の絶対パスが現れないこと（Markdown、全体の記録、`.jsonl` のそれぞれで）。
+- 7: `spill` のファイルがない、`result.text` が `null` の記録で、その試行だけが失敗になり、次の試行が走り、記録が書かれること。模擬の提供者が大きすぎる `Content-Length` に 400 で答えること。
 - `harnesses.json` の三つの本物の項目が、`api_key` に値の形を持たず、`price` と `billing` を持つこと。
 
 ## 完了条件
