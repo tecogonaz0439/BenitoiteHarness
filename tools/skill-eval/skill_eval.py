@@ -631,7 +631,7 @@ def dsh_environment() -> Tuple[Dict[str, str], List[str]]:
 
 
 def agy_environment() -> Tuple[Dict[str, str], List[str]]:
-    """起動の設定と自動更新を親の環境から独立させる（P5-07 補足 7）。"""
+    """起動の設定を親の環境から独立させる。更新を止める環境変数は実走で無効だった。"""
     env, removed = harness_environment()
     extra = [name for name in env if name.startswith(('AGY_', 'ANTIGRAVITY_', 'JETSKI_',
                                                      'GOOGLE_', 'GEMINI_', 'CLOUDSDK_'))]
@@ -779,6 +779,30 @@ def prepare_agy(trial: str, workspace: str) -> None:
         {'type': 'command', 'command': command, 'timeout': 10}]}]}}
     with open(os.path.join(workspace, '.agents', 'hooks.json'), 'w', encoding='utf-8') as f:
         f.write(json.dumps(hooks, ensure_ascii=False, indent=2) + '\n')
+
+
+def agy_user_settings_state() -> Dict[str, object]:
+    """許可の保存などを検知するため、指定した設定だけを比較する（P5-07 補足 2）。"""
+    gemini = os.path.join(os.path.expanduser('~'), '.gemini')
+    config = os.path.join(gemini, 'config')
+    projects = os.path.join(config, 'projects')
+    # リンクや特殊ファイルに替わった設定は開かず、事後なら比較不能として停止させる。
+    for path in (gemini, config, projects, os.path.join(gemini, 'antigravity-cli')):
+        if os.path.lexists(path) and (os.path.islink(path) or not os.path.isdir(path)):
+            raise ValueError('cannot inspect Antigravity settings directory: %s' % path)
+    try:
+        state = {'config entries': sorted(os.listdir(config)) if os.path.isdir(config) else None}
+        paths = ['config/config.json', 'config/mcp_config.json', 'antigravity-cli/settings.json']
+        if os.path.isdir(projects):
+            paths += ['config/projects/' + name for name in sorted(os.listdir(projects)) if name.endswith('.json')]
+        for relative in paths:
+            path = os.path.join(gemini, relative)
+            if os.path.islink(path):
+                raise ValueError('settings path is a link')
+            state[relative] = file_sha256(path) if os.path.lexists(path) else None
+        return state
+    except (OSError, ValueError):
+        raise ValueError('cannot inspect Antigravity user settings') from None
 
 
 def agy_integrity(trial: str, workspace: str) -> Dict[str, object]:
@@ -1599,6 +1623,9 @@ def run_trial(task: Task, trial_dir: str, benitoite: str, harness_name: str, har
             if is_dsh:
                 env['DEEPSEEK_API_KEY'] = dsh_key
             cleanup = {'cleanup_group': True} if is_agy else {}
+            if is_agy:
+                settings_before = agy_user_settings_state()
+                harness_version_start = version_of(list(harness['version']), env, cleanup_group=True)
             try:
                 if is_agy:
                     permission_errors.extend(agy_permissions(workspace, False))
@@ -1608,6 +1635,11 @@ def run_trial(task: Task, trial_dir: str, benitoite: str, harness_name: str, har
             finally:
                 if is_agy:
                     permission_errors.extend(agy_permissions(workspace, True))
+                    harness_version_end = version_of(list(harness['version']), env, cleanup_group=True)
+                    try:
+                        settings_changed = settings_before != agy_user_settings_state()
+                    except ValueError:
+                        settings_changed = True
             if is_dsh:
                 del env['DEEPSEEK_API_KEY']
         entries = read_log(log)
@@ -1719,6 +1751,12 @@ def run_trial(task: Task, trial_dir: str, benitoite: str, harness_name: str, har
             verdict.reason = 'SAFETY: shell output seen; ' + verdict.reason
         if user_skill_state() != user_skills_before:
             verdict.reason = 'SAFETY: user skill directory changed; ' + verdict.reason
+        if is_agy:
+            if settings_changed:
+                verdict.reason = 'SAFETY: user Antigravity settings changed; ' + verdict.reason
+            if harness_version_start != harness_version_end:
+                verdict.reason += '; WARNING: harness version changed %s -> %s' % (
+                    harness_version_start, harness_version_end)
     finally:
         if mock is not None:
             mock.shutdown()
@@ -1743,7 +1781,9 @@ def run_trial(task: Task, trial_dir: str, benitoite: str, harness_name: str, har
     if synced_skills is not None:
         row.update(claude_config_checked=True, claude_synced_skills=synced_skills)
     if builtin_skills is not None:
-        row.update(agy_config_checked=True, agy_builtin_skills=builtin_skills)
+        row.update(agy_config_checked=True, agy_builtin_skills=builtin_skills,
+                   agy_settings_changed=settings_changed, harness_version_start=harness_version_start,
+                   harness_version_end=harness_version_end)
     return row
 
 
@@ -2114,8 +2154,8 @@ def evaluation_header(args: argparse.Namespace, benitoite: str, harness_name: st
                                DSH_AGENTS_HOME=os.path.join(first_trial, 'agents-home'),
                                DSH_TELEMETRY_DISABLED='1', TMPDIR=os.path.join(first_trial, 'tmp'))
         if is_agy:
-            version_env['TMPDIR'] = os.path.join(first_trial, 'tmp')
-            harness_version = version_of(list(harness['version']), version_env, cleanup_group=True)
+            # 更新後の版を見出しに使わず、最初の試行の開始時に得た版を使う。
+            harness_version = first['harness_version_start']
         else:
             harness_version = version_of(list(harness['version']), version_env)
     with open(benitoite, 'rb') as f:
@@ -2186,7 +2226,18 @@ def evaluate(args: argparse.Namespace, tasks: List[Task], benitoite: str, harnes
                 print('%s %-16s trial %d: %s, attempts %d, %s' % (
                     harness_name, task.name, trial, 'success' if row['success'] else 'failure', row['attempts'],
                     row['reason']), flush=True)
-                if budget.add(row):
+                budget.add(row)
+                if harness.get('prepare') == 'agy' and not args.dry_run:
+                    stops = []
+                    if row['agy_settings_changed']:
+                        stops.append('user Antigravity settings changed')
+                    if row['harness_version_start'] != row['harness_version_end']:
+                        stops.append('harness version changed %s -> %s' % (
+                            row['harness_version_start'], row['harness_version_end']))
+                    if stops:
+                        # 費用の上限と同じく、後続の項目も止めて完了済みの記録を残す。
+                        budget.message = 'stopped: ' + '; '.join(stops)
+                if budget.message:
                     print(budget.message, file=sys.stderr)
                     return 3
         wins = sum(1 for r in rows if r['success'])

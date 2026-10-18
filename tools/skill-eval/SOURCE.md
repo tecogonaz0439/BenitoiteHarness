@@ -105,7 +105,7 @@ python3 -I tools/skill-eval/skill_eval.py \
 
 読み取りの道具は `view_file`・`list_dir`・`grep_search`・`find_by_name`・`view_file_outline`・`view_code_item` とする。書き込みの道具は `write_to_file`・`replace_file_content`・`multi_replace_file_content` とする。入れ子の辞書も含め、鍵名が `path`・`file`・`directory`・`uri` で終わるものをパスの鍵と推し量る（大文字と小文字を区別しない）。`File` そのものも含め、`NodePaths`・`SecurityNote` は含めない。パスの鍵の値が真偽値か数なら、表示などの指定として検査から外す。文字列か空でない文字列の一覧ならすべてのパスを検査し、それ以外の型は拒む。検査するパスが一つもなければ、読み取りも書き込みも拒む。`CodeContent`・`TargetContent`・`Query` など、ほかの鍵の値はパスとして扱わない。
 
-パスは `/` または小文字の `file://` で始まり、実のパスで作業ディレクトリ内に収まるものだけを許す。相対パス、`~`、ほかの scheme、先頭か末尾の空白・制御文字、NUL を拒む。URI の復号後も同じ文字の検査を行う。書き込みでは、すべてのパスについて、相対パスの要素に `.agents`・`_agents`・`.agent`・`_agent`・`.gemini`・`.git` があるものと、末尾が `AGENTS.md`・`GEMINI.md` のものを拒む（大文字と小文字を区別しない）。ほかのすべての道具は拒む。この鍵名の推し量りと道具の名前は実走で未検証である。最初の試しの走行の `gate.log` の `argument_keys` で確かめ、鍵名の一覧を固める。
+パスは `/` または小文字の `file://` で始まり、実のパスで作業ディレクトリ内に収まるものだけを許す。相対パス、`~`、ほかの scheme、先頭か末尾の空白・制御文字、NUL を拒む。URI の復号後も同じ文字の検査を行う。書き込みでは、すべてのパスについて、相対パスの要素に `.agents`・`_agents`・`.agent`・`_agent`・`.gemini`・`.git` があるものと、末尾が `AGENTS.md`・`GEMINI.md` のものを拒む（大文字と小文字を区別しない）。ほかのすべての道具は拒む。実走で確かめた引数の鍵は後述する。それ以外の道具の鍵名の推し量りは未検証である。
 
 決定は `<試行>/agy/gate.log` に JSON Lines で残す。時刻、決定、道具の名前、入れ子を含む引数の鍵の名前の一覧、`CommandLine` の先頭200文字だけを書く。ほかの引数の値は書かない。ログは準備で作り、門は `O_APPEND|O_NOFOLLOW|O_NONBLOCK` で開いて、通常ファイルであることを `fstat` で確かめる。ログがない・形が違う・追記できない場合は、拒否を返す。会話の記録に道具の呼び出しがあるのに有効な門の記録がない場合は、`SAFETY: hooks were not loaded` を理由に加える。包みのコマンドの記録に行があるのに、門の記録に `run_command` の `allow` がない場合も同じとする。後者は会話の記録が読めなくても働く。
 
@@ -121,21 +121,33 @@ python3 -I tools/skill-eval/skill_eval.py \
 
 子の環境から `AGY_*`・`ANTIGRAVITY_*`・`JETSKI_*`・`GOOGLE_*`・`GEMINI_*`・`CLOUDSDK_*` を除き、除いた名前を見出しに書く。`AGY_CLI_DISABLE_AUTO_UPDATE=1` と `TMPDIR=<試行>/tmp` を設定する。版の問い合わせにも同じ整理を行う。API の単価は置かず、`billing: none`、`cost_usd: null` とする。`--stop-cost` ではプランの利用枠の残量を管理できない。
 
+2026-10-19 に設計者の了承を得て行った最初の試しの走行では、次の事実を確かめた。対象は `json_summary` の1試行、起動時の版は `agy` 1.4.0 である。出典は [P5-07 の「補足 2」](../../docs/plan/tasks/P5-07-antigravity.md#補足-22026-10-19最初の試しの走行の後) のオーケストレータによる調査結果である。同節が挙げる試行の記録は `2026-10-19-0642-antigravity-gemini-trial.md` である。
+
+- `-p` と `--mode accept-edits` のもとでフックが読み込まれ、`matcher: ".*"` の門が全26回の道具の呼び出しで起動された。
+- 門が `benitoite check main.bnt` に `allow` を返しても、非対話の既定の拒否に優先せず、`command` の権限不足として走行が終わった。最後の応答は空で、`denied_actions` に `command` が残った。門が `ls -la` に `deny` を返したときは走行が続いた。
+- `view_file` の引数は `AbsolutePath`・`StartLine`・`EndLine`・`ContentOffset`、`write_to_file` は `TargetFile`・`CodeContent`・`Description`・`Overwrite`、`run_command` は `CommandLine`・`Cwd`・`WaitMsBeforeAsync` だった。各道具には `toolAction`・`toolSummary` も加わった。
+- `AGY_CLI_DISABLE_AUTO_UPDATE=1` を設定しても背後の更新が起動し、走行開始の9秒後に利用者の `agy` が1.4.2に置き換わった。文書にある更新の止め方はない。
+- 利用者の `~/.gemini/config/` と `~/.gemini/antigravity-cli/settings.json` は変わらなかった。
+
+この結果に従い、門の `PERMISSION_OVERRIDES` を `True` とし、許した `run_command` にだけ `permissionOverrides: ["command(<CommandLine>)"]` を返す。`<CommandLine>` は門で検査した文字列そのものとする。拒否とファイルの道具には権限を追加しない。`permissionOverrides` は同梱の `hooks.md` が一時的な権限として定める形であるが、この形による非対話の実行は次の試しの走行で確かめる。
+
+許可が設定に保存される場合を検知するため、各試行の前後で `~/.gemini/config/config.json`・`mcp_config.json`・`projects/*.json` と `~/.gemini/antigravity-cli/settings.json` の SHA-256、および `~/.gemini/config/` 直下の項目の一覧を比べる。変更か事後の比較不能を検知すると、理由の先頭に `SAFETY: user Antigravity settings changed` を付ける。設定値とハッシュは公開する記録に残さず、`agy_settings_changed` の真偽だけを残す。試行中に書き換えて元に戻した変更は検知できない。
+
+自動更新は止めず、試行の起動の前後に `agy --version` を問い合わせ、行の `harness_version_start` と `harness_version_end` に書く。見出しには最初の試行の起動前の版を使う。前後の版が異なる場合は理由に `WARNING: harness version changed <前> -> <後>` を加える。設定か版の変化を検知したら、後続の試行と項目を始めず、完了済みの Markdown と `.jsonl`、見出しの停止理由を保存して終了状態3で終える。利用者の実行ファイルと設定には手を加えない。
+
 集計は標準出力のオブジェクトから読み、全体を読めなければ最後の空でない行を読む。入力にキャッシュの読み取りを加え、キャッシュの書き込みは0とする。`thinking_tokens` は別の欄に残し、出力に含まれるか未確認なので合計には足さない。`num_turns` は利用者の発言数なので番として使わず、ホームの `brain/<conversation_id>/.system_generated/logs/transcript_full.jsonl`（なければ `transcript.jsonl`）の `PLANNER_RESPONSE` の数と、その道具の名前を数える。ID の文字種と記録の実のパスを検査する。会話の記録は `O_NONBLOCK` で開き、通常ファイルだけを読む。深い JSON の `RecursionError` も欠損として扱う。記録が読めなければ番と道具の回数を `null` にし、使用量が標準出力と違えば理由に記す。使用量は標準出力を正とする。
 
 終わり方は、評価の道具の時間切れ、`agy` の print timeout、終了状態3または `AGY_ERROR`、終了状態0かつ `SUCCESS`、ほかの誤りの順に判定する。`AGY_ERROR` の JSON は `status`・`code`・`retryable`・`error_id`・`short_error` の値だけを残す。JSON として読めないときは文を使い、どちらもメールアドレスを `<email>` に伏せて先頭200文字を残す。道具の名前が `[a-z0-9_]{1,64}` に当たらなければ `<invalid>` として数える。集計が読めなくても課題の判定は続け、読めないトークンの欄は `null` にする。
 
-初回の試しの走行で、次を確かめてから評価を広げる。この作業では本物の LLM を呼ばず、項目を `verified: false` としている。
+次の試しの走行で、残る点を確かめてから評価を広げる。補足 2 の実装では本物の LLM を呼ばず、項目は `verified: false` のままとする。
 
-- フックが読み込まれ、`gate.log` に決定が残るか。
 - 門が時間切れ・異常終了したとき、書き込みが既定で許されるか。コマンドについて既定で断られるという調査結果を、書き込みの保証には使わない。
 - `.*` の門が拒む `command_status`・`task_boundary`・`notify_user` などで、走行が止まらないか。
-- フックの `allow` が、非対話の既定の「断る」に優先するか。優先しなければ、`agy_gate.py` の `PERMISSION_OVERRIDES` を `True` に替え、`permissionOverrides: ["command(<CommandLine>)"]` を返す形で確かめる。その許可が `~/.gemini/config` に残るかも調べる。
-- 許す一覧の道具の名前と、`gate.log` に記録した引数の鍵の名前が、実際の道具に合っているか。`matcher: ".*"` ですべての道具を受けるか。
+- `permissionOverrides: ["command(<CommandLine>)"]` によって許したコマンドを実行できるか。その許可が利用者の設定に残るかも、試行前後の比較で確かめる。
+- まだ実走で使われていない道具の名前と、`gate.log` に記録した引数の鍵の名前が、門のパスの検査に合っているか。
 - パスの鍵としない `grep_search` の `Includes`、`find_by_name` の `Pattern`・`Excludes` に置いたパスや `..` を、agy が検索の根の外に向けて解かないか。
 - 試行の途中で書き換えたフックを読み直すか。
 - `run_command` の子が別のプロセスのグループに残るか。同じグループの終了後の SIGKILL では、その子は止められない。
-- `<試行>/agy/agy.log` に `Auto-update disabled via environment variable` があり、自動更新が止まったか。この環境変数は実行ファイル内で見つかったもので、公開の文書にはない。
 
 フックと Skill と設定の探索の出典は、`agy` 1.4.0 の同梱文書 `~/.gemini/antigravity-cli/builtin/skills/agy-customizations/docs/` の `hooks.md`・`skills.md`・`json_configs.md` である。JSON の集計、会話の記録、時間切れの文言、課金と環境変数は、P5-07 の「前提の事実」と「補足」の、オーケストレータによる2026-10-18の調査記録に従った。
 
@@ -208,3 +220,5 @@ python3 -I tools/skill-eval/skill_eval.py \
 - オーケストレータのセキュリティの所見に従い、門を全道具共通にし、引数の部分パスと読み書きのパスを検査した。設定の鍵を許可の一覧に替え、読む設定の範囲を限定した。読み取り専用の `.agents/`、新しい設定の作成とフック未読込の検知、すべての kind の利用者向け Skill のメタデータ比較を加えた。JSON の深さと特殊ファイルを欠損として扱い、ログの追記先と、記録に残す誤りの欄を限定した。
 
 - 再レビューの所見 A〜I に従い、パスを鍵名で判定し、本文や検索語をパスとして扱わないようにした。実際の `projectResources.resources` の形と入れ子の許可の一覧に合わせ、権限変更のリンクの追跡と失敗の扱い、包みの起動に対応する門の許可の確認、作成した印の名前と件数だけの報告を改めた。テスト全体の HOME・設定・状態・一時領域も一時ディレクトリに向けた。
+
+- 補足 2 に従い、検査済みのコマンドに `permissionOverrides` を加えた。利用者の設定と各試行の前後の版を比較し、変化を検知したら記録を保存して後続を止める。最初の試しの走行で確かめたフック、権限、引数、自動更新と設定の状態を記録し、未検証の項目を改めた。

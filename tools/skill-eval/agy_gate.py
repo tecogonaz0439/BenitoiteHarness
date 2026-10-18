@@ -11,8 +11,8 @@ import unicodedata
 from typing import List, Optional
 from urllib.parse import unquote, urlsplit
 
-# 初回の実走で allow が既定の拒否に優先しなければ、ここだけを切り替える。
-PERMISSION_OVERRIDES = False
+# allow だけでは非対話の command 権限を得られない（P5-07 補足 2 の実走結果）。
+PERMISSION_OVERRIDES = True
 READ_TOOLS = {'view_file', 'list_dir', 'grep_search', 'find_by_name', 'view_file_outline', 'view_code_item'}
 WRITE_TOOLS = {'write_to_file', 'replace_file_content', 'multi_replace_file_content'}
 PROTECTED_DIRS = {'.agents', '_agents', '.agent', '_agent', '.gemini', '.git'}
