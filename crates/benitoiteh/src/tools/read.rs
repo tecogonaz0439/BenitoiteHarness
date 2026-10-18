@@ -8,6 +8,41 @@ use std::path::Path;
 pub(super) const MAX_BYTES: usize = 50 * 1024;
 pub(super) const MAX_FILE_BYTES: u64 = 64 * 1024 * 1024;
 
+// 表示パスだけでは BH-029 の囮を区別できない。read の可否と上限を共有し、
+// 文字の置換前の全バイトを照合する（設計書 04-01「実行の前の検査の報告」）。
+pub(super) fn content_hash(
+    mut opened: super::paths::OpenedFile,
+    cancelled: &std::sync::atomic::AtomicBool,
+) -> Result<String, ToolError> {
+    use sha2::{Digest, Sha256};
+    let metadata = opened.file.metadata()?;
+    check_text_file(&opened.real_path, &metadata)?;
+    let version = FileVersion::from_metadata(&metadata);
+    let mut hasher = Sha256::new();
+    let mut buffer = [0; 8192];
+    let mut bytes_read = 0;
+    loop {
+        if cancelled.load(std::sync::atomic::Ordering::Acquire) {
+            return Err(ToolError::Changed);
+        }
+        let count = opened.file.read(&mut buffer)?;
+        if count == 0 {
+            break;
+        }
+        let part = buffer.get(..count).unwrap_or_default();
+        bytes_read = check_text_chunk(part, bytes_read)?;
+        hasher.update(part);
+    }
+    if version != FileVersion::from_metadata(&opened.file.metadata()?) {
+        return Err(ToolError::Changed);
+    }
+    Ok(hasher
+        .finalize()
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect())
+}
+
 pub(super) fn execute(context: &ToolContext, arguments: &Value) -> Result<ToolOutput, ToolError> {
     let path = string(arguments, "path")?;
     let offset = number(arguments, "offset", 1, false)?;

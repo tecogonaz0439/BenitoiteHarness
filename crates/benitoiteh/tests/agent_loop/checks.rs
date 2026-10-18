@@ -312,10 +312,13 @@ fn check_limit_error_retains_diagnostics_before_tool_output_truncation() -> Test
     let mut config = f.config(&server, AdapterKind::OpenAiChat);
     config.mode = Mode::Restricted;
     config.limits.max_check_fix = 1;
-    let note = "long diagnostic note ".repeat(4000);
-    let expected = note.clone();
+    // 一つの欄の上限は守りつつ、診断の全体を道具の上限より大きくする。
+    let notes = (0..20)
+        .map(|n| format!("note {n}: {}", "🟦".repeat(3000)))
+        .collect::<Vec<_>>();
+    let expected = "note 19:";
     let query: Arc<CheckQuery> = Arc::new(move |_, _, _| {
-        Err(BenitoiteError::Exit { stdout: Vec::new(), code: Some(2), stderr: json!({"kind":"check","severity":"error","code":"E0101","message":"discovery failed","primary":null,"secondary":[],"notes":[note],"helps":[]}).to_string().into_bytes() })
+        Err(BenitoiteError::Exit { stdout: Vec::new(), code: Some(2), stderr: json!({"kind":"check","severity":"error","code":"E0101","message":"discovery failed","primary":null,"secondary":[],"notes":notes,"helps":[]}).to_string().into_bytes() })
     });
     let (mut agent, _) = f.agent_with_check(config, None, Some(query))?;
     let (report, events) = complete(&mut agent)?;
@@ -325,7 +328,7 @@ fn check_limit_error_retains_diagnostics_before_tool_output_truncation() -> Test
             .first()
             .is_some_and(|result| result.text.contains("[Output truncated:"))
     );
-    assert!(events.iter().any(|event| matches!(event, AgentEvent::Error { kind, message } if kind == "limit" && message.contains(&expected) && !message.contains("[Output truncated:"))));
+    assert!(events.iter().any(|event| matches!(event, AgentEvent::Error { kind, message } if kind == "limit" && message.contains(expected) && !message.contains("[Output truncated:"))));
     assert!(!report.summary.reason.contains('\n'));
     server.shutdown()?;
     Ok(())

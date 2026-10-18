@@ -142,6 +142,15 @@ pub(super) fn definitions(mode: crate::config::Mode) -> Vec<ToolDefinition> {
             false,
         ));
     }
+    if mode == crate::config::Mode::Restricted {
+        tools.push(definition(
+            ToolId::BenitoiteTest,
+            text::BENITOITE_TEST,
+            &[text::BENITOITE_TEST.1],
+            vec![arg("paths", ArgumentType::StringArray, true)],
+            false,
+        ));
+    }
     tools.push(definition(
         ToolId::BenitoiteExplain,
         text::BENITOITE_EXPLAIN,

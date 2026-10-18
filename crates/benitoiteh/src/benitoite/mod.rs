@@ -1,9 +1,11 @@
 //! 処理系を探して機能を確かめ、スクリプトを実行しない問い合わせを起動する（設計書 04-01）。
 
 pub mod diagnostics;
+pub(crate) mod display;
 pub mod effects;
 mod executable;
 pub mod report;
+pub(crate) mod test_results;
 pub use effects::Effect;
 mod query;
 pub mod skill;
@@ -187,6 +189,7 @@ mod tests;
 /// 制限モードの実行用に起動時に固定した値（設計書 03-02、04-01）。
 #[derive(Clone, Debug)]
 pub struct RunContext {
+    pub test_timeout: std::time::Duration,
     pub processor: PathBuf,
     pub helper: PathBuf,
     pub scratch: PathBuf,

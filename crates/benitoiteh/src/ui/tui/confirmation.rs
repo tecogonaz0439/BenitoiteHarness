@@ -131,7 +131,10 @@ impl Confirmation {
                     rows.extend(fact(label, value, width, compact));
                 }
             }
-            if request.kind == ApprovalKind::Effects {
+            if matches!(
+                request.kind,
+                ApprovalKind::Effects | ApprovalKind::TestEffects
+            ) {
                 let targets = request
                     .facts
                     .targets
@@ -150,6 +153,14 @@ impl Confirmation {
                     rows.extend(fact(
                         text::ADDED_EFFECTS,
                         &request.facts.added_effects.join(", "),
+                        width,
+                        compact,
+                    ));
+                }
+                if request.facts.unread_imports > 0 {
+                    rows.extend(fact(
+                        text::UNREAD_IMPORTS,
+                        &request.facts.unread_imports.to_string(),
                         width,
                         compact,
                     ));

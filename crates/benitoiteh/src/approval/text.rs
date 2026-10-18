@@ -18,17 +18,26 @@ pub const USER_WEB_DENIED: &str =
     "The user denied this web fetch. No DNS lookup or HTTP request was made by this call.";
 
 pub const POLICY_EFFECTS_DENIED: &str = "Tool call was denied by the never approval policy: running a Benitoite script requires confirming its effects. Stop and report.";
-fn target(facts: &super::ApprovalFacts, project: &std::path::Path) -> String {
+fn target(
+    kind: super::ApprovalKind,
+    facts: &super::ApprovalFacts,
+    project: &std::path::Path,
+) -> String {
     facts
         .targets
-        .first()
-        .map(|p| {
-            p.strip_prefix(project)
-                .unwrap_or(p)
-                .to_string_lossy()
-                .into_owned()
+        .iter()
+        .take(if kind == super::ApprovalKind::TestEffects {
+            usize::MAX
+        } else {
+            1
         })
-        .unwrap_or_default()
+        .map(|p| {
+            crate::benitoite::display::one_line(
+                &p.strip_prefix(project).unwrap_or(p).to_string_lossy(),
+            )
+        })
+        .collect::<Vec<_>>()
+        .join(", ")
 }
 fn effects(facts: &super::ApprovalFacts) -> String {
     if facts.effects.is_empty() {
@@ -37,17 +46,76 @@ fn effects(facts: &super::ApprovalFacts) -> String {
         facts.effects.join(", ")
     }
 }
-pub fn effects_summary(facts: &super::ApprovalFacts, project: &std::path::Path) -> String {
+pub fn effects_summary(
+    kind: super::ApprovalKind,
+    facts: &super::ApprovalFacts,
+    project: &std::path::Path,
+) -> String {
+    let prefix = if kind == super::ApprovalKind::TestEffects {
+        "Run tests in"
+    } else {
+        "Run"
+    };
     format!(
-        "Run {} with effects: {}",
-        target(facts, project),
+        "{prefix} {} with effects: {}",
+        target(kind, facts, project),
         effects(facts)
     )
 }
-pub fn effects_denied(facts: &super::ApprovalFacts, project: &std::path::Path) -> String {
+pub fn effects_denied(
+    kind: super::ApprovalKind,
+    facts: &super::ApprovalFacts,
+    project: &std::path::Path,
+) -> String {
+    let (verb, object) = if kind == super::ApprovalKind::TestEffects {
+        ("run tests in", "tests")
+    } else {
+        ("run", "script")
+    };
     format!(
-        "The user declined to run {} with effects: {}. Ask the user how to proceed, or change the script.",
-        target(facts, project),
+        "The user declined to {verb} {} with effects: {}. Ask the user how to proceed, or change the {object}.",
+        target(kind, facts, project),
         effects(facts)
+    )
+}
+
+pub const POLICY_TEST_EFFECTS_DENIED: &str = "Tool call was denied by the never approval policy: running Benitoite tests requires confirming their effects. Stop and report.";
+pub fn allow_denied(
+    kind: super::ApprovalKind,
+    facts: &super::ApprovalFacts,
+    project: &std::path::Path,
+    allowed: &std::collections::BTreeSet<crate::benitoite::Effect>,
+) -> String {
+    let names = crate::benitoite::effects::names(allowed, false);
+    let permitted = if names.is_empty() {
+        "none".into()
+    } else {
+        names.join(", ")
+    };
+    let (uses, narrow) = if kind == super::ApprovalKind::TestEffects {
+        ("use", "the tests")
+    } else {
+        ("uses", "main")
+    };
+    format!(
+        "This non-interactive run allows only these effects: {permitted}. {} {uses}: {}. Narrow the uses of {narrow}, or stop and report.",
+        target(kind, facts, project),
+        effects(facts)
+    )
+}
+
+pub fn unread_imports_denied(facts: &super::ApprovalFacts, project: &std::path::Path) -> String {
+    let paths = facts
+        .targets
+        .iter()
+        .map(|p| {
+            crate::benitoite::display::one_line(
+                &p.strip_prefix(project).unwrap_or(p).to_string_lossy(),
+            )
+        })
+        .collect::<Vec<_>>()
+        .join(", ");
+    format!(
+        "{paths} import files that benitoiteh does not read; run them interactively to confirm."
     )
 }

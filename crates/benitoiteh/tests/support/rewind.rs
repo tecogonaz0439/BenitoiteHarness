@@ -93,6 +93,7 @@ impl Fixture {
     }
     pub fn config(&self, server: &MockProvider) -> AgentConfig {
         AgentConfig {
+            allow_effects: None,
             mode: Mode::Normal,
             destination: Destination {
                 provider: "mock".into(),

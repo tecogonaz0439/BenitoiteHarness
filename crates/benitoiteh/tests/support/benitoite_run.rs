@@ -78,6 +78,7 @@ impl Fixture {
         std::fs::set_permissions(&placeholders, std::fs::Permissions::from_mode(0o700))?;
         let processor = crate::support::benitoite()?;
         self.context.run = Some(RunContext {
+            test_timeout: std::time::Duration::from_secs(120),
             processor,
             helper: std::fs::canonicalize(env!("CARGO_BIN_EXE_benitoiteh"))?,
             scratch,
@@ -91,6 +92,18 @@ impl Fixture {
             denied_candidates: vec![],
             allowed_programs: vec![],
         });
+        Ok(())
+    }
+    pub fn exclude(&mut self, patterns: &[&str]) -> TestResult {
+        self.context.exclude = ExcludeRules::new(
+            &self.project,
+            &self.paths,
+            &self.session.directory().join("spill"),
+            &ReadConfig {
+                exclude: patterns.iter().map(|s| (*s).into()).collect(),
+            },
+            &ReadConfig::default(),
+        )?;
         Ok(())
     }
     pub fn query(&mut self, query: Arc<CheckQuery>) {

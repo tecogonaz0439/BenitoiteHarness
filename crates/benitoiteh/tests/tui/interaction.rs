@@ -49,6 +49,7 @@ fn approval_gate_and_key_table_have_no_implicit_or_modified_answer() -> TestResu
         (ApprovalKind::Escalate, 'y', ApprovalOutcome::Approved),
         (ApprovalKind::WriteScope, 'n', ApprovalOutcome::Denied),
         (ApprovalKind::Effects, 'y', ApprovalOutcome::Approved),
+        (ApprovalKind::TestEffects, 'y', ApprovalOutcome::Approved),
         (
             ApprovalKind::WebFetch,
             's',
@@ -103,7 +104,10 @@ fn approval_gate_and_key_table_have_no_implicit_or_modified_answer() -> TestResu
         ];
         if matches!(
             kind,
-            ApprovalKind::Escalate | ApprovalKind::WriteScope | ApprovalKind::Effects
+            ApprovalKind::Escalate
+                | ApprovalKind::WriteScope
+                | ApprovalKind::Effects
+                | ApprovalKind::TestEffects
         ) {
             invalid.extend([
                 key(KeyCode::Char('a'), KeyModifiers::NONE),
@@ -1044,9 +1048,14 @@ fn invisible_and_ambiguous_characters_cannot_hide_command_suffixes() -> TestResu
 // 関門: 記録専用の sources の漏れ、空集合の非表示、事実を隠したままの許可を画面境界で守る。
 #[test]
 fn effect_confirmation_displays_all_facts_but_not_source_hashes_and_must_fit() -> TestResult {
-    for empty in [false, true] {
+    for (kind, empty) in [
+        (ApprovalKind::Effects, false),
+        (ApprovalKind::Effects, true),
+        (ApprovalKind::TestEffects, false),
+        (ApprovalKind::TestEffects, true),
+    ] {
         let mut screen = Screen::new((140, 40), status());
-        let (mut prompt, receiver) = prompt(ApprovalKind::Effects, "unused");
+        let (mut prompt, receiver) = prompt(kind, "unused");
         prompt.request.facts = ApprovalFacts {
             targets: vec!["/project/main.bnt".into(), "/project/other.bnt".into()],
             effects: if empty {
@@ -1060,6 +1069,7 @@ fn effect_confirmation_displays_all_facts_but_not_source_hashes_and_must_fit() -
                 vec!["Process.Run".into()]
             },
             shell_reference: !empty,
+            unread_imports: if empty { 0 } else { 2 },
             sources: vec![benitoiteh::approval::ApprovalSource {
                 display_path: "HIDDEN_SOURCE".into(),
                 content_hash: benitoiteh::approval::ContentHash {
@@ -1075,7 +1085,11 @@ fn effect_confirmation_displays_all_facts_but_not_source_hashes_and_must_fit() -
         let rendered = String::from_utf8(bytes)?;
         let visible = controls()?.replace_all(&rendered, "");
         for value in [
-            "Run Benitoite script?",
+            if kind == ApprovalKind::TestEffects {
+                "Run Benitoite tests?"
+            } else {
+                "Run Benitoite script?"
+            },
             "Targets",
             "/project/main.bnt",
             "/project/other.bnt",
@@ -1094,6 +1108,7 @@ fn effect_confirmation_displays_all_facts_but_not_source_hashes_and_must_fit() -
         } else {
             for value in [
                 "Added effects",
+                "Imports files that benitoiteh does not read",
                 "Shell",
                 "The script references Process.shell",
                 "OS sandbox blocks starting a shell",
@@ -1124,6 +1139,40 @@ fn effect_confirmation_displays_all_facts_but_not_source_hashes_and_must_fit() -
         assert_eq!(
             receiver.recv_timeout(Duration::from_secs(1))?.outcome,
             ApprovalOutcome::Denied
+        );
+    }
+    Ok(())
+}
+
+// 関門: 本物の報告の表示パスが囮と衝突した場合も、対話の確認画面に取り込みの件数を示す。
+#[test]
+fn real_decoy_imports_are_visible_as_counts_in_interactive_confirmation() -> TestResult {
+    for nested_package in [true, false] {
+        let mut f = benitoite_fixture::Fixture::new()?;
+        support::import_decoy::prepare(&f.project, nested_package)?;
+        f.exclude(&["t5/Secret/**"])?;
+        let output = f
+            .tools
+            .execute(&f.context, "benitoite_test", json!({"paths":["t5"]}));
+        let request = output.approval.ok_or(output.text)?;
+        let mut screen = Screen::new((160, 40), status());
+        let (mut prompt, _receiver) = prompt(request.kind, "unused");
+        prompt.request.facts = request.facts;
+        screen.open_approval(prompt);
+        let mut bytes = Vec::new();
+        screen.draw(&mut bytes, None)?;
+        let visible = safe_output(&bytes)?;
+        let count = if nested_package { 1 } else { 2 };
+        assert!(
+            visible.contains(&format!(
+                "Imports files that benitoiteh does not read:\n│   {count}"
+            )),
+            "{visible}"
+        );
+        assert!(
+            !visible.contains("Secret")
+                && !visible.contains("SECRET_HASH_COLLISION")
+                && !visible.contains("sha256")
         );
     }
     Ok(())

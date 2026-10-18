@@ -620,7 +620,7 @@ fn restricted_check_limit_emits_full_safe_diagnostics_and_flat_summary() -> Test
         "{stderr}"
     );
     assert!(
-        !stderr.contains('\x1b') && stderr.contains("\\x1b"),
+        !stderr.contains('\x1b') && stderr.contains("\\u{1b}"),
         "{stderr}"
     );
     let summary = events
@@ -647,8 +647,7 @@ fn restricted_check_limit_emits_full_safe_diagnostics_and_flat_summary() -> Test
 
 // 関門: exec が実行の要求を拒んでも、JSON Lines と記録に問い合わせの回数を残す。
 #[test]
-fn exec_denies_every_first_run_until_noninteractive_effect_permissions_are_implemented()
--> TestResult {
+fn exec_denies_effects_outside_the_noninteractive_allow_set() -> TestResult {
     let mut server = MockProvider::start(vec![
         ResponseScript::sse(Protocol::Chat.response(
             Some(("run", "benitoite_run", json!({"path":"main.bnt"}))),
@@ -674,7 +673,85 @@ fn exec_denies_every_first_run_until_noninteractive_effect_permissions_are_imple
     assert_eq!(summary.get("checks"), Some(&json!(1)));
     assert_eq!(summary.pointer("/approvals/policy_denied"), Some(&json!(1)));
     let (_, records) = f.records()?;
-    assert!(records.iter().any(|r|r.get("type")==Some(&json!("tool_result")) && r.pointer("/result/text")==Some(&json!("Tool call was denied by the never approval policy: running a Benitoite script requires confirming its effects. Stop and report."))));
+    assert!(records.iter().any(|r|r.get("type")==Some(&json!("tool_result")) && r.pointer("/result/text")==Some(&json!("This non-interactive run allows only these effects: none. main.bnt uses: File.Write. Narrow the uses of main, or stop and report."))));
     server.shutdown()?;
+    Ok(())
+}
+
+// 関門: --allow が CLI の解決後にも届き、確認なしの Assert.Check の実行と連続拒否の終了値を守る。
+#[test]
+fn exec_allows_assert_check_without_permissions_and_stops_three_effect_denials() -> TestResult {
+    for (denied, allow) in [(false, None), (false, Some("Assert.Check")), (true, None)] {
+        let calls = if denied { 3 } else { 1 };
+        let mut scripts = (0..calls)
+            .map(|n| {
+                ResponseScript::sse(Protocol::Chat.response(
+                    Some((
+                        &format!("test-{n}"),
+                        "benitoite_test",
+                        json!({"paths":["test.bnt"]}),
+                    )),
+                    "",
+                    false,
+                ))
+            })
+            .collect::<Vec<_>>();
+        if !denied {
+            scripts.push(ResponseScript::sse(
+                Protocol::Chat.response(None, "done", false),
+            ));
+        }
+        let mut server = MockProvider::start(scripts)?;
+        let f = Fixture::restricted(Protocol::Chat, &server)?;
+        let source = if denied {
+            "import Benitoite.Unofficial.IO.File\n@test\nfunction write() -> Unit uses File.Write\n bind _ <- File.writeText(path: \"MUST_NOT_EXIST\", text: \"ran\")\nend function\n"
+        } else {
+            "import Benitoite.Assert\n@test\nfunction passes() -> Unit uses Assert.Check\n Assert.equal(actual: 1, expected: 1)\nend function\n"
+        };
+        fs::write(f.root.join("project/test.bnt"), source)?;
+        let mut command = f.command("test");
+        command.arg("--json");
+        if let Some(allow) = allow {
+            command.args(["--allow", allow]);
+        }
+        let output = Running::start(&mut command)?.finish()?;
+        assert_eq!(
+            output.status.code(),
+            Some(i32::from(denied)),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let events = lines(&output.stdout)?;
+        let summary = events.last().ok_or("summary")?;
+        assert_eq!(summary.get("checks"), Some(&json!(3)));
+        assert_eq!(
+            summary.pointer("/approvals/policy_denied"),
+            Some(&json!(if denied { 3 } else { 0 }))
+        );
+        let (_, records) = f.records()?;
+        assert!(
+            !records
+                .iter()
+                .any(|r| r.get("type") == Some(&json!("approval")))
+        );
+        if denied {
+            assert!(events.iter().any(|e| e.get("type") == Some(&json!("error"))
+                && e.get("kind") == Some(&json!("limit"))));
+            assert!(!f.root.join("project/MUST_NOT_EXIST").exists());
+        } else {
+            assert!(records.iter().any(|r| {
+                r.pointer("/result/text")
+                    .and_then(Value::as_str)
+                    .is_some_and(|s| s.contains("All tests passed."))
+            }));
+            assert!(
+                records
+                    .iter()
+                    .any(|r| r.get("type") == Some(&json!("checkpoint"))
+                        && r.pointer("/reason") == Some(&json!("benitoite_test")))
+            );
+        }
+        server.shutdown()?;
+    }
     Ok(())
 }

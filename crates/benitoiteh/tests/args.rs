@@ -128,16 +128,45 @@ fn exec_arguments_reject_duplicates_invalid_values_and_unavailable_options() {
     ] {
         assert!(ExecArgs::parse(args.clone()).is_err(), "{args:?}");
     }
-    for (option, value) in [
-        ("--allow", Some("File.Read,File.Write")),
-        ("--project-parent", Some("/project")),
+    assert!(matches!(
+        ExecArgs::parse(["--project-parent", "/project", "request"]),
+        Err(ArgsError::Unavailable { .. })
+    ));
+}
+
+// 関門: --allow の名前の検査を CLI の境界で守る。集合の比較だけでは不正な指定の受理を捕まえない。
+#[test]
+fn allow_accepts_atomic_effects_and_rejects_aliases_duplicates_and_interactive_use()
+-> Result<(), Box<dyn Error>> {
+    use benitoiteh::benitoite::Effect;
+    assert_eq!(
+        ExecArgs::parse(["--allow", "Assert.Check,File.Write", "request"])?.allow,
+        Some(
+            [Effect::AssertCheck, Effect::FileWrite]
+                .into_iter()
+                .collect()
+        )
+    );
+    for value in [
+        "IO.All",
+        "File.Unknown",
+        "File.Read,File.Read",
+        "File.Read,",
+        ",File.Read",
+        "",
+        " File.Read",
     ] {
-        let mut args = vec![option];
-        args.extend(value);
-        args.push("request");
         assert!(
-            matches!(ExecArgs::parse(args), Err(ArgsError::Unavailable { .. })),
-            "{option}"
+            matches!(
+                ExecArgs::parse(["--allow", value, "request"]),
+                Err(ArgsError::Invalid)
+            ),
+            "{value}"
         );
     }
+    assert!(matches!(
+        ExecArgs::parse_interactive(["--allow", "Assert.Check"]),
+        Err(ArgsError::Invalid)
+    ));
+    Ok(())
 }

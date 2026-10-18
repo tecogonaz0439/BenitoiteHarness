@@ -123,3 +123,5 @@ pub fn checkpoint_before_rewind(checkpoint: &str) -> String {
 }
 
 pub const SESSION_PATH_CHANGED: &str = "A fixed session path now resolves to a different location.";
+
+pub const ALLOW_RESTRICTED: &str = "benitoiteh: --allow is available only in restricted mode.";

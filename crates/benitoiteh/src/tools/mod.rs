@@ -2,17 +2,19 @@
 
 mod bash;
 mod benitoite_check;
+mod benitoite_process;
 mod benitoite_reference;
 mod benitoite_run;
+mod benitoite_test;
 mod definitions;
 mod edit;
 pub mod exclude;
 mod paths;
-mod process_output;
+pub(crate) mod process_output;
 mod read;
 mod search;
 mod search_notices;
-mod text;
+pub(crate) mod text;
 pub mod truncate;
 mod web_fetch;
 mod write;
@@ -59,6 +61,8 @@ pub enum ToolId {
     BenitoiteCheck,
     /// 確認したエフェクトでスクリプトを実行する。
     BenitoiteRun,
+    /// 確認したエフェクトでテストを実行する。
+    BenitoiteTest,
     /// 処理系の Skill の文書。
     BenitoiteReference,
     /// HTTPS の本文の取得。
@@ -77,6 +81,7 @@ impl ToolId {
             Self::Bash => "bash",
             Self::BenitoiteCheck => "benitoite_check",
             Self::BenitoiteRun => "benitoite_run",
+            Self::BenitoiteTest => "benitoite_test",
             Self::BenitoiteExplain => "benitoite_explain",
             Self::BenitoiteReference => "benitoite_reference",
             Self::WebFetch => "web_fetch",
@@ -162,6 +167,7 @@ impl ToolSet {
                     | ToolId::BenitoiteReference
                     | ToolId::BenitoiteCheck
                     | ToolId::BenitoiteRun
+                    | ToolId::BenitoiteTest
             )
         });
         tools
@@ -249,6 +255,9 @@ impl ToolSet {
             ToolId::BenitoiteRun => {
                 benitoite_run::execute(context, &call.arguments, approval, invocation)
             }
+            ToolId::BenitoiteTest => {
+                benitoite_test::execute(context, &call.arguments, approval, invocation)
+            }
             ToolId::BenitoiteCheck => {
                 benitoite_check::execute(context, &call.arguments, invocation)
             }
@@ -328,6 +337,7 @@ pub struct WebFetchContext {
 
 /// 最大八つの道具が共有する文脈。変わる版の記録だけを Mutex で守る。
 pub struct ToolContext {
+    pub(crate) noninteractive: bool,
     pub mode: Mode,
     pub project: ScopeRoot,
     pub temporary: ScopeRoot,
@@ -382,6 +392,7 @@ impl ToolContext {
         exclude: ExcludeRules,
     ) -> Self {
         Self {
+            noninteractive: false,
             mode,
             project,
             temporary,
@@ -666,10 +677,19 @@ pub enum ConfirmKey {
 impl ConfirmKey {
     /// 道具とループで同じ事実から単位を得る。
     pub fn from_facts(kind: ApprovalKind, facts: &ApprovalFacts) -> Option<Self> {
-        if kind == ApprovalKind::Effects {
-            facts.targets.first().cloned().map(Self::Run)
-        } else {
-            None
+        match kind {
+            ApprovalKind::Effects => facts.targets.first().cloned().map(Self::Run),
+            ApprovalKind::TestEffects if !facts.targets.is_empty() => {
+                let mut targets = facts.targets.clone();
+                targets.sort();
+                targets.dedup();
+                Some(Self::Test(targets))
+            }
+            ApprovalKind::TestEffects
+            | ApprovalKind::WriteScope
+            | ApprovalKind::Command
+            | ApprovalKind::Escalate
+            | ApprovalKind::WebFetch => None,
         }
     }
 }

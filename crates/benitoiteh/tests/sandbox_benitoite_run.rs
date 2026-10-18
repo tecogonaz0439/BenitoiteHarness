@@ -449,6 +449,7 @@ fn agent(
     resume: bool,
 ) -> Result<Agent, Box<dyn std::error::Error>> {
     let config = AgentConfig {
+        allow_effects: None,
         mode: Mode::Restricted,
         destination: Destination {
             provider: "mock".into(),

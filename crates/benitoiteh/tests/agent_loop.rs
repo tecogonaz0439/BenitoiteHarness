@@ -1,5 +1,7 @@
 //! 模擬 HTTP 提供者と本物の道具・記録をつなぐループの契約（設計書 07-01「持ち主の境界」）。
 
+#[path = "agent_loop/allow.rs"]
+mod allow;
 #[path = "agent_loop/checks.rs"]
 mod checks;
 #[path = "agent_loop/compaction.rs"]
@@ -70,6 +72,7 @@ impl Fixture {
 
     fn config(&self, server: &MockProvider, kind: AdapterKind) -> AgentConfig {
         AgentConfig {
+            allow_effects: None,
             mode: Mode::Normal,
             destination: Destination {
                 provider: "mock".into(),
@@ -108,6 +111,16 @@ impl Fixture {
         sandbox: Option<(Sandbox, bool)>,
         check_query: Option<Arc<benitoiteh::benitoite::CheckQuery>>,
     ) -> Result<(Agent, PathBuf), Box<dyn Error>> {
+        self.agent_with_read_config(config, sandbox, check_query, ReadConfig::default())
+    }
+
+    fn agent_with_read_config(
+        &self,
+        config: AgentConfig,
+        sandbox: Option<(Sandbox, bool)>,
+        check_query: Option<Arc<benitoiteh::benitoite::CheckQuery>>,
+        read: ReadConfig,
+    ) -> Result<(Agent, PathBuf), Box<dyn Error>> {
         let session = Session::create(&self.paths, SessionId::generate(SystemTime::now())?)?;
         let directory = session.directory().to_owned();
         let spill = directory.join("spill");
@@ -120,7 +133,7 @@ impl Fixture {
                 &self.project,
                 &self.paths,
                 &spill,
-                &ReadConfig::default(),
+                &read,
                 &ReadConfig::default(),
             )?,
         )

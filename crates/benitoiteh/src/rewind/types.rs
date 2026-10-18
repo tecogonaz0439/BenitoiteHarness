@@ -47,6 +47,8 @@ pub enum CheckpointReason {
     Bash,
     /// 制限モードのスクリプトの実行前。
     BenitoiteRun,
+    /// 制限モードのテストの実行前。
+    BenitoiteTest,
     Write,
     Edit,
     BeforeRewind,
