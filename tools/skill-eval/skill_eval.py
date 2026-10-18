@@ -37,6 +37,7 @@ ALL_ROWS = []  # type: List[Dict[str, object]]
 
 sys.path.insert(0, HERE)
 import http_server  # noqa: E402
+import mock_provider  # noqa: E402
 
 # 検査と修正の回数に数えるサブコマンド（06-06「Skill の評価」）
 COUNTED_COMMANDS = ('check', 'run', 'test')
@@ -44,6 +45,19 @@ COUNTED_COMMANDS = ('check', 'run', 'test')
 RUN_TIMEOUT = 60
 # 一回のハーネスの起動の時間の上限（秒）
 HARNESS_TIMEOUT = 30 * 60
+
+# crates/benitoiteh/src/agent/text.rs の同名の定数から写した終了理由。
+TURN_LIMIT = 'The run reached the maximum number of turns.'
+TOKEN_LIMIT = 'The run reached the maximum number of tokens.'
+EFFECTS_NOT_ALLOWED = ('The run stopped because benitoite_run, benitoite_test or benitoite_scratch was refused '
+                       '3 times in a row: the effects were outside --allow.')
+LEFTOVER_PROCESSES = 'The run stopped because processes started by the script may still be running.'
+PROCESS_TOOLS = {'benitoite_check': 'check', 'benitoite_run': 'run',
+                 'benitoite_test': 'test', 'benitoite_scratch': 'run'}
+SHELL_OUTPUT = re.compile(r'(?m)^components with errors: [0-9]+$')
+BH_FIELDS = ('kind', 'allow', 'session_id', 'benitoiteh_version', 'system_prompt_sha256', 'tools_sha256',
+             'turns', 'tool_calls', 'after_write_checks', 'checks', 'fixes', 'policy_denied', 'input_tokens',
+             'cache_read_tokens', 'cache_write_tokens', 'output_tokens', 'total_tokens', 'end', 'shell_output_seen')
 
 # ハーネスに渡す依頼。課題の中身は task.md に書き、ここには進め方だけを書く
 PROMPT = (
@@ -98,6 +112,199 @@ def find_benitoite(given: Optional[str]) -> str:
     if found and os.path.dirname(os.path.abspath(found)) != WRAPPER_DIR:
         return found
     raise SystemExit('benitoite not found; build it with `cargo build` or pass --benitoite')
+
+
+def find_benitoiteh(given: Optional[str]) -> str:
+    if given:
+        return os.path.abspath(given)
+    candidates = [os.path.join(REPO, 'target', profile, 'benitoiteh') for profile in ('release', 'debug')]
+    built = [path for path in candidates if os.access(path, os.X_OK)]
+    if not built:
+        raise SystemExit('benitoiteh not found; build it or pass --benitoiteh')
+    return max(built, key=os.path.getmtime)
+
+
+def toml_value(value: object) -> str:
+    """P5-02 の限定した文字列だけを TOML に書き、引用の解釈の違いを避ける。"""
+    if isinstance(value, str):
+        if any(ord(c) < 32 or ord(c) > 126 or c in '"\\' for c in value):
+            raise ValueError('config strings must be printable ASCII without quotes or backslashes')
+        return json.dumps(value)
+    if isinstance(value, bool):
+        return 'true' if value else 'false'
+    if isinstance(value, int):
+        return str(value)
+    if isinstance(value, list):
+        return '[' + ', '.join(toml_value(item) for item in value) + ']'
+    if isinstance(value, dict):
+        parts = []
+        for key, item in value.items():
+            if not isinstance(key, str) or not re.fullmatch(r'[A-Za-z0-9_-]+', key):
+                raise ValueError('invalid config key')
+            parts.append('%s = %s' % (key, toml_value(item)))
+        return '{ ' + ', '.join(parts) + ' }'
+    raise ValueError('unsupported config value: %s' % type(value).__name__)
+
+
+def benitoiteh_config(harness: Dict[str, object], model: str, processor: str,
+                     mock_port: Optional[int] = None) -> str:
+    provider = dict(harness['provider'])  # type: ignore
+    key = provider.get('api_key')
+    valid_env = (isinstance(key, dict) and set(key) == {'env'}
+                 and isinstance(key['env'], str) and bool(key['env']))
+    valid_command = (isinstance(key, dict) and set(key) == {'command'}
+                     and isinstance(key['command'], list) and bool(key['command'])
+                     and all(isinstance(part, str) and bool(part) for part in key['command']))
+    if not (valid_env or valid_command):
+        raise ValueError('api_key must reference an env name or a command; literal keys are not allowed')
+    if mock_port is not None:
+        provider['base_url'] = str(provider['base_url']).replace('{mock_port}', str(mock_port))
+    provider.update(model=model, effort=harness['effort'], context_window=200000)
+    # 一度全体を検証し、途中まで書かれた設定を起動に使わない。
+    toml_value(provider)
+    lines = ['default_mode = "restricted"', 'default_provider = "eval"', '', '[providers.eval]']
+    lines += ['%s = %s' % (key, toml_value(value)) for key, value in provider.items()]
+    lines += ['', '[benitoite]', 'path = ' + toml_value(processor), '', '[restricted]',
+              'allowed_programs = ["/usr/bin/sort"]', '']
+    return '\n'.join(lines)
+
+
+def task_allow(task: Task, benitoite: str) -> str:
+    """解の報告が確定しているときだけ、非対話の許可の集合を取り出す。"""
+    with tempfile.TemporaryDirectory(prefix='skill-eval-effects-') as directory:
+        shutil.copyfile(task.path('reference.bnt'), os.path.join(directory, task.script))
+        command = [benitoite, 'test', '--check'] if task.kind == 'test' else [benitoite, 'check']
+        code, out, err = run_command(command + ['--report=json', task.script], directory, dict(os.environ))
+    try:
+        report = json.loads(out)
+    except ValueError:
+        report = None
+    if isinstance(report, dict):
+        aggregate = report.get('aggregateEffects')
+        if (code == 0 and type(report.get('schemaVersion')) is int and report['schemaVersion'] == 1
+                and report.get('status') == 'ok' and report.get('complete') is True
+                and isinstance(aggregate, dict) and aggregate.get('basis') == 'declaredUpperBound'):
+            expanded = aggregate.get('expanded')
+            if isinstance(expanded, list) and all(isinstance(effect, str) and effect for effect in expanded):
+                return ','.join(sorted(expanded))
+    raise ValueError('cannot determine --allow for %s (exit %d): %s' % (task.name, code, first_line(err or out)))
+
+
+def json_object(line: str) -> Optional[Dict[str, object]]:
+    try:
+        value = json.loads(line)
+    except ValueError:
+        return None
+    return value if isinstance(value, dict) else None
+
+
+def benitoiteh_output(out: str, harness_exit: int) -> Tuple[Dict[str, object], str, str]:
+    """exec のイベントを読み、集計・終了理由・最後の番の応答を返す。"""
+    fields = dict.fromkeys(BH_FIELDS)
+    fields.update(kind='benitoiteh', attempts=0, shell_output_seen=False, end='error')
+    start = None
+    outcome = None
+    error = {}
+    last = None
+    final = []
+    final_turn = None
+    for line in out.splitlines():
+        if not line.strip():
+            continue
+        value = json_object(line)
+        last = value
+        if value is None:
+            continue
+        event = value.get('type')
+        if event == 'session_start' and start is None:
+            start = value
+        elif event == 'session_end':
+            outcome = value.get('outcome')
+        elif event == 'error':
+            error = value
+        elif event in ('turn_start', 'text_delta'):
+            if value.get('turn') != final_turn:
+                final_turn = value.get('turn')
+                final = []
+            if event == 'text_delta':
+                final.append(str(value.get('text', '')))
+    if start is not None:
+        for key in ('session_id', 'benitoiteh_version', 'system_prompt_sha256', 'tools_sha256'):
+            fields[key] = start.get(key)
+    if last is None or last.get('type') != 'summary':
+        return fields, 'benitoiteh produced no summary (exit %d)' % harness_exit, ''.join(final)
+    calls = last.get('tool_calls', {})
+    tokens = last.get('tokens', {})
+    fields.update(turns=last.get('turns'), tool_calls=calls,
+                  attempts=sum(calls.get(name, 0) for name in PROCESS_TOOLS),
+                  after_write_checks=last.get('after_write_checks'), checks=last.get('checks'), fixes=last.get('fixes'),
+                  policy_denied=last.get('approvals', {}).get('policy_denied', 0),
+                  input_tokens=tokens.get('input', 0), cache_read_tokens=tokens.get('cache_read', 0),
+                  cache_write_tokens=tokens.get('cache_write', 0), output_tokens=tokens.get('output', 0),
+                  total_tokens=tokens.get('input', 0) + tokens.get('output', 0))
+    reason = str(last.get('reason', ''))
+    if outcome in ('completed', 'cancelled'):
+        fields['end'] = outcome
+    elif reason in (TURN_LIMIT, TOKEN_LIMIT, EFFECTS_NOT_ALLOWED, LEFTOVER_PROCESSES):
+        fields['end'] = {TURN_LIMIT: 'max_turns', TOKEN_LIMIT: 'max_tokens',
+                         EFFECTS_NOT_ALLOWED: 'effects_refused', LEFTOVER_PROCESSES: 'leftover_processes'}[reason]
+    elif reason.startswith('The run stopped because checks of '):
+        fields['end'] = 'check_fix_limit'
+    else:
+        detail = '%s: %s' % (error.get('kind', 'error'), str(error.get('message', ''))[:200])
+        reason = '%s (%s)' % (reason, detail)
+    return fields, reason, ''.join(final)
+
+
+def session_file(directory: str, relative: str) -> bytes:
+    # 記録のパスを辿って、試行の外のファイルを読み出さない。
+    path = os.path.realpath(os.path.join(directory, relative))
+    if os.path.commonpath([os.path.realpath(directory), path]) != os.path.realpath(directory):
+        raise ValueError('session file is outside the session directory')
+    with open(path, 'rb') as f:
+        return f.read()
+
+
+def benitoiteh_results(directory: str) -> Tuple[List[List[str]], bool]:
+    """記録の結果を既存の診断の集計に渡す。退避した出力は安全の検査だけに使う。"""
+    path = os.path.join(directory, 'session.jsonl')
+    if not os.path.isfile(path):
+        return [], False
+    entries = []
+    calls = {}
+    shell_seen = False
+    with open(path, encoding='utf-8', errors='replace') as f:
+        for line in f:
+            value = json_object(line)
+            if value is not None and value.get('type') == 'spilled':
+                # UTF-8 の文字の途中で分かれた部分も、バイト列を繋いでから復元する。
+                restored = b''.join(session_file(directory, part) for part in value['parts'])
+                value = json_object(restored.decode('utf-8', 'replace'))
+            if value is None:
+                continue
+            if value.get('type') == 'tool_call':
+                call = value['call']
+                calls[call['id']] = call.get('arguments', {})
+            if value.get('type') != 'tool_result':
+                continue
+            name = value.get('name')
+            result = value['result']
+            text = result['text']
+            if name in PROCESS_TOOLS:
+                arguments = calls.get(result['id'], {})
+                entries.append(['', '', '', ','.join(codes_in(text)), PROCESS_TOOLS[name],
+                                arguments.get('path', '')])
+                shell_seen = shell_seen or bool(SHELL_OUTPUT.search(text))
+                for key in ('spill', 'stderr_spill'):
+                    spill = value.get(key)
+                    if spill is not None:
+                        saved = session_file(directory, spill['path']).decode('utf-8', 'replace')
+                        shell_seen = bool(SHELL_OUTPUT.search(saved)) or shell_seen
+            elif name in ('write', 'edit'):
+                check = re.search(r'(?m)^Check of (.+) after this change:\n', text)
+                if check:
+                    entries.append(['', '', '', ','.join(codes_in(text[check.end():])), 'check', check.group(1)])
+    return entries, shell_seen
 
 
 def copy_tree(source: str, target: str) -> None:
@@ -389,16 +596,27 @@ def render(template: List[str], values: Dict[str, str]) -> List[str]:
     return [part.format(**values) for part in template]
 
 
-def version_of(command: List[str]) -> str:
+def version_of(command: List[str], env: Optional[Dict[str, str]] = None) -> str:
     try:
-        completed = subprocess.run(command, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, timeout=60)
+        completed = subprocess.run(command, env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, timeout=60)
     except (OSError, subprocess.TimeoutExpired):
         return 'unknown'
     return first_line(completed.stdout.decode('utf-8', 'replace')) or 'unknown'
 
 
+def judge_trial_script(task: Task, script_path: str, benitoite: str, http_base: Optional[str],
+                       attempts: int) -> Verdict:
+    if not os.path.isfile(script_path):
+        return Verdict(False, '%s was not written' % task.script)
+    if attempts > task.attempt_limit:
+        return Verdict(False, '%d attempts exceed the limit %d' % (attempts, task.attempt_limit))
+    with open(script_path, encoding='utf-8', errors='replace') as f:
+        return judge(task, f.read(), benitoite, http_base)
+
+
 def run_trial(task: Task, trial_dir: str, benitoite: str, harness_name: str, harness: Dict[str, object],
-              model: str, skill_dir: Optional[str], dry_run: bool) -> Dict[str, object]:
+              model: str, skill_dir: Optional[str], dry_run: bool,
+              benitoiteh: Optional[str] = None) -> Dict[str, object]:
     """一回の試行。作業ディレクトリ（workspace）と、エージェントに見せない記録（benitoite.log など）を分けて置く。"""
     workspace = os.path.join(trial_dir, 'workspace')
     log = os.path.join(trial_dir, 'benitoite.log')
@@ -423,13 +641,32 @@ def run_trial(task: Task, trial_dir: str, benitoite: str, harness_name: str, har
     env['PATH'] = tools_dir + os.pathsep + env.get('PATH', '')
     env['SKILL_EVAL_LOG'] = log
     env['SKILL_EVAL_REAL_BENITOITE'] = benitoite
+    is_benitoiteh = harness.get('kind') == 'benitoiteh' and not dry_run
+    fields = dict.fromkeys(BH_FIELDS)
+    allow = task_allow(task, benitoite) if is_benitoiteh else None
     server = None
+    mock = None
     http_base = None
-    if task.http:
-        server, http_base = http_server.start()
-        env[http_server.BASE_VARIABLE] = http_base
-    warning = ''
     try:
+        if task.http:
+            server, http_base = http_server.start()
+            env[http_server.BASE_VARIABLE] = http_base
+        if is_benitoiteh:
+            for variable, relative in (('XDG_CONFIG_HOME', 'bh/config'), ('XDG_STATE_HOME', 'bh/state'),
+                                       ('TMPDIR', 'tmp')):
+                env[variable] = os.path.join(trial_dir, relative)
+                os.makedirs(env[variable])
+            port = None
+            if harness.get('mock'):
+                with open(task.path('reference.bnt'), encoding='utf-8') as f:
+                    mock, _base = mock_provider.start(task.kind, task.script, f.read())
+                port = mock.server_address[1]
+                env['SKILL_EVAL_MOCK_KEY'] = 'skill-eval-synthetic-key'
+            config = benitoiteh_config(harness, model, benitoite, port)
+            config_dir = os.path.join(env['XDG_CONFIG_HOME'], 'benitoiteh')
+            os.makedirs(config_dir)
+            with open(os.path.join(config_dir, 'config.toml'), 'w', encoding='utf-8') as f:
+                f.write(config)
         if dry_run:
             # ハーネスの代わりに解のスクリプトを置き、エージェントと同じく包みのコマンドで一度検査する
             shutil.copyfile(task.path('reference.bnt'), os.path.join(workspace, task.script))
@@ -438,10 +675,20 @@ def run_trial(task: Task, trial_dir: str, benitoite: str, harness_name: str, har
             harness_exit = 0
             err = ''
         else:
-            values = dict(harness.get('options', {}))  # type: ignore
-            values.update(workspace=workspace, model=model, prompt=PROMPT.format(limit=task.attempt_limit))
-            command = render(list(harness['start']), values)  # type: ignore
-            cwd = str(harness.get('cwd', '{workspace}')).format(**values)
+            if is_benitoiteh:
+                options = harness['options']
+                command = [benitoiteh or find_benitoiteh(None), 'exec', '--mode', 'restricted', '--provider', 'eval']
+                if allow:
+                    command += ['--allow', allow]
+                command += ['--max-turns', str(options['max_turns']),
+                            '--max-run-tokens', str(options['max_run_tokens']), '--json',
+                            PROMPT.format(limit=task.attempt_limit)]
+                cwd = workspace
+            else:
+                values = dict(harness.get('options', {}))  # type: ignore
+                values.update(workspace=workspace, model=model, prompt=PROMPT.format(limit=task.attempt_limit))
+                command = render(list(harness['start']), values)  # type: ignore
+                cwd = str(harness.get('cwd', '{workspace}')).format(**values)
             harness_exit, out, err = run_command(command, cwd, env, HARNESS_TIMEOUT)
             # 生の対話の記録はリポジトリの外（試行のディレクトリ）に置く
             with open(os.path.join(trial_dir, 'harness.stdout'), 'w', encoding='utf-8') as f:
@@ -450,31 +697,57 @@ def run_trial(task: Task, trial_dir: str, benitoite: str, harness_name: str, har
                 f.write(err)
         entries = read_log(log)
         attempts = count_attempts(entries)
+        end_reason = ''
+        no_summary = False
+        if is_benitoiteh:
+            fields, end_reason, final = benitoiteh_output(out, harness_exit)
+            fields['allow'] = allow
+            attempts = fields['attempts']
+            no_summary = end_reason.startswith('benitoiteh produced no summary ')
+            session_id = fields['session_id']
+            entries = []
+            if session_id:
+                sessions = os.path.join(env['XDG_STATE_HOME'], 'benitoiteh', 'sessions')
+                directory = os.path.join(sessions, str(session_id))
+                if os.path.dirname(os.path.realpath(directory)) != os.path.realpath(sessions):
+                    raise ValueError('invalid session_id')
+                entries, seen = benitoiteh_results(directory)
+                fields['shell_output_seen'] = seen if task.name == 'process_shell' else False
+            with open(os.path.join(trial_dir, 'final.txt'), 'w', encoding='utf-8') as f:
+                f.write(final)
         script_path = os.path.join(workspace, task.script)
-        if harness_exit == -2:
+        if no_summary:
+            verdict = Verdict(False, end_reason)
+        elif harness_exit == -2:
             verdict = Verdict(False, 'the harness could not be started: %s' % first_line(err))
-        elif not os.path.isfile(log) or attempts == 0:
+        elif not is_benitoiteh and (not os.path.isfile(log) or attempts == 0):
             # 包みのコマンドを通らずに処理系を使った（迂回した、サンドボックスが記録を書けない）試行を、成功と記録しない
-            warning = 'WARNING: no counted benitoite command in the wrapper log'
-            verdict = Verdict(False, warning)
-        elif not os.path.isfile(script_path):
-            verdict = Verdict(False, '%s was not written' % task.script)
-        elif attempts > task.attempt_limit:
-            verdict = Verdict(False, '%d attempts exceed the limit %d' % (attempts, task.attempt_limit))
+            verdict = Verdict(False, 'WARNING: no counted benitoite command in the wrapper log')
         else:
-            with open(script_path, encoding='utf-8', errors='replace') as f:
-                verdict = judge(task, f.read(), benitoite, http_base)
+            verdict = judge_trial_script(task, script_path, benitoite, http_base, attempts)
+        if is_benitoiteh and not no_summary and fields['end'] != 'completed':
+            verdict.reason += '; %s: %s' % (fields['end'], end_reason)
+        if fields['shell_output_seen']:
+            verdict.reason = 'SAFETY: shell output seen; ' + verdict.reason
     finally:
+        if mock is not None:
+            mock.shutdown()
+            mock.server_close()
         if server is not None:
             server.shutdown()
             server.server_close()
-    return {
+    if mock is not None and mock.problems:
+        verdict.success = False
+        verdict.reason += '; mock provider: ' + '; '.join(mock.problems)
+    row = {
         'task': task.name, 'success': verdict.success, 'reason': verdict.reason, 'attempts': attempts,
         'log_exists': os.path.isfile(log), 'skill': os.path.relpath(skill_path, workspace),
         'tests_passed': verdict.tests_passed, 'harness_exit': harness_exit, 'trial_dir': trial_dir,
         'diagnostics': diagnostic_stats(entries), 'final_codes': verdict.final_codes, 'harness': harness_name,
         'model': model,
     }
+    row.update(fields)
+    return row
 
 
 def self_test(tasks: List[Task], benitoite: str) -> int:
@@ -605,7 +878,10 @@ def diagnostics_section(rows: List[Dict[str, object]]) -> List[str]:
     pairs = sorted(set((str(r['harness']), str(r['model'])) for r in rows))
     for harness, model in pairs:
         mine = [r for r in rows if (str(r['harness']), str(r['model'])) == (harness, model)]
-        lines += ['### %s（%s）' % (harness, model), ''] + code_table(mine) + ['']
+        lines += ['### %s（%s）' % (harness, model), '']
+        if any(r.get('kind') == 'benitoiteh' for r in mine) and not any(r['diagnostics']['counts'] for r in mine):
+            lines += ['no diagnostic codes were found in benitoiteh tool results', '']
+        lines += code_table(mine) + ['']
     if len(pairs) > 1:
         lines += ['### 全体', ''] + code_table(rows) + ['']
     lines += ['### 試行ごとの最初の check のコードと最後の警告', '', '| ハーネス | 課題 | 試行 | 最初の check | 最後の check の警告 |',
@@ -635,8 +911,12 @@ def write_record(path: str, header: Dict[str, str], rows: List[Dict[str, object]
         lines.append('| %s | %s | %s | %s |' % (row['task'], 'yes' if row['success'] else 'no', row['attempts'],
                                                str(row['reason']).replace('|', '\\|')))
     lines += diagnostics_section(rows)
+    os.makedirs(os.path.dirname(os.path.abspath(path)), exist_ok=True)
     with open(path, 'w', encoding='utf-8') as f:
         f.write('\n'.join(lines) + '\n')
+    with open(os.path.splitext(path)[0] + '.jsonl', 'w', encoding='utf-8') as f:
+        for row in rows:
+            f.write(json.dumps(row, ensure_ascii=False) + '\n')
 
 
 def main(argv: Optional[List[str]] = None) -> int:
@@ -652,6 +932,7 @@ def main(argv: Optional[List[str]] = None) -> int:
     parser.add_argument('--agent', default='codex', help='harness whose Skill location --dry-run uses')
     parser.add_argument('--skill-dir', help='Skill directory to use instead of `benitoite skill install`')
     parser.add_argument('--benitoite', help='path of the real benitoite (default: target/release, target/debug, PATH)')
+    parser.add_argument('--benitoiteh', help='path of benitoiteh (default: newest target/release or target/debug)')
     parser.add_argument('--work-root', help='directory for workspaces and raw logs (default: a new temporary one)')
     parser.add_argument('--allow-unverified', action='store_true',
                         help='start a harness whose settings are not verified (harnesses.json "verified": false)')
@@ -679,6 +960,8 @@ def main(argv: Optional[List[str]] = None) -> int:
     if len(names) > 1 and (args.record or args.model):
         raise SystemExit('--record and --model need a single harness')
     skill_dir = os.path.abspath(args.skill_dir) if args.skill_dir else None
+    if not args.dry_run and any(harnesses[name].get('kind') == 'benitoiteh' for name in names):
+        args.benitoiteh = find_benitoiteh(args.benitoiteh)
     work_root = os.path.realpath(args.work_root) if args.work_root else tempfile.mkdtemp(prefix='skill-eval-')
     if os.path.commonpath([work_root, os.path.realpath(REPO)]) == os.path.realpath(REPO):
         raise SystemExit('--work-root must be outside the repository (raw logs are not kept in it)')
@@ -708,7 +991,11 @@ def evaluate(args: argparse.Namespace, tasks: List[Task], benitoite: str, harnes
                 number += args.trials
             trial_dir = os.path.join(work_root, task.name, str(number))
             os.makedirs(trial_dir)
-            row = run_trial(task, trial_dir, benitoite, harness_name, harness, model, skill_dir, args.dry_run)
+            try:
+                row = run_trial(task, trial_dir, benitoite, harness_name, harness, model, skill_dir, args.dry_run,
+                                args.benitoiteh)
+            except ValueError as error:
+                raise SystemExit(str(error))
             rows.append(row)
             print('%s %-16s trial %d: %s, attempts %d, %s' % (
                 harness_name, task.name, trial, 'success' if row['success'] else 'failure', row['attempts'],
@@ -729,12 +1016,20 @@ def evaluate(args: argparse.Namespace, tasks: List[Task], benitoite: str, harnes
 
     ALL_ROWS.extend(rows)
     first_skill = os.path.join(str(rows[0]['trial_dir']), 'workspace', str(harness['skill_parent']), 'benitoite')
+    if harness.get('kind') == 'benitoiteh':
+        first_trial = str(rows[0]['trial_dir'])
+        version_env = dict(os.environ, XDG_CONFIG_HOME=os.path.join(first_trial, 'bh/config'),
+                           XDG_STATE_HOME=os.path.join(first_trial, 'bh/state'),
+                           TMPDIR=os.path.join(first_trial, 'tmp'))
+        harness_version = version_of([args.benitoiteh, '--version'], version_env)
+    else:
+        harness_version = version_of(list(harness['version']))  # type: ignore
     header = {
         '日時': datetime.datetime.now().strftime('%Y-%m-%d %H:%M'),
         '処理系': version_of([benitoite, '--version']),
         'Skill': ('%s（--skill-dir %s）' % (skill_version(first_skill), args.skill_dir)) if skill_dir
         else skill_version(first_skill),
-        'ハーネス': '%s（%s）' % (harness_name, version_of(list(harness['version']))),  # type: ignore
+        'ハーネス': '%s（%s）' % (harness_name, harness_version),
         'モデル': '%s %s' % (model, json.dumps(harness.get('options', {}), ensure_ascii=False)),
         '試行の回数': str(args.trials),
         '生の記録': work_root + '（リポジトリの外）',
