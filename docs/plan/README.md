@@ -64,6 +64,7 @@
 | [P5-02](tasks/P5-02-benitoiteh-harness.md) | 評価の道具に `benitoiteh` を加え、集計を読み取り、模擬の提供者で 11 課題を通す | P5-01 | 完了 |
 | [P5-03](tasks/P5-03-records-and-cost.md) | 評価の道具の記録の欄、子の環境、時間の上限、費用の見積もりと上限、本物の提供者の項目 | P5-02 | 完了 |
 | [P5-04](tasks/P5-04-dsh-and-claude-code.md) | 評価の道具に DeepSeek Harness と Claude Code の項目を整える（集計の読み取り、隔離、キーの渡し方、利用者が加えたスキルの確かめ） | P5-03 | 完了 |
+| [P5-05](tasks/P5-05-performance.md) | 性能の測定の道具（06-02 の目標の各項目を測るテストと集める道具、`opt-level = "s"` との比べ） | P5-04 | 未着手 |
 | [P5-06](tasks/P5-06-evaluation-switches.md) | 評価で決める選択肢を切り替える口（`restricted.after_write_check`、`read.line_numbers`、評価の道具の `config` と比べる項目） | P5-04 | 完了 |
 | [P5-07](tasks/P5-07-antigravity.md) | 評価の道具に Antigravity の項目を整える（`accept-edits` とフックで `benitoite` だけを許す、出力と会話の記録の読み取り、利用者の設定の確かめ） | P5-04 | 完了 |
 
