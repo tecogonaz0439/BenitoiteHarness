@@ -50,6 +50,20 @@ impl Environment {
         })
     }
 
+    /// プロジェクトと書ける場所を変え、ほかの起動時の情報を引き継ぐ。
+    pub fn with_project(
+        mut self,
+        project: &Path,
+        writable_roots: &[PathBuf],
+    ) -> Result<Self, ContextError> {
+        self.project = absolute_path(project)?;
+        self.writable_roots = writable_roots
+            .iter()
+            .map(|path| absolute_path(path))
+            .collect::<Result<_, _>>()?;
+        Ok(self)
+    }
+
     /// 起動時に確かめた処理系の版を環境の情報に加える。
     pub fn with_benitoite_version(mut self, version: &str) -> Self {
         self.benitoite_version = version.into();

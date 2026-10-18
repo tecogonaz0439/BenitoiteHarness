@@ -291,6 +291,7 @@ fn scratch_agent(
     use benitoiteh::tools::{ToolContext, exclude::ExcludeRules};
     use std::time::{Duration, SystemTime};
     let config = AgentConfig {
+        project_parent: None,
         allow_effects: Some(allowed),
         mode: Mode::Restricted,
         destination: Destination {

@@ -93,6 +93,7 @@ impl Fixture {
     }
     pub fn config(&self, server: &MockProvider) -> AgentConfig {
         AgentConfig {
+            project_parent: None,
             allow_effects: None,
             mode: Mode::Normal,
             destination: Destination {

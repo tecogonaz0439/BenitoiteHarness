@@ -1,0 +1,2 @@
+Create a new Benitoite project and switch this session to it after approval.
+The parent directory must already exist and the destination must not exist. Use a path relative to the current project or an absolute path; do not use ~. The new project contains main.bnt. After switching, the previous project is outside the tools' read and write scope. In exec, creation is allowed only directly under --project-parent.

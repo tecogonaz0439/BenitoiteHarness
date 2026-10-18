@@ -119,3 +119,12 @@ pub fn unread_imports_denied(facts: &super::ApprovalFacts, project: &std::path::
         "{paths} import files that benitoiteh does not read; run them interactively to confirm."
     )
 }
+
+pub const POLICY_PROJECT_DENIED: &str = "Project creation was denied by policy. In exec, set --project-parent and choose a new directory directly inside it, or stop and report.";
+pub const USER_PROJECT_DENIED: &str = "The user denied creating the project. Nothing was created and the current project did not change.";
+pub fn create_project_summary(path: &std::path::Path) -> String {
+    format!(
+        "Create a project at {} and switch this session to it?",
+        path.display()
+    )
+}

@@ -551,3 +551,39 @@ pub const BENITOITE_SCRATCH: (&str, &str) =
 pub const SCRATCH_CODE: &str = "code must be at most 64 MiB and contain no NUL in its first 8 KiB.";
 pub const SCRATCH_NAMES: &str = "Could not create a new scratch script after 128 attempts.";
 pub const SCRATCH_COUNTER: &str = "The scratch script counter is exhausted.";
+
+pub const CREATE_PROJECT: (&str, &str) =
+    prompt_parts(include_str!("../../prompts/tools/create_project.md"));
+pub const CREATE_CONTEXT: &str = "Project creation context is unavailable. Stop and report.";
+pub const CREATE_PATH: &str = "Invalid project path. Use a UTF-8 path with no empty, dot, parent, or control-character components. The parent directory must already exist.";
+pub const CREATE_TILDE: &str = "Project paths do not expand ~. Use an absolute path or a path relative to the current project.";
+pub const CREATE_EXISTS: &str = "The project destination already exists (possibly as a symbolic link). Choose a new directory name.";
+pub const CREATE_CHANGED: &str = "The project destination or its parent changed after the approval request, or no matching request exists. Nothing was created. Call create_project again to request approval.";
+pub const CREATE_CANCELLED: &str = "Project creation was cancelled. Nothing was created.";
+pub fn project_created(path: &std::path::Path) -> String {
+    format!(
+        "Created project at {} and switched this session to it. The previous project is no longer readable or writable by the tools.",
+        path.display()
+    )
+}
+pub fn create_failure(error: &dyn std::fmt::Display) -> String {
+    format!(
+        "Could not create the project: {error}. Choose a permitted destination with an existing parent, or stop and report."
+    )
+}
+
+/// 親や守る場所の実体を示さず、モデル自身が渡した要求だけを引用する。
+pub fn project_unavailable(requested: &str) -> String {
+    format!(
+        "The project cannot be created at {}: the parent directory must exist and the location must be permitted. Choose another destination, or stop and report.",
+        crate::benitoite::display::quoted(requested)
+    )
+}
+
+/// 作成は承認済みなので残し、切り替えの準備の失敗を道具の結果として伝える。
+pub fn project_switch_failed(path: &std::path::Path, error: &dyn std::fmt::Display) -> String {
+    format!(
+        "Created project at {}, but could not switch this session to it: {error}. The current project is unchanged. The created directory was kept. Stop and report before continuing with it.",
+        crate::benitoite::display::quoted(&path.to_string_lossy())
+    )
+}

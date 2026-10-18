@@ -245,12 +245,21 @@ impl Fixture {
         &self,
         server: &MockProvider,
     ) -> Result<benitoiteh::ui::tui::NewSession, Box<dyn Error>> {
+        self.new_session_in_mode(server, Mode::Normal)
+    }
+
+    fn new_session_in_mode(
+        &self,
+        server: &MockProvider,
+        mode: Mode,
+    ) -> Result<benitoiteh::ui::tui::NewSession, Box<dyn Error>> {
         let session = Session::create(&self.paths, SessionId::generate(SystemTime::now())?)?;
         let directory = session.directory().to_owned();
         let spill = directory.join("spill");
         let config = AgentConfig {
+            project_parent: None,
             allow_effects: None,
-            mode: Mode::Normal,
+            mode,
             destination: Destination {
                 provider: "mock".into(),
                 base_url: server.base_url(),
@@ -268,8 +277,8 @@ impl Fixture {
             },
             retry_initial: Duration::from_millis(2),
         };
-        let context = ToolContext::new(
-            Mode::Normal,
+        let mut context = ToolContext::new(
+            mode,
             ScopeRoot::open(&self.project)?,
             ScopeRoot::open(session.temporary_dir())?,
             ScopeRoot::open(&spill)?,
@@ -282,6 +291,10 @@ impl Fixture {
             )?,
         )
         .with_session(session.clone())
+        .with_project_creation(
+            self.paths.clone(),
+            fs::canonicalize(env!("CARGO_BIN_EXE_benitoiteh"))?,
+        )
         .with_shell(benitoiteh::tools::ShellContext {
             policy: None,
             policy_name: None,
@@ -299,9 +312,12 @@ impl Fixture {
             sandboxed: false,
             approval: benitoiteh::config::Approval::Never,
         });
+        if mode == Mode::Restricted {
+            context = context.with_skill(support::skills()?);
+        }
         let environment = Environment::capture(
             &self.project,
-            Mode::Normal,
+            mode,
             &[self.project.clone(), session.temporary_dir().to_owned()],
             false,
             SystemTime::now(),

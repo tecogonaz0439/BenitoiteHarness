@@ -74,6 +74,15 @@ pub struct QueryOutput {
 }
 
 impl Processor {
+    /// 次の問い合わせから新しいプロジェクトを作業ディレクトリに使う。
+    pub fn set_project(&self, project: &std::path::Path) {
+        self.context
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .locations
+            .project = project.into();
+    }
+
     /// 利用者のスクリプトを実行しない問い合わせを、固定した形で起動する。
     pub fn query(
         &self,
@@ -81,7 +90,10 @@ impl Processor {
         limits: QueryLimits,
         cancelled: &AtomicBool,
     ) -> Result<QueryOutput, BenitoiteError> {
-        let context = &self.context;
+        let context = self
+            .context
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         // --no-sandbox とテストも方針の検証を通し、不正な場所を起動へ渡さない。
         let policy = sandbox::restricted_policy(
             &RestrictedAccess {

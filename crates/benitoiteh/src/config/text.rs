@@ -40,3 +40,6 @@ pub const INVALID_DOMAIN: &str = "Invalid web_fetch.allowed_domains entry. Use a
 
 pub const INVALID_BENITOITE_PATH: &str = "benitoite.path must be an absolute path";
 pub const CHECK_FIX_POSITIVE: &str = "--max-check-fix and limits.max_check_fix must be at least 1.";
+
+pub const WRITABLE_PROTECTED_NAME: &str =
+    "A project cannot be created inside .git or .benitoiteh (case-insensitive)";

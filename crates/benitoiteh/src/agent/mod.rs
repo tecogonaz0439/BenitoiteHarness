@@ -46,6 +46,8 @@ const TICK: Duration = Duration::from_millis(10);
 /// exec が解決した設定と、通信・やり直しの時間の上限。
 #[derive(Clone, Debug)]
 pub struct AgentConfig {
+    /// 非対話で作成を許す実の親ディレクトリ。
+    pub project_parent: Option<std::path::PathBuf>,
     /// Some は非対話で許す集合、None は対話の確認。
     pub allow_effects: Option<BTreeSet<crate::benitoite::Effect>>,
     pub mode: Mode,
@@ -63,6 +65,7 @@ impl From<ResolvedExec> for AgentConfig {
     fn from(config: ResolvedExec) -> Self {
         Self {
             allow_effects: None,
+            project_parent: None,
             mode: config.mode,
             destination: config.destination,
             kind: config.kind,
@@ -300,6 +303,9 @@ impl Agent {
             return Err(AgentError::InvalidConfiguration);
         }
         tool_context.noninteractive = config.allow_effects.is_some();
+        tool_context
+            .project_parent
+            .clone_from(&config.project_parent);
         provider_host(&config.destination)?;
         let tools = if tool_context.skill.is_some() {
             ToolSet::new(config.mode)
@@ -676,6 +682,19 @@ impl Agent {
             }
             if self.token_limit_reached(summary) {
                 return Err(AgentError::Limit(text::TOKEN_LIMIT));
+            }
+            if let Some(changes) = self.environment_changes.take() {
+                let message = UserMessage {
+                    parts: vec![UserPart {
+                        kind: UserPartKind::Environment,
+                        text: changes,
+                    }],
+                };
+                self.writer.append(&Record::User {
+                    kind: UserKind::Request,
+                    message: message.clone(),
+                })?;
+                self.push_item(Item::UserMessage(message));
             }
             // 道具の呼び出しは前の番で全て結果と対応済みなので、実行途中では圧縮しない
             // （設計書 01-04「圧縮」）。一つの番の前では一度だけ判定する。

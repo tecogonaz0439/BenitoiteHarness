@@ -100,6 +100,7 @@ impl CheckpointRecorder {
                     generation = generation.max(checkpoint.generation);
                     checkpoints.push(checkpoint.clone());
                 }
+                Record::ProjectDirChanged { .. } => checkpoints.clear(),
                 Record::Compaction { .. } | Record::Rewind { .. } => {
                     generation = generation.saturating_add(1)
                 }
@@ -117,7 +118,6 @@ impl CheckpointRecorder {
                 | Record::TurnEnd { .. }
                 | Record::SessionEnd { .. }
                 | Record::Summary { .. }
-                | Record::ProjectDirChanged { .. }
                 | Record::WriteTarget { .. }
                 | Record::Spilled { .. } => {}
             }
@@ -134,6 +134,44 @@ impl CheckpointRecorder {
                 generation,
                 limits: CheckpointLimits::default(),
                 checkpoints,
+                previous: None,
+                previous_started_at: None,
+                hard_links: BTreeSet::new(),
+                notices: Vec::new(),
+                stats: CheckpointStats::default(),
+            })),
+        })
+    }
+
+    /// 番号と世代の続きは保ち、新しい根の時点だけを記録し始める。
+    pub fn restart(
+        &mut self,
+        project: &ScopeRoot,
+        exclude: ExcludeRules,
+    ) -> Result<(), RewindError> {
+        *self = self.prepare_restart(project, exclude)?;
+        Ok(())
+    }
+
+    // 現在の時点を消す前に、記述子の複製と状態の取得を済ませる。
+    // 共有していた元の記録にも触れない（設計書 01-03「create_project（制限モード）」）。
+    pub(crate) fn prepare_restart(
+        &self,
+        project: &ScopeRoot,
+        exclude: ExcludeRules,
+    ) -> Result<Self, RewindError> {
+        let root = project.no_follow()?;
+        let state = self.lock()?;
+        Ok(Self {
+            session: self.session.clone(),
+            project: Arc::new(root),
+            exclude,
+            state: Arc::new(Mutex::new(State {
+                next: state.next,
+                turn: state.turn,
+                generation: state.generation,
+                limits: state.limits.clone(),
+                checkpoints: Vec::new(),
                 previous: None,
                 previous_started_at: None,
                 hard_links: BTreeSet::new(),

@@ -99,7 +99,7 @@ pub struct Processor {
     pub build: Value,
     /// 形を確かめた記述子から計算した SHA-256。
     pub sha256: String,
-    context: QueryContext,
+    context: std::sync::RwLock<QueryContext>,
 }
 impl Processor {
     pub(crate) fn inspect(
@@ -114,7 +114,7 @@ impl Processor {
             sha256,
             version: String::new(),
             build: Value::Null,
-            context,
+            context: std::sync::RwLock::new(context),
         };
         let output = processor.query(
             &["--version=json".into()],

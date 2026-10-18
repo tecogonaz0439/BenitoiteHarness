@@ -100,3 +100,11 @@ pub fn hard_links(paths: &[std::path::PathBuf]) -> String {
             .join(", ")
     )
 }
+
+/// 切り替えた実のパスを一行で知らせる。
+pub fn project_changed(path: &std::path::Path) -> String {
+    format!(
+        "Project changed to {}.",
+        super::terminal_text(&path.to_string_lossy(), false)
+    )
+}

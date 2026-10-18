@@ -50,6 +50,7 @@ fn approval_gate_and_key_table_have_no_implicit_or_modified_answer() -> TestResu
         (ApprovalKind::WriteScope, 'n', ApprovalOutcome::Denied),
         (ApprovalKind::Effects, 'y', ApprovalOutcome::Approved),
         (ApprovalKind::TestEffects, 'y', ApprovalOutcome::Approved),
+        (ApprovalKind::CreateProject, 'y', ApprovalOutcome::Approved),
         (
             ApprovalKind::WebFetch,
             's',
@@ -104,7 +105,8 @@ fn approval_gate_and_key_table_have_no_implicit_or_modified_answer() -> TestResu
         ];
         if matches!(
             kind,
-            ApprovalKind::Escalate
+            ApprovalKind::CreateProject
+                | ApprovalKind::Escalate
                 | ApprovalKind::WriteScope
                 | ApprovalKind::Effects
                 | ApprovalKind::TestEffects
@@ -1490,6 +1492,70 @@ fn real_decoy_imports_are_visible_as_counts_in_interactive_confirmation() -> Tes
                 && !visible.contains("SECRET_HASH_COLLISION")
                 && !visible.contains("sha256")
         );
+    }
+    Ok(())
+}
+
+// 関門: 作成の事実は一行のパスだけ。キーの説明と、全事実が収まらないときの拒否を画面で守る。
+#[test]
+fn create_project_confirmation_shows_only_path_and_requires_visible_facts() -> TestResult {
+    for oversized in [false, true] {
+        let mut screen = Screen::new((120, 24), status());
+        let (mut prompt, receiver) = prompt(ApprovalKind::CreateProject, "");
+        prompt.request.justification = None;
+        let path = if oversized {
+            format!("/projects/{}", "x".repeat(8000))
+        } else {
+            "/projects/new\nproject".into()
+        };
+        prompt.request.facts = ApprovalFacts {
+            path: Some(path.into()),
+            ..ApprovalFacts::default()
+        };
+        screen.open_approval(prompt);
+        let shown = Instant::now();
+        let mut output = Vec::new();
+        screen.draw(&mut output, None)?;
+        screen.presented(shown);
+        let visible = safe_output(&output)?;
+        assert!(visible.contains("Create Benitoite project?"));
+        assert!(
+            !visible.contains("│ Command:")
+                && !visible.contains("│ Sandbox:")
+                && !visible.contains("│ Directory:")
+        );
+        if !oversized {
+            assert!(visible.contains("/projects/new\\x0aproject"));
+            assert!(visible.contains("[y] create and switch to this project"));
+        }
+        let ready = shown + Duration::from_millis(301);
+        for ch in ['a', 's'] {
+            screen.input_at(
+                key(KeyCode::Char(ch), KeyModifiers::NONE),
+                ready,
+                Duration::ZERO,
+                true,
+            );
+            assert!(receiver.try_recv().is_err());
+        }
+        screen.input_at(
+            key(KeyCode::Char('y'), KeyModifiers::NONE),
+            ready,
+            Duration::ZERO,
+            true,
+        );
+        if oversized {
+            assert!(receiver.try_recv().is_err());
+            screen.input_at(
+                key(KeyCode::Char('n'), KeyModifiers::NONE),
+                ready,
+                Duration::ZERO,
+                true,
+            );
+            assert_eq!(receiver.recv()?.outcome, ApprovalOutcome::Denied);
+        } else {
+            assert_eq!(receiver.recv()?.outcome, ApprovalOutcome::Approved);
+        }
     }
     Ok(())
 }

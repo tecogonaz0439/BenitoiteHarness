@@ -21,6 +21,8 @@ pub enum ApprovalKind {
     Command,
     /// サンドボックスの外で動かすコマンド。
     Escalate,
+    /// 新しいプロジェクトを作って切り替える。
+    CreateProject,
     /// ウェブのドメインの取得。
     WebFetch,
     /// スクリプトのエフェクトの確認。
@@ -118,10 +120,12 @@ pub fn decide(
         Approval::OnRequest | Approval::Never => Decision::Allow,
     };
     match kind {
-        ApprovalKind::Effects | ApprovalKind::TestEffects => match policy.approval {
-            Approval::Never => Decision::Deny,
-            Approval::OnRequest | Approval::Untrusted => Decision::Ask,
-        },
+        ApprovalKind::CreateProject | ApprovalKind::Effects | ApprovalKind::TestEffects => {
+            match policy.approval {
+                Approval::Never => Decision::Deny,
+                Approval::OnRequest | Approval::Untrusted => Decision::Ask,
+            }
+        }
         ApprovalKind::WebFetch => {
             if facts
                 .domain
@@ -161,7 +165,10 @@ pub fn decide_in_mode(
     if mode == crate::config::Mode::Restricted
         && !matches!(
             kind,
-            ApprovalKind::WebFetch | ApprovalKind::Effects | ApprovalKind::TestEffects
+            ApprovalKind::CreateProject
+                | ApprovalKind::WebFetch
+                | ApprovalKind::Effects
+                | ApprovalKind::TestEffects
         )
     {
         Decision::Deny
@@ -257,6 +264,7 @@ impl Approver for NonInteractiveApprover {
 /// 方針が拒否した操作について LLM に返す文。
 pub fn policy_denial_message(kind: ApprovalKind) -> &'static str {
     match kind {
+        ApprovalKind::CreateProject => text::POLICY_PROJECT_DENIED,
         ApprovalKind::WriteScope => text::POLICY_WRITE_DENIED,
         ApprovalKind::Command => text::POLICY_COMMAND_DENIED,
         ApprovalKind::Escalate => text::POLICY_ESCALATE_DENIED,
@@ -274,6 +282,7 @@ pub fn user_denial_message(
     message: Option<&str>,
 ) -> String {
     let denial = match kind {
+        ApprovalKind::CreateProject => text::USER_PROJECT_DENIED.to_owned(),
         ApprovalKind::WriteScope => text::USER_WRITE_DENIED.to_owned(),
         ApprovalKind::Command => text::USER_COMMAND_DENIED.to_owned(),
         ApprovalKind::Escalate => text::USER_ESCALATE_DENIED.to_owned(),
@@ -313,4 +322,9 @@ pub fn allow_denied(
 /// 非対話ではエフェクトの許可と独立に、読まないソースの取り込みを断る。
 pub(crate) fn unread_imports_denied(facts: &ApprovalFacts, project: &Path) -> String {
     text::unread_imports_denied(facts, project)
+}
+
+/// 新しく作る絶対パスだけから確認の要約を作る。
+pub fn create_project_summary(path: &Path) -> String {
+    text::create_project_summary(path)
 }

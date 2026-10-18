@@ -60,6 +60,8 @@ pub enum AgentEvent {
     },
     /// 操縦を会話に加えた。
     Steered { text: String },
+    /// 新しく作ったプロジェクトへ切り替える。
+    ProjectDirChanged { project_dir: PathBuf },
     /// 番の開始。
     TurnStart { turn: u64 },
     /// 応答の文の差分。
@@ -170,6 +172,9 @@ impl AgentEvent {
                 notice: notice.clone(),
                 instruction_files: instruction_files.clone(),
                 skipped_instructions: skipped_instructions.clone(),
+            },
+            Self::ProjectDirChanged { project_dir } => Record::ProjectDirChanged {
+                project_dir: project_dir.clone(),
             },
             Self::TurnStart { turn } => Record::TurnStart { turn: *turn },
             Self::TurnEnd {

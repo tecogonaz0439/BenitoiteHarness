@@ -22,16 +22,17 @@ Options (interactive and exec):
     --no-sandbox
     --resume <ID>
     --continue
-    --json
-    --output-last-message <file>
     --help
 
+Options (exec only):
+    --json
+    --output-last-message <file>
+    --allow <effects>
+    --project-parent <dir>
+
 Use - as the exec request to read standard input.
---json and --output-last-message are exec-only.
 exec only supports --approval never.
 --licenses is not available yet.
-The following options are not available yet:
-    --allow, --project-parent
 ";
 
 /// 使い方の誤りに共通の案内。
@@ -40,11 +41,6 @@ pub const INVALID_ARGUMENTS: &str = "benitoiteh: invalid arguments; use --help f
 /// 重複した指定を示す。
 pub fn duplicate_option(option: &str) -> String {
     format!("benitoiteh: duplicate option {option}; use --help for usage")
-}
-
-/// 後の段階で使える指定を示す。
-pub fn unavailable_option(option: &str) -> String {
-    format!("benitoiteh: option {option} is not available yet")
 }
 
 /// ビルドしたパッケージの版を一行に整える。
@@ -125,3 +121,7 @@ pub fn checkpoint_before_rewind(checkpoint: &str) -> String {
 pub const SESSION_PATH_CHANGED: &str = "A fixed session path now resolves to a different location.";
 
 pub const ALLOW_RESTRICTED: &str = "benitoiteh: --allow is available only in restricted mode.";
+
+pub const PROJECT_PARENT_RESTRICTED: &str =
+    "--project-parent is available only in restricted exec mode.";
+pub const PROJECT_PARENT_DIRECTORY: &str = "--project-parent must name an existing directory.";
