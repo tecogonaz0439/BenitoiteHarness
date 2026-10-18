@@ -33,9 +33,10 @@ if [[ -n "${BENITOITEH_TEST_BENITOITE_AARCH64:-}" ]]; then
         -v "$processor_dir:$processor_dir:ro")
 fi
 container_args+=(-v "$repo_root:$repo_root")
-if [[ "$executable_dir" != "$repo_root" ]]; then
-    container_args+=(-v "$executable_dir:$executable_dir")
-fi
+case "$executable_dir/" in
+    "$repo_root"/*|"${processor_dir:-$repo_root}"/*) ;;
+    *) container_args+=(-v "$executable_dir:$executable_dir") ;;
+esac
 
 # exec により、container が返すプログラムの終了状態をそのまま cargo に渡す。
 exec container "${container_args[@]}" \

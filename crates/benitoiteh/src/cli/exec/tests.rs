@@ -12,7 +12,10 @@ use crate::provider::UserPartKind;
 fn test_processor() -> Result<PathBuf, Box<dyn Error>> {
     Ok(fs::canonicalize(
         std::env::var_os("BENITOITEH_TEST_BENITOITE")
-            .ok_or("BENITOITEH_TEST_BENITOITE is required")?,
+            .filter(|path| !path.is_empty())
+            .ok_or(
+                "BENITOITEH_TEST_BENITOITE is required: set it to a benitoite v0.0.7 executable.",
+            )?,
     )?)
 }
 fn prepare(
@@ -717,13 +720,12 @@ fn processor_startup_fails_closed_in_restricted_mode_and_disables_tools_in_norma
             &mut |_| false,
         );
         if mode == "restricted" {
-            assert!(matches!(
-                prepared,
-                Err(PreparationError {
-                    error: StartupError::Sandbox(_) | StartupError::Benitoite(_),
-                    ..
-                })
-            ));
+            let error = prepared.err().ok_or("restricted startup must fail")?.error;
+            if failure == "sandbox" {
+                assert!(matches!(error, StartupError::Sandbox(_)), "{error}");
+            } else {
+                assert!(matches!(error, StartupError::Benitoite(_)), "{error}");
+            }
         } else {
             let prepared = prepared.map_err(|e| e.to_string())?;
             assert!(prepared.agent.status().benitoite_path.is_none());

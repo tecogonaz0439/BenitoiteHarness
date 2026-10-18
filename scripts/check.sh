@@ -54,6 +54,30 @@ begin_stage() {
     printf '\n== %s ==\n' "$stage"
 }
 
+begin_stage processors
+required_processors=(BENITOITEH_TEST_BENITOITE)
+if ! "$inside_codex"; then
+    required_processors+=(BENITOITEH_TEST_BENITOITE_AARCH64)
+    if [[ -n "${BENITOITEH_X86_64_HOST:-}" ]]; then
+        required_processors+=(BENITOITEH_TEST_BENITOITE_X86_64)
+    fi
+fi
+for variable in "${required_processors[@]}"; do
+    if [[ -z "${!variable}" ]]; then
+        printf '%s is required: set it to a benitoite v0.0.7 executable.\n' "$variable" >&2
+        exit 2
+    fi
+    processor_path=${!variable}
+    processor_dir=$(cd "$(dirname "$processor_path")" && pwd -P)
+    export "$variable=$processor_dir/$(basename "$processor_path")"
+done
+
+processor_identity() {
+    local target=$1 report=$2 digest=$3 version
+    version=$(printf '%s' "$report" | python3 -c 'import json, sys; print(json.load(sys.stdin)["version"])')
+    printf 'processor %s: version=%s sha256=%s\n' "$target" "$version" "$digest"
+}
+
 begin_stage fmt
 cargo fmt --all --check
 
@@ -63,6 +87,10 @@ for target in "${linux_targets[@]}"; do
     cargo clippy --workspace --all-targets --target "$target"
 done
 
+host_target=$(rustc -vV | sed -n 's/^host: //p')
+processor_report=$("$BENITOITEH_TEST_BENITOITE" --version=json)
+processor_hash=$(shasum -a 256 "$BENITOITEH_TEST_BENITOITE" | awk '{print $1}')
+processor_identity "$host_target" "$processor_report" "$processor_hash"
 begin_stage test
 cargo build -p sandbox-probe
 if [[ $(uname -s) == Darwin ]]; then
@@ -95,6 +123,9 @@ fi
 
 begin_stage linux
 if ! "$inside_codex"; then
+    processor_report=$(scripts/container-run.sh "$BENITOITEH_TEST_BENITOITE_AARCH64" --version=json)
+    processor_hash=$(shasum -a 256 "$BENITOITEH_TEST_BENITOITE_AARCH64" | awk '{print $1}')
+    processor_identity aarch64-unknown-linux-musl "$processor_report" "$processor_hash"
     # aarch64 は container の中で走らせる。container の既定のカーネルは Landlock を持たないので、
     # Landlock を要する統合テストを除き、x86_64 の機械で確かめる（実装プラン 00-common「検査」）。
     cargo test --workspace --target aarch64-unknown-linux-musl --lib --bins
@@ -125,6 +156,9 @@ if ! "$inside_codex"; then
         fi
         printf 'Running x86_64 tests on %s (%s)\n' "$BENITOITEH_X86_64_HOST" "$BENITOITEH_X86_64_DIR"
         scripts/remote-linux-run.sh --sync
+        processor_report=$(scripts/remote-linux-run.sh "$BENITOITEH_TEST_BENITOITE_X86_64" --version=json)
+        processor_hash=$(scripts/remote-linux-run.sh --sha256 "$BENITOITEH_TEST_BENITOITE_X86_64" | awk '{print $1}')
+        processor_identity x86_64-unknown-linux-musl "$processor_report" "$processor_hash"
         CARGO_TARGET_X86_64_UNKNOWN_LINUX_MUSL_RUNNER="$repo_root/scripts/remote-linux-run.sh" \
             cargo test --workspace --target x86_64-unknown-linux-musl
     else
@@ -140,7 +174,6 @@ else
 fi
 
 begin_stage size
-host_target=$(rustc -vV | sed -n 's/^host: //p')
 target_dir=${CARGO_TARGET_DIR:-target}
 cargo build --release -p benitoiteh
 bytes=$(wc -c < "$target_dir/release/benitoiteh" | tr -d '[:space:]')
