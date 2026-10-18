@@ -27,7 +27,7 @@ stage=setup
 finish() {
     local status=$?
     if [[ -n "$skill_eval_work" ]]; then
-        rm -rf "$skill_eval_work"
+        rm -rf -- "$skill_eval_work" || true
     fi
     if ((status != 0)); then
         printf 'FAILED: %s (exit %s)\n' "$stage" "$status" >&2
@@ -41,6 +41,7 @@ finish() {
         fi
         printf '  linux: container tests for %s\n' "${linux_targets[@]}"
         printf '  skill-eval: http_client (loopback listening is blocked in the Codex sandbox)\n'
+        printf '  skill-eval: benitoiteh-mock pass (needs loopback and the benitoiteh sandbox outside Codex)\n'
     fi
     if ((${#aarch64_skipped[@]} != 0)); then
         printf '\nNot run on aarch64-unknown-linux-musl:\n'
@@ -126,7 +127,9 @@ else
     cargo test --workspace
 fi
 
+target_dir=${CARGO_TARGET_DIR:-target}
 begin_stage skill-eval
+python3 -I -m unittest discover -s tools/skill-eval -p 'test_*.py'
 skill_eval_args=()
 if "$inside_codex"; then
     # Codex のサンドボックスではループバックの待ち受けができない（実装プラン P5-01）。
@@ -147,6 +150,21 @@ warning_count=$(awk '/^\| W[0-9][0-9][0-9][0-9] \|/ { count++ } END { print coun
 if [[ "$warning_count" != 5 ]]; then
     printf 'Expected 5 warning rows in the skill-eval record, found %s.\n' "$warning_count" >&2
     exit 1
+fi
+if ! "$inside_codex"; then
+    python3 -I tools/skill-eval/skill_eval.py --harness benitoiteh-mock \
+        --benitoite "$BENITOITEH_TEST_BENITOITE" --benitoiteh "$target_dir/debug/benitoiteh" \
+        --work-root "$skill_eval_work/mock" --record "$skill_eval_work/mock-record.md"
+    python3 -I - "$skill_eval_work/mock-record.jsonl" <<'EOF'
+import json
+import sys
+
+with open(sys.argv[1], encoding='utf-8') as f:
+    rows = [json.loads(line) for line in f if line.strip()]
+if len(rows) != 11 or any(row.get('success') is not True or row.get('end') != 'completed'
+                          or row.get('shell_output_seen') is not False for row in rows):
+    raise SystemExit('Expected 11 successful, completed mock trials without shell output.')
+EOF
 fi
 
 begin_stage linux

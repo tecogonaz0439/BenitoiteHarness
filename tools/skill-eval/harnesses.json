@@ -1,5 +1,22 @@
 {
   "_comment": "Skill の評価で起動するハーネスの設定（tools/skill-eval/README.md の「ハーネスの設定」）。型板の {workspace}・{model}・{prompt} と options の各キーは skill_eval.py が値で置き換える。agent は `benitoite skill install --agent` の名前、skill_parent は --skill-dir のときに Skill を写す先。files は起動の前に作業ディレクトリに書くファイル（インターネットを使わせない設定など）。verified が false の設定は、実際に呼んで確かめていない。 default が true の項目が既定の評価の対象（--harness default）。設計者の決定（2026-10-08）で、Claude Code（Opus 5.5 medium）、Codex（GPT-6-Luna max）、Antigravity（Gemini 3.8 Flash high）とし、OpenCode は対象から外した。 2026-10-08 の短い試行で claude-code（Claude Code 2.1.291）・codex（codex-cli 0.160.0）・antigravity-gemini を確かめた。Antigravity は --sandbox が包みのコマンドの起動と記録を止め、--dangerously-skip-permissions のもとでは迂回されるので使わず、ウェブの道具は作業ディレクトリの .agents/hooks.json の PreToolUse で拒否する（拒否されることを確かめた）。antigravity-gpt-oss は短い試行で検査が上限を超え、ウェブの検索を呼んだので、既定の対象から外し、設計者の決定（2026-10-09）で評価の対象に含めないことにした。",
+  "benitoiteh-mock": {
+    "kind": "benitoiteh",
+    "agent": "codex",
+    "skill_parent": ".agents/skills",
+    "model": "mock",
+    "effort": "high",
+    "provider": {
+      "kind": "anthropic-messages",
+      "base_url": "http://127.0.0.1:{mock_port}",
+      "api_key": {"env": "SKILL_EVAL_MOCK_KEY"},
+      "capabilities": {}
+    },
+    "options": {"max_turns": 50, "max_run_tokens": 2000000},
+    "mock": true,
+    "verified": true,
+    "default": false
+  },
   "codex": {
     "agent": "codex",
     "skill_parent": ".agents/skills",
