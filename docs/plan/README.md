@@ -38,7 +38,7 @@
 | [P2-06](tasks/P2-06-skill-runtime.md) | Skill の文書を処理系から得る、`benitoite_explain`・`benitoite_reference` | P2-05 | 完了 |
 | [P2-07](tasks/P2-07-check-and-diagnostics.md) | 診断の受け渡し、`benitoite_check`、書いた後の検査、検査と修正の回数（BH-028 の測定） | P2-06 | 完了 |
 | [P2-08](tasks/P2-08-run-and-confirm.md) | 実行の前の検査の報告、制限モードの方針、`benitoite_run`、対話の確認 | P2-07 | 完了 |
-| [P2-09](tasks/P2-09-scratch.md) | 一時的なスクリプト `benitoite_scratch` | P2-08、P2-12 | 未着手 |
+| [P2-09](tasks/P2-09-scratch.md) | 一時的なスクリプト `benitoite_scratch` | P2-08、P2-12 | 完了 |
 | [P2-10](tasks/P2-10-effects-confirmation.md) | 対話の画面の、エフェクトの確認 | P2-09、P2-12、P4-07 | 未着手 |
 | [P2-11](tasks/P2-11-p2-completion.md) | P2 の完了の確かめ（制限モードの安全の性質のテストの一覧と結果） | P2-09、P2-10、P2-12 | 未着手 |
 | [P2-12](tasks/P2-12-test-and-allow.md) | `benitoite_test` と、非対話の `--allow` | P2-08 | 完了 |
