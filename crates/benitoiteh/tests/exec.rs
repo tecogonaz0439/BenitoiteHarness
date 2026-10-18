@@ -390,8 +390,16 @@ fn unfinished_and_output_limited_turns_do_not_execute_tools() -> TestResult {
 }
 
 #[test]
+// 作成時の関門: 起動を拒む場所と選択元の案内を、終了状態と同じ CLI の境界で守る。
 fn startup_and_authentication_errors_have_distinct_exit_statuses() -> TestResult {
-    for case in ["authentication", "option", "config", "home"] {
+    for case in [
+        "authentication",
+        "option",
+        "config",
+        "home",
+        "private-cwd",
+        "private-project",
+    ] {
         let mut server = MockProvider::start(vec![ResponseScript::json(
             401,
             &json!({"error":{"message":KEY}}),
@@ -410,6 +418,15 @@ fn startup_and_authentication_errors_have_distinct_exit_statuses() -> TestResult
             }
             "home" => {
                 command.arg("--project").arg(f.root.join("home"));
+            }
+            "private-cwd" | "private-project" => {
+                let project = f.root.join("home/.config");
+                fs::create_dir(&project)?;
+                if case == "private-project" {
+                    command.arg("--project").arg(&project);
+                } else {
+                    command.current_dir(&project);
+                }
             }
             _ => {}
         }
@@ -438,6 +455,21 @@ fn startup_and_authentication_errors_have_distinct_exit_statuses() -> TestResult
             }
             "home" => {
                 assert!(stderr.contains("home"));
+            }
+            "private-cwd" | "private-project" => {
+                for expected in [
+                    "The project directory ",
+                    if case == "private-project" {
+                        "(from --project)"
+                    } else {
+                        "(the current directory)"
+                    },
+                    "cannot be used:",
+                    "writable root is inside a home dot directory",
+                    "--project <dir>",
+                ] {
+                    assert!(stderr.contains(expected), "{stderr}");
+                }
             }
             _ => {}
         }

@@ -2,6 +2,8 @@
 
 use std::path::Path;
 
+use crate::config::writable::WritableError;
+
 pub const PROBE_OUTPUT_LIMIT: &str =
     "The sandbox rule check exceeded the 1 MiB stdout limit; the child was stopped.";
 pub const PROCESSOR_CHANGED: &str = "The Benitoite executable changed during the doctor checks (SHA-256 mismatch); version and Skill results were rejected.";
@@ -17,6 +19,7 @@ pub const UNKNOWN: &str = "unknown";
 pub const DEFAULTS: &str = "No configuration file; using defaults.";
 pub const LOADED: &str = "Configuration loaded.";
 pub const CONFIG_REQUIRED: &str = "Requires readable user configuration and data paths.";
+pub const PROJECT_REQUIRED: &str = "Requires a usable project directory; see the writable item.";
 pub const NO_PROVIDERS: &str = "No providers configured; exec cannot start.";
 pub const INVALID_DEFAULT: &str =
     "The default provider is missing or does not name a configured provider.";
@@ -66,11 +69,25 @@ pub const STORAGE_REQUIRED: &str = "Requires a safe sessions directory.";
 pub const TEMPORARY_LOCATION: &str =
     "The doctor temporary directory must be outside the project and data directories.";
 pub const RESTRICTED_FALLBACK_OK: &str = "Restricted mode sandbox: available (checked with benitoiteh itself; Benitoite was not found or failed validation).";
+pub const RESTRICTED_UNCHECKED_OK: &str = "Restricted mode sandbox: available (checked with benitoiteh itself; Benitoite was not checked).";
 pub const RESTRICTED_OK: &str = "Restricted mode sandbox: available.";
 pub const RESTRICTED_UNAVAILABLE: &str = "Restricted mode sandbox: unavailable.";
 pub const NORMAL_ENABLED: &str = "Normal mode sandbox: enabled.";
 pub const NORMAL_DISABLED: &str = "Normal mode sandbox: disabled by configuration.";
 pub const NORMAL_UNAVAILABLE: &str = "Normal mode sandbox: unavailable.";
+
+/// プロジェクト自身が拒否されたときだけ、場所の選択元と対処を添える。
+pub fn writable_error(project: &Path, from_option: bool, error: &WritableError) -> String {
+    match error {
+        WritableError::Rejected { path, .. } if path == project => {
+            format!(
+                "{} Run doctor in a project directory or pass --project <dir>.",
+                super::super::text::project_unusable(project, from_option, error)
+            )
+        }
+        WritableError::Resolve { .. } | WritableError::Rejected { .. } => error.to_string(),
+    }
+}
 
 /// 探索の出どころと、設定があればそのパスも示す。
 pub fn discovery(configured: Option<&Path>, result: &str) -> String {

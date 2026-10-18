@@ -64,6 +64,35 @@ pub fn startup_error(error: &impl std::fmt::Display) -> String {
     format!("benitoiteh: {error}")
 }
 
+/// 拒否されたプロジェクトの実のパスと、利用者が場所を選んだ方法を示す。
+pub fn project_unusable(
+    project: &std::path::Path,
+    from_option: bool,
+    error: &crate::config::writable::WritableError,
+) -> String {
+    let source = if from_option {
+        "from --project"
+    } else {
+        "the current directory"
+    };
+    format!(
+        "The project directory {} ({source}) cannot be used: {error}.",
+        project.display()
+    )
+}
+
+/// 起動を拒否した場所の代わりを指定する方法を案内する。
+pub fn project_startup_error(
+    project: &std::path::Path,
+    from_option: bool,
+    error: &crate::config::writable::WritableError,
+) -> String {
+    format!(
+        "{} Pass --project <dir> to select a different project directory.",
+        project_unusable(project, from_option, error)
+    )
+}
+
 /// ループの診断に実行ファイルの名前を添える。
 pub fn agent_error(error: &crate::agent::AgentError) -> String {
     format!("benitoiteh: {error}")

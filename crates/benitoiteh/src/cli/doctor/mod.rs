@@ -85,11 +85,13 @@ struct Summary {
 }
 
 impl Summary {
-    fn restricted_detail(&self) -> &'static str {
+    fn restricted_detail(&self, processor_checked: bool) -> &'static str {
         if !self.restricted_sandbox {
             text::RESTRICTED_UNAVAILABLE
         } else if self.processor_validated {
             text::RESTRICTED_OK
+        } else if !processor_checked {
+            text::RESTRICTED_UNCHECKED_OK
         } else {
             text::RESTRICTED_FALLBACK_OK
         }
@@ -99,6 +101,7 @@ impl Summary {
 /// 診断を一度行い、項目と要約を出力して終了状態を返す。
 pub(super) fn run(args: impl Iterator<Item = OsString>) -> Result<u8, CliError> {
     let (project, json) = arguments(args)?;
+    let project_from_option = project.is_some();
     let project = project
         .map(Ok)
         .unwrap_or_else(std::env::current_dir)
@@ -208,6 +211,7 @@ pub(super) fn run(args: impl Iterator<Item = OsString>) -> Result<u8, CliError> 
             &mut items,
             paths,
             root.real_path(),
+            project_from_option,
             probe,
             config.as_ref().unwrap_or(&UserConfig::default()),
             restricted,
@@ -376,6 +380,7 @@ fn normal(
     items: &mut Vec<Item>,
     paths: &DataPaths,
     project: &Path,
+    project_from_option: bool,
     probe: &Probe,
     config: &UserConfig,
     restricted: bool,
@@ -395,7 +400,7 @@ fn normal(
             items.push(Item::new(
                 "writable",
                 Status::Unavailable,
-                error.to_string(),
+                text::writable_error(project, project_from_option, &error),
             ));
             items.push(Item::new(
                 "sandbox.normal",
@@ -519,7 +524,11 @@ fn output(items: &[Item], summary: &Summary, json: bool) -> io::Result<()> {
         serde_json::to_writer(&mut stdout, summary).map_err(io::Error::other)?;
         writeln!(stdout)?;
     } else {
-        writeln!(stdout, "{}", summary.restricted_detail())?;
+        // 探索前の失敗を「見つからなかった」と示さない（実装プラン P4-12）。
+        let processor_checked = items
+            .iter()
+            .any(|item| item.name == "benitoite.discovery" && item.status != Status::Unchecked);
+        writeln!(stdout, "{}", summary.restricted_detail(processor_checked))?;
         writeln!(
             stdout,
             "{}",
@@ -543,10 +552,11 @@ mod tests {
     #[test]
     fn restricted_summary_distinguishes_the_self_probe_without_changing_json()
     -> Result<(), serde_json::Error> {
-        for (restricted, processor_validated, expected) in [
-            (true, true, text::RESTRICTED_OK),
-            (true, false, text::RESTRICTED_FALLBACK_OK),
-            (false, false, text::RESTRICTED_UNAVAILABLE),
+        for (restricted, processor_validated, processor_checked, expected) in [
+            (true, true, true, text::RESTRICTED_OK),
+            (true, false, true, text::RESTRICTED_FALLBACK_OK),
+            (true, false, false, text::RESTRICTED_UNCHECKED_OK),
+            (false, false, false, text::RESTRICTED_UNAVAILABLE),
         ] {
             let summary = Summary {
                 kind: "summary",
@@ -555,7 +565,7 @@ mod tests {
                 normal_sandbox: NormalSandbox::Unavailable,
                 exit_status: 1,
             };
-            assert_eq!(summary.restricted_detail(), expected);
+            assert_eq!(summary.restricted_detail(processor_checked), expected);
             let json = serde_json::to_value(&summary)?;
             assert_eq!(
                 json.get("restricted_sandbox"),
