@@ -1,0 +1,4 @@
+From Ada <ada@example.com> on 2026-10-01: meeting moved.
+Reply to bob.smith@Example.com, cc carol@example.org.
+No address here, call 555-0100 instead.
+dave_99@sub.example.net wrote on 2026-10-03; also ADA@example.com.

@@ -1,0 +1,49 @@
+#!/bin/sh
+# Skill の評価の包みのコマンド（設計書 06-06「Skill の評価」）。
+# 評価の間は、この名前で PATH の先頭に置く。起動のたびに本物の benitoite（環境変数
+# SKILL_EVAL_REAL_BENITOITE のパス）を実行し、その終了状態をそのまま返す。あわせて、記録のファイル
+# （環境変数 SKILL_EVAL_LOG のパス）に次の形の行を一つ加える。区切りはタブである。
+#
+#   <開始の時刻 UTC> <TAB> <終了の時刻 UTC> <TAB> <終了状態> <TAB> <診断のコード> <TAB> <引数 1> <TAB> ...
+#
+# 引数の中のタブと改行は空白に置き換えて書く（記録の一行が一回の起動に当たるようにするため）。
+# 診断のコードは、本物の処理系が標準エラー出力に書いた診断のコード（文章の形の `error[E0405]`・
+# `warning[W0401]`・`runtime error[R0101]` と、JSON の形の `"code":"E0405"`）を、出た順にコンマで
+# 区切って並べたものである（設計書 02-10）。標準エラー出力は tee で写しを取るだけで、エージェントに見える
+# 出力は変えない。
+# 検査と修正の回数は、skill_eval.py がこの記録の check・run・test の行を数えて求める。
+
+if [ -z "${SKILL_EVAL_REAL_BENITOITE:-}" ]; then
+  echo "skill-eval: SKILL_EVAL_REAL_BENITOITE is not set" >&2
+  exit 127
+fi
+
+started=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+codes=
+if [ -n "${SKILL_EVAL_LOG:-}" ] && scratch=$(mktemp -d 2>/dev/null); then
+  # 標準エラー出力を名前付きパイプに流し、tee で元の標準エラー出力と写しの両方へ書く
+  mkfifo "$scratch/pipe"
+  tee "$scratch/stderr" < "$scratch/pipe" >&2 &
+  tee_pid=$!
+  "$SKILL_EVAL_REAL_BENITOITE" "$@" 2> "$scratch/pipe"
+  status=$?
+  wait "$tee_pid"
+  codes=$( { grep -oE '(error|warning)\[[A-Z][0-9]{4}\]' "$scratch/stderr" | sed -E 's/.*\[([A-Z][0-9]{4})\]/\1/'
+             grep -oE '"code":"[A-Z][0-9]{4}"' "$scratch/stderr" | sed -E 's/.*"([A-Z][0-9]{4})"/\1/'; } | paste -sd ',' -)
+  rm -rf "$scratch"
+else
+  "$SKILL_EVAL_REAL_BENITOITE" "$@"
+  status=$?
+fi
+finished=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+
+if [ -n "${SKILL_EVAL_LOG:-}" ]; then
+  line=$(printf '%s\t%s\t%s\t%s' "$started" "$finished" "$status" "$codes")
+  for argument in "$@"; do
+    cleaned=$(printf '%s' "$argument" | tr '\t\n' '  ')
+    line=$(printf '%s\t%s' "$line" "$cleaned")
+  done
+  printf '%s\n' "$line" >> "$SKILL_EVAL_LOG"
+fi
+
+exit "$status"

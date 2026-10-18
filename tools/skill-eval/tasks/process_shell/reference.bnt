@@ -1,0 +1,13 @@
+import Benitoite.Unofficial.IO.Console
+import Benitoite.Unofficial.IO.Process
+
+function main() -> Result[Unit, String] uses Process.Run, Console.Write
+  bind errors <- try Process.shell("grep ' ERROR ' app.log | cut -d ' ' -f 3 | LC_ALL=C sort -u") |> Result.mapError(r: _, f: lambda(error) return IOError.message(error) end lambda) or return
+  bind components <- String.lines(Process.Output.standardOutput(errors))
+  List.forEach(xs: components, f: lambda(value) Console.writeLine(value) end lambda)
+  Console.writeLine("components with errors: ${List.length(components)}")
+  bind fatal <- try Process.shell("grep -q ' FATAL ' app.log") |> Result.mapError(r: _, f: lambda(error) return IOError.message(error) end lambda) or return
+  bind code <- Process.Output.exitCode(fatal)
+  Console.writeLine(if code = 0 then "FATAL lines: found" else "FATAL lines: none (grep exit code ${code})" end if)
+  return Result.Ok(())
+end function

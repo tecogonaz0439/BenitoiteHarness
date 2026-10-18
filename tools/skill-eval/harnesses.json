@@ -1,0 +1,166 @@
+{
+  "_comment": "Skill の評価で起動するハーネスの設定（tools/skill-eval/README.md の「ハーネスの設定」）。型板の {workspace}・{model}・{prompt} と options の各キーは skill_eval.py が値で置き換える。agent は `benitoite skill install --agent` の名前、skill_parent は --skill-dir のときに Skill を写す先。files は起動の前に作業ディレクトリに書くファイル（インターネットを使わせない設定など）。verified が false の設定は、実際に呼んで確かめていない。 default が true の項目が既定の評価の対象（--harness default）。設計者の決定（2026-10-08）で、Claude Code（Opus 5.5 medium）、Codex（GPT-6-Luna max）、Antigravity（Gemini 3.8 Flash high）とし、OpenCode は対象から外した。 2026-10-08 の短い試行で claude-code（Claude Code 2.1.291）・codex（codex-cli 0.160.0）・antigravity-gemini を確かめた。Antigravity は --sandbox が包みのコマンドの起動と記録を止め、--dangerously-skip-permissions のもとでは迂回されるので使わず、ウェブの道具は作業ディレクトリの .agents/hooks.json の PreToolUse で拒否する（拒否されることを確かめた）。antigravity-gpt-oss は短い試行で検査が上限を超え、ウェブの検索を呼んだので、既定の対象から外し、設計者の決定（2026-10-09）で評価の対象に含めないことにした。",
+  "codex": {
+    "agent": "codex",
+    "skill_parent": ".agents/skills",
+    "model": "gpt-6-luna",
+    "options": {
+      "reasoning_effort": "max"
+    },
+    "start": [
+      "codex",
+      "exec",
+      "--json",
+      "--skip-git-repo-check",
+      "--sandbox",
+      "workspace-write",
+      "--cd",
+      "{workspace}",
+      "-m",
+      "{model}",
+      "-c",
+      "model_reasoning_effort=\"{reasoning_effort}\"",
+      "-c",
+      "notify=[]",
+      "-c",
+      "tools.web_search=false",
+      "{prompt}"
+    ],
+    "cwd": "{workspace}",
+    "version": [
+      "codex",
+      "--version"
+    ],
+    "files": {},
+    "verified": true,
+    "default": true
+  },
+  "opencode": {
+    "agent": "opencode",
+    "skill_parent": ".agents/skills",
+    "model": "opencode-go/longcat-2.5-preview-free",
+    "options": {},
+    "start": [
+      "opencode",
+      "run",
+      "--standalone",
+      "-m",
+      "{model}",
+      "--format",
+      "json",
+      "--auto",
+      "{prompt}"
+    ],
+    "cwd": "{workspace}",
+    "version": [
+      "opencode",
+      "--version"
+    ],
+    "files": {
+      "opencode.json": "{\n  \"$schema\": \"https://opencode.ai/config.json\",\n  \"permission\": {\"webfetch\": \"deny\", \"websearch\": \"deny\"}\n}\n"
+    },
+    "verified": false,
+    "default": false
+  },
+  "claude-code": {
+    "agent": "claude-code",
+    "skill_parent": ".claude/skills",
+    "model": "claude-opus-5-5",
+    "options": {
+      "effort": "medium"
+    },
+    "start": [
+      "claude",
+      "-p",
+      "{prompt}",
+      "--model",
+      "{model}",
+      "--effort",
+      "{effort}",
+      "--output-format",
+      "json",
+      "--permission-mode",
+      "acceptEdits",
+      "--allowedTools",
+      "Bash(benitoite:*)",
+      "Read",
+      "Write",
+      "Edit",
+      "Glob",
+      "Grep",
+      "Skill",
+      "--disallowedTools",
+      "WebFetch",
+      "WebSearch",
+      "--strict-mcp-config"
+    ],
+    "cwd": "{workspace}",
+    "version": [
+      "claude",
+      "--version"
+    ],
+    "files": {},
+    "verified": true,
+    "default": true
+  },
+  "antigravity-gemini": {
+    "agent": "codex",
+    "skill_parent": ".agents/skills",
+    "model": "gemini-3.8-flash-high",
+    "options": {
+      "effort": "high"
+    },
+    "start": [
+      "agy",
+      "-p",
+      "{prompt}",
+      "--model",
+      "{model}",
+      "--effort",
+      "{effort}",
+      "--output-format",
+      "json",
+      "--dangerously-skip-permissions"
+    ],
+    "cwd": "{workspace}",
+    "version": [
+      "agy",
+      "--version"
+    ],
+    "files": {
+      ".agents/hooks.json": "{\n  \"deny-internet\": {\n    \"PreToolUse\": [\n      {\n        \"matcher\": \"search_web|read_url.*|browser_.*\",\n        \"hooks\": [\n          {\n            \"type\": \"command\",\n            \"command\": \"printf '%s' '{\\\"decision\\\":\\\"deny\\\",\\\"reason\\\":\\\"Internet access is disabled for this evaluation.\\\"}'\",\n            \"timeout\": 10\n          }\n        ]\n      }\n    ]\n  }\n}\n"
+    },
+    "verified": true,
+    "default": true
+  },
+  "antigravity-gpt-oss": {
+    "agent": "codex",
+    "skill_parent": ".agents/skills",
+    "model": "gpt-oss-120b-medium",
+    "options": {
+      "effort": "medium"
+    },
+    "start": [
+      "agy",
+      "-p",
+      "{prompt}",
+      "--model",
+      "{model}",
+      "--effort",
+      "{effort}",
+      "--output-format",
+      "json",
+      "--dangerously-skip-permissions"
+    ],
+    "cwd": "{workspace}",
+    "version": [
+      "agy",
+      "--version"
+    ],
+    "files": {
+      ".agents/hooks.json": "{\n  \"deny-internet\": {\n    \"PreToolUse\": [\n      {\n        \"matcher\": \"search_web|read_url.*|browser_.*\",\n        \"hooks\": [\n          {\n            \"type\": \"command\",\n            \"command\": \"printf '%s' '{\\\"decision\\\":\\\"deny\\\",\\\"reason\\\":\\\"Internet access is disabled for this evaluation.\\\"}'\",\n            \"timeout\": 10\n          }\n        ]\n      }\n    ]\n  }\n}\n"
+    },
+    "verified": false,
+    "default": false
+  }
+}

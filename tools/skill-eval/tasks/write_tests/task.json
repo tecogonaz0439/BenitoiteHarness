@@ -1,0 +1,1 @@
+{"kind": "test", "script": "settings_test.bnt", "attempt_limit": 10, "min_tests": 4, "require_text": ["case File.readLines(", "resume("]}

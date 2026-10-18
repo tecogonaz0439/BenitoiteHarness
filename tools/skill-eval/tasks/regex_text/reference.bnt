@@ -1,0 +1,18 @@
+import Benitoite.Unofficial.IO.Console
+import Benitoite.Unofficial.IO.File
+import Benitoite.Unofficial.Regex
+
+function main() -> Result[Unit, String] uses File.Read, Console.Write
+  bind text <- try File.readText("messages.txt") |> Result.mapError(r: _, f: lambda(error) return IOError.message(error) end lambda) or return
+  bind email <- try Regex.compile(r"[A-Za-z0-9._%+-]+@([A-Za-z0-9.-]+\.[A-Za-z]+)") or return
+  bind date <- try Regex.compile(r"\d{4}-\d{2}-\d{2}") or return
+  bind found <- Regex.findAll(pattern: email, text: text)
+  bind domains <- List.map(xs: found, f: lambda(value) return String.toLowercase(Option.unwrapOr(o: Regex.group(m: value, index: 1), fallback: "")) end lambda)
+  bind counts <- List.fold(xs: domains, initial: Map.empty(), f: lambda(acc, value)
+    return Map.set(m: acc, k: value, value: Option.unwrapOr(o: Map.get(m: acc, k: value), fallback: 0) + 1)
+  end lambda)
+  Console.writeLine("addresses: ${List.length(found)}")
+  Map.forEach(m: counts, f: lambda(key, value) Console.writeLine("${key}: ${value}") end lambda)
+  Console.writeLine("dates: ${String.join(xs: List.map(xs: Regex.findAll(pattern: date, text: text), f: lambda(value) return Regex.matchText(value) end lambda), separator: ", ")}")
+  return Result.Ok(())
+end function

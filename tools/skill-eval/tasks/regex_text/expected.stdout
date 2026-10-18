@@ -1,0 +1,5 @@
+addresses: 5
+example.com: 3
+example.org: 1
+sub.example.net: 1
+dates: 2026-10-01, 2026-10-03

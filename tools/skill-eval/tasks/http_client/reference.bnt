@@ -1,0 +1,43 @@
+import Benitoite.Unofficial.IO.Console
+import Benitoite.Unofficial.IO.Process
+import Benitoite.Unofficial.Json
+import Benitoite.Unofficial.Network.Http
+
+record Item
+  name: String
+  stock: Integer
+  price: Integer
+end record
+
+function itemOf(value: Json.Value) -> Result[Item, String]
+  bind name <- try Option.okOr(o: Option.andThen(o: Json.get(value: value, k: "name"), f: Json.asString), error: "an item has no name") or return
+  bind stock <- try Option.okOr(o: Option.andThen(o: Json.get(value: value, k: "stock"), f: Json.asInteger), error: "an item has no stock") or return
+  bind price <- try Option.okOr(o: Option.andThen(o: Json.get(value: value, k: "price"), f: Json.asInteger), error: "an item has no price") or return
+  return Result.Ok(Item(name: name, stock: stock, price: price))
+end function
+
+function bodyText(response: Http.Response) -> String
+  return Option.unwrapOr(o: String.fromUTF8(Http.Response.body(response)), fallback: "")
+end function
+
+function main() -> Result[Unit, String] uses Process.Environment, Http.Connect, Console.Write
+  bind base <- try Option.okOr(o: try Process.environmentVariable("SKILL_EVAL_HTTP_BASE") |> Result.mapError(r: _, f: lambda(error) return IOError.message(error) end lambda) or return, error: "SKILL_EVAL_HTTP_BASE is not set") or return
+  bind status <- try Http.get(base + "/status") |> Result.mapError(r: _, f: lambda(error) return NetworkError.message(error) end lambda) or return
+  Console.writeLine("status: ${bodyText(status)}")
+  bind inventory <- try Http.get(base + "/inventory") |> Result.mapError(r: _, f: lambda(error) return NetworkError.message(error) end lambda) or return
+  bind parsed <- try Json.parse(bodyText(inventory)) |> Result.mapError(r: _, f: lambda(error) return Json.ParseError.message(error) end lambda) or return
+  bind array <- try Option.okOr(o: Json.asArray(parsed), error: "the inventory is not an array") or return
+  bind items <- try List.fold(xs: array, initial: Result.Ok([]), f: lambda(acc, value)
+    bind collected <- try acc or return
+    bind item <- try itemOf(value) or return
+    return Result.Ok(List.prepend(xs: collected, x: item))
+  end lambda) |> Result.map(r: _, f: lambda(value) return List.reverse(value) end lambda) or return
+  bind low <- List.filter(xs: items, p: lambda(value) return Item.stock(value) < 5 end lambda)
+  Console.writeLine("low stock: ${String.join(xs: List.map(xs: low, f: lambda(value) return "${Item.name(value)} (${Item.stock(value)})" end lambda), separator: ", ")}")
+  Console.writeLine("inventory value: ${List.fold(xs: items, initial: 0, f: lambda(acc, value) return acc + Item.stock(value) * Item.price(value) end lambda)}")
+  bind names <- Json.Value.Array(List.map(xs: low, f: lambda(value) return Json.Value.String(Item.name(value)) end lambda))
+  bind request <- Http.ClientRequest(..Http.clientRequest(method: "POST", url: base + "/report"), body: String.toUTF8(Json.stringify(names)))
+  bind reply <- try Http.send(request) |> Result.mapError(r: _, f: lambda(error) return NetworkError.message(error) end lambda) or return
+  Console.writeLine("report: ${Http.Response.status(reply)} ${bodyText(reply)}")
+  return Result.Ok(())
+end function
