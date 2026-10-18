@@ -243,6 +243,13 @@ P0-04 で作った型: 方針の入力 `PolicyConfig`（`readable: ReadAccess`�
 - `agent`: `AgentConfig.allow_effects: Option<BTreeSet<Effect>>`、`AgentError::EffectsNotAllowed(String)`（範囲の外で 3 回続けて断ったとき）。`cli`: `ExecArgs.allow`（制限モードだけ）。
 - 読まないファイルを取り込む実行は、対話では毎回確認を求め、非対話では断る（`benitoite_run` と `benitoite_test`。`benitoite_scratch` は P2-09 で当てる）。
 
+### 一時的なスクリプト（P2-09）
+
+- `tools`: `ToolId::BenitoiteScratch`（`code`・`args`・`stdin`。並べない。120 秒）。実行の本体は `tools/benitoite_process.rs` に移して `benitoite_run` と共有する。`ToolContext::remember_scratch_automatic(call_id, effects, explicitly_allowed)`（`pub(crate)`。非対話の和のうち `--allow` にない分を、その呼び出しの呼び直しにだけ持たせる）。呼び直しは `call_id` で覚えたファイルを開き直し、新しく書かない。
+- `safe_fs::ScopeRoot::create_new(path) -> Result<File, SafeFsError>`（`O_CREAT|O_EXCL|O_NOFOLLOW`、0600）。
+- `sandbox::PolicyConfig` に `readable_files: Vec<PathBuf>`（配下を含まない一つのファイル）と `readable_metadata: Vec<PathBuf>`（macOS でメタデータだけを許す）。`sandbox::restricted::scratch_policy(...)`（確認なしの実行の読める範囲）。
+- `benitoite::RunContext.scratch_auto_effects: BTreeSet<Effect>`、`benitoite::effects::scratch_auto_effects(configured)`（既定と利用者の設定の和）。`agent::SessionSafety.scratch_auto_effects: Vec<String>`（`/new` で固定する）。`rewind::CheckpointReason::BenitoiteScratch`（戻せないものに数える）。
+
 ### `provider`（P1-01、P1-02）
 
 - 共通の形（`provider::types`、`provider` から再公開）: `Destination { provider, base_url, model }`、`AdapterKind`、`Conversation { items }`、`Item::{UserMessage, AssistantTurn, ToolResult}`、`UserMessage { parts: Vec<UserPart> }`（`UserPartKind::{Environment, Request, Steering}`）、`AssistantTurn { parts, raw_items, finish_reason, usage }`、`AssistantPart::{Text, Reasoning, ToolCall}`、`RawItems { destination, adapter, items }`、`ToolCall { id, provider_id, provider_item_id, name, arguments, raw_arguments }`、`ToolResult { id, provider_id, text, is_error }`、`Usage`（各項目 `Option<u64>` と `raw`）、`FinishReason::{Completed, ToolCalls, OutputLimit, Refusal(String), Error, Cancelled, Disconnected}`、`StreamEvent`、`ProviderError`、`Capabilities`。
