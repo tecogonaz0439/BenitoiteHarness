@@ -21,10 +21,14 @@ linux_targets=(aarch64-unknown-linux-musl x86_64-unknown-linux-musl)
 skipped_tests=(crates/*/tests/sandbox_*.rs)
 x86_64_skipped=()
 aarch64_skipped=()
+skill_eval_work=
 stage=setup
 
 finish() {
     local status=$?
+    if [[ -n "$skill_eval_work" ]]; then
+        rm -rf "$skill_eval_work"
+    fi
     if ((status != 0)); then
         printf 'FAILED: %s (exit %s)\n' "$stage" "$status" >&2
     fi
@@ -36,6 +40,7 @@ finish() {
             printf '  %s\n' "${skipped_tests[@]}"
         fi
         printf '  linux: container tests for %s\n' "${linux_targets[@]}"
+        printf '  skill-eval: http_client (loopback listening is blocked in the Codex sandbox)\n'
     fi
     if ((${#aarch64_skipped[@]} != 0)); then
         printf '\nNot run on aarch64-unknown-linux-musl:\n'
@@ -119,6 +124,29 @@ if "$inside_codex"; then
     cargo test --workspace --doc
 else
     cargo test --workspace
+fi
+
+begin_stage skill-eval
+skill_eval_args=()
+if "$inside_codex"; then
+    # Codex のサンドボックスではループバックの待ち受けができない（実装プラン P5-01）。
+    for task_file in tools/skill-eval/tasks/*/task.json; do
+        task_name=${task_file%/task.json}
+        task_name=${task_name##*/}
+        if [[ "$task_name" != http_client ]]; then
+            skill_eval_args+=(--task "$task_name")
+        fi
+    done
+fi
+python3 -I tools/skill-eval/skill_eval.py --self-test --benitoite "$BENITOITEH_TEST_BENITOITE" \
+    ${skill_eval_args[@]+"${skill_eval_args[@]}"}
+skill_eval_work=$(mktemp -d)
+python3 -I tools/skill-eval/skill_eval.py --dry-run --benitoite "$BENITOITEH_TEST_BENITOITE" \
+    --work-root "$skill_eval_work" ${skill_eval_args[@]+"${skill_eval_args[@]}"}
+warning_count=$(awk '/^\| W[0-9][0-9][0-9][0-9] \|/ { count++ } END { print count+0 }' "$skill_eval_work/record.md")
+if [[ "$warning_count" != 5 ]]; then
+    printf 'Expected 5 warning rows in the skill-eval record, found %s.\n' "$warning_count" >&2
+    exit 1
 fi
 
 begin_stage linux

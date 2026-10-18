@@ -176,7 +176,12 @@ def warning_codes() -> List[str]:
         with open(CODES_FILE, encoding='utf-8') as f:
             text = f.read()
     except OSError:
-        return []
+        # 本リポジトリには処理系のソースがないので、同じ版から取り出した一覧を使う。
+        try:
+            with open(os.path.join(HERE, 'warning-codes.txt'), encoding='utf-8') as f:
+                return sorted(set(line.strip() for line in f if line.strip()))
+        except OSError:
+            return []
     return sorted(set(re.findall(r'^\s+(W[0-9]{4})\s', text, re.MULTILINE)))
 
 
@@ -477,8 +482,13 @@ def self_test(tasks: List[Task], benitoite: str) -> int:
     failures = 0
     for task in tasks:
         problems = []
+        skipped = []
         for relative, source in sorted(task.acceptance.items()):
-            if not same_file(os.path.join(REPO, source), task.path(relative)):
+            source_path = os.path.join(REPO, source)
+            # 写した課題の元は本リポジトリに含まれない（設計書 07-02「評価の課題」）。
+            if not os.path.exists(source_path):
+                skipped.append('acceptance skipped: %s' % source)
+            elif not same_file(source_path, task.path(relative)):
                 problems.append('%s differs from %s' % (relative, source))
         server = None
         http_base = None
@@ -494,7 +504,10 @@ def self_test(tasks: List[Task], benitoite: str) -> int:
         if not verdict.success:
             problems.append(verdict.reason)
         failures += 1 if problems else 0
-        print('%-16s %s' % (task.name, 'ok' if not problems else 'FAILED: ' + '; '.join(problems)))
+        result = 'ok' if not problems else 'FAILED: ' + '; '.join(problems)
+        if skipped:
+            result += ' (%s)' % '; '.join(skipped)
+        print('%-16s %s' % (task.name, result))
     wrapper_problem = check_wrapper(benitoite)
     print('%-16s %s' % ('(wrapper)', wrapper_problem or 'ok'))
     failures += 1 if wrapper_problem else 0

@@ -26,3 +26,10 @@
 ## 写した後に変えた点
 
 写した直後のコミットからの変更を、作業ごとに書く。課題（`tasks/`）と判定は変えない。
+
+### P5-01 評価の道具を本リポジトリで動かす
+
+- `skill_eval.py` の `--self-test` は、`acceptance` の元のファイルがなければ比較を飛ばし、課題の行に元のパスを示す。
+- `skill_eval.py` の `warning_codes()` は、処理系のコードの定義が読めなければ `warning-codes.txt` を使う。
+- `scripts/check.sh` の `skill-eval` の段で、手元の処理系による `--self-test` と `--dry-run`、記録の警告の行が5件あることを確かめ、一時ディレクトリは終了時に消す。`--inside-codex` では `http_client` を除き、除いたことを示す。
+- `.gitignore` に `__pycache__/` を加える。
