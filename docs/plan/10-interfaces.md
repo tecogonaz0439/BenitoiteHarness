@@ -260,6 +260,13 @@ P0-04 で作った型: 方針の入力 `PolicyConfig`（`readable: ReadAccess`�
 - `cli/doctor/processor.rs`: 項目 `benitoite.discovery`・`benitoite.executable`（説明に `sha256=`）・`benitoite.version`（`version`、`build` の `commit`・`dirty`・`target`。`null` は `unknown`）・`benitoite.skill`（`contentHash`）。JSON の行の形は変えない。
 - 規則の確かめ（`probe.rs`）は `/bin/sh` を拒んだ後に処理系の `--version=json` を問い合わせと同じ `restricted_policy` で起動し、標準出力 1 MiB・標準エラー 64 KiB で打ち切る。処理系がないか形が通らないときだけ `benitoiteh` 自身で確かめ、要約の文でそのことを示す。版と Skill は規則の確かめが通ったときだけ `QueryLauncher::Sandboxed` で問い合わせ、示したハッシュと問い合わせた実行ファイルのハッシュが違えば `unavailable` にする。
 
+### `create_project`（P4-11）
+
+- `tools::ToolId::CreateProject`（制限モードだけ。`benitoite_reference` と `web_fetch` の間）。`approval::ApprovalKind::CreateProject`（事実は `facts.path`）。答えのキーは `y`・`n`・`m`。
+- `AgentConfig.project_parent: Option<PathBuf>`、`ExecArgs.project_parent`（`exec` の制限モードだけ。直下だけを許す）。`AgentEvent::ProjectDirChanged { project_dir }`（記録は `Record::ProjectDirChanged`）。
+- 切り替えは、失敗しうる値（巻き戻しの記録の根、`Environment::with_project` の結果など）を先に作ってから、出来事の記録と `ToolContext` の切り替え（プロジェクト、`ExcludeRules::rebased`、読んだ版の消去、`RunContext.locations.project`、`Processor::set_project`）、`CheckpointRecorder::restart`、確認したエフェクトと検査の回数の消去、`environment_changes` を行う。`CheckpointRecorder::new` は最後の `ProjectDirChanged` より前の時点を捨てる。
+- 確認の前の判定は、場所の規則を有無より先に当て、範囲の外の有無や実のパスを誤りの文に出さない。
+
 ### `provider`（P1-01、P1-02）
 
 - 共通の形（`provider::types`、`provider` から再公開）: `Destination { provider, base_url, model }`、`AdapterKind`、`Conversation { items }`、`Item::{UserMessage, AssistantTurn, ToolResult}`、`UserMessage { parts: Vec<UserPart> }`（`UserPartKind::{Environment, Request, Steering}`）、`AssistantTurn { parts, raw_items, finish_reason, usage }`、`AssistantPart::{Text, Reasoning, ToolCall}`、`RawItems { destination, adapter, items }`、`ToolCall { id, provider_id, provider_item_id, name, arguments, raw_arguments }`、`ToolResult { id, provider_id, text, is_error }`、`Usage`（各項目 `Option<u64>` と `raw`）、`FinishReason::{Completed, ToolCalls, OutputLimit, Refusal(String), Error, Cancelled, Disconnected}`、`StreamEvent`、`ProviderError`、`Capabilities`。

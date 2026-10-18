@@ -57,7 +57,7 @@
 | [P4-08](tasks/P4-08-slash-commands.md) | `/` で始まるコマンドと、P4 の安全の性質のテストの一覧 | P4-03、P4-04、P4-07、P4-09 | 完了 |
 | [P4-09](tasks/P4-09-safe-walk-search.md) | `glob`・`grep`・`read` を、リンクを辿らず上限のある読み方に移す | P4-03 | 完了 |
 | [P4-10](tasks/P4-10-doctor-processor.md) | `doctor` の処理系の項目 | P2-06 | 完了 |
-| [P4-11](tasks/P4-11-create-project.md) | 制限モードの道具 `create_project`（雛形、確認、プロジェクトの切り替え、`--project-parent`） | P4-08、P2-12 | 未着手 |
+| [P4-11](tasks/P4-11-create-project.md) | 制限モードの道具 `create_project`（雛形、確認、プロジェクトの切り替え、`--project-parent`） | P4-08、P2-12 | 完了 |
 
 P1 の作業は P0-04・P0-05（OS のサンドボックス）の結果に依らないので、P0-04・P0-05 が設計者の判断を待つ間に先に進めてよい。
 
