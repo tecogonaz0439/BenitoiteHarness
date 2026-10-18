@@ -84,7 +84,60 @@ python3 -I tools/skill-eval/skill_eval.py \
 
 時間の上限は通常30分であり、項目の `options.harness_timeout` があればその秒数を使う。上限と中断ではプロセスのグループに SIGTERM を送り、30秒の猶予の後に SIGKILL を送る。SIGTERM では `benitoiteh` が道具の子を止めて集計を書き、終了状態130で終わる。SIGKILL で止めると、`benitoiteh` が `setsid` と `process_group(0)` で別のセッションに起動した道具の子には届かず、子が残りうる。時間の上限は終了状態と分けて `timed_out` に記録し、`end` は `timeout` とする。中断と例外でも、完了済みの試行の記録を書いてから終了する。
 
-評価の道具に SIGTERM または SIGHUP が届いたときも、子の停止と完了済みの記録の保存を行う。ハーネスの起動中は、試行のディレクトリの `harness.pgid` にプロセスのグループの番号を残し、終了を確認したら消す。評価の道具自体を SIGKILL で止めた場合は後始末ができないので、残った `harness.pgid` の番号が残存するハーネスのグループであることを確認し、`kill -TERM -<pgid>` で止める。必要な猶予を待っても残る場合は `kill -KILL -<pgid>` で止め、終了を確認してから `harness.pgid` を消す。別セッションの道具の子が残る制約は、この手動の後始末でも同じである。
+評価の道具に SIGTERM または SIGHUP が届いたときも、子の停止と完了済みの記録の保存を行う。ハーネスの起動中は、試行のディレクトリの `harness.pgid` にプロセスのグループの番号を残し、終了を確認したら消す。評価の道具自体を SIGKILL で止めた場合は後始末ができないので、残った `harness.pgid` の番号が残存するハーネスのグループであることを確認し、`kill -TERM -<pgid>` で止める。必要な猶予を待っても残る場合は `kill -KILL -<pgid>` で止め、終了を確認してから `harness.pgid` を消す。別セッションの道具の子が残る制約は、この手動の後始末でも同じである。Antigravity の試行では、評価の道具自体を SIGKILL で止めると、`.agents/` の下のディレクトリは0555、ファイルは0444のまま残る。残存するプロセスを止めた後、作業の根を消す前に `chmod -R u+w <作業の根>` で書ける状態へ戻す。
+
+### Antigravity の CLI
+
+Antigravity は、普段の Google アカウントのログインとプランの利用枠で走らせる。次のコマンドも、本物の LLM を呼ぶので、設計者の了承を得てから実行する。`--work-root` はリポジトリと `HOME` の外（例 `/Users/Shared/bh-eval/...`）に置く。祖先の `.agents/` を拒むため、`~/.agents/` があるホームの下では試行を始められない。
+
+```sh
+python3 -I tools/skill-eval/skill_eval.py \
+  --harness antigravity-gemini --trials 3 --allow-unverified \
+  --benitoite <path-to-benitoite-v0.0.7> \
+  --work-root <directory-outside-home-and-repository> --record <record.md>
+```
+
+起動は `agy -p <依頼> --model gemini-3.8-flash-high --effort high --mode accept-edits --output-format json --print-timeout 1800s --log-file <試行>/agy/agy.log` とする。すべての操作を許す `--dangerously-skip-permissions` は使わない。ファイルの編集を自動で許し、コマンドは試行ごとのフックで Benitoite の起動だけに限る。`agy` 自身の時間の上限を1800秒、評価の道具の時間の上限を1860秒とし、途中の応答を書いて終わる猶予を設ける。試行と版の問い合わせが終わった後も、プロセスのグループに SIGKILL を一度送り、同じグループの背後の処理を止める。
+
+フックは作業ディレクトリの `.agents/hooks.json` に、`matcher: ".*"` の `PreToolUse` を一つだけ置く。門は、作業ディレクトリの外の `<試行>/agy/agy_gate.py` を `python -I` で起動し、実の作業ディレクトリを引数に渡す。実行ファイルとパスはシェル用に引用する。門の起動に失敗した場合（`pre-tool hook failed`）は、`accept-edits` の既定の権限によりコマンドは断られる（P5-07 の調査記録による）。
+
+門は `run_command` と、明示した読み書きの道具だけを許す。コマンドは4096文字以下の `benitoite( [A-Za-z0-9_./=:,+-]+)*` に全体が一致し、第一引数が `check`・`run`・`test` であることを確かめる。各引数を `=`・`,`・`:` でも分け、絶対パスと `..` のパス要素を拒む。zsh のコマンド名の展開を防ぐため、引数そのものや区切りの後が `=` で始まる形も拒む。`Cwd` は作業ディレクトリかその下の絶対パスに限る。`skill install` など、ホームへ書き込めるサブコマンドは許さない。
+
+読み取りの道具は `view_file`・`list_dir`・`grep_search`・`find_by_name`・`view_file_outline`・`view_code_item` とする。書き込みの道具は `write_to_file`・`replace_file_content`・`multi_replace_file_content` とする。入れ子の辞書も含め、鍵名が `path`・`file`・`directory`・`uri` で終わるものをパスの鍵と推し量る（大文字と小文字を区別しない）。`File` そのものも含め、`NodePaths`・`SecurityNote` は含めない。パスの鍵の値が真偽値か数なら、表示などの指定として検査から外す。文字列か空でない文字列の一覧ならすべてのパスを検査し、それ以外の型は拒む。検査するパスが一つもなければ、読み取りも書き込みも拒む。`CodeContent`・`TargetContent`・`Query` など、ほかの鍵の値はパスとして扱わない。
+
+パスは `/` または小文字の `file://` で始まり、実のパスで作業ディレクトリ内に収まるものだけを許す。相対パス、`~`、ほかの scheme、先頭か末尾の空白・制御文字、NUL を拒む。URI の復号後も同じ文字の検査を行う。書き込みでは、すべてのパスについて、相対パスの要素に `.agents`・`_agents`・`.agent`・`_agent`・`.gemini`・`.git` があるものと、末尾が `AGENTS.md`・`GEMINI.md` のものを拒む（大文字と小文字を区別しない）。ほかのすべての道具は拒む。この鍵名の推し量りと道具の名前は実走で未検証である。最初の試しの走行の `gate.log` の `argument_keys` で確かめ、鍵名の一覧を固める。
+
+決定は `<試行>/agy/gate.log` に JSON Lines で残す。時刻、決定、道具の名前、入れ子を含む引数の鍵の名前の一覧、`CommandLine` の先頭200文字だけを書く。ほかの引数の値は書かない。ログは準備で作り、門は `O_APPEND|O_NOFOLLOW|O_NONBLOCK` で開いて、通常ファイルであることを `fstat` で確かめる。ログがない・形が違う・追記できない場合は、拒否を返す。会話の記録に道具の呼び出しがあるのに有効な門の記録がない場合は、`SAFETY: hooks were not loaded` を理由に加える。包みのコマンドの記録に行があるのに、門の記録に `run_command` の `allow` がない場合も同じとする。後者は会話の記録が読めなくても働く。
+
+起動前に `.agents/` のファイルを0444、ディレクトリを0555にする。理由: フックや Skill の偶発的な編集を起こしにくくするためである。同じ利用者のプロセスは権限を戻せるので、事後の比較も行う。ハーネスが終わった後は、例外の場合も、片付けと記録の前にファイルを0644、ディレクトリを0755へ戻す。リンクの参照先は変更しない。親ディレクトリの記述子を基準に `follow_symlinks=False` の `chmod` を使い、対応していなければ `O_NOFOLLOW` で開いた記述子の `fchmod` を使う。消えた項目などの失敗は `<試行>/agy/permissions.log` に記録し、ほかの項目の処理と試行の記録を続ける。公開する理由の欄には失敗の件数だけを書く。
+
+試行の前後で、`hooks.json` のバイト列、設置した Skill の `skill_digest`、`.agents/` の項目の一覧、包みのコマンドと門の SHA-256 を比べる。違えば理由の先頭に `SAFETY: <対象> was modified` を付ける。作業ディレクトリ全体でも、上記の設定ディレクトリ名や指示ファイル名が新しく現れれば `SAFETY: <印の名前> was created (<件数>)` を加える。印は `.agents`・`AGENTS.md` などの固定の名前に揃え、途中のディレクトリ名は理由に書かない。準備で設置したものと課題の初めからあるものは除く。書き換えて元に戻した変更は検知できない。会話の記録に許す一覧の外の道具があれば、理由に警告を書く。
+
+この門が検査するのは、道具の呼び出しの形と、道具の引数に現れるパスである。`benitoite run` のスクリプトの中のパスとプロセスは検査しない。`--allow-effects=<Process のエフェクト>` を指定したスクリプトは、任意のコマンドを起動できる。この範囲は Claude Code の `Bash(benitoite:*)` と同じものとして受け入れる。すべての kind の試行で、ホームの `.claude/skills/benitoite` と `.agents/skills/benitoite` の有無、種類、mtime（下位の項目を含む）を比べ、違えば `SAFETY: user skill directory changed` を先頭に加える。ファイルの内容は読まない。この二つの設置先は、[Benitoite v0.0.7 の skill/mod.rs](https://github.com/tecogonaz0439/Benitoite/blob/v0.0.7/crates/benitoite/src/cli/tools/skill/mod.rs) の `agent_parent`・`target_dirs`・`parse_skill_args` で確認した（コミット `63de89a21cce4d0c2995011226db8f2f938598ec`）。
+
+試行の準備では、利用者が加えた指示ファイル、スキル・プラグイン・規則・フック・ワークフロー・MCP のサーバなどの設定を拒む。祖先の `.agents/`・`.agent/`・`_agents/`・`_agent/`、指示ファイル、`.gemini/settings.json`、管理者設定の `/Library/Application Support/Antigravity/admin_settings.json` も拒む。調べる範囲はホームの `.gemini/` 直下、`config/`、`antigravity-cli/` 直下に限り、`brain/` の会話やトークンの領域は歩かない。同梱 Skill の名前は `builtin/skills/` 直下から取る。誤りにはパスと鍵の名前だけを示し、設定値は示さない。製品が同梱するスキルは残し、名前の一覧と設定の確認に通った旨を見出しに書く。`--dry-run` ではこの確認も `agy` の起動も行わない。
+
+設定の根の鍵は、`settings.json` では `model`・`trustedWorkspaces`、`config/config.json` では `userSettings`、`config/projects/*.json` では `id`・`name`・`projectResources` に限る。`userSettings` の下は `remoteControlHostname` だけを許す。一覧にない鍵は、綴りの違う `useG1Credits` も含めて拒む。`projectResources` は `resources` の一覧を持つ辞書として読み、各項目の `folderUri` と `gitFolder.folderUri` の両方について、作業の根かその祖先・子孫との重なりを拒む。`projectResources` の下は `resources`、各項目は `folderUri`・`gitFolder`、`gitFolder` の下は `folderUri`・`allowWrite` だけを許す。一覧を直接置いた形や、入れ子の知らない鍵も誤りとする。`antigravity-cli/mcp_config.json` は空か `{}` だけを許す。
+
+子の環境から `AGY_*`・`ANTIGRAVITY_*`・`JETSKI_*`・`GOOGLE_*`・`GEMINI_*`・`CLOUDSDK_*` を除き、除いた名前を見出しに書く。`AGY_CLI_DISABLE_AUTO_UPDATE=1` と `TMPDIR=<試行>/tmp` を設定する。版の問い合わせにも同じ整理を行う。API の単価は置かず、`billing: none`、`cost_usd: null` とする。`--stop-cost` ではプランの利用枠の残量を管理できない。
+
+集計は標準出力のオブジェクトから読み、全体を読めなければ最後の空でない行を読む。入力にキャッシュの読み取りを加え、キャッシュの書き込みは0とする。`thinking_tokens` は別の欄に残し、出力に含まれるか未確認なので合計には足さない。`num_turns` は利用者の発言数なので番として使わず、ホームの `brain/<conversation_id>/.system_generated/logs/transcript_full.jsonl`（なければ `transcript.jsonl`）の `PLANNER_RESPONSE` の数と、その道具の名前を数える。ID の文字種と記録の実のパスを検査する。会話の記録は `O_NONBLOCK` で開き、通常ファイルだけを読む。深い JSON の `RecursionError` も欠損として扱う。記録が読めなければ番と道具の回数を `null` にし、使用量が標準出力と違えば理由に記す。使用量は標準出力を正とする。
+
+終わり方は、評価の道具の時間切れ、`agy` の print timeout、終了状態3または `AGY_ERROR`、終了状態0かつ `SUCCESS`、ほかの誤りの順に判定する。`AGY_ERROR` の JSON は `status`・`code`・`retryable`・`error_id`・`short_error` の値だけを残す。JSON として読めないときは文を使い、どちらもメールアドレスを `<email>` に伏せて先頭200文字を残す。道具の名前が `[a-z0-9_]{1,64}` に当たらなければ `<invalid>` として数える。集計が読めなくても課題の判定は続け、読めないトークンの欄は `null` にする。
+
+初回の試しの走行で、次を確かめてから評価を広げる。この作業では本物の LLM を呼ばず、項目を `verified: false` としている。
+
+- フックが読み込まれ、`gate.log` に決定が残るか。
+- 門が時間切れ・異常終了したとき、書き込みが既定で許されるか。コマンドについて既定で断られるという調査結果を、書き込みの保証には使わない。
+- `.*` の門が拒む `command_status`・`task_boundary`・`notify_user` などで、走行が止まらないか。
+- フックの `allow` が、非対話の既定の「断る」に優先するか。優先しなければ、`agy_gate.py` の `PERMISSION_OVERRIDES` を `True` に替え、`permissionOverrides: ["command(<CommandLine>)"]` を返す形で確かめる。その許可が `~/.gemini/config` に残るかも調べる。
+- 許す一覧の道具の名前と、`gate.log` に記録した引数の鍵の名前が、実際の道具に合っているか。`matcher: ".*"` ですべての道具を受けるか。
+- パスの鍵としない `grep_search` の `Includes`、`find_by_name` の `Pattern`・`Excludes` に置いたパスや `..` を、agy が検索の根の外に向けて解かないか。
+- 試行の途中で書き換えたフックを読み直すか。
+- `run_command` の子が別のプロセスのグループに残るか。同じグループの終了後の SIGKILL では、その子は止められない。
+- `<試行>/agy/agy.log` に `Auto-update disabled via environment variable` があり、自動更新が止まったか。この環境変数は実行ファイル内で見つかったもので、公開の文書にはない。
+
+フックと Skill と設定の探索の出典は、`agy` 1.4.0 の同梱文書 `~/.gemini/antigravity-cli/builtin/skills/agy-customizations/docs/` の `hooks.md`・`skills.md`・`json_configs.md` である。JSON の集計、会話の記録、時間切れの文言、課金と環境変数は、P5-07 の「前提の事実」と「補足」の、オーケストレータによる2026-10-18の調査記録に従った。
 
 ### 評価で決める選択肢の切り替え
 
@@ -97,6 +150,7 @@ python3 -I tools/skill-eval/skill_eval.py \
 | ファイル | 内容 |
 |---|---|
 | `SOURCE.md` | 本書 |
+| `agy_gate.py` | Antigravity の `PreToolUse` で全道具を検査し、決定を試行ごとに記録する門 |
 | `warning-codes.txt` | 処理系の警告のコードの一覧。`v0.0.7` のタグの `crates/benitoite/src/diag/codes.rs` から、`skill_eval.py` の `warning_codes()` と同じ正規表現で取り出した。本リポジトリには `codes.rs` がないので、集計の表で一度も出なかった警告も 0 と示すために使う |
 
 ## 写した後に変えた点
@@ -144,3 +198,13 @@ python3 -I tools/skill-eval/skill_eval.py \
 - `kind: benitoiteh` の項目の `config` を読み取り時に検証し、試行の設定ファイルの `[restricted]` と `[read]` に鍵を加える。記録の見出しにも `config` を残す。
 - 書いた後の検査、read の行の番号、effort の low・max を一つずつ比べる四項目を加えた。すべて `verified: false`、`default: false` とし、effort の効果の確認と試行回数の決定を評価前に残した。
 - `test_skill_eval.py` に、設定の生成、許さない入力の拒否、四項目の読み取り、記録の見出しのテストを加えた。本物の提供者は呼んでいない。
+
+### P5-07 Antigravity の項目を整える
+
+- `antigravity-gemini` を `accept-edits` と試行ごとの一つの門で起動する形に改めた。`prepare: agy`、`agy-json`、プランの課金の扱い、時間の上限、記録のパスを加えた。`antigravity-gpt-oss` の項目と、写した元の `README.md` は変えていない。
+- 門、利用者の設定の事前確認、試行の後の改変検知、会話の記録による番と道具の集計を加えた。トークンの量、拒否した操作、思考の量、最後の応答、終了理由を記録する。試行と版の問い合わせの環境を整理し、終了後のプロセスのグループを止める。
+- テストは偽のホームと偽の `agy`、手で組み立てた集計と会話の記録を使う。生成したフックをシェルから起動して門の判断を確かめ、包みのコマンドと判定には本物の Benitoite v0.0.7 を使う。本物の LLM、`agy`、トークンとキーチェーンは使っていない。
+
+- オーケストレータのセキュリティの所見に従い、門を全道具共通にし、引数の部分パスと読み書きのパスを検査した。設定の鍵を許可の一覧に替え、読む設定の範囲を限定した。読み取り専用の `.agents/`、新しい設定の作成とフック未読込の検知、すべての kind の利用者向け Skill のメタデータ比較を加えた。JSON の深さと特殊ファイルを欠損として扱い、ログの追記先と、記録に残す誤りの欄を限定した。
+
+- 再レビューの所見 A〜I に従い、パスを鍵名で判定し、本文や検索語をパスとして扱わないようにした。実際の `projectResources.resources` の形と入れ子の許可の一覧に合わせ、権限変更のリンクの追跡と失敗の扱い、包みの起動に対応する門の許可の確認、作成した印の名前と件数だけの報告を改めた。テスト全体の HOME・設定・状態・一時領域も一時ディレクトリに向けた。

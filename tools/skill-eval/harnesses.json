@@ -1,5 +1,5 @@
 {
-  "_comment": "Skill の評価で起動するハーネスの設定（tools/skill-eval/README.md の「ハーネスの設定」）。型板の {workspace}・{model}・{prompt} と options の各キーは skill_eval.py が値で置き換える。agent は `benitoite skill install --agent` の名前、skill_parent は --skill-dir のときに Skill を写す先。files は起動の前に作業ディレクトリに書くファイル（インターネットを使わせない設定など）。verified が false の設定は、実際に呼んで確かめていない。 default が true の項目が既定の評価の対象（--harness default）。設計者の決定（2026-10-08）で、Claude Code（Opus 5.5 medium）、Codex（GPT-6-Luna max）、Antigravity（Gemini 3.8 Flash high）とし、OpenCode は対象から外した。 2026-10-08 の短い試行で claude-code（Claude Code 2.1.291）・codex（codex-cli 0.160.0）・antigravity-gemini を確かめた。Antigravity は --sandbox が包みのコマンドの起動と記録を止め、--dangerously-skip-permissions のもとでは迂回されるので使わず、ウェブの道具は作業ディレクトリの .agents/hooks.json の PreToolUse で拒否する（拒否されることを確かめた）。antigravity-gpt-oss は短い試行で検査が上限を超え、ウェブの検索を呼んだので、既定の対象から外し、設計者の決定（2026-10-09）で評価の対象に含めないことにした。 P5-03: 単価は100万トークンあたりの米ドル。2026-10-18 に確認した公式価格表: Anthropic https://platform.claude.com/docs/en/about-claude/pricing (Opus 5.5: 4/0.20/5/20、書き込みは5分キャッシュ)、DeepSeek https://api-docs.deepseek.com/quick_start/pricing (deepseek-flash: 0.3/0.006/0.3/1.2、ピーク時の高い側、書き込みは入力と同じと置く)、Google https://ai.google.dev/gemini-api/docs/pricing (Gemini 3.8 Flash: 0.75/0.075/0.75/3.75、2026年中、書き込みは入力と同じと置く)。値の順は input/cache_read/cache_write/output。",
+  "_comment": "Skill の評価で起動するハーネスの設定（tools/skill-eval/README.md の「ハーネスの設定」）。型板の {workspace}・{model}・{prompt} と options の各キーは skill_eval.py が値で置き換える。agent は `benitoite skill install --agent` の名前、skill_parent は --skill-dir のときに Skill を写す先。files は起動の前に作業ディレクトリに書くファイル（インターネットを使わせない設定など）。verified が false の設定は、実際に呼んで確かめていない。 default が true の項目が既定の評価の対象（--harness default）。設計者の決定（2026-10-08）で、Claude Code（Opus 5.5 medium）、Codex（GPT-6-Luna max）、Antigravity（Gemini 3.8 Flash high）とし、OpenCode は対象から外した。 2026-10-08 の短い試行で claude-code（Claude Code 2.1.291）・codex（codex-cli 0.160.0）・antigravity-gemini を確かめた。Antigravity は --sandbox が包みのコマンドの起動と記録を止め、--dangerously-skip-permissions のもとでは迂回されるので使わず、ウェブの道具は作業ディレクトリの .agents/hooks.json の PreToolUse で拒否する（拒否されることを確かめた）。antigravity-gpt-oss は短い試行で検査が上限を超え、ウェブの検索を呼んだので、既定の対象から外し、設計者の決定（2026-10-09）で評価の対象に含めないことにした。 P5-03: 単価は100万トークンあたりの米ドル。2026-10-18 に確認した公式価格表: Anthropic https://platform.claude.com/docs/en/about-claude/pricing (Opus 5.5: 4/0.20/5/20、書き込みは5分キャッシュ)、DeepSeek https://api-docs.deepseek.com/quick_start/pricing (deepseek-flash: 0.3/0.006/0.3/1.2、ピーク時の高い側、書き込みは入力と同じと置く)、Google https://ai.google.dev/gemini-api/docs/pricing (Gemini 3.8 Flash: 0.75/0.075/0.75/3.75、2026年中、書き込みは入力と同じと置く)。値の順は input/cache_read/cache_write/output。 P5-07: {trial} も試行の絶対パスで置き換える。antigravity-gemini は --mode accept-edits と試行ごとのフックで起動し、--dangerously-skip-permissions を使わない。prepare: agy が門と hooks.json を生成する。時間の上限は agy が1800秒、道具が1860秒。プランの利用枠を使い billing: none とし、起動の形を改めたため verified: false に戻した。過去の Antigravity の検証は現在の起動の形の検証ではない。",
   "benitoiteh-mock": {
     "kind": "benitoiteh",
     "agent": "codex",
@@ -140,7 +140,8 @@
     "skill_parent": ".agents/skills",
     "model": "gemini-3.8-flash-high",
     "options": {
-      "effort": "high"
+      "effort": "high",
+      "harness_timeout": 1860
     },
     "start": [
       "agy",
@@ -150,20 +151,25 @@
       "{model}",
       "--effort",
       "{effort}",
+      "--mode",
+      "accept-edits",
       "--output-format",
       "json",
-      "--dangerously-skip-permissions"
+      "--print-timeout",
+      "1800s",
+      "--log-file",
+      "{trial}/agy/agy.log"
     ],
     "cwd": "{workspace}",
     "version": [
       "agy",
       "--version"
     ],
-    "files": {
-      ".agents/hooks.json": "{\n  \"deny-internet\": {\n    \"PreToolUse\": [\n      {\n        \"matcher\": \"search_web|read_url.*|browser_.*\",\n        \"hooks\": [\n          {\n            \"type\": \"command\",\n            \"command\": \"printf '%s' '{\\\"decision\\\":\\\"deny\\\",\\\"reason\\\":\\\"Internet access is disabled for this evaluation.\\\"}'\",\n            \"timeout\": 10\n          }\n        ]\n      }\n    ]\n  }\n}\n"
-    },
-    "verified": true,
-    "default": true
+    "verified": false,
+    "default": true,
+    "prepare": "agy",
+    "output": "agy-json",
+    "billing": "none"
   },
   "antigravity-gpt-oss": {
     "agent": "codex",
