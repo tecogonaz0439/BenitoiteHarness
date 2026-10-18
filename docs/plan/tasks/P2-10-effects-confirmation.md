@@ -50,3 +50,43 @@
 
 - `scripts/check.sh --inside-codex` が通る。
 - 完了の報告に、画面の例（各場合）、足した英文の全文、実行ファイルの大きさの変化を書く。
+
+## P2-08〜P2-12 の実装の後の補足（2026-10-18）
+
+P2-08、P2-12、P2-09、P4-07 を取り込んだ後に、この文書を実装に突き合わせた。上の記述と食い違うところは、この節を正とする。
+
+### 既にあるもの（作り直さない）
+
+- 題（`ui/tui/text.rs` の `approval_title`。`╭─ Run Benitoite script?`・`╭─ Run Benitoite tests?`）。`a`・`s` は `confirmation.rs` の `confirmation_input` が `Command`・`WebFetch` に限っており、`Effects`・`TestEffects` で受けないことと、先行入力と 300 ミリ秒の守りは `tests/tui/interaction.rs` の `approval_gate_and_key_table_have_no_implicit_or_modified_answer` が確かめている。テストの 4 のうちキーの部分は加えない。
+- 事実の行（`confirmation.rs` の `Confirmation::facts` の `Effects | TestEffects` の枝）: `Targets`、`Effects`、`Added effects`、`Imports files that benitoiteh does not read`（P2-12 の `unread_imports`）、`Shell`。
+- `Assert.Check` は道具の側で除いてから `facts.effects` と `added_effects` を作る（`benitoite_run.rs`・`benitoite_test.rs`）。画面の側で除く処理とそのテストは要らない。
+- `shell_reference` は、道具が `processShellReference` が `"present"` で `Process.Run` を含むときだけ真にする。
+- 収まらないときに許す答えを受けない扱い（`fits`）と制御の文字の変換は、種類によらない共有の部品で働く。手を加えない。
+- `benitoite_scratch` の確認は `benitoite_run::execute_script` を通る（`ApprovalKind::Effects`、`Targets` は一時ファイルの実の絶対パス、`added_effects` は作らない）。事実を埋める箇所は `benitoite_run.rs` の `execute_script` と `benitoite_test.rs` の `execute` の二つであり、`benitoite_scratch.rs` は触らない。一時的なスクリプトの題と示し方は今のままとする。
+- 「03-03 の利用者の言語の訳は示さない…」の項は済んだ（03-03 は英語だけと書いている）。作業から除く。
+
+### 残る作業
+
+- `ApprovalFacts` に `restricted: Option<RestrictedFacts>` を `#[serde(default, skip_serializing_if = "Option::is_none")]` で加える。`RestrictedFacts { writable: Vec<PathBuf>, network: bool, programs: Vec<PathBuf> }`（`Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize`）。ほかの種類の facts の JSON を変えない。
+- 二つの道具で、`context.run` があるときに、`benitoite::effects::restricted_access(&集合, &run.processor, &run.allowed_programs)` と `run.locations` から埋める。共有の関数は `tools/benitoite_process.rs` に置く。`writable` は `write_project` なら `[project, temporary]`、そうでなければ `[temporary]`、`network` は `allow_ip`、`programs` は `programs`。集合は、前に確認した集合と今回の報告の集合（`Assert.Check` を除く）の和とする。理由: 承認すると確認した集合は和になり、呼び直しは二度目の報告の集合で実行するので、一度目になかった前の確認のエフェクトも含みうる。今回の集合だけで作ると、実際の範囲が画面より広くなりうる。`context.run` がないとき（道具のテストの `Fixture::new()`）は `None` とし、画面はその区画を出さない。
+- エフェクトの説明: `ui/tui/text.rs` に `effect_description(Effect) -> &'static str` を網羅の `match` で置く。英文は `assets/benitoite/v0.0.7/skill/SKILL.md` の「Before running」の表から写し、注記に版（`v0.0.7`）を書く。`Process.Run` は末尾の ` (name them)`（エージェントへの指示）を除いて `starts external commands` とする。`IO.All` と `Assert.Check` の行は使わない。説明は、端末が狭くても省かない（収まらなければ、今の `fits` の規則で許す答えを受けない）。
+- 事実の並び（`Effects | TestEffects`。LLM の説明は今のとおり事実より前）:
+  1. `Targets`（今のまま）。
+  2. 読まないファイルの取り込みの件数（今の行を `Targets` のすぐ後に移す）。
+  3. `Effects`: 一行に一つ、`<印> <名前>  <説明>`。前の確認があるときは増えたものを先に `+` を付けて並べ、残りは今の綴りの順とする（印のない行は空白二つで揃える）。`Added effects` の行は廃する。空なら `none`。
+  4. `Sandbox`: 書ける場所と IP の通信の可否。
+  5. `Process.Run` を含むときだけ `Programs`: 許すプログラムの一覧と注意。macOS（`cfg!(target_os = "macos")`）で `programs` に処理系のほかのものがあるときだけ、プロセスグループの注意を加える。
+  6. `Shell`（今の行）。
+- 見出しは事実ごとに一行を使う今の `fact` の形を保ち、説明の行と注意の行を一つの事実の値（`\n` で繋ぐ）にまとめる。
+- 答えのキーの文（`Effects`・`TestEffects` だけ）を `[y] run and allow these effects for this session  [n] decline  [m] decline with a message` に改める（設計書 05-02「確認の画面」）。
+- 英文の案（取り込む前にオーケストレータが見直す）:
+  - `Sandbox` の値: `can write: <project> and the session temporary directory` か `can write: only the session temporary directory`、改行して `network: allowed` か `network: blocked`。
+  - `Programs` の値: 許すプログラムの実のパス（一行に一つ）の後に、`The OS sandbox blocks starting any other program.` と `Allowing Process.Run lets the script start benitoite on another script, which can use any operation the OS sandbox allows, including effects not listed above.`
+  - macOS の注意: `On macOS, processes that an allowed program starts in a new session or process group are not stopped when the tool ends.`
+- テスト（`tests/tui/interaction.rs`。今のテストを広げ、新しい関数は最小にする）:
+  - `effect_confirmation_displays_all_facts_but_not_source_hashes_and_must_fit` を、新しい並び、`+` の印、`Added effects` の廃止、キーの文に合わせて直し、`Process.Run` の有無で `Programs` の区画が出ること・出ないこと、macOS の注意の有無（`cfg!` で期待を分ける）を加える。
+  - `oversized_facts_disable_approval_keep_decline_and_never_overflow_the_screen` の表に、許すプログラムが多い `Effects` の場合と、制御の列と改行を含む `Targets` の場合を加える。
+  - 写しの一致: 本物の `SKILL.md` の表の行を読み（`env!("CARGO_MANIFEST_DIR")` から辿る。実行ファイルには埋め込まない）、12 のエフェクトを持つ確認を幅の広い端末（例: 300×60）で描き、各行の説明の英文がそのまま出ることを確かめる（`Process.Run` は ` (name them)` を除いて比べる）。期待値を `effect_description` から作らない。
+  - 収まり: `Console.Write, File.Read, File.Write, Process.Exit` に `Sandbox` を持つ確認が 80×24 で許せること。
+  - `tests/tools_benitoite_run.rs`・`tools_benitoite_test.rs`: `Fixture::sandbox()` を呼んで、`File.Write`・`Http.Connect`・`Process.Run` の有無で `facts.restricted` の三つの欄が変わることと、前の確認との和で作ることを、本物の報告で確かめる（実行の前に返るので Codex の中で動く。`BENITOITEH_TEST_BENITOITE` が要る）。
+- 完了の報告に、`IO.All` と `Process.Run` を持つスクリプトの確認が許せる最小の端末の大きさ（80 桁と 120 桁で）を書く。
