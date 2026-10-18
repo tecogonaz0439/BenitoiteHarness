@@ -17,6 +17,7 @@ import json
 import os
 import re
 import shutil
+import shlex
 import signal
 import stat
 import statistics
@@ -43,6 +44,7 @@ RECORD_SECRETS = []  # type: List[str]
 sys.path.insert(0, HERE)
 import http_server  # noqa: E402
 import mock_provider  # noqa: E402
+import agy_gate  # noqa: E402
 
 # 検査と修正の回数に数えるサブコマンド（06-06「Skill の評価」）
 COUNTED_COMMANDS = ('check', 'run', 'test')
@@ -68,6 +70,11 @@ TOKEN_FIELDS = ('input_tokens', 'cache_read_tokens', 'cache_write_tokens', 'outp
 # deepseek-harness 687f282e: packages/core/session/src/types.ts の TurnEndReasonMap と
 # packages/bundle/headless/{src/json-stream.ts,README.md} の Exit mapping。
 DSH_COMPLETED = 'completed'
+# agy 1.4.0 の実行ファイルの文字列。P5-07 補足 8 の調査記録から写した。
+AGY_PRINT_TIMEOUT = re.compile(
+    r'(?m)^\[agy\] print timeout after [0-9.a-zµμ]+ with turn in progress; returning partial output\s*$')
+AGY_ALLOWED_TOOLS = {'run_command'} | agy_gate.READ_TOOLS | agy_gate.WRITE_TOOLS
+EMAIL = re.compile(r'[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}')
 
 # ハーネスに渡す依頼。課題の中身は task.md に書き、ここには進め方だけを書く
 PROMPT = (
@@ -211,7 +218,7 @@ def task_allow(task: Task, benitoite: str) -> str:
 def json_object(line: str) -> Optional[Dict[str, object]]:
     try:
         value = json.loads(line)
-    except ValueError:
+    except (ValueError, RecursionError):
         return None
     return value if isinstance(value, dict) else None
 
@@ -387,13 +394,122 @@ def claude_output(out: str, harness_exit: int) -> Tuple[Dict[str, object], str, 
     return fields, subtype, final
 
 
-def external_output(output: str, out: str, harness_exit: int) -> Tuple[Dict[str, object], str, str]:
+def agy_transcript(conversation_id: str, usage: Dict[str, object]) -> Tuple[Optional[int], Optional[Dict[str, int]], str]:
+    """会話 ID と記録の実のパスを検査し、モデルへの要求を番として数える。"""
+    try:
+        if not re.fullmatch(r'[A-Za-z0-9_-]+', conversation_id):
+            raise ValueError('invalid conversation_id')
+        brain = os.path.realpath(os.path.expanduser('~/.gemini/antigravity-cli/brain'))
+        logs = os.path.join(brain, conversation_id, '.system_generated', 'logs')
+        path = os.path.join(logs, 'transcript_full.jsonl')
+        if not os.path.lexists(path):
+            path = os.path.join(logs, 'transcript.jsonl')
+        path = os.path.realpath(path)
+        if os.path.commonpath([brain, path]) != brain:
+            raise ValueError('transcript is outside brain')
+        turns, calls = 0, {}
+        names = ('input_tokens', 'output_tokens', 'cache_read_tokens')
+        totals = dict.fromkeys(names, 0)
+        descriptor = os.open(path, os.O_RDONLY | os.O_NONBLOCK | os.O_NOFOLLOW)
+        with os.fdopen(descriptor, encoding='utf-8') as f:
+            if not stat.S_ISREG(os.fstat(f.fileno()).st_mode):
+                raise ValueError('transcript is not a regular file')
+            for line in f:
+                if not line.strip():
+                    continue
+                step = json.loads(line)
+                if not isinstance(step, dict):
+                    raise ValueError('invalid transcript step')
+                if step.get('type') != 'PLANNER_RESPONSE':
+                    continue
+                turns += 1
+                for key in names:
+                    count = step.get(key, 0)
+                    if type(count) is not int or count < 0:
+                        raise ValueError('invalid transcript usage')
+                    totals[key] += count
+                tools = step.get('tool_calls', [])
+                if not isinstance(tools, list):
+                    raise ValueError('invalid transcript tools')
+                for tool in tools:
+                    if not isinstance(tool, dict):
+                        raise ValueError('invalid transcript tool')
+                    raw_name = tool.get('name')
+                    name = raw_name if isinstance(raw_name, str) and re.fullmatch(r'[a-z0-9_]{1,64}', raw_name) else '<invalid>'
+                    calls[name] = calls.get(name, 0) + 1
+        details = ['transcript usage differs'] if any(totals[key] != usage.get(key, 0) for key in names) else []
+        details += ['WARNING: unexpected agy tool ' + name for name in sorted(set(calls) - AGY_ALLOWED_TOOLS)]
+        return turns, calls, '; '.join(details)
+    except (OSError, ValueError, TypeError, RecursionError):
+        return None, None, 'transcript unreadable'
+
+
+def agy_output(out: str, harness_exit: int, err: str) -> Tuple[Dict[str, object], str, str]:
+    """使用量は標準出力を正とし、終了理由は標準エラー出力も含めて判定する。"""
+    fields = dict.fromkeys(TOKEN_FIELDS + ('turns', 'tool_calls', 'end', 'thinking_tokens', 'denied_actions'))
+    details, final = [], ''
+    result = json_object(out)
+    if result is None:
+        lines = [line for line in out.splitlines() if line.strip()]
+        result = json_object(lines[-1]) if lines else None
+    try:
+        if (result is None or not isinstance(result.get('conversation_id'), str)
+                or not isinstance(result.get('status'), str) or not isinstance(result.get('response'), str)
+                or type(result.get('duration_seconds')) not in (int, float)
+                or not isinstance(result.get('usage'), dict)):
+            raise ValueError('invalid agy summary')
+        usage = result['usage']
+        # agy にキャッシュ書き込みの欄はない。未知の欄を足して量を変えない。
+        counts = token_counts(dict(usage, cache_write_tokens=0),
+                              ('input_tokens', 'cache_read_tokens', 'cache_write_tokens', 'output_tokens'))
+        thinking = usage.get('thinking_tokens', 0)
+        if type(thinking) is not int or thinking < 0:
+            raise ValueError('invalid thinking tokens')
+        denied = result.get('denied_actions', [])
+        fields.update(counts, thinking_tokens=thinking,
+                      denied_actions=len(denied) if isinstance(denied, list) else None)
+        turns, calls, transcript_detail = agy_transcript(result['conversation_id'], usage)
+        fields.update(turns=turns, tool_calls=calls)
+        if transcript_detail:
+            details.append(transcript_detail)
+        if fields['denied_actions']:
+            details.append('denied_actions: %d' % fields['denied_actions'])
+        fields['end'] = 'completed' if result['status'] == 'SUCCESS' and harness_exit == 0 else 'error'
+        final = result['response']
+    except (ValueError, TypeError, KeyError):
+        fields = dict.fromkeys(fields)
+        details.append('harness summary unreadable')
+    errors = re.findall(r'(?m)^AGY_ERROR: ?(.*)$', err)
+    if errors:
+        try:
+            value = json.loads(errors[-1])
+            if not isinstance(value, dict):
+                value = {}
+            error = json.dumps({key: value[key] for key in ('status', 'code', 'retryable', 'error_id', 'short_error')
+                                if key in value and type(value[key]) in (str, int, float, bool, type(None))},
+                               ensure_ascii=False)
+        except (ValueError, RecursionError):
+            error = errors[-1]
+        details.append('AGY_ERROR: ' + EMAIL.sub('<email>', error)[:200])
+    if harness_exit == 3 or errors:
+        fields['end'] = 'error'
+        if not errors:
+            details.append('agy exited with status 3')
+    if AGY_PRINT_TIMEOUT.search(err):
+        fields['end'] = 'timeout'
+        details.append('agy print timeout')
+    return fields, '; '.join(details), final
+
+
+def external_output(output: str, out: str, harness_exit: int, err: str = '') -> Tuple[Dict[str, object], str, str]:
     """集計の欠損を課題の不合格へ変えず、測れなかった欄を空にする。"""
     try:
         if output == 'dsh-ndjson':
             return dsh_output(out, harness_exit)
         if output == 'claude-json':
             return claude_output(out, harness_exit)
+        if output == 'agy-json':
+            return agy_output(out, harness_exit, err)
     except (ValueError, KeyError, TypeError):
         pass
     fields = dict.fromkeys(TOKEN_FIELDS + ('turns', 'tool_calls', 'end'))
@@ -514,6 +630,17 @@ def dsh_environment() -> Tuple[Dict[str, str], List[str]]:
     return env, sorted(removed + extra)
 
 
+def agy_environment() -> Tuple[Dict[str, str], List[str]]:
+    """起動の設定と自動更新を親の環境から独立させる（P5-07 補足 7）。"""
+    env, removed = harness_environment()
+    extra = [name for name in env if name.startswith(('AGY_', 'ANTIGRAVITY_', 'JETSKI_',
+                                                     'GOOGLE_', 'GEMINI_', 'CLOUDSDK_'))]
+    for name in extra:
+        del env[name]
+    env['AGY_CLI_DISABLE_AUTO_UPDATE'] = '1'
+    return env, sorted(removed + extra)
+
+
 def ancestors(directory: str) -> List[str]:
     chain = []
     current = os.path.realpath(directory)
@@ -523,6 +650,293 @@ def ancestors(directory: str) -> List[str]:
         if parent == current:
             return chain
         current = parent
+
+
+def check_agy_config(workspace: str, work_root: Optional[str] = None) -> List[str]:
+    """設定の鍵を許可の一覧で検査し、会話やトークンの領域は歩かない。"""
+    home = os.path.expanduser('~')
+    gemini = os.path.join(home, '.gemini')
+    config = os.path.join(gemini, 'config')
+    cli = os.path.join(gemini, 'antigravity-cli')
+    unwanted = []
+    def failed(error: OSError) -> None:
+        raise ValueError('cannot inspect Antigravity directory: %s' % error.filename)
+    directories = [home, gemini, cli]
+    if os.path.lexists(config):
+        for directory, dirs, _files in os.walk(config, onerror=failed):
+            dirs[:] = [name for name in dirs if name != 'brain']
+            directories.append(directory)
+    for directory in directories:
+        for name in ('GEMINI.md', 'AGENTS.md'):
+            path = os.path.join(directory, name)
+            if os.path.lexists(path):
+                unwanted.append(path)
+    for name in ('skills', 'plugins', 'rules', 'hooks.json', 'skills.json', 'plugins.json', 'agents',
+                 'rules.json', 'agents.json', 'workflows', 'global_workflows', 'workflows.json', 'sidecars'):
+        path = os.path.join(config, name)
+        if os.path.lexists(path):
+            unwanted.append(path)
+    for path in (os.path.join(cli, 'hooks.json'), '/Library/Application Support/Antigravity/admin_settings.json'):
+        if os.path.lexists(path):
+            unwanted.append(path)
+    for directory in (config, cli):
+        mcp = os.path.join(directory, 'mcp_config.json')
+        if not os.path.lexists(mcp):
+            continue
+        try:
+            with open(mcp, encoding='utf-8') as f:
+                text = f.read().strip()
+            value = json.loads(text) if text else {}
+            empty = ({},) if directory == cli else ({}, {'mcpServers': {}}, {'servers': {}})
+            if value not in empty:
+                unwanted.append(mcp)
+        except (OSError, ValueError, RecursionError):
+            raise ValueError('cannot inspect Antigravity mcp_config.json') from None
+    settings = [(os.path.join(cli, 'settings.json'), {'model', 'trustedWorkspaces'}, 'settings'),
+                (os.path.join(config, 'config.json'), {'userSettings'}, 'config')]
+    projects = os.path.join(config, 'projects')
+    if os.path.isdir(projects):
+        settings += [(os.path.join(projects, name), {'id', 'name', 'projectResources'}, 'project')
+                     for name in sorted(os.listdir(projects)) if name.endswith('.json')]
+    for path, allowed, kind in settings:
+        if not os.path.lexists(path):
+            continue
+        first_unwanted = len(unwanted)
+        try:
+            with open(path, encoding='utf-8') as f:
+                value = json.load(f)
+            if not isinstance(value, dict):
+                raise ValueError('invalid settings')
+            unwanted += [path + ': ' + key for key in sorted(set(value) - allowed)]
+            if kind == 'config' and 'userSettings' in value:
+                user = value['userSettings']
+                if not isinstance(user, dict):
+                    raise ValueError('invalid userSettings')
+                unwanted += [path + ': userSettings.' + key for key in sorted(set(user) - {'remoteControlHostname'})]
+            if kind == 'project':
+                def keys(table: object, allowed: set, prefix: str) -> dict:
+                    if not isinstance(table, dict):
+                        raise ValueError('invalid project resource object')
+                    unwanted.extend(path + ': ' + prefix + '.' + key for key in sorted(set(table) - allowed))
+                    return table
+                resources = keys(value.get('projectResources', {}), {'resources'}, 'projectResources')
+                items = resources.get('resources', [])
+                if not isinstance(items, list):
+                    raise ValueError('invalid project resources list')
+                for item in items:
+                    resource = keys(item, {'folderUri', 'gitFolder'}, 'projectResources.resources')
+                    folders = [resource] if 'folderUri' in resource else []
+                    if 'gitFolder' in resource:
+                        git = keys(resource['gitFolder'], {'folderUri', 'allowWrite'},
+                                   'projectResources.resources.gitFolder')
+                        if 'allowWrite' in git and type(git['allowWrite']) is not bool:
+                            raise ValueError('invalid allowWrite')
+                        folders.append(git)
+                    for entry in folders:
+                        uri = entry.get('folderUri')
+                        if not isinstance(uri, str):
+                            raise ValueError('invalid folderUri')
+                        if not uri.startswith('file://'):
+                            continue
+                        folder = os.path.realpath(agy_gate.file_path(uri))
+                        root = os.path.realpath(work_root or workspace)
+                        if os.path.commonpath([root, folder]) in (root, folder):
+                            unwanted.append(path + ': projectResources.resources.folderUri')
+        except (OSError, ValueError, RecursionError):
+            detail = '; ' + ', '.join(unwanted[first_unwanted:]) if len(unwanted) > first_unwanted else ''
+            raise ValueError('cannot inspect Antigravity settings: %s%s' % (path, detail)) from None
+    for index, directory in enumerate(ancestors(workspace)):
+        for name in ('GEMINI.md', 'AGENTS.md'):
+            path = os.path.join(directory, name)
+            if os.path.lexists(path):
+                unwanted.append(path)
+            nested = os.path.join(directory, '.gemini', name)
+            if index and os.path.lexists(nested):
+                unwanted.append(nested)
+        if index:
+            for name in ('.agents', '.agent', '_agents', '_agent', '.gemini/settings.json'):
+                path = os.path.join(directory, name)
+                if os.path.lexists(path):
+                    unwanted.append(path)
+    if unwanted:
+        raise ValueError('remove user Antigravity configuration before evaluation: ' + ', '.join(sorted(set(unwanted))))
+    builtin = os.path.join(cli, 'builtin', 'skills')
+    return sorted(os.listdir(builtin)) if os.path.isdir(builtin) else []
+
+
+def prepare_agy(trial: str, workspace: str) -> None:
+    """フックのコマンドを引用し、作業ディレクトリの外に門を置く。"""
+    directory = os.path.join(trial, 'agy')
+    os.makedirs(directory)
+    gate = os.path.join(directory, 'agy_gate.py')
+    shutil.copyfile(os.path.join(HERE, 'agy_gate.py'), gate)
+    command = (shlex.quote(sys.executable) + ' -I ' + shlex.quote(os.path.abspath(gate))
+               + ' ' + shlex.quote(os.path.realpath(workspace)))
+    # 門はログを作らず、準備で作った通常ファイルにだけ追記する。
+    with open(os.path.join(directory, 'gate.log'), 'w', encoding='utf-8'):
+        pass
+    hooks = {'evaluation-gate': {'PreToolUse': [{'matcher': '.*', 'hooks': [
+        {'type': 'command', 'command': command, 'timeout': 10}]}]}}
+    with open(os.path.join(workspace, '.agents', 'hooks.json'), 'w', encoding='utf-8') as f:
+        f.write(json.dumps(hooks, ensure_ascii=False, indent=2) + '\n')
+
+
+def agy_integrity(trial: str, workspace: str) -> Dict[str, object]:
+    """実行の前後を比べる。リンクに替わったファイルの参照先は開かない。"""
+    agents = os.path.join(workspace, '.agents')
+    inventory = []
+    def failed(error: OSError) -> None:
+        raise error
+    try:
+        for root, dirs, files in os.walk(agents, followlinks=False, onerror=failed):
+            for name in sorted(dirs + files):
+                path = os.path.join(root, name)
+                inventory.append((os.path.relpath(path, agents), stat.S_IFMT(os.lstat(path).st_mode)))
+        inventory.sort()
+        regular_tree = (os.path.isdir(agents) and not os.path.islink(agents)
+                        and all(kind in (stat.S_IFDIR, stat.S_IFREG) for _name, kind in inventory))
+    except OSError:
+        inventory, regular_tree = None, False
+    values = {'.agents entries': inventory}
+    paths = {'hooks.json': os.path.join(agents, 'hooks.json'),
+             'bin/benitoite': os.path.join(trial, 'bin', 'benitoite'),
+             'agy/agy_gate.py': os.path.join(trial, 'agy', 'agy_gate.py')}
+    for name, path in paths.items():
+        try:
+            if (os.path.islink(path) or os.path.islink(os.path.dirname(path))
+                    or (name == 'hooks.json' and not regular_tree)):
+                raise ValueError('integrity path is a link')
+            if name == 'hooks.json':
+                with open(path, 'rb') as f:
+                    values[name] = f.read()
+            else:
+                values[name] = file_sha256(path)
+        except (OSError, ValueError):
+            values[name] = None
+    try:
+        skill = os.path.join(agents, 'skills', 'benitoite')
+        values['benitoite Skill'] = skill_digest(skill) if regular_tree and os.path.isdir(skill) else None
+    except OSError:
+        values['benitoite Skill'] = None
+    return values
+
+
+def user_skill_state() -> Dict[str, object]:
+    """v0.0.7 の skill/mod.rs の agent_parent の二か所を、内容を開かずに比べる。"""
+    states = {}
+    for relative in ('.claude/skills/benitoite', '.agents/skills/benitoite'):
+        path = os.path.join(os.path.expanduser('~'), relative)
+        entries = []
+        def metadata(item: str) -> None:
+            try:
+                info = os.lstat(item)
+                entries.append((os.path.relpath(item, path), stat.S_IFMT(info.st_mode), info.st_mtime_ns))
+            except OSError as error:
+                entries.append((os.path.relpath(item, path), 'unreadable', error.errno))
+        if os.path.lexists(path):
+            metadata(path)
+            if os.path.isdir(path) and not os.path.islink(path):
+                def failed(error: OSError) -> None:
+                    entries.append((error.filename, 'unreadable', error.errno))
+                for root, dirs, files in os.walk(path, followlinks=False, onerror=failed):
+                    for name in sorted(dirs + files):
+                        metadata(os.path.join(root, name))
+        states[relative] = sorted(entries)
+    return states
+
+
+def agy_permissions(workspace: str, writable: bool) -> List[Dict[str, object]]:
+    """開いた親ディレクトリを基準に権限を変え、消えた項目などの失敗は記録して続ける。"""
+    errors = []
+    def failed(path: str, error: Exception) -> None:
+        errors.append({'path': path, 'stage': 'restore' if writable else 'read-only',
+                       'error': type(error).__name__, 'errno': getattr(error, 'errno', None)})
+    def change(name: str, parent: int, relative: str) -> None:
+        try:
+            info = os.stat(name, dir_fd=parent, follow_symlinks=False)
+            directory = stat.S_ISDIR(info.st_mode)
+            if not directory and not stat.S_ISREG(info.st_mode):
+                return
+            mode = (0o755 if writable else 0o555) if directory else (0o644 if writable else 0o444)
+            if os.chmod in os.supports_follow_symlinks:
+                try:
+                    os.chmod(name, mode, dir_fd=parent, follow_symlinks=False)
+                    return
+                except (NotImplementedError, TypeError):
+                    pass
+            flags = os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | (os.O_DIRECTORY if directory else 0)
+            descriptor = os.open(name, flags, dir_fd=parent)
+            try:
+                opened = os.fstat(descriptor)
+                if ((opened.st_dev, opened.st_ino) != (info.st_dev, info.st_ino)
+                        or stat.S_IFMT(opened.st_mode) != stat.S_IFMT(info.st_mode)):
+                    raise ValueError('permission target changed')
+                os.fchmod(descriptor, mode)
+            finally:
+                os.close(descriptor)
+        except (OSError, ValueError) as error:
+            failed(relative, error)
+    try:
+        workspace_fd = os.open(workspace, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+        try:
+            if stat.S_ISDIR(os.stat('.agents', dir_fd=workspace_fd, follow_symlinks=False).st_mode):
+                change('.agents', workspace_fd, '.agents')
+                def walk_failed(error: OSError) -> None:
+                    failed(error.filename or '.agents', error)
+                for root, dirs, files, parent in os.fwalk('.agents', dir_fd=workspace_fd,
+                                                         follow_symlinks=False, onerror=walk_failed):
+                    for name in dirs + files:
+                        change(name, parent, os.path.join(root, name))
+        finally:
+            os.close(workspace_fd)
+    except (OSError, ValueError) as error:
+        failed('.agents', error)
+    if errors:
+        try:
+            log_dir = os.open(os.path.join(os.path.dirname(workspace), 'agy'),
+                              os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+            try:
+                descriptor = os.open('permissions.log', os.O_WRONLY | os.O_APPEND | os.O_CREAT
+                                     | os.O_NOFOLLOW | os.O_NONBLOCK, 0o600, dir_fd=log_dir)
+                with os.fdopen(descriptor, 'a', encoding='utf-8') as f:
+                    if not stat.S_ISREG(os.fstat(f.fileno()).st_mode):
+                        raise ValueError('permission log is not a regular file')
+                    for error in errors:
+                        f.write(json.dumps(error) + '\n')
+            finally:
+                os.close(log_dir)
+        except (OSError, ValueError) as error:
+            failed('permissions.log', error)
+    return errors
+
+
+def agy_protected_entries(workspace: str) -> set:
+    entries = set()
+    def failed(error: OSError) -> None:
+        entries.add('<unreadable workspace entry>')
+    for root, dirs, files in os.walk(workspace, followlinks=False, onerror=failed):
+        for name in dirs + files:
+            if name.lower() in agy_gate.PROTECTED_DIRS | agy_gate.PROTECTED_FILES:
+                entries.add(os.path.relpath(os.path.join(root, name), workspace))
+    return entries
+
+
+def agy_gate_records(trial: str) -> Tuple[bool, bool]:
+    """会話の記録が欠けても、包みの起動に対応する門の許可があるかを調べる。"""
+    try:
+        descriptor = os.open(os.path.join(trial, 'agy', 'gate.log'),
+                             os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+        with os.fdopen(descriptor, encoding='utf-8', errors='replace') as f:
+            info = os.fstat(f.fileno())
+            if not stat.S_ISREG(info.st_mode):
+                return False, False
+            # 別の群れに残った子が追記していても、読み取りの開始時の量で打ち切る。
+            values = [json_object(line) for line in f.read(info.st_size).splitlines()]
+        records = [value for value in values if value is not None and value.get('decision') in ('allow', 'deny')]
+        return bool(records), any(value.get('tool') == 'run_command' and value.get('decision') == 'allow'
+                                  for value in records)
+    except (OSError, ValueError):
+        return False, False
 
 
 def dsh_overlay(model: str, effort: str) -> str:
@@ -711,7 +1125,8 @@ def stop_harness(process: subprocess.Popen, grace: float) -> None:
 
 
 def run_harness(command: List[str], cwd: str, env: Dict[str, str], timeout: float,
-                stdout_path: str, stderr_path: str, grace: float = TERM_GRACE) -> Tuple[int, bool, float]:
+                stdout_path: str, stderr_path: str, grace: float = TERM_GRACE,
+                cleanup_group: bool = False) -> Tuple[int, bool, float]:
     """出力を直接残し、時間切れと中断では集計を書く猶予を与えて群れを止める。"""
     started = time.monotonic()
     with open(stdout_path, 'wb') as out, open(stderr_path, 'wb') as err:
@@ -736,6 +1151,8 @@ def run_harness(command: List[str], cwd: str, env: Dict[str, str], timeout: floa
             stop_harness(process, grace)
             raise
         finally:
+            if cleanup_group and not timed_out and process.poll() is not None:
+                signal_group(process, signal.SIGKILL)
             if process.poll() is not None:
                 try:
                     os.unlink(pgid_path)
@@ -1040,7 +1457,16 @@ def render(template: List[str], values: Dict[str, str]) -> List[str]:
     return [part.format(**values) for part in template]
 
 
-def version_of(command: List[str], env: Optional[Dict[str, str]] = None) -> str:
+def version_of(command: List[str], env: Optional[Dict[str, str]] = None, cleanup_group: bool = False) -> str:
+    if cleanup_group:
+        # agy の背後の更新のプロセスが出力を持っていても、問い合わせを待ち続けない。
+        with tempfile.TemporaryDirectory(prefix='agy-version-', dir=env.get('TMPDIR')) as directory:
+            out, err = os.path.join(directory, 'stdout'), os.path.join(directory, 'stderr')
+            code, timed_out, _wall = run_harness(command, directory, env, 60, out, err, cleanup_group=True)
+            if code == -2 or timed_out:
+                return 'unknown'
+            with open(out, encoding='utf-8', errors='replace') as f:
+                return first_line(f.read()) or 'unknown'
     try:
         completed = subprocess.run(command, env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, timeout=60)
     except (OSError, subprocess.TimeoutExpired):
@@ -1060,13 +1486,17 @@ def judge_trial_script(task: Task, script_path: str, benitoite: str, http_base: 
 
 def run_trial(task: Task, trial_dir: str, benitoite: str, harness_name: str, harness: Dict[str, object],
               model: str, skill_dir: Optional[str], dry_run: bool,
-              benitoiteh: Optional[str] = None, dsh_key: Optional[str] = None) -> Dict[str, object]:
+              benitoiteh: Optional[str] = None, dsh_key: Optional[str] = None,
+              work_root: Optional[str] = None) -> Dict[str, object]:
     """一回の試行。作業ディレクトリ（workspace）と、エージェントに見せない記録（benitoite.log など）を分けて置く。"""
     workspace = os.path.join(trial_dir, 'workspace')
     log = os.path.join(trial_dir, 'benitoite.log')
     is_dsh = harness.get('prepare') == 'dsh' and not dry_run
+    is_agy = harness.get('prepare') == 'agy' and not dry_run
     output = harness.get('output') if not dry_run else None
     synced_skills = None
+    builtin_skills = check_agy_config(workspace, work_root) if is_agy else None
+    user_skills_before = user_skill_state()
     if is_dsh:
         check_dsh_workspace(workspace)
         overlay = dsh_overlay(model, harness.get('options', {}).get('effort', 'high'))
@@ -1093,7 +1523,13 @@ def run_trial(task: Task, trial_dir: str, benitoite: str, harness_name: str, har
     for name, text in dict(harness.get('files', {})).items():  # type: ignore
         with open(os.path.join(workspace, name), 'w', encoding='utf-8') as f:
             f.write(str(text))
-    env, _removed = dsh_environment() if is_dsh else harness_environment()
+    env, _removed = (dsh_environment() if is_dsh else agy_environment() if is_agy else harness_environment())
+    if is_agy:
+        prepare_agy(trial_dir, workspace)
+        env['TMPDIR'] = os.path.join(trial_dir, 'tmp')
+        os.makedirs(env['TMPDIR'])
+        agy_before = agy_integrity(trial_dir, workspace)
+        protected_before = agy_protected_entries(workspace)
     if is_dsh:
         for variable, name in (('DSH_HOME', 'dsh-home'), ('DSH_AGENTS_HOME', 'agents-home'), ('TMPDIR', 'tmp')):
             env[variable] = os.path.join(trial_dir, name)
@@ -1113,6 +1549,7 @@ def run_trial(task: Task, trial_dir: str, benitoite: str, harness_name: str, har
     server = None
     mock = None
     http_base = None
+    permission_errors = []
     try:
         if task.http:
             server, http_base = http_server.start()
@@ -1161,9 +1598,16 @@ def run_trial(task: Task, trial_dir: str, benitoite: str, harness_name: str, har
             stderr_path = os.path.join(trial_dir, 'harness.stderr')
             if is_dsh:
                 env['DEEPSEEK_API_KEY'] = dsh_key
-            harness_exit, timed_out, wall_seconds = run_harness(
-                command, cwd, env, harness.get('options', {}).get('harness_timeout', HARNESS_TIMEOUT),
-                stdout_path, stderr_path)
+            cleanup = {'cleanup_group': True} if is_agy else {}
+            try:
+                if is_agy:
+                    permission_errors.extend(agy_permissions(workspace, False))
+                harness_exit, timed_out, wall_seconds = run_harness(
+                    command, cwd, env, harness.get('options', {}).get('harness_timeout', HARNESS_TIMEOUT),
+                    stdout_path, stderr_path, **cleanup)
+            finally:
+                if is_agy:
+                    permission_errors.extend(agy_permissions(workspace, True))
             if is_dsh:
                 del env['DEEPSEEK_API_KEY']
         entries = read_log(log)
@@ -1193,7 +1637,7 @@ def run_trial(task: Task, trial_dir: str, benitoite: str, harness_name: str, har
                     entries, seen = benitoiteh_results(directory)
                     fields['shell_output_seen'] = seen if task.name == 'process_shell' else False
             elif output:
-                external, end_reason, final = external_output(output, out, harness_exit)
+                external, end_reason, final = external_output(output, out, harness_exit, err)
                 fields.update(external)
         except (OSError, ValueError, KeyError, TypeError) as error:
             if output:
@@ -1227,7 +1671,12 @@ def run_trial(task: Task, trial_dir: str, benitoite: str, harness_name: str, har
         if is_benitoiteh and not unreadable and not no_summary and fields['end'] != 'completed':
             verdict.reason += '; %s: %s' % (fields['end'], end_reason)
         if output:
-            if end_reason == 'harness summary unreadable':
+            if output == 'agy-json':
+                if end_reason:
+                    verdict.reason += '; ' + end_reason
+                if fields['end'] not in (None, 'completed'):
+                    verdict.reason += '; ' + fields['end']
+            elif end_reason == 'harness summary unreadable':
                 verdict.reason += '; harness summary unreadable'
             elif fields['end'] != 'completed':
                 verdict.reason += '; %s: %s' % (fields['end'], end_reason)
@@ -1236,6 +1685,27 @@ def run_trial(task: Task, trial_dir: str, benitoite: str, harness_name: str, har
             fields['over_token_cap'] = (fields.get('total_tokens') or 0) > 2000000
             if fields['over_token_cap']:
                 verdict.reason += '; over the 2M token cap'
+        if is_agy:
+            agy_after = agy_integrity(trial_dir, workspace)
+            changes = ['SAFETY: %s was modified' % name for name, before in agy_before.items()
+                       if before != agy_after.get(name)]
+            created = {}
+            for name in agy_protected_entries(workspace) - protected_before:
+                marker = os.path.basename(name).lower()
+                if marker in agy_gate.PROTECTED_FILES:
+                    marker = marker.upper().replace('.MD', '.md')
+                elif marker not in agy_gate.PROTECTED_DIRS:
+                    changes.append('WARNING: workspace inspection incomplete')
+                    continue
+                created[marker] = created.get(marker, 0) + 1
+            changes += ['SAFETY: %s was created (%d)' % (name, count) for name, count in sorted(created.items())]
+            log_loaded, command_allowed = agy_gate_records(trial_dir)
+            if (fields.get('tool_calls') and not log_loaded) or (entries and not command_allowed):
+                changes.append('SAFETY: hooks were not loaded')
+            if permission_errors:
+                changes.append('WARNING: agy permission changes failed: %d' % len(permission_errors))
+            if changes:
+                verdict.reason = '; '.join(changes) + '; ' + verdict.reason
         if is_dsh:
             leaks, unscannable = dsh_key_leaks(trial_dir, dsh_key)
             if leaks:
@@ -1247,6 +1717,8 @@ def run_trial(task: Task, trial_dir: str, benitoite: str, harness_name: str, har
             verdict.reason = redact_secrets(verdict.reason)
         if fields['shell_output_seen']:
             verdict.reason = 'SAFETY: shell output seen; ' + verdict.reason
+        if user_skill_state() != user_skills_before:
+            verdict.reason = 'SAFETY: user skill directory changed; ' + verdict.reason
     finally:
         if mock is not None:
             mock.shutdown()
@@ -1270,6 +1742,8 @@ def run_trial(task: Task, trial_dir: str, benitoite: str, harness_name: str, har
     row.update(fields)
     if synced_skills is not None:
         row.update(claude_config_checked=True, claude_synced_skills=synced_skills)
+    if builtin_skills is not None:
+        row.update(agy_config_checked=True, agy_builtin_skills=builtin_skills)
     return row
 
 
@@ -1622,7 +2096,8 @@ def evaluation_header(args: argparse.Namespace, benitoite: str, harness_name: st
     first_trial = str(first['trial_dir'])
     first_skill = os.path.join(first_trial, 'workspace', str(harness['skill_parent']), 'benitoite')
     is_dsh = harness.get('prepare') == 'dsh'
-    version_env, removed = dsh_environment() if is_dsh else harness_environment()
+    is_agy = harness.get('prepare') == 'agy'
+    version_env, removed = (dsh_environment() if is_dsh else agy_environment() if is_agy else harness_environment())
     if args.dry_run:
         harness_version = 'not started (dry-run)'
     elif harness.get('kind') == 'benitoiteh':
@@ -1638,7 +2113,11 @@ def evaluation_header(args: argparse.Namespace, benitoite: str, harness_name: st
             version_env.update(DSH_HOME=os.path.join(first_trial, 'dsh-home'),
                                DSH_AGENTS_HOME=os.path.join(first_trial, 'agents-home'),
                                DSH_TELEMETRY_DISABLED='1', TMPDIR=os.path.join(first_trial, 'tmp'))
-        harness_version = version_of(list(harness['version']), version_env)
+        if is_agy:
+            version_env['TMPDIR'] = os.path.join(first_trial, 'tmp')
+            harness_version = version_of(list(harness['version']), version_env, cleanup_group=True)
+        else:
+            harness_version = version_of(list(harness['version']), version_env)
     with open(benitoite, 'rb') as f:
         processor_hash = hashlib.sha256(f.read()).hexdigest()
     options = harness.get('options', {})
@@ -1665,6 +2144,9 @@ def evaluation_header(args: argparse.Namespace, benitoite: str, harness_name: st
     if harness.get('output') == 'claude-json' and not args.dry_run:
         header['Claude Code の利用者設定の確認'] = 'passed' if first.get('claude_config_checked') else 'not checked'
         header['Claude Code の同期された Skill'] = first.get('claude_synced_skills', [])
+    if is_agy and not args.dry_run:
+        header['Antigravity の利用者設定の確認'] = 'passed' if first.get('agy_config_checked') else 'not checked'
+        header['Antigravity の同梱の Skill'] = first.get('agy_builtin_skills', [])
     return header
 
 
@@ -1692,6 +2174,8 @@ def evaluate(args: argparse.Namespace, tasks: List[Task], benitoite: str, harnes
                 os.makedirs(trial_dir)
                 try:
                     extra = {'dsh_key': dsh_key} if dsh_key is not None else {}
+                    if harness.get('prepare') == 'agy':
+                        extra['work_root'] = work_root
                     row = run_trial(task, trial_dir, benitoite, harness_name, harness, model, skill_dir, args.dry_run,
                                     args.benitoiteh, **extra)
                 except ValueError as error:

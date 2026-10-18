@@ -11,6 +11,7 @@ import shutil
 import sys
 import tempfile
 import signal
+import stat
 import subprocess
 import time
 import unittest
@@ -19,6 +20,19 @@ from unittest import mock
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import mock_provider
 import skill_eval as evaluation
+
+
+def setUpModule():
+    # 準備の失敗経路や子プロセスも、本物のホームと設定を見ない。
+    temporary = tempfile.TemporaryDirectory(prefix='skill-eval-suite-')
+    unittest.addModuleCleanup(temporary.cleanup)
+    values = {}
+    for variable in ('HOME', 'XDG_CONFIG_HOME', 'XDG_STATE_HOME', 'TMPDIR', 'CLAUDE_CONFIG_DIR'):
+        values[variable] = os.path.join(temporary.name, variable.lower())
+        os.makedirs(values[variable])
+    patch = mock.patch.dict(os.environ, values)
+    patch.start()
+    unittest.addModuleCleanup(patch.stop)
 
 
 def event_output(reason='The run completed.', outcome='completed', calls=None):
@@ -804,7 +818,7 @@ class RecordsAndCostTests(unittest.TestCase):
                 harness = copy.deepcopy(evaluation.load_harnesses()['benitoiteh-mock'])
                 harness.pop('mock')
                 path = os.path.join(directory, 'record.md')
-                with mock.patch.dict(os.environ, CLAUDECODE='test-parent', ANTHROPIC_API_KEY='test-key',
+                with mock.patch.dict(os.environ, HOME=directory, CLAUDECODE='test-parent', ANTHROPIC_API_KEY='test-key',
                                      OPENAI_API_KEY='test-key', DEEPSEEK_API_KEY='test-key',
                                      GEMINI_API_KEY='test-key', GOOGLE_API_KEY='test-key'), \
                         mock.patch.object(evaluation, 'load_harnesses', return_value={'fake': harness}), \
@@ -883,7 +897,8 @@ class ExternalPreparationTests(unittest.TestCase):
                 self.assertEqual(evaluation.check_claude_config(workspace), ['standard-skill'])
 
     def test_dsh_refuses_git_ancestors_and_invalid_overlay_values(self):
-        with tempfile.TemporaryDirectory(prefix='skill-eval-dsh-guard-') as directory:
+        with tempfile.TemporaryDirectory(prefix='skill-eval-dsh-guard-') as directory, \
+                mock.patch.dict(os.environ, HOME=directory):
             os.mkdir(os.path.join(directory, 'repo'))
             with open(os.path.join(directory, 'repo', '.git'), 'w') as f:
                 f.write('gitdir: /irrelevant')
@@ -1202,6 +1217,776 @@ class ExternalTrialTests(unittest.TestCase):
                 self.assertIsNone(row['end'])
         self.assertFalse(os.path.exists(self.counter))
 
+
+def agy_summary(**extra):
+    value = dict(conversation_id='fake-conversation', status='SUCCESS', response='Done.', duration_seconds=1.2,
+                 num_turns=1, usage=dict(input_tokens=100, cache_read_tokens=300, output_tokens=20,
+                                         thinking_tokens=7, total_tokens=120))
+    value.update(extra)
+    return value
+
+
+class AgyTests(unittest.TestCase):
+    def setUp(self):
+        self.temporary = tempfile.TemporaryDirectory(prefix='skill-eval-agy-')
+        self.addCleanup(self.temporary.cleanup)
+        self.directory = os.path.realpath(self.temporary.name)
+        self.home = os.path.join(self.directory, 'home')
+        self.workspace = os.path.join(self.directory, "trial's files", 'workspace')
+        os.makedirs(self.home)
+        os.makedirs(self.workspace)
+        parent = dict(os.environ, HOME=self.home, TMPDIR=self.directory,
+                      CLAUDE_CONFIG_DIR=os.path.join(self.home, '.claude'),
+                      XDG_CONFIG_HOME=os.path.join(self.directory, 'config'),
+                      XDG_STATE_HOME=os.path.join(self.directory, 'state'),
+                      AGY_CLI_DISABLE_AUTO_UPDATE='0', AGY_OTHER='private-agy-value',
+                      ANTIGRAVITY_TEST='private-antigravity-value', JETSKI_TEST='private-jetski-value',
+                      GOOGLE_TEST='private-google-value', GEMINI_TEST='private-gemini-value',
+                      CLOUDSDK_TEST='private-cloudsdk-value')
+        patch = mock.patch.dict(os.environ, parent, clear=True)
+        patch.start()
+        self.addCleanup(patch.stop)
+        self.logs = os.path.join(self.home, '.gemini/antigravity-cli/brain/fake-conversation/.system_generated/logs')
+
+    def write(self, path, content):
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, 'w', encoding='utf-8') as f:
+            f.write(content)
+        return path
+
+    def transcript(self, filename='transcript_full.jsonl', extra=None):
+        events = [{'type': 'USER_INPUT'},
+                  {'type': 'PLANNER_RESPONSE', 'input_tokens': 100, 'cache_read_tokens': 300,
+                   'output_tokens': 20, 'tool_calls': [{'name': 'run_command'}, {'name': 'view_file'}]},
+                  {'type': 'GENERIC'}, {'type': 'PLANNER_RESPONSE'}]
+        if extra:
+            events[1].update(extra)
+        return self.write(os.path.join(self.logs, filename), '\n'.join(json.dumps(v) for v in events))
+
+    def test_gate_standard_io_and_audit_log(self):
+        gate = os.path.join(self.directory, 'agy', 'agy_gate.py')
+        os.makedirs(os.path.dirname(gate))
+        shutil.copyfile(os.path.join(evaluation.HERE, 'agy_gate.py'), gate)
+        self.write(os.path.join(self.directory, 'agy/gate.log'), '')
+        nested = os.path.join(self.workspace, 'sub')
+        os.mkdir(nested)
+        os.symlink(self.home, os.path.join(self.workspace, 'escape'))
+        good = ['benitoite check main.bnt', 'benitoite run --allow-effects=Console.Write,File.Read main.bnt',
+                'benitoite test main.bnt']
+        cases = [(command, nested, 'run_command', True) for command in good]
+        cases += [(command, self.workspace, 'run_command', False) for command in (
+            'benitoite check main.bnt; rm -rf ~', 'benitoite run $(cat x)', 'benitoite check "main.bnt"',
+            'benitoite check main.bnt\n', 'benitoite  check main.bnt', 'ls', 'benitoite /x.bnt',
+            'benitoite ../x.bnt', 'benitoite a/../x.bnt', 'benitoite ' + 'x' * 4090)]
+        cases += [('benitoite check main.bnt', cwd, 'run_command', False)
+                  for cwd in (self.home, self.workspace + '-other', 'sub', None,
+                              os.path.join(self.workspace, 'escape'))]
+        cases += [('benitoite check main.bnt', self.workspace, 'shell_exec', False)]
+        inputs = [(json.dumps({'toolCall': {'name': name, 'args': {'CommandLine': command, 'Cwd': cwd}},
+                              'stepIdx': 1, 'workspacePaths': [self.workspace]}), allow)
+                  for command, cwd, name, allow in cases]
+        inputs += [(value, False) for value in ('bad json', '[]', '{}', '{"toolCall":null}',
+                                               '{"toolCall":{"args":[]}}')]
+        for content, allow in inputs:
+            with self.subTest(content=content):
+                result = subprocess.run([sys.executable, '-I', gate, self.workspace], input=content,
+                    text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=dict(os.environ), timeout=10)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                decision = json.loads(result.stdout)
+                self.assertEqual(decision['decision'], 'allow' if allow else 'deny')
+                self.assertTrue(decision['reason'])
+                self.assertNotIn('permissionOverrides', decision)
+        with open(os.path.join(self.directory, 'agy/gate.log')) as f:
+            records = [json.loads(line) for line in f]
+        self.assertEqual(len(records), len(inputs))
+        self.assertTrue(all(record['time'] and len(record['command'] or '') <= 200 for record in records))
+        self.assertEqual([record['decision'] for record in records[:2]], ['allow', 'allow'])
+
+    def test_summary_tokens_transcript_fallback_and_warnings(self):
+        fallback = self.transcript('transcript.jsonl')
+        for pretty in (False, True):
+            with self.subTest(pretty=pretty):
+                text = json.dumps(agy_summary(denied_actions=[{}, {}]), indent=2 if pretty else None)
+                if not pretty:
+                    text = 'earlier output\n' + text + '\n\n'
+                fields, detail, final = evaluation.external_output('agy-json', text, 0)
+                self.assertEqual([fields[k] for k in evaluation.TOKEN_FIELDS], [400, 300, 0, 20, 420])
+                self.assertEqual(fields['thinking_tokens'], 7)
+                self.assertEqual(fields['turns'], 2)  # num_turns は利用者の発言数なので使わない。
+                self.assertEqual(fields['tool_calls'], {'run_command': 1, 'view_file': 1})
+                self.assertEqual(fields['denied_actions'], 2)
+                self.assertIn('denied_actions: 2', detail)
+                self.assertEqual(fields['end'], 'completed')
+                self.assertEqual(final, 'Done.')
+        # 完全な記録を優先し、最後の番で tool_calls がなくても数えられる。
+        self.transcript(extra={'input_tokens': 99, 'tool_calls': [{'name': 'search_web'}]})
+        self.write(fallback, 'bad fallback')
+        fields, detail, _ = evaluation.external_output('agy-json', json.dumps(agy_summary()), 0)
+        self.assertEqual(fields['tool_calls'], {'search_web': 1})
+        self.assertIn('transcript usage differs', detail)
+        self.assertIn('WARNING: unexpected agy tool search_web', detail)
+        self.assertEqual(fields['input_tokens'], 400)
+        for denied, count in ((None, None), ({}, None), ([], 0)):
+            with self.subTest(denied=denied):
+                fields, _, _ = evaluation.external_output('agy-json', json.dumps(agy_summary(denied_actions=denied)), 0)
+                self.assertEqual(fields['denied_actions'], count)
+        fields, _, _ = evaluation.external_output('agy-json', json.dumps(agy_summary()), 0)
+        self.assertEqual(fields['denied_actions'], 0)
+
+    def test_transcript_missing_malformed_and_escaping_paths_leave_counts_unknown(self):
+        self.transcript()
+        outside = os.path.join(self.directory, 'outside')
+        os.mkdir(outside)
+        brain = os.path.dirname(os.path.dirname(os.path.dirname(self.logs)))
+        os.symlink(outside, os.path.join(brain, 'escape'))
+        for identity in ('missing', '../outside', 'escape', '/absolute', 'bad\n', '日本語'):
+            with self.subTest(identity=identity):
+                fields, detail, _ = evaluation.external_output('agy-json', json.dumps(agy_summary(conversation_id=identity)), 0)
+                self.assertIsNone(fields['turns'])
+                self.assertIsNone(fields['tool_calls'])
+                self.assertEqual(fields['total_tokens'], 420)
+                self.assertIn('transcript unreadable', detail)
+        # ID のディレクトリだけでなく、記録そのもののリンクも検査する。
+        path = os.path.join(self.logs, 'transcript_full.jsonl')
+        os.unlink(path)
+        os.symlink(self.write(os.path.join(outside, 'record'), '{"type":"PLANNER_RESPONSE"}'), path)
+        fields, _, _ = evaluation.external_output('agy-json', json.dumps(agy_summary()), 0)
+        self.assertIsNone(fields['turns'])
+        os.unlink(path)
+        self.write(path, '{"type":"PLANNER_RESPONSE"}\ninvalid')
+        fields, _, _ = evaluation.external_output('agy-json', json.dumps(agy_summary()), 0)
+        self.assertIsNone(fields['turns'])
+
+    def test_end_priority_errors_and_unreadable_summary(self):
+        self.transcript()
+        warning = '[agy] print timeout after 30m0s with turn in progress; returning partial output'
+        cases = [(json.dumps(agy_summary()), 0, '', 'completed', ''),
+                 (json.dumps(agy_summary(status='FAILED')), 0, '', 'error', ''),
+                 (json.dumps(agy_summary()), 2, '', 'error', ''),
+                 (json.dumps(agy_summary()), 3, '', 'error', 'status 3'),
+                 (json.dumps(agy_summary()), 0, 'AGY_ERROR: {"short_error":"failed"}', 'error', 'short_error'),
+                 ('invalid', 3, 'AGY_ERROR: {"code":503,"retryable":true}', 'error', 'retryable'),
+                 ('invalid', 0, 'AGY_ERROR: ' + 'x' * 250, 'error', 'x' * 200),
+                 (json.dumps(agy_summary()), 3, warning + '\nAGY_ERROR: {}', 'timeout', 'agy print timeout'),
+                 ('invalid', 0, warning, 'timeout', 'harness summary unreadable'),
+                 ('invalid', 0, '', None, 'harness summary unreadable'),
+                 (json.dumps(agy_summary(usage={'input_tokens': 'bad'})), 0, '', None, 'harness summary unreadable')]
+        for out, code, err, end, detail in cases:
+            with self.subTest(code=code, err=err, out=out):
+                fields, reason, _ = evaluation.external_output('agy-json', out, code, err)
+                self.assertEqual(fields['end'], end)
+                self.assertIn(detail, reason)
+                self.assertNotIn('x' * 201, reason)
+
+    def test_preflight_rejects_user_settings_and_reports_only_names(self):
+        self.assertEqual(evaluation.check_agy_config(self.workspace), [])
+        paths = ['.gemini/config/' + name for name in (
+            'skills', 'plugins', 'rules', 'hooks.json', 'skills.json', 'plugins.json', 'agents',
+            'workflows', 'global_workflows', 'workflows.json', 'sidecars')]
+        paths += ['GEMINI.md', 'AGENTS.md', '.gemini/GEMINI.md', '.gemini/AGENTS.md',
+                  '.gemini/antigravity-cli/hooks.json', '.gemini/config/nested/AGENTS.md']
+        for name in paths:
+            with self.subTest(name=name):
+                path = self.write(os.path.join(self.home, name), 'private-config-value')
+                with self.assertRaisesRegex(ValueError, 'Antigravity') as caught:
+                    evaluation.check_agy_config(self.workspace)
+                self.assertIn(name, str(caught.exception))
+                self.assertNotIn('private-config-value', str(caught.exception))
+                os.unlink(path)
+        for name in ('.gemini/config/config.json', '.gemini/antigravity-cli/settings.json',
+                     '.gemini/config/projects/project.json'):
+            for key, value in (('useG1Credits', True), ('PeRmissionOverrides', [])):
+                with self.subTest(name=name, key=key):
+                    path = self.write(os.path.join(self.home, name), json.dumps({key: value}))
+                    with self.assertRaisesRegex(ValueError, key):
+                        evaluation.check_agy_config(self.workspace)
+                    self.write(path, '{}')
+        mcp = os.path.join(self.home, '.gemini/config/mcp_config.json')
+        for text in ('', '{}', '{"mcpServers":{}}'):
+            self.write(mcp, text)
+            self.assertEqual(evaluation.check_agy_config(self.workspace), [])
+        for text in ('{"mcpServers":{"custom":{"command":"private-config-value"}}}', 'invalid'):
+            self.write(mcp, text)
+            with self.assertRaisesRegex(ValueError, 'mcp_config.json') as caught:
+                evaluation.check_agy_config(self.workspace)
+            self.assertNotIn('private-config-value', str(caught.exception))
+        os.unlink(mcp)
+        builtin = os.path.join(self.home, '.gemini/antigravity-cli/builtin/skills/product-skill')
+        os.makedirs(builtin)
+        self.assertEqual(evaluation.check_agy_config(self.workspace), ['product-skill'])
+
+    def test_preflight_workspace_and_ancestor_customizations(self):
+        for base, name in ((self.workspace, 'GEMINI.md'), (self.workspace, 'AGENTS.md'),
+                           (os.path.dirname(self.workspace), 'AGENTS.md'),
+                           (os.path.dirname(self.workspace), '.gemini/GEMINI.md'),
+                           (os.path.dirname(self.workspace), '.gemini/AGENTS.md')):
+            with self.subTest(base=base, name=name):
+                path = self.write(os.path.join(base, name), 'private-instruction')
+                with self.assertRaisesRegex(ValueError, name):
+                    evaluation.check_agy_config(self.workspace)
+                os.unlink(path)
+        parent_agents = os.path.join(os.path.dirname(self.workspace), '.agents')
+        os.mkdir(parent_agents)
+        with self.assertRaisesRegex(ValueError, '.agents'):
+            evaluation.check_agy_config(self.workspace)
+        os.rmdir(parent_agents)
+        # 試行自身の .agents は道具が設置するため許す。
+        os.mkdir(os.path.join(self.workspace, '.agents'))
+        self.assertEqual(evaluation.check_agy_config(self.workspace), [])
+        inside_home = os.path.join(self.home, 'trials/workspace')
+        os.makedirs(os.path.join(self.home, '.agents/skills'))
+        with self.assertRaisesRegex(ValueError, '.agents'):
+            evaluation.check_agy_config(inside_home)
+
+    def security_gate(self, name, args, log_kind='regular'):
+        gate_dir = os.path.join(self.directory, 'gate-test')
+        os.makedirs(gate_dir, exist_ok=True)
+        gate = os.path.join(gate_dir, 'agy_gate.py')
+        shutil.copyfile(os.path.join(evaluation.HERE, 'agy_gate.py'), gate)
+        log = os.path.join(gate_dir, 'gate.log')
+        if os.path.lexists(log):
+            if os.path.isdir(log) and not os.path.islink(log):
+                os.rmdir(log)
+            else:
+                os.unlink(log)
+        if log_kind == 'regular':
+            self.write(log, '')
+        elif log_kind == 'symlink':
+            os.symlink(self.write(os.path.join(self.directory, 'sentinel'), 'unchanged'), log)
+        elif log_kind == 'fifo':
+            os.mkfifo(log)
+        elif log_kind == 'directory':
+            os.mkdir(log)
+        reader = os.open(log, os.O_RDWR | os.O_NONBLOCK) if log_kind == 'fifo' else None
+        try:
+            result = subprocess.run([sys.executable, '-I', gate, self.workspace],
+                input=json.dumps({'toolCall': {'name': name, 'args': args}}), text=True,
+                stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=2)
+        finally:
+            if reader is not None:
+                os.close(reader)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        return json.loads(result.stdout), log
+
+    def test_security_gate_commands_paths_and_tool_categories(self):
+        for command in ('benitoite skill install', 'benitoite package add x', 'benitoite fmt x.bnt',
+                        'benitoite run --out=/etc/passwd x.bnt', 'benitoite run x.bnt:/etc',
+                        'benitoite run --x=../f', 'benitoite test --x=a,/etc', 'benitoite',
+                        'benitoite run =ls', 'benitoite run --x==ls', 'benitoite run x.bnt:=ls',
+                        'benitoite run --x=a,=ls'):
+            with self.subTest(command=command):
+                decision, _ = self.security_gate('run_command', {'CommandLine': command, 'Cwd': self.workspace})
+                self.assertEqual(decision['decision'], 'deny')
+        os.symlink(self.home, os.path.join(self.workspace, 'outside'))
+        readers = ('view_file', 'list_dir', 'grep_search', 'find_by_name', 'view_file_outline', 'view_code_item')
+        writers = ('write_to_file', 'replace_file_content', 'multi_replace_file_content')
+        for name in readers + writers:
+            for path, allowed in ((self.workspace + '/main.bnt', True), ('file://' + self.workspace + '/main.bnt', True),
+                                  (self.home + '/private', False), ('file://' + self.home + '/private', False),
+                                  (self.workspace + '/outside/private', False)):
+                with self.subTest(name=name, path=path):
+                    decision, log = self.security_gate(name, {'nested': [{'Path': path}], 'Content': 'private-file-value'})
+                    self.assertEqual(decision['decision'], 'allow' if allowed else 'deny')
+                    with open(log) as f:
+                        record = json.loads(f.readline())
+                    self.assertEqual(record['tool'], name)
+                    self.assertIn('nested', record['argument_keys'])
+                    self.assertNotIn('private-file-value', json.dumps(record))
+            decision, _ = self.security_gate(name, {'Query': 'plain search'})
+            self.assertEqual(decision['decision'], 'deny')
+            self.assertIn('absolute', decision['reason'])
+        for marker in ('.agents', '_agents', '.agent', '_agent', '.gemini', '.git', 'AgEnTs.Md', 'gEmInI.md'):
+            for name in writers:
+                with self.subTest(name=name, marker=marker):
+                    path = os.path.join(self.workspace, 'sub', marker)
+                    if marker.startswith(('.', '_')):
+                        path += '/file'
+                    decision, _ = self.security_gate(name, {'Path': path})
+                    self.assertEqual(decision['decision'], 'deny')
+        for name in ('search_web', 'unknown_tool', 'invoke_subagent'):
+            decision, _ = self.security_gate(name, {})
+            self.assertEqual(decision, {'decision': 'deny', 'reason': 'This tool is disabled for this evaluation.'})
+
+    def test_security_path_keys_and_content_are_distinct(self):
+        bad = ('../../etc/passwd', '~/.ssh/id_rsa', 'file:/etc/passwd', 'FILE:///etc/passwd',
+               ' /etc/passwd', self.workspace + '/x ', self.workspace + '/x\n',
+               self.workspace + '/x\x00', 'file://' + self.workspace + '/x%00',
+               'file://' + self.workspace + '/x%0A', '', '..')
+        for name, key in (('view_file', 'AbsolutePath'), ('list_dir', 'DirectoryPath'),
+                          ('grep_search', 'SearchPath'), ('find_by_name', 'SearchDirectory'),
+                          ('view_file_outline', 'FilePath'), ('view_code_item', 'Uri'),
+                          ('write_to_file', 'TargetFile'), ('replace_file_content', 'TargetFile'),
+                          ('multi_replace_file_content', 'TargetFile')):
+            for value in bad + (None, 123, {}, [self.workspace, '../outside']):
+                with self.subTest(name=name, key=key, value=value):
+                    decision, _ = self.security_gate(name, {'nested': [{key: value}],
+                                                          'Description': self.workspace + '/main.bnt'})
+                    self.assertEqual(decision['decision'], 'deny')
+        cases = [('write_to_file', {'TargetFile': self.workspace + '/main.bnt', 'CodeContent': '// comment\nbody'}),
+                 ('replace_file_content', {'TargetFile': self.workspace + '/main.bnt', 'TargetContent': '/* old */'}),
+                 ('grep_search', {'SearchPath': self.workspace, 'Query': '/foo'}),
+                 ('find_by_name', {'SearchDirectory': self.workspace, 'Pattern': '../../**'}),
+                 ('find_by_name', {'SearchDirectory': self.workspace, 'Pattern': '*.bnt', 'FullPath': False}),
+                 ('find_by_name', {'SearchDirectory': self.workspace, 'FullPath': 1, 'SecurityNote': 'note'}),
+                 ('find_by_name', {'SearchDirectory': self.workspace, 'FullPath': 1.5}),
+                 ('view_code_item', {'File': self.workspace + '/main.bnt', 'NodePaths': ['main']}),
+                 ('view_file', {'nested': [{'aBsOlUtEpAtH': [self.workspace + '/a', 'file://' + self.workspace + '/b']}]})]
+        for name, args in cases:
+            with self.subTest(name=name, args=args):
+                decision, _ = self.security_gate(name, args)
+                self.assertEqual(decision['decision'], 'allow')
+        for marker in ('.agents', '_agents', '.agent', '_agent', '.gemini', '.git', 'AGENTS.md', 'Gemini.MD'):
+            for name in ('write_to_file', 'replace_file_content', 'multi_replace_file_content'):
+                with self.subTest(marker=marker, name=name):
+                    decision, _ = self.security_gate(name, {'TargetFile': [self.workspace + '/ok.bnt',
+                                                        self.workspace + '/sub/' + marker]})
+                    self.assertEqual(decision['decision'], 'deny')
+
+    def test_security_gate_log_rejects_missing_symlink_fifo_and_directory(self):
+        for kind in ('missing', 'symlink', 'fifo', 'directory'):
+            with self.subTest(kind=kind):
+                decision, _ = self.security_gate('run_command',
+                    {'CommandLine': 'benitoite check main.bnt', 'Cwd': self.workspace}, kind)
+                self.assertEqual(decision['decision'], 'deny')
+                if kind == 'symlink':
+                    with open(os.path.join(self.directory, 'sentinel')) as f:
+                        self.assertEqual(f.read(), 'unchanged')
+
+    def test_security_json_recursion_special_files_and_record_redaction(self):
+        deep = '[' * 3000 + ']' * 3000
+        fields, reason, _ = evaluation.external_output('agy-json', deep, 0)
+        self.assertIsNone(fields['end'])
+        self.assertIn('harness summary unreadable', reason)
+        path = self.write(os.path.join(self.logs, 'transcript_full.jsonl'),
+                          '{"type":"PLANNER_RESPONSE","extra":' + deep + '}')
+        fields, reason, _ = evaluation.external_output('agy-json', json.dumps(agy_summary()), 0)
+        self.assertIsNone(fields['turns'])
+        self.assertIn('transcript unreadable', reason)
+        os.unlink(path)
+        os.mkfifo(path)
+        driver = ('import sys, json; sys.path.insert(0, %r); import skill_eval as e; '
+                  'print(json.dumps(e.external_output("agy-json", %r, 0)[0]))') % (
+                      evaluation.HERE, json.dumps(agy_summary()))
+        result = subprocess.run([sys.executable, '-I', '-c', driver], env=dict(os.environ),
+                                capture_output=True, text=True, timeout=2)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIsNone(json.loads(result.stdout)['turns'])
+        os.unlink(path)
+        self.transcript(extra={'tool_calls': [{'name': 'view_file'}, {'name': 'bad@example.com'},
+                                              {'name': 'x' * 65}, {'name': 'UPPER'}, {'name': None}, {'name': 1}]})
+        error = {'short_error': 'failed person@example.com', 'code': 503, 'retryable': True,
+                 'status': 'UNAVAILABLE', 'error_id': 'id', 'account': 'private-account',
+                 'nested': {'token': 'private-token'}}
+        for message in (json.dumps(error), 'plain person@example.com ' + 'x' * 250):
+            fields, reason, _ = evaluation.external_output('agy-json', json.dumps(agy_summary()), 3,
+                                                           'AGY_ERROR: ' + message)
+            self.assertEqual(fields['tool_calls'], {'view_file': 1, '<invalid>': 5})
+            self.assertIn('<email>', reason)
+            for text in ('person@example.com', 'bad@example.com', 'private-account', 'private-token', 'x' * 201):
+                self.assertNotIn(text, reason)
+        for value in ([{'account': 'private-account'}], 'private-account', 123):
+            _, reason, _ = evaluation.external_output('agy-json', json.dumps(agy_summary()), 3,
+                                                       'AGY_ERROR: ' + json.dumps(value))
+            self.assertNotIn('private-account', reason)
+            self.assertIn('AGY_ERROR: {}', reason)
+
+    def test_security_preflight_allowlists_additional_files_and_scan_scope(self):
+        for base, name in ((self.home, '.gemini/config/rules.json'), (self.home, '.gemini/config/agents.json'),
+                           (os.path.dirname(self.workspace), '.gemini/settings.json')):
+            path = self.write(os.path.join(base, name), '{}')
+            with self.subTest(name=name), self.assertRaises(ValueError):
+                evaluation.check_agy_config(self.workspace)
+            os.unlink(path)
+        for marker in ('.agent', '_agents', '_agent'):
+            path = os.path.join(os.path.dirname(self.workspace), marker)
+            os.mkdir(path)
+            with self.subTest(marker=marker), self.assertRaises(ValueError):
+                evaluation.check_agy_config(self.workspace)
+            os.rmdir(path)
+        for relative, values in (
+            ('.gemini/antigravity-cli/settings.json', {'model': 'm', 'trustedWorkspaces': []}),
+            ('.gemini/config/config.json', {'userSettings': {'remoteControlHostname': 'host'}}),
+            ('.gemini/config/projects/p.json', {'id': 'id', 'name': 'n', 'projectResources': {'resources': []}})):
+            path = self.write(os.path.join(self.home, relative), json.dumps(values))
+            self.assertEqual(evaluation.check_agy_config(self.workspace), [])
+            for key in ('plugins', 'useG1Credits', 'use_g1_credits', 'useg1credits', 'permissions', 'modelProvider'):
+                with self.subTest(relative=relative, key=key):
+                    self.write(path, json.dumps(dict(values, **{key: 'private-setting'})))
+                    with self.assertRaisesRegex(ValueError, key) as caught:
+                        evaluation.check_agy_config(self.workspace)
+                    self.assertNotIn('private-setting', str(caught.exception))
+            self.write(path, json.dumps(values))
+        path = os.path.join(self.home, '.gemini/config/config.json')
+        self.write(path, '{"userSettings":{"plugins":"private-setting"}}')
+        with self.assertRaisesRegex(ValueError, 'plugins'):
+            evaluation.check_agy_config(self.workspace)
+        self.write(path, '{}')
+        path = os.path.join(self.home, '.gemini/antigravity-cli/mcp_config.json')
+        for text in ('', '{}'):
+            self.write(path, text)
+            self.assertEqual(evaluation.check_agy_config(self.workspace), [])
+        for text in ('{"mcpServers":{}}', '{"servers":{"x":{}}}', 'invalid'):
+            self.write(path, text)
+            with self.assertRaisesRegex(ValueError, 'mcp_config.json'):
+                evaluation.check_agy_config(self.workspace)
+        os.unlink(path)
+        # 会話の記録と、そのほかの利用者の領域まで再帰して歩かない。
+        self.write(os.path.join(self.home, '.gemini/antigravity-cli/brain/old/AGENTS.md'), 'private')
+        self.write(os.path.join(self.home, '.gemini/other/AGENTS.md'), 'private')
+        self.assertEqual(evaluation.check_agy_config(self.workspace), [])
+        exists = os.path.lexists
+        with mock.patch.object(os.path, 'lexists', side_effect=lambda p: p == '/Library/Application Support/Antigravity/admin_settings.json' or exists(p)):
+            with self.assertRaisesRegex(ValueError, 'admin_settings.json'):
+                evaluation.check_agy_config(self.workspace)
+
+    def security_trial(self, mutation, harness_name='antigravity-gemini', user_parent='.agents'):
+        task = evaluation.Task('json_summary')
+        with open(task.path('reference.bnt')) as f:
+            source = f.read()
+        self.transcript()
+        trial = os.path.join(self.directory, 'security-trial')
+        executable = os.path.join(self.directory, 'fake-agy')
+        text = ("#!%s\n" % sys.executable +
+            'import json, os, stat, subprocess, sys\nfrom pathlib import Path\n'
+            'ws = Path.cwd()\ntrial = ws.parent\n'
+            'Path("main.bnt").write_text(%r)\n' % source +
+            'subprocess.run(["benitoite", "check", "main.bnt"], check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)\n'
+            'mutation = %r\n' % mutation +
+            'if (ws / ".agents/hooks.json").exists() and mutation != "no-gate":\n'
+            ' hooks = json.loads((ws / ".agents/hooks.json").read_text())\n'
+            ' group = next(iter(hooks.values()))["PreToolUse"][0]\n'
+            ' payload = {"toolCall":{"name":"run_command","args":{"CommandLine":"benitoite check main.bnt","Cwd":str(ws)}}}\n'
+            ' if mutation == "read-gate-no-transcript": payload = {"toolCall":{"name":"view_file","args":{"AbsolutePath":str(ws / "task.md")}}}\n'
+            ' if mutation == "deny-gate-no-transcript": payload["toolCall"]["args"]["CommandLine"] = "ls"\n'
+            ' subprocess.run(group["hooks"][0]["command"], shell=True, input=json.dumps(payload), text=True, check=True, stdout=subprocess.DEVNULL)\n'
+            'if mutation.endswith("no-transcript"):\n'
+            ' (Path.home() / ".gemini/antigravity-cli/brain/fake-conversation/.system_generated/logs/transcript_full.jsonl").unlink()\n'
+            'if mutation == "readonly":\n'
+            ' for p in [ws / ".agents"] + list((ws / ".agents").rglob("*")):\n'
+            '  assert stat.S_IMODE(p.stat().st_mode) == (0o555 if p.is_dir() else 0o444), str(p)\n'
+            'elif mutation.startswith("user-"):\n'
+            ' p = Path.home() / %r\n' % (user_parent + '/skills/benitoite') +
+            ' if mutation == "user-create": p.mkdir(parents=True)\n'
+            ' elif mutation == "user-delete": p.rmdir()\n'
+            ' elif mutation == "user-modify": os.utime(p, ns=(p.stat().st_atime_ns, p.stat().st_mtime_ns + 1000000000))\n'
+            ' elif mutation == "user-type": p.rmdir(); p.write_text("file")\n'
+            'elif mutation == "missing-gate": (trial / "agy/gate.log").unlink()\n'
+            'elif mutation == "restore-error":\n'
+            ' (ws / ".agents").chmod(0o755)\n'
+            ' for name in ("vanish", "restored"): (ws / ".agents" / name).write_text("file"); (ws / ".agents" / name).chmod(0o444)\n'
+            'elif mutation.startswith("create:"):\n'
+            ' p = ws / mutation.split(":", 1)[1]\n'
+            ' if p.name.lower() in ("agents.md", "gemini.md"): p.parent.mkdir(parents=True, exist_ok=True); p.write_text("instruction")\n'
+            ' else: p.mkdir(parents=True)\n'
+            'print(%r)\n' % (event_output(calls={'benitoite_check': 1}) if harness_name == 'benitoiteh-deepseek'
+                                  else json.dumps(claude_result()) if harness_name == 'claude-code'
+                                  else json.dumps(agy_summary())))
+        self.write(executable, text)
+        os.chmod(executable, 0o755)
+        harness = copy.deepcopy(evaluation.load_harnesses()[harness_name])
+        harness['start'] = [executable]
+        return evaluation.run_trial(task, trial, os.environ['BENITOITEH_TEST_BENITOITE'], harness_name,
+                                    harness, str(harness['model']), None, False, benitoiteh=executable)
+
+    @unittest.skipUnless(os.environ.get('BENITOITEH_TEST_BENITOITE'), 'BENITOITEH_TEST_BENITOITE is not set')
+    def test_security_trial_metadata_and_protected_workspace_changes(self):
+        for harness_name, user_parent in (('antigravity-gemini', '.agents'), ('antigravity-gemini', '.claude'),
+                                          ('claude-code', '.agents'), ('benitoiteh-deepseek', '.agents')):
+            for mutation in ('user-create', 'user-delete', 'user-modify', 'user-type'):
+                with self.subTest(harness=harness_name, mutation=mutation, user_parent=user_parent):
+                    target = os.path.join(self.home, user_parent, 'skills/benitoite')
+                    if mutation != 'user-create':
+                        os.makedirs(target)
+                    row = self.security_trial(mutation, harness_name, user_parent)
+                    self.assertTrue(row['reason'].startswith('SAFETY: user skill directory changed'), row['reason'])
+                    self.assertTrue(row['success'], row['reason'])
+                    if os.path.isdir(target):
+                        os.rmdir(target)
+                    elif os.path.lexists(target):
+                        os.unlink(target)
+                    shutil.rmtree(os.path.join(self.directory, 'security-trial'))
+        for marker in ('.agents', '_agents', '.agent', '_agent', '.gemini', '.git', 'AgEnTs.Md', 'GEMINI.md'):
+            with self.subTest(marker=marker):
+                row = self.security_trial('create:sub/' + marker)
+                expected = marker.upper().replace('.MD', '.md') if marker.lower().endswith('.md') else marker
+                self.assertIn('SAFETY: %s was created (1)' % expected, row['reason'])
+                shutil.rmtree(os.path.join(self.directory, 'security-trial'))
+        for mutation in ('no-gate', 'missing-gate'):
+            row = self.security_trial(mutation)
+            self.assertIn('SAFETY: hooks were not loaded', row['reason'])
+            shutil.rmtree(os.path.join(self.directory, 'security-trial'))
+        row = self.security_trial('readonly')
+        self.assertEqual(row['harness_exit'], 0, row['reason'])
+        agents = os.path.join(self.directory, 'security-trial/workspace/.agents')
+        for root, dirs, files in os.walk(agents):
+            for path in [root] + [os.path.join(root, n) for n in dirs + files]:
+                self.assertTrue(os.stat(path).st_mode & stat.S_IWUSR, path)
+
+    def test_security_project_resources_and_google_environment(self):
+        project = os.path.join(self.home, '.gemini/config/projects/p.json')
+        root = os.path.join(self.directory, 'work-root')
+        for git in (False, True):
+            for folder in (root, os.path.dirname(root), os.path.join(root, 'child')):
+                resource = {'folderUri': 'file://' + folder}
+                if git:
+                    resource = {'gitFolder': dict(resource, allowWrite=True)}
+                self.write(project, json.dumps({'projectResources': {'resources': [resource]}}))
+                with self.subTest(folder=folder, git=git), self.assertRaisesRegex(ValueError, 'folderUri'):
+                    evaluation.check_agy_config(self.workspace, root)
+        for resource in ({'folderUri': 'file://' + self.home},
+                         {'gitFolder': {'folderUri': 'file://' + self.home, 'allowWrite': True}}):
+            self.write(project, json.dumps({'projectResources': {'resources': [resource]}}))
+            self.assertEqual(evaluation.check_agy_config(self.workspace, root), [])
+        for resources in ([], {'resources': {}}, {'resources': [None]},
+                          {'resources': [{'folderUri': 1}]}, {'resources': [{'gitFolder': []}]}):
+            self.write(project, json.dumps({'projectResources': resources}))
+            with self.subTest(resources=resources), self.assertRaises(ValueError):
+                evaluation.check_agy_config(self.workspace, root)
+        for resources in ({'resources': [], 'permissions': 'private-value'},
+                          {'resources': [{'permissions': 'private-value'}]},
+                          {'resources': [{'gitFolder': {'permissions': 'private-value'}}]}):
+            self.write(project, json.dumps({'projectResources': resources}))
+            with self.subTest(resources=resources), self.assertRaisesRegex(ValueError, 'permissions') as caught:
+                evaluation.check_agy_config(self.workspace, root)
+            self.assertNotIn('private-value', str(caught.exception))
+        self.write(project, '{"id":"default","name":"Default"}')
+        self.assertEqual(evaluation.check_agy_config(self.workspace, root), [])
+        with mock.patch.dict(os.environ, GOOGLE_TEST='private', GEMINI_TEST='private', CLOUDSDK_TEST='private'):
+            env, removed = evaluation.agy_environment()
+            for name in ('GOOGLE_TEST', 'GEMINI_TEST', 'CLOUDSDK_TEST'):
+                self.assertNotIn(name, env)
+                self.assertIn(name, removed)
+            normal, _ = evaluation.harness_environment()
+            self.assertEqual(normal['GOOGLE_TEST'], 'private')
+
+    def test_security_permissions_restore_skips_links_and_continues_after_failure(self):
+        for fallback in (False, True):
+            with self.subTest(fallback=fallback):
+                agents = os.path.join(self.workspace, '.agents')
+                os.makedirs(agents)
+                os.makedirs(os.path.join(os.path.dirname(self.workspace), 'agy'), exist_ok=True)
+                outside = self.write(os.path.join(self.directory, 'outside-file-%s' % fallback), 'private')
+                os.chmod(outside, 0o400)
+                for name in ('victim', 'missing', 'ok'):
+                    self.write(os.path.join(agents, name), 'file')
+                    os.chmod(os.path.join(agents, name), 0o444)
+                real_open, real_chmod = os.open, os.chmod
+                swapped = []
+                def swap(path, kwargs):
+                    name = os.path.basename(path)
+                    if name in ('victim', 'missing') and name not in swapped:
+                        swapped.append(name)
+                        directory = kwargs.get('dir_fd')
+                        os.unlink(path, dir_fd=directory)
+                        if name == 'victim':
+                            os.symlink(outside, path, dir_fd=directory)
+                def opening(path, flags, *args, **kwargs):
+                    swap(path, kwargs)
+                    return real_open(path, flags, *args, **kwargs)
+                def changing(path, mode, *args, **kwargs):
+                    swap(path, kwargs)
+                    return real_chmod(path, mode, *args, **kwargs)
+                support = set(os.supports_follow_symlinks)
+                if fallback:
+                    support.discard(os.chmod)
+                elif os.chmod in os.supports_follow_symlinks:
+                    support.add(changing)
+                with mock.patch.object(os, 'open', new=opening), \
+                        mock.patch.object(os, 'chmod', new=changing), \
+                        mock.patch.object(os, 'supports_follow_symlinks', support):
+                    evaluation.agy_permissions(self.workspace, True)
+                self.assertEqual(set(swapped), {'victim', 'missing'})
+                self.assertEqual(stat.S_IMODE(os.stat(outside).st_mode), 0o400)
+                self.assertTrue(os.stat(os.path.join(agents, 'ok')).st_mode & stat.S_IWUSR)
+                with open(os.path.join(self.directory, "trial's files/agy/permissions.log")) as f:
+                    self.assertIn('missing', f.read())
+                shutil.rmtree(agents)
+
+    @unittest.skipUnless(os.environ.get('BENITOITEH_TEST_BENITOITE'), 'BENITOITEH_TEST_BENITOITE is not set')
+    def test_security_permission_failure_keeps_trial_result(self):
+        real_stat = os.stat
+        removed = []
+        def disappearing(path, *args, **kwargs):
+            if path == 'vanish' and kwargs.get('dir_fd') is not None and not removed:
+                removed.append(True)
+                os.unlink(path, dir_fd=kwargs['dir_fd'])
+            return real_stat(path, *args, **kwargs)
+        with mock.patch.object(os, 'stat', new=disappearing):
+            row = self.security_trial('restore-error')
+        self.assertTrue(removed)
+        self.assertTrue(row['success'], row['reason'])
+        self.assertIn('WARNING: agy permission changes failed: 1', row['reason'])
+        trial = os.path.join(self.directory, 'security-trial')
+        self.assertTrue(os.stat(os.path.join(trial, 'workspace/.agents/restored')).st_mode & stat.S_IWUSR)
+        with open(os.path.join(trial, 'agy/permissions.log')) as f:
+            errors = [json.loads(line) for line in f]
+        self.assertTrue(any(item['path'] == '.agents/vanish' and item['stage'] == 'restore' for item in errors))
+
+    @unittest.skipUnless(os.environ.get('BENITOITEH_TEST_BENITOITE'), 'BENITOITEH_TEST_BENITOITE is not set')
+    def test_security_wrapper_requires_command_allow_and_created_names_are_private(self):
+        for mutation, warned in (('read-gate-no-transcript', True), ('deny-gate-no-transcript', True),
+                                  ('command-gate-no-transcript', False)):
+            with self.subTest(mutation=mutation):
+                row = self.security_trial(mutation)
+                self.assertEqual('SAFETY: hooks were not loaded' in row['reason'], warned, row['reason'])
+                self.assertTrue(row['log_exists'])
+                self.assertIsNone(row['tool_calls'])
+                shutil.rmtree(os.path.join(self.directory, 'security-trial'))
+        for marker, expected in (('private@example.com/.agents/sub/.agents', '.agents'),
+                                  ('private@example.com/secret/AGENTS.md', 'AGENTS.md')):
+            row = self.security_trial('create:' + marker)
+            self.assertIn('SAFETY: %s was created' % expected, row['reason'])
+            self.assertIn('(2)' if expected == '.agents' else '(1)', row['reason'])
+            self.assertNotIn('private@example.com', row['reason'])
+            self.assertNotIn('secret', row['reason'])
+            shutil.rmtree(os.path.join(self.directory, 'security-trial'))
+
+    def test_normal_exit_and_version_query_stop_background_group(self):
+        # 先頭が正常終了しても、同じ群れで出力を持つ子を残さない契約。
+        for version_query in (False, True):
+            with self.subTest(version_query=version_query):
+                pid_file = os.path.join(self.directory, 'child-pid')
+                child = ('import os, time\nfrom pathlib import Path\n'
+                         'Path(%r).write_text(str(os.getpid()))\ntime.sleep(60)\n') % pid_file
+                parent = ('import subprocess, sys, time\nfrom pathlib import Path\n'
+                          'p = subprocess.Popen([sys.executable, "-c", %r])\n'
+                          'while not Path(%r).exists(): time.sleep(.01)\n'
+                          'print("fake agy version", flush=True)\n') % (child, pid_file)
+                env, removed = evaluation.agy_environment()
+                self.assertEqual(env['AGY_CLI_DISABLE_AUTO_UPDATE'], '1')
+                self.assertIn('AGY_OTHER', removed)
+                try:
+                    if version_query:
+                        version = evaluation.version_of([sys.executable, '-c', parent], env, cleanup_group=True)
+                        self.assertEqual(version, 'fake agy version')
+                    else:
+                        code, timed_out, _wall = evaluation.run_harness([sys.executable, '-c', parent],
+                            self.directory, env, 5, os.path.join(self.directory, 'stdout'),
+                            os.path.join(self.directory, 'stderr'), cleanup_group=True)
+                        self.assertEqual(code, 0)
+                        self.assertFalse(timed_out)
+                    with open(pid_file) as f:
+                        pid = int(f.read())
+                    deadline = time.monotonic() + 5
+                    while time.monotonic() < deadline:
+                        try:
+                            os.kill(pid, 0)
+                        except ProcessLookupError:
+                            break
+                        time.sleep(.01)
+                    else:
+                        self.fail('background child survived agy group cleanup')
+                finally:
+                    if os.path.exists(pid_file):
+                        with open(pid_file) as f:
+                            pid = int(f.read())
+                        try:
+                            os.kill(pid, signal.SIGKILL)
+                        except ProcessLookupError:
+                            pass
+                        os.unlink(pid_file)
+
+    @unittest.skipUnless(os.environ.get('BENITOITEH_TEST_BENITOITE'), 'BENITOITEH_TEST_BENITOITE is not set')
+    def test_fake_agy_trial_hooks_integrity_records_and_environment(self):
+        task = evaluation.Task('json_summary')
+        with open(task.path('reference.bnt')) as f:
+            source = f.read()
+        self.transcript()
+        self.write(os.path.join(self.home, '.gemini/antigravity-cli/builtin/skills/product-skill/SKILL.md'), 'product')
+        fake = os.path.join(self.directory, 'fake-bin/agy')
+        script = ("#!%s\n" % sys.executable +
+            'import json, os, re, shlex, subprocess, sys\nfrom pathlib import Path\n'
+            'assert os.environ["AGY_CLI_DISABLE_AUTO_UPDATE"] == "1"\n'
+            'assert all(n == "AGY_CLI_DISABLE_AUTO_UPDATE" or not n.startswith(("AGY_", "ANTIGRAVITY_", "JETSKI_", "GOOGLE_", "GEMINI_", "CLOUDSDK_")) for n in os.environ)\n'
+            'assert Path(os.environ["TMPDIR"]).is_dir()\n'
+            'if "--version" in sys.argv:\n print("fake agy 1.4.0")\n sys.exit(0)\n'
+            'assert sys.argv[1] == "-p"\n'
+            'assert sys.argv[sys.argv.index("--mode")+1] == "accept-edits"\n'
+            'assert "--dangerously-skip-permissions" not in sys.argv\n'
+            'assert sys.argv[sys.argv.index("--print-timeout")+1] == "1800s"\n'
+            'assert Path(sys.argv[sys.argv.index("--log-file")+1]) == Path.cwd().parent / "agy/agy.log"\n'
+            'hooks = json.loads(Path(".agents/hooks.json").read_text())\n'
+            'assert len(hooks) == 1\n'
+            'group = hooks["evaluation-gate"]["PreToolUse"]\n'
+            'assert len(group) == 1 and group[0]["matcher"] == ".*"\n'
+            'gate = group[0]["hooks"][0]["command"]\n'
+            'assert shlex.split(gate)[2:] == [str(Path.cwd().parent / "agy/agy_gate.py"), str(Path.cwd())]\n'
+            'payload = {"toolCall":{"name":"run_command","args":{"CommandLine":"benitoite check main.bnt","Cwd":str(Path.cwd())}}}\n'
+            'result = subprocess.run(gate, shell=True, input=json.dumps(payload), text=True, capture_output=True, check=True)\n'
+            'assert json.loads(result.stdout)["decision"] == "allow"\n'
+            'payload["toolCall"]["name"] = "search_web"\n'
+            'result = subprocess.run(gate, shell=True, input=json.dumps(payload), text=True, capture_output=True, check=True)\n'
+            'assert json.loads(result.stdout)["decision"] == "deny"\n'
+            'Path("main.bnt").write_text(%r)\n' % source +
+            'subprocess.run(["benitoite", "check", "main.bnt"], check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)\n'
+            'mutation = os.environ.get("EVAL_MUTATION")\n'
+            'targets = {"hooks.json":Path(".agents/hooks.json"), "benitoite Skill":Path(".agents/skills/benitoite/SKILL.md"), "bin/benitoite":Path.cwd().parent / "bin/benitoite", "agy/agy_gate.py":Path.cwd().parent / "agy/agy_gate.py"}\n'
+            'if mutation == ".agents entries": Path(".agents").chmod(0o755); Path(".agents/new-file").write_text("added")\n'
+            'elif mutation: targets[mutation].chmod(0o644); targets[mutation].write_text("modified")\n'
+            'outcome = os.environ.get("EVAL_OUTCOME", "completed")\n'
+            'if outcome == "print-timeout": print("[agy] print timeout after 30m0s with turn in progress; returning partial output", file=sys.stderr)\n'
+            'if outcome == "agy-error": print(\'AGY_ERROR: {"short_error":"failed"}\', file=sys.stderr)\n'
+            'print("invalid" if outcome in ("unreadable", "print-timeout") else %r)\n' % json.dumps(agy_summary()))
+        self.write(fake, script)
+        os.chmod(fake, 0o755)
+        os.environ['PATH'] = os.path.dirname(fake) + os.pathsep + os.environ.get('PATH', '')
+        cases = [(mutation, 'completed') for mutation in (
+            None, 'hooks.json', 'benitoite Skill', '.agents entries', 'bin/benitoite', 'agy/agy_gate.py')]
+        cases += [(None, outcome) for outcome in ('unreadable', 'print-timeout', 'agy-error')]
+        for mutation, outcome in cases:
+            with self.subTest(mutation=mutation, outcome=outcome):
+                os.environ['EVAL_MUTATION'] = mutation or ''
+                os.environ['EVAL_OUTCOME'] = outcome
+                # 空白と引用符を含む実のパスを、生成したフックで受け渡せることも確かめる。
+                root = os.path.join(self.directory, "work's files", mutation or outcome)
+                record = os.path.join(root, 'record.md')
+                with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+                    code = evaluation.main(['--harness', 'antigravity-gemini', '--allow-unverified',
+                        '--task', task.name, '--trials', '1', '--benitoite', os.environ['BENITOITEH_TEST_BENITOITE'],
+                        '--work-root', root, '--record', record, '--stop-cost', '.01'])
+                self.assertEqual(code, 0)
+                with open(os.path.splitext(record)[0] + '.jsonl') as f:
+                    row = json.loads(f.readline())
+                with open(os.path.join(root, task.name, '1/harness.stderr')) as f:
+                    self.assertEqual(row['harness_exit'], 0, f.read())
+                self.assertTrue(row['success'], row['reason'])
+                self.assertEqual(row['harness_exit'], 0)
+                unreadable = outcome in ('unreadable', 'print-timeout')
+                self.assertEqual(row['total_tokens'], None if unreadable else 420)
+                self.assertEqual(row['turns'], None if unreadable else 2)
+                self.assertEqual(row['attempts'], 1)
+                self.assertEqual(row['end'], {'completed': 'completed', 'unreadable': None,
+                                             'print-timeout': 'timeout', 'agy-error': 'error'}[outcome])
+                self.assertIsNone(row['cost_usd'])
+                self.assertEqual(row['billing'], 'none')
+                trial = os.path.join(root, task.name, '1')
+                with open(os.path.join(trial, 'final.txt')) as f:
+                    self.assertEqual(f.read(), '' if unreadable else 'Done.')
+                if unreadable:
+                    self.assertIn('harness summary unreadable', row['reason'])
+                if outcome == 'agy-error':
+                    self.assertIn('AGY_ERROR:', row['reason'])
+                if mutation:
+                    self.assertTrue(row['reason'].startswith('SAFETY: %s was modified' % mutation), row['reason'])
+                else:
+                    self.assertNotIn('SAFETY', row['reason'])
+                with open(record) as f:
+                    markdown = f.read()
+                for text in ('fake agy 1.4.0', 'Antigravity の利用者設定の確認: passed', 'product-skill',
+                             'AGY_OTHER', 'ANTIGRAVITY_TEST', 'JETSKI_TEST', 'GOOGLE_TEST', 'GEMINI_TEST',
+                             'CLOUDSDK_TEST', '1860'):
+                    self.assertIn(text, markdown)
+                for text in (self.home, 'private-agy-value', 'private-antigravity-value', 'private-jetski-value',
+                             'private-google-value', 'private-gemini-value', 'private-cloudsdk-value'):
+                    self.assertNotIn(text, markdown)
+        # dry-run は混入した設定があっても、agy とその版の問い合わせを起動しない。
+        self.write(os.path.join(self.home, 'AGENTS.md'), 'private')
+        os.unlink(fake)
+        row = evaluation.run_trial(task, os.path.join(self.directory, 'dry-run'),
+            os.environ['BENITOITEH_TEST_BENITOITE'], 'antigravity-gemini',
+            evaluation.load_harnesses()['antigravity-gemini'], 'unused', None, True)
+        self.assertTrue(row['success'], row['reason'])
+        self.assertNotIn('agy_config_checked', row)
 
 @unittest.skipUnless(os.environ.get('BENITOITEH_TEST_BENITOITE'), 'BENITOITEH_TEST_BENITOITE is not set')
 class ProcessorTests(unittest.TestCase):
