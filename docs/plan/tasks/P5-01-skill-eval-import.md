@@ -18,16 +18,21 @@ Benitoite の Skill の評価の道具を、`v0.0.8` のタグから `tools/skil
 
 ## 作るもの
 
-1. `skill_eval.py` の `self_test` で、`task.json` の `acceptance` が指す元のファイルが本リポジトリにないときは、比較を飛ばし、その課題の行に `ok (acceptance skipped: <元のパス> is not in this repository)` の形で示す。失敗に数えない。元のファイルがあるときの比較は今のままとする。
+1. `skill_eval.py` の `self_test` で、`task.json` の `acceptance` が指す元のファイルが本リポジトリにないときは、そのファイルとの比較を飛ばし、失敗に数えない。元のファイルがあるときの比較は今のままとする。課題の行は次の形にする。
+   - 飛ばした元のファイルを、`acceptance skipped: <元のパス>` の句として一つずつ作り、`; ` で区切って並べる（`json_summary` は二つの句になる）。
+   - ほかに問題がなければ `ok (<句>; <句>)`、問題（解のスクリプトの失敗、元のファイルがあって中身が違う）があれば、今の `FAILED: <問題>; ...` の後に ` (<句>; <句>)` を付ける。
 2. `skill_eval.py` の `warning_codes` で、`CODES_FILE` が読めないときは、同じディレクトリの `warning-codes.txt`（一行に一つのコード。オーケストレータが置いた）を読む。どちらも読めないときは今のとおり空の一覧とする。
-3. `scripts/check.sh` に段 `skill-eval` を `test` の段の後に加え、次を実行する。どちらも LLM もネットワークも使わない。
-   - `python3 -I tools/skill-eval/skill_eval.py --self-test --benitoite "$BENITOITEH_TEST_BENITOITE"`
-   - `python3 -I tools/skill-eval/skill_eval.py --dry-run --benitoite "$BENITOITEH_TEST_BENITOITE" --work-root <一時ディレクトリ>`。一時ディレクトリは `mktemp -d` で作り、段の終わりに消す。リポジトリの中に作らない。
-   - `--inside-codex` のときに、Codex のサンドボックスが 127.0.0.1 での待ち受け（`http_server.py`）を止めて `http_client` が通らないなら、その課題だけを `--task` の指定で除き、`Skipped with --inside-codex:` の一覧に `skill-eval: http_client (loopback listening is blocked in the Codex sandbox)` と示す。止めないなら除かない。どちらだったかを完了の報告に書く。
-4. `.gitignore` に `__pycache__/` を加える（`skill_eval.py` が `http_server` を読み込むと、`tools/skill-eval/__pycache__/` ができる）。`python3 -I` でも `__pycache__` は作られうるので、無視の設定で扱う。
+3. `scripts/check.sh` に段 `skill-eval` を `test` の段の後に加える。この段は、`--inside-codex` の有無によらず、手元の機械（macOS）で実行し、コンテナと x86_64 の機械では実行しない。どちらの起動も LLM もネットワークも使わない。
+   - `python3 -I tools/skill-eval/skill_eval.py --self-test --benitoite "$BENITOITEH_TEST_BENITOITE" [--task <課題>...]`
+   - `python3 -I tools/skill-eval/skill_eval.py --dry-run --benitoite "$BENITOITEH_TEST_BENITOITE" --work-root "$skill_eval_work" [--task <課題>...]`。`skill_eval_work` は `mktemp -d` で作り、リポジトリの中に作らない。
+   - 一時ディレクトリの後始末: `skill_eval_work=` を `trap finish EXIT` より前に大域の変数として置き、`finish()` の中で空でなければ `rm -rf` する。`trap` を二つ目に掛けない（`finish` が外れる）。`set -e` で途中で止まっても消える。
+   - `--dry-run` の後、消す前に、記録 `"$skill_eval_work/record.md"` の警告の行（`^\| W[0-9]{4} \|` に当たる行）がちょうど 5 行であることを確かめ、違えば段を失敗させる（2 の確かめ）。
+   - `--inside-codex` のときは `http_client` を除く。Codex の workspace-write のサンドボックスは 127.0.0.1 での `bind` を `EPERM` で止め、`http_server.start()` が例外で止まる（2026-10-18 に確かめた）。`--task` は課題を選ぶ指定であり除く指定ではないので、`tools/skill-eval/tasks/*/task.json` から課題の名前を集め、`http_client` 以外を `--task` で並べる。手元の機械では `--task` を付けない。macOS の `/bin/bash` は 3.2 で、`set -u` のもとで空の配列の `"${arr[@]}"` が「unbound variable」で止まるので、`${arr[@]+"${arr[@]}"}` か、長さの確かめ（既存の `((${#test_args[@]} != 0))` と同じ形）で書く。
+   - `finish()` の `Skipped with --inside-codex:` の一覧に、`--inside-codex` のときだけ `skill-eval: http_client (loopback listening is blocked in the Codex sandbox)` を示す。
+4. `.gitignore` に `__pycache__/` を加える。この機械の python3（Apple の 3.9）は `-I` のもとでバイトコードを書かず、書くときもホームの下のキャッシュに書くが、ほかの Python で `tools/skill-eval/__pycache__/` ができたときの備えとする。
 5. `tools/skill-eval/SOURCE.md` の「写した後に変えた点」に、P5-01 の節を作り、1〜4 で変えた点を一行ずつ書く。
 
-`README.md`（写した元の文書）は変えない。本リポジトリでの使い方は、P5-02 で `SOURCE.md` に書く。
+`README.md`（写した元の文書）は変えない。本リポジトリでの使い方は、P5-02 で `SOURCE.md` に書く。処理系を探す既定の場所（`target/`）、記録のディレクトリ `results/` がないこと、誤りの文が Benitoite のスキルの名前を示すことは、P5-02 で扱う（`--self-test` と `--dry-run` は `--benitoite` を渡せば影響を受けない）。
 
 ## 触るファイル
 
@@ -38,10 +43,10 @@ Benitoite の Skill の評価の道具を、`v0.0.8` のタグから `tools/skil
 ## テスト
 
 - Rust のテストは加えない。`scripts/check.sh` の `skill-eval` の段が、11 課題の `--self-test` と `--dry-run` を処理系 `v0.0.7` で通すことを、変更の確かめとする。
-- `--self-test` の出力で、`json_summary` の行が `acceptance skipped` を含み、`self-test: 0 of 12 failed` で終わること。
-- `warning_codes()` が `warning-codes.txt` の 5 件（`W0301`・`W0401`・`W0402`・`W0403`・`W0501`）を返すことを、`--dry-run` の記録（作業ディレクトリに書かれる）の「診断のコードの集計」の節に 5 件の警告の行が出ることで確かめる。
+- `--self-test` の出力で、`json_summary` の行が `acceptance skipped` を二つ含み、手元の機械では `self-test: 0 of 12 failed`、`--inside-codex` では `self-test: 0 of 11 failed` で終わること。`--dry-run` は、手元の機械では 11 of 11、`--inside-codex` では 10 of 10 の試行が成功すること。
+- `warning_codes()` が `warning-codes.txt` の 5 件（`W0301`・`W0401`・`W0402`・`W0403`・`W0501`）を返すことは、3 の記録の行の数の確かめで見る。
 
 ## 完了条件
 
 - `scripts/check.sh --inside-codex` が通る（`BENITOITEH_TEST_BENITOITE` を設定して）。
-- 完了の報告に、`--self-test` と `--dry-run` の出力の末尾と、3 の `http_client` の扱いを書く。
+- 完了の報告に、`--inside-codex` での `--self-test` と `--dry-run` の出力の末尾を書く。
