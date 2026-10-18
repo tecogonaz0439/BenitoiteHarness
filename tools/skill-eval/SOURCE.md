@@ -97,9 +97,9 @@ python3 -I tools/skill-eval/skill_eval.py \
   --work-root <directory-outside-home-and-repository> --record <record.md>
 ```
 
-起動は `agy -p <依頼> --model gemini-3.8-flash-high --effort high --mode accept-edits --output-format json --print-timeout 1800s --log-file <試行>/agy/agy.log` とする。すべての操作を許す `--dangerously-skip-permissions` は使わない。ファイルの編集を自動で許し、コマンドは試行ごとのフックで Benitoite の起動だけに限る。`agy` 自身の時間の上限を1800秒、評価の道具の時間の上限を1860秒とし、途中の応答を書いて終わる猶予を設ける。試行と版の問い合わせが終わった後も、プロセスのグループに SIGKILL を一度送り、同じグループの背後の処理を止める。
+起動は `agy -p <依頼> --model gemini-3.8-flash-high --effort high --dangerously-skip-permissions --output-format json --print-timeout 1800s --log-file <試行>/agy/agy.log` とする。すべての操作を自動で許し、試行ごとのフックでコマンドとファイルの操作を絞る。理由: `allow` と `permissionOverrides` のいずれも非対話の既定の拒否に優先しなかったため、利用者の設定に許可を書かずに実行する形を設計者が選んだ（P5-07「補足 3」、2026-10-19）。`agy` 自身の時間の上限を1800秒、評価の道具の時間の上限を1860秒とし、途中の応答を書いて終わる猶予を設ける。試行と版の問い合わせが終わった後も、プロセスのグループに SIGKILL を一度送り、同じグループの背後の処理を止める。
 
-フックは作業ディレクトリの `.agents/hooks.json` に、`matcher: ".*"` の `PreToolUse` を一つだけ置く。門は、作業ディレクトリの外の `<試行>/agy/agy_gate.py` を `python -I` で起動し、実の作業ディレクトリを引数に渡す。実行ファイルとパスはシェル用に引用する。門の起動に失敗した場合（`pre-tool hook failed`）は、`accept-edits` の既定の権限によりコマンドは断られる（P5-07 の調査記録による）。
+フックは作業ディレクトリの `.agents/hooks.json` に、`matcher: ".*"` の `PreToolUse` を一つだけ置く。門は、作業ディレクトリの外の `<試行>/agy/agy_gate.py` を `python -I` で起動し、実の作業ディレクトリを引数に渡す。実行ファイルとパスはシェル用に引用する。門の時間の上限は30秒とする。全操作を自動で許す起動では、門が時間切れや異常終了で失敗すると、その道具は通る（P5-07「補足 3」）。制限時間を延ばして時間切れを起こしにくくし、決定の記録が不足した場合は試行後の照合で検知する。
 
 門は `run_command` と、明示した読み書きの道具だけを許す。コマンドは4096文字以下の `benitoite( [A-Za-z0-9_./=:,+-]+)*` に全体が一致し、第一引数が `check`・`run`・`test` であることを確かめる。各引数を `=`・`,`・`:` でも分け、絶対パスと `..` のパス要素を拒む。zsh のコマンド名の展開を防ぐため、引数そのものや区切りの後が `=` で始まる形も拒む。`Cwd` は作業ディレクトリかその下の絶対パスに限る。`skill install` など、ホームへ書き込めるサブコマンドは許さない。
 
@@ -108,6 +108,8 @@ python3 -I tools/skill-eval/skill_eval.py \
 パスは `/` または小文字の `file://` で始まり、実のパスで作業ディレクトリ内に収まるものだけを許す。相対パス、`~`、ほかの scheme、先頭か末尾の空白・制御文字、NUL を拒む。URI の復号後も同じ文字の検査を行う。書き込みでは、すべてのパスについて、相対パスの要素に `.agents`・`_agents`・`.agent`・`_agent`・`.gemini`・`.git` があるものと、末尾が `AGENTS.md`・`GEMINI.md` のものを拒む（大文字と小文字を区別しない）。ほかのすべての道具は拒む。実走で確かめた引数の鍵は後述する。それ以外の道具の鍵名の推し量りは未検証である。
 
 決定は `<試行>/agy/gate.log` に JSON Lines で残す。時刻、決定、道具の名前、入れ子を含む引数の鍵の名前の一覧、`CommandLine` の先頭200文字だけを書く。ほかの引数の値は書かない。ログは準備で作り、門は `O_APPEND|O_NOFOLLOW|O_NONBLOCK` で開いて、通常ファイルであることを `fstat` で確かめる。ログがない・形が違う・追記できない場合は、拒否を返す。会話の記録に道具の呼び出しがあるのに有効な門の記録がない場合は、`SAFETY: hooks were not loaded` を理由に加える。包みのコマンドの記録に行があるのに、門の記録に `run_command` の `allow` がない場合も同じとする。後者は会話の記録が読めなくても働く。
+
+試行の後、会話の記録の `PLANNER_RESPONSE` の `tool_calls` と、`gate.log` の `allow`・`deny` の行を道具の名前ごとに数える。道具ごとに、呼び出しの数から決定の数を引き、正の差だけを足す。不足があれば理由の先頭に `SAFETY: tool calls without a gate decision (<不足の合計>)` を加える。別の道具の余分な決定では不足を相殺しない。会話の記録がないか読めない場合と、集計が読めず会話の記録を特定できない場合は、`SAFETY: gate coverage unverifiable` を先頭に加える。これは試行後の検知であり、門が失敗した時点の操作を止めるものではない。
 
 起動前に `.agents/` のファイルを0444、ディレクトリを0555にする。理由: フックや Skill の偶発的な編集を起こしにくくするためである。同じ利用者のプロセスは権限を戻せるので、事後の比較も行う。ハーネスが終わった後は、例外の場合も、片付けと記録の前にファイルを0644、ディレクトリを0755へ戻す。リンクの参照先は変更しない。親ディレクトリの記述子を基準に `follow_symlinks=False` の `chmod` を使い、対応していなければ `O_NOFOLLOW` で開いた記述子の `fchmod` を使う。消えた項目などの失敗は `<試行>/agy/permissions.log` に記録し、ほかの項目の処理と試行の記録を続ける。公開する理由の欄には失敗の件数だけを書く。
 
@@ -129,7 +131,7 @@ python3 -I tools/skill-eval/skill_eval.py \
 - `AGY_CLI_DISABLE_AUTO_UPDATE=1` を設定しても背後の更新が起動し、走行開始の9秒後に利用者の `agy` が1.4.2に置き換わった。文書にある更新の止め方はない。
 - 利用者の `~/.gemini/config/` と `~/.gemini/antigravity-cli/settings.json` は変わらなかった。
 
-この結果に従い、門の `PERMISSION_OVERRIDES` を `True` とし、許した `run_command` にだけ `permissionOverrides: ["command(<CommandLine>)"]` を返す。`<CommandLine>` は門で検査した文字列そのものとする。拒否とファイルの道具には権限を追加しない。`permissionOverrides` は同梱の `hooks.md` が一時的な権限として定める形であるが、この形による非対話の実行は次の試しの走行で確かめる。
+2回目の試しの走行（`agy` 1.4.2）でも、門が検査済みの `benitoite check main.bnt` に `permissionOverrides: ["command(benitoite check main.bnt)"]` を添えて `allow` を返したが、`command` の権限不足として走行が終わった。出典は [P5-07 の「補足 3」](../../docs/plan/tasks/P5-07-antigravity.md#補足-32026-10-192-回目の試しの走行の後) のオーケストレータによる調査結果である。同節が挙げる試行の記録は `2026-10-19-0710-antigravity-gemini-trial2.md` である。この結果を受け、起動を全操作の自動許可に替え、門の `PERMISSION_OVERRIDES` を `False` に戻した。許可が利用者の設定に残るかは未確認であり、この起動では不要なので返さない。
 
 許可が設定に保存される場合を検知するため、各試行の前後で `~/.gemini/config/config.json`・`mcp_config.json`・`projects/*.json` と `~/.gemini/antigravity-cli/settings.json` の SHA-256、および `~/.gemini/config/` 直下の項目の一覧を比べる。変更か事後の比較不能を検知すると、理由の先頭に `SAFETY: user Antigravity settings changed` を付ける。設定値とハッシュは公開する記録に残さず、`agy_settings_changed` の真偽だけを残す。試行中に書き換えて元に戻した変更は検知できない。
 
@@ -139,11 +141,10 @@ python3 -I tools/skill-eval/skill_eval.py \
 
 終わり方は、評価の道具の時間切れ、`agy` の print timeout、終了状態3または `AGY_ERROR`、終了状態0かつ `SUCCESS`、ほかの誤りの順に判定する。`AGY_ERROR` の JSON は `status`・`code`・`retryable`・`error_id`・`short_error` の値だけを残す。JSON として読めないときは文を使い、どちらもメールアドレスを `<email>` に伏せて先頭200文字を残す。道具の名前が `[a-z0-9_]{1,64}` に当たらなければ `<invalid>` として数える。集計が読めなくても課題の判定は続け、読めないトークンの欄は `null` にする。
 
-次の試しの走行で、残る点を確かめてから評価を広げる。補足 2 の実装では本物の LLM を呼ばず、項目は `verified: false` のままとする。
+次の試しの走行で、残る点を確かめてから評価を広げる。補足 3 の実装では本物の LLM を呼ばず、項目は `verified: false` のままとする。
 
-- 門が時間切れ・異常終了したとき、書き込みが既定で許されるか。コマンドについて既定で断られるという調査結果を、書き込みの保証には使わない。
+- `agy` 1.4.2 の全操作を自動で許す起動でも、門の `deny` が効くことを最初に確かめる。
 - `.*` の門が拒む `command_status`・`task_boundary`・`notify_user` などで、走行が止まらないか。
-- `permissionOverrides: ["command(<CommandLine>)"]` によって許したコマンドを実行できるか。その許可が利用者の設定に残るかも、試行前後の比較で確かめる。
 - まだ実走で使われていない道具の名前と、`gate.log` に記録した引数の鍵の名前が、門のパスの検査に合っているか。
 - パスの鍵としない `grep_search` の `Includes`、`find_by_name` の `Pattern`・`Excludes` に置いたパスや `..` を、agy が検索の根の外に向けて解かないか。
 - 試行の途中で書き換えたフックを読み直すか。
@@ -213,7 +214,7 @@ python3 -I tools/skill-eval/skill_eval.py \
 
 ### P5-07 Antigravity の項目を整える
 
-- `antigravity-gemini` を `accept-edits` と試行ごとの一つの門で起動する形に改めた。`prepare: agy`、`agy-json`、プランの課金の扱い、時間の上限、記録のパスを加えた。`antigravity-gpt-oss` の項目と、写した元の `README.md` は変えていない。
+- `antigravity-gemini` を全操作の自動許可と試行ごとの一つの門で起動する形に改めた。`prepare: agy`、`agy-json`、プランの課金の扱い、時間の上限、記録のパスを加えた。`antigravity-gpt-oss` の項目と、写した元の `README.md` は変えていない。
 - 門、利用者の設定の事前確認、試行の後の改変検知、会話の記録による番と道具の集計を加えた。トークンの量、拒否した操作、思考の量、最後の応答、終了理由を記録する。試行と版の問い合わせの環境を整理し、終了後のプロセスのグループを止める。
 - テストは偽のホームと偽の `agy`、手で組み立てた集計と会話の記録を使う。生成したフックをシェルから起動して門の判断を確かめ、包みのコマンドと判定には本物の Benitoite v0.0.7 を使う。本物の LLM、`agy`、トークンとキーチェーンは使っていない。
 
@@ -222,3 +223,5 @@ python3 -I tools/skill-eval/skill_eval.py \
 - 再レビューの所見 A〜I に従い、パスを鍵名で判定し、本文や検索語をパスとして扱わないようにした。実際の `projectResources.resources` の形と入れ子の許可の一覧に合わせ、権限変更のリンクの追跡と失敗の扱い、包みの起動に対応する門の許可の確認、作成した印の名前と件数だけの報告を改めた。テスト全体の HOME・設定・状態・一時領域も一時ディレクトリに向けた。
 
 - 補足 2 に従い、検査済みのコマンドに `permissionOverrides` を加えた。利用者の設定と各試行の前後の版を比較し、変化を検知したら記録を保存して後続を止める。最初の試しの走行で確かめたフック、権限、引数、自動更新と設定の状態を記録し、未検証の項目を改めた。
+
+- 補足 3 に従い、`--mode accept-edits` を `--dangerously-skip-permissions` に替え、`PERMISSION_OVERRIDES` を `False` に戻し、門の時間の上限を30秒にした。門の失敗時も道具が通るため、試行後に会話の記録と門の決定を道具ごとの件数で照合し、不足や照合不能を理由の先頭に記録する。包みのコマンドと `run_command` の `allow` の照合も残した。
