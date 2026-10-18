@@ -98,3 +98,32 @@
 
 - `scripts/check.sh --inside-codex` が通る（`BENITOITEH_TEST_BENITOITE` を設定して）。
 - 完了の報告に、`unittest` の結果の末尾と、偽の出力から作った行の欄の例を書く。
+
+## 補足（2026-10-18、始める前の点検）
+
+本節は、上の各節に優先する。
+
+1. **祖先の `.agents/`**: `~/.agents/skills`（利用者が加えた 3 個のスキル）があり、Antigravity は作業ディレクトリからプロジェクトの根までの `.agents/` を読む（`json_configs.md`）。前提の事実の「`~/.agents/skills` は読まない見込み」は根拠が弱いので取り消す。走らせる前の確かめで、作業ディレクトリの祖先（作業ディレクトリ自身を除き、`~/.agents/` を含む）に `.agents/` があれば誤りとする。`SOURCE.md` に、Antigravity の項目では `--work-root` を `HOME` の外（例 `/Users/Shared/bh-eval/...`）に置くことを書く。
+2. **フックは試行ごとに組み立てる**: `files` は型板として置き換えられないので、項目から `files` を除き、`"prepare": "agy"` を置いて `run_trial` で分ける。その分かれ道で、`agy_gate.py` を `<試行>/agy/` に写し、`hooks.json` を `json.dumps` で組み立てて書く。門のコマンドは `shlex.quote(sys.executable) + ' -I ' + shlex.quote(<門の写し>) + ' ' + shlex.quote(<作業ディレクトリの実のパス>)` とする（フックは `sh -c` で起動されるので引用し、作業ディレクトリは推し量らずに引数で渡す）。
+3. **門の規則**（2 の「`benitoite` だけを許す」を置き換える）:
+   - 入力の形は `hooks.md` に合わせる。`toolCall.name`、`toolCall.args`（`CommandLine`。`Cwd` は会話の記録でだけ見える。絶対のパス）、`stepIdx`、`conversationId`、`workspacePaths`、`transcriptPath`、`modelName`。出力は `{"decision": ..., "reason": ...}` とする。
+   - 許すのは、道具の名前が `run_command`、`CommandLine` が 4096 文字以下で `re.fullmatch(r'benitoite( [A-Za-z0-9_./=:,+-]+)*', ...)` に当たり（`$` は末尾の改行を許すので使わない）、`Cwd` が絶対のパスで、引数の作業ディレクトリの実のパスか、その下であるときだけとする。`Cwd` がないか相対のパスなら拒む。引数が `/` で始まるか `..` の要素を含むときも拒む（ほかの試行に届かせない）。
+   - 拒む理由の文は、次の形で、LLM が次の手を選べるようにする: `Only "benitoite <args>" commands are allowed, with Cwd set to <作業ディレクトリ>. Use the file tools to read and edit files.`
+   - 決定ごとに、`<試行>/agy/gate.log` に一行（時刻、決定、道具の名前、`CommandLine` の先頭 200 文字）を加える（Antigravity の記録には、フックの決定が残らないため）。
+   - `allow` が非対話の既定の「断る」に優先するかは確かめられていない。最初の試しの走行で確かめ、優先しなければ、出力に `"permissionOverrides": ["command(<CommandLine>)"]` を加える形に替える（その切り替えを、門の中の定数一つで行えるようにしておく）。
+   - 二つのフックの `matcher` は重ならないようにする（複数が当たったときの決定の組み合わせ方は文書にない）。門が失敗したとき（`pre-tool hook failed`）は、`accept-edits` の既定によりコマンドは断られる。このことを `SOURCE.md` に書く。
+   - 門の範囲: `benitoite run --allow-effects=<Process のエフェクト> x.bnt` は、スクリプトを通じて任意のコマンドを起動できる。これは `claude-code` の `Bash(benitoite:*)` と同じ範囲であり、通常モードのハーネスの比べ方として受け入れる。このことを `SOURCE.md` に書く。
+4. **ウェブなどを拒むフックの `matcher`** に、`execute_notebook|agency_tool_call|rpc_action|workspace_api|deploy_firebase|set_up_firebase|cloud_sql_.*|restart_dev_server|generate_image|code_search|trajectory_search|install_applet_.*` を加える。試行の後、会話の記録の道具の名前が `run_command`・`view_file`・`write_to_file`・`replace_file_content`・`multi_replace_file_content` のどれでもなければ、理由に `WARNING: unexpected agy tool <名前>` を加える。
+5. **試行の後の確かめ**（2 の「`.agents/` の下のファイル」を置き換える）: 次のどれかが書いたときと違えば、理由の先頭に `SAFETY: <何が> was modified` を加える。`hooks.json` のバイト列、`.agents/skills/benitoite` の `skill_digest`、`.agents/` の下の項目の一覧（新しい項目）、`<試行>/bin/benitoite` と `<試行>/agy/agy_gate.py` の SHA-256。書き換えて元に戻した変更は見つけられないことを `SOURCE.md` に書く。
+6. **会話の記録**: `transcript_full.jsonl` を読み、なければ `transcript.jsonl` を読む（後者は `truncated_fields` で欄が切られることがある）。最後の `PLANNER_RESPONSE` は `tool_calls` の鍵を持たないので、0 と数える。会話の記録の根は、呼ぶときに `os.path.expanduser('~/.gemini/antigravity-cli/brain')` で求める（テストで `HOME` を差し替えられるようにする）。
+7. **子の環境**: 親の環境から、名前が `AGY_`・`ANTIGRAVITY_`・`JETSKI_` で始まる変数を除き（名前を見出しに書く）、`AGY_CLI_DISABLE_AUTO_UPDATE=1` を加える。版の問い合わせ（`agy --version`）の環境にも同じものを使う。`start` に `--log-file {trial}/agy/agy.log` を加え、`{trial}` を型板で置き換える（P5-04 の補足 12）。自動の更新が止まったこと（記録の `Auto-update disabled via environment variable` の行）は、最初の試しの走行で確かめる。
+8. **終わり方**（3 の `end` を置き換える）:
+   - 優先の順: 道具の側の時間の上限 > `--print-timeout` の警告（JSON が読めなくても）> 終了状態 3 か `AGY_ERROR` > `status` が `SUCCESS` で終了状態 0 > `error`。
+   - `--print-timeout` の警告は、`agy` 1.4.0 の `[agy] print timeout after %s with turn in progress; returning partial output` で、`%s` は Go の時間の書き方（1800 秒は `30m0s`）なので、正規表現で行に当てる。
+   - `AGY_ERROR` は、`AGY_ERROR: {"short_error":...}` と、形の決まった JSON の二つの形がある。`AGY_ERROR: ` の後を JSON として読み、読めなければ文のまま先頭 200 文字を添える。
+   - 標準出力は、全体を JSON として読み、だめなら最後の空でない行を読む。
+   - `denied_actions` は省かれうる。ないときは 0、一覧ならその長さ、ほかの形なら `None` とする。0 より大きければ、理由に `; denied_actions: N` を添える。
+   - 外部のハーネスの集計の読み取りの関数に、標準エラー出力の文字列も渡す（関数の形を変えてよい）。
+   - `agy` が終わった後、そのプロセスのグループに SIGKILL を一度送る（背後の処理を残さないため）。
+9. **走らせる前の確かめに加えるもの**: `~/.gemini/antigravity-cli/hooks.json`、`~/.gemini/config/` の `skills.json`・`plugins.json`・`agents/`・`workflows/`・`global_workflows/`・`workflows.json`・`sidecars/`、`settings.json`・`config.json`・`projects/*.json` の、名前に `permission` を含む鍵（大文字と小文字を区別しない）、作業ディレクトリ自身と祖先の `GEMINI.md`・`AGENTS.md`、祖先の `.gemini/` の下の `GEMINI.md`・`AGENTS.md`。確かめは、P5-04 の `claude-code` と同じく試行の準備で行い、見出しに通ったことを一行書く。
+10. **小さな点**: `antigravity-gpt-oss` の項目は変えない。`harnesses.json` の `_comment` を改める。`SOURCE.md` の「写した後に加えたファイル」に `agy_gate.py` を加える。`--print-timeout 1800s` の書き方は受け付けられる（`--help` の既定が `0s`）。
