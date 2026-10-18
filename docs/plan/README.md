@@ -56,7 +56,7 @@
 | [P4-07](tasks/P4-07-interaction.md) | 対話の操作と確認の画面 | P4-04、P4-06 | 完了 |
 | [P4-08](tasks/P4-08-slash-commands.md) | `/` で始まるコマンドと、P4 の安全の性質のテストの一覧 | P4-03、P4-04、P4-07、P4-09 | 完了 |
 | [P4-09](tasks/P4-09-safe-walk-search.md) | `glob`・`grep`・`read` を、リンクを辿らず上限のある読み方に移す | P4-03 | 完了 |
-| [P4-10](tasks/P4-10-doctor-processor.md) | `doctor` の処理系の項目 | P2-06 | 未着手 |
+| [P4-10](tasks/P4-10-doctor-processor.md) | `doctor` の処理系の項目 | P2-06 | 完了 |
 
 P1 の作業は P0-04・P0-05（OS のサンドボックス）の結果に依らないので、P0-04・P0-05 が設計者の判断を待つ間に先に進めてよい。
 
