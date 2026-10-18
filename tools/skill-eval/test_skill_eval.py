@@ -110,6 +110,101 @@ class OutputTests(unittest.TestCase):
             evaluation.benitoiteh_output('\n'.join(json.dumps(event) for event in events), 0)
 
 
+def dsh_events(missing=False, reason=None):
+    return [
+        {'type': 'session', 'sessionId': 'fake-session'},
+        {'type': 'status', 'phase': 'turn_start'},
+        {'type': 'status', 'phase': 'step_end',
+         'usage': {'inputTokens': 100, 'outputTokens': 20, 'cacheReadTokens': 30, 'cacheWriteTokens': 10}},
+        {'type': 'tool_call', 'tool': 'bash'},
+        {'type': 'tool_call', 'tool': 'bash'},
+        {'type': 'tool_call', 'tool': 'subagent_spawn'},
+        dict(type='status', phase='step_end', **({} if missing else {'usage': {'inputTokens': 50}})),
+        {'type': 'status', 'phase': 'turn_end', 'reason': reason or {'kind': 'completed'}},
+        {'type': 'final', 'text': 'Done.'},
+    ]
+
+
+def claude_result(**extra):
+    value = dict(type='result', subtype='success', is_error=False, num_turns=3, result='Done.',
+                 total_cost_usd=12.34,
+                 usage={'input_tokens': 100, 'output_tokens': 20,
+                        'cache_read_input_tokens': 30, 'cache_creation_input_tokens': 10})
+    value.update(extra)
+    return value
+
+
+class ExternalOutputTests(unittest.TestCase):
+    def test_dsh_usage_turns_final_and_end_reasons(self):
+        # step を番として数え、欠けた使用量を費用の確定値にしない契約。
+        cases = [({'kind': 'completed'}, 0, 'completed', 'completed'),
+                 ({'kind': 'completed'}, 1, 'error', 'completed'),
+                 ({'kind': 'blocked'}, 0, 'error', 'blocked'),
+                 ({'kind': 'error', 'error': {'code': 'AUTH', 'message': 'x' * 250}},
+                  1, 'error', 'AUTH: ' + 'x' * 194)]
+        for reason, code, end, detail in cases:
+            for missing in (False, True):
+                with self.subTest(reason=reason, missing=missing):
+                    out = 'invalid\n[]\n' + '\n'.join(json.dumps(v) for v in dsh_events(missing, reason))
+                    fields, actual, final = evaluation.external_output('dsh-ndjson', out, code)
+                    self.assertEqual(fields['turns'], 2)
+                    self.assertEqual(fields['dsh_turns'], 1)
+                    self.assertNotIn('steps', fields)
+                    self.assertEqual(fields['usage_missing'], int(missing))
+                    self.assertEqual(fields['tool_calls'], {'bash': 2, 'subagent_spawn': 1})
+                    self.assertEqual(fields['subagent_calls'], 1)
+                    self.assertIn('usage excludes subagents', actual)
+                    self.assertEqual([fields[k] for k in evaluation.TOKEN_FIELDS],
+                                     [140, 30, 10, 20, 160] if missing else [190, 30, 10, 20, 210])
+                    self.assertEqual(fields['end'], end)
+                    self.assertIn(detail, actual)
+                    self.assertNotIn('x' * 195, actual)
+                    self.assertEqual(final, 'Done.')
+        fields, detail, _ = evaluation.external_output('dsh-ndjson',
+            '{"type":"error","message":"earlier"}\n' +
+            json.dumps({'type': 'error', 'message': 'last ' + 'x' * 250}), 1)
+        self.assertEqual(fields['end'], 'error')
+        self.assertEqual(detail, 'error: last ' + 'x' * 195)
+        self.assertIsNone(fields['total_tokens'])
+
+    def test_claude_models_fallback_and_subtypes(self):
+        models = {'one': {'inputTokens': 7, 'outputTokens': 2, 'cacheReadInputTokens': 3,
+                          'cacheCreationInputTokens': 1}, 'two': {'inputTokens': 4, 'outputTokens': 5}}
+        for subtype, is_error, end in (('success', False, 'completed'), ('success', True, 'error'),
+                                        ('error_max_turns', True, 'max_turns'),
+                                        ('error_during_execution', True, 'error')):
+            for usage in ({}, {'modelUsage': models}):
+                with self.subTest(subtype=subtype, usage=usage):
+                    result = claude_result(subtype=subtype, is_error=is_error, **usage)
+                    fields, detail, final = evaluation.external_output('claude-json',
+                        'earlier output\n' + json.dumps(result) + '\n\n', 1)
+                    self.assertEqual(fields['end'], end)
+                    self.assertEqual(detail, subtype)
+                    self.assertEqual(fields['turns'], 3)
+                    self.assertIsNone(fields['tool_calls'])
+                    self.assertEqual(fields['claude_reported_cost_usd'], 12.34)
+                    self.assertNotIn('cost_usd', fields)
+                    self.assertEqual(final, 'Done.')
+                    self.assertEqual([fields[k] for k in evaluation.TOKEN_FIELDS],
+                                     [15, 3, 1, 7, 22] if usage else [140, 30, 10, 20, 160])
+
+    def test_unreadable_external_summaries_leave_tokens_unknown(self):
+        cases = [('dsh-ndjson', ''), ('dsh-ndjson', '{"type":"session"}'),
+                 ('dsh-ndjson', '\n'.join(json.dumps(v) for v in dsh_events(
+                     reason={'kind': 'error', 'error': 'bad'}))),
+                 ('dsh-ndjson', '{"type":"status","phase":"step_end","usage":[]}'),
+                 ('claude-json', json.dumps(claude_result()) + '\ninvalid'),
+                 ('claude-json', json.dumps(claude_result(modelUsage=[]))),
+                 ('claude-json', json.dumps(claude_result(usage={'input_tokens': -1}))),
+                 ('claude-json', json.dumps(claude_result(num_turns=True)))]
+        for output, out in cases:
+            with self.subTest(output=output, out=out):
+                fields, reason, _ = evaluation.external_output(output, out, 0)
+                self.assertEqual(reason, 'harness summary unreadable')
+                self.assertIsNone(fields['end'])
+                self.assertTrue(all(fields[k] is None for k in evaluation.TOKEN_FIELDS))
+
+
 class SessionTests(unittest.TestCase):
     def test_diagnostics_and_safety_from_session_and_spilled_records(self):
         with tempfile.TemporaryDirectory(prefix='skill-eval-session-test-') as directory:
@@ -673,6 +768,383 @@ class RecordsAndCostTests(unittest.TestCase):
                     self.assertIn('| json_summary | 1 / 2 |', f.read())
 
 
+
+
+class ExternalPreparationTests(unittest.TestCase):
+    def test_claude_user_configuration_is_rejected_by_name(self):
+        with tempfile.TemporaryDirectory(prefix='skill-eval-claude-config-') as directory:
+            config = os.path.join(directory, '.claude')
+            os.makedirs(os.path.join(config, 'skills', 'synced', 'bundle'))
+            with open(os.path.join(config, 'skills', 'synced', 'bundle', 'manifest.json'), 'w') as f:
+                json.dump({'skills': [{'name': 'standard-skill', 'description': 'do not record this'}]}, f)
+            workspace = os.path.join(directory, 'workspace')
+            os.mkdir(workspace)
+            with mock.patch.dict(os.environ, HOME=directory, CLAUDE_CONFIG_DIR=config):
+                self.assertEqual(evaluation.check_claude_config(workspace), ['standard-skill'])
+                for relative in ('skills/custom', 'agents/reviewer.md', 'commands/custom.md',
+                                 'output-styles/custom.md', 'CLAUDE.md'):
+                    with self.subTest(relative=relative):
+                        path = os.path.join(config, relative)
+                        os.makedirs(os.path.dirname(path), exist_ok=True)
+                        os.symlink('/no/such/target', path)
+                        try:
+                            with self.assertRaisesRegex(ValueError, relative):
+                                evaluation.check_claude_config(workspace)
+                        finally:
+                            os.unlink(path)
+                settings = os.path.join(config, 'settings.json')
+                for value, name in (({'enabledPlugins': {'custom': True}}, 'enabledPlugins'),
+                                    ({'hooks': {}}, 'hooks'), ({'outputStyle': 'custom'}, 'outputStyle'),
+                                    ({'apiKeyHelper': 'private-setting-value'}, 'apiKeyHelper'),
+                                    ({'env': {'ANTHROPIC_API_KEY': 'private-setting-value'}}, 'env'),
+                                    ({'permissions': {'allow': ['private-setting-value']}}, 'permissions.allow'),
+                                    ({'permissions': {'allow': []}}, 'permissions.allow'),
+                                    ([], 'settings.json')):
+                    with self.subTest(value=value):
+                        with open(settings, 'w') as f:
+                            json.dump(value, f)
+                        with self.assertRaisesRegex(ValueError, name) as caught:
+                            evaluation.check_claude_config(workspace)
+                        self.assertNotIn('private-setting-value', str(caught.exception))
+                with open(settings, 'w') as f:
+                    json.dump({'enabledPlugins': {'custom': False}}, f)
+                self.assertEqual(evaluation.check_claude_config(workspace), ['standard-skill'])
+                for name in ('CLAUDE.md', 'CLAUDE.local.md'):
+                    path = os.path.join(directory, name)
+                    with open(path, 'w') as f:
+                        f.write('private instructions')
+                    try:
+                        with self.assertRaisesRegex(ValueError, name):
+                            evaluation.check_claude_config(workspace)
+                    finally:
+                        os.unlink(path)
+            # HOME の既定と CLAUDE_CONFIG_DIR の優先を、それぞれ実際のディレクトリで確かめる。
+            parent = dict(os.environ, HOME=directory)
+            parent.pop('CLAUDE_CONFIG_DIR', None)
+            with mock.patch.dict(os.environ, parent, clear=True):
+                self.assertEqual(evaluation.check_claude_config(workspace), ['standard-skill'])
+            with mock.patch.dict(os.environ, HOME='/no/such/home', CLAUDE_CONFIG_DIR=config):
+                self.assertEqual(evaluation.check_claude_config(workspace), ['standard-skill'])
+
+    def test_dsh_refuses_git_ancestors_and_invalid_overlay_values(self):
+        with tempfile.TemporaryDirectory(prefix='skill-eval-dsh-guard-') as directory:
+            os.mkdir(os.path.join(directory, 'repo'))
+            with open(os.path.join(directory, 'repo', '.git'), 'w') as f:
+                f.write('gitdir: /irrelevant')
+            os.symlink(os.path.join(directory, 'repo'), os.path.join(directory, 'alias'))
+            harness = evaluation.load_harnesses()['deepseek-harness']
+            for name in ('repo', 'alias'):
+                with self.subTest(name=name), self.assertRaisesRegex(ValueError, '.git ancestor'):
+                    evaluation.run_trial(evaluation.Task('json_summary'), os.path.join(directory, name, 'trial'),
+                        '/no/processor', 'fake', harness, 'deepseek-flash', None, False, dsh_key='synthetic')
+            for model, effort in (('bad_model', 'high'), ('bad\nmodel', 'high'), ('日本語', 'high'),
+                                  ('flash', 'medium'), ('flash', 'HIGH'), ('flash', '')):
+                with self.subTest(model=model, effort=effort), self.assertRaisesRegex(ValueError, 'model or effort'):
+                    evaluation.dsh_overlay(model, effort)
+            overlay = evaluation.dsh_overlay('flash-1.0', 'off')
+            self.assertIn('model: "flash-1.0"', overlay)
+            self.assertIn('reasoningEffort: "off"', overlay)
+
+    def test_work_root_under_shared_tmp_is_rejected_after_resolving_links(self):
+        with tempfile.TemporaryDirectory(prefix='skill-eval-work-root-') as directory:
+            alias = os.path.join(directory, 'alias')
+            os.symlink('/tmp', alias)
+            # 試行を 0 回にし、修正前でも共有の /tmp にファイルを作らせない。
+            for root in ('/tmp', '/tmp/evaluation', '/private/tmp', '/private/tmp/evaluation', alias):
+                with self.subTest(root=root), contextlib.redirect_stdout(io.StringIO()):
+                    with self.assertRaises(SystemExit) as caught:
+                        evaluation.main(['--dry-run', '--task', 'json_summary', '--trials', '0',
+                                         '--benitoite', sys.executable, '--work-root', root])
+                    self.assertEqual(str(caught.exception),
+                                     '--work-root must not be under /tmp (harnesses can write there)')
+
+
+@unittest.skipUnless(os.environ.get('BENITOITEH_TEST_BENITOITE'), 'BENITOITEH_TEST_BENITOITE is not set')
+class ExternalTrialTests(unittest.TestCase):
+    def setUp(self):
+        if any(os.path.lexists(os.path.join(parent, '.git'))
+               for parent in evaluation.ancestors(tempfile.gettempdir())):
+            self.skipTest('temporary directory has a .git ancestor')
+        self.temporary = tempfile.TemporaryDirectory(prefix='skill-eval-external-')
+        self.addCleanup(self.temporary.cleanup)
+        self.directory = self.temporary.name
+        self.home = os.path.join(self.directory, 'home')
+        os.mkdir(self.home)
+        # 実際の利用者の設定とキーには触れず、すべての起動を一時領域に向ける。
+        parent = dict(os.environ, HOME=self.home, CLAUDE_CONFIG_DIR=os.path.join(self.home, '.claude'),
+                      XDG_CONFIG_HOME=os.path.join(self.directory, 'config'),
+                      XDG_STATE_HOME=os.path.join(self.directory, 'state'), TMPDIR=self.directory,
+                      DSH_PERMISSION_MODE='danger-full-access', DSH_SYSTEM_PROMPT='private',
+                      DSH_TOOLS_MODE='ptc', DEEPSEEK_BASE_URL='https://invalid', NODE_OPTIONS='--invalid',
+                      ANTHROPIC_API_KEY='private-anthropic')
+        patch = mock.patch.dict(os.environ, parent, clear=True)
+        patch.start()
+        self.addCleanup(patch.stop)
+        self.key = 'synthetic-deepseek-key-P5-04'
+        self.counter = os.path.join(self.directory, 'key-reads')
+        self.key_command = self.executable('key-command',
+            'import os\nfrom pathlib import Path\n'
+            'assert not any(n.startswith(("DSH_", "DEEPSEEK_", "ANTHROPIC", "NODE_")) '
+            'for n in os.environ)\n'
+            'with open(%r, "a") as f: f.write("read\\n")\nprint(%r)\n' % (self.counter, self.key))
+
+    def executable(self, name, source):
+        path = os.path.join(self.directory, name)
+        with open(path, 'w', encoding='utf-8') as f:
+            f.write('#!%s\n%s' % (sys.executable, source))
+        os.chmod(path, 0o755)
+        return path
+
+    def run_external(self, output, text, trials=2, extra=None, leak=None, timed=False, after_check=''):
+        task = evaluation.Task('json_summary')
+        with open(task.path('reference.bnt'), encoding='utf-8') as f:
+            source = f.read()
+        script = ('import os, sys, subprocess\nfrom pathlib import Path\n'
+                  'if "--version" in sys.argv:\n print("fake external 1.0")\n sys.exit(0)\n'
+                  'trial = Path.cwd().parent\n'
+                  'assert sys.argv[1] == str(trial)\n'
+                  'Path("main.bnt").write_text(%r)\n') % source
+        if output == 'dsh-ndjson':
+            script += ('assert os.environ["DEEPSEEK_API_KEY"] == %r\n'
+                       'assert os.environ["DSH_HOME"] == str(trial / "dsh-home")\n'
+                       'assert os.environ["DSH_AGENTS_HOME"] == str(trial / "agents-home")\n'
+                       'assert os.environ["DSH_TELEMETRY_DISABLED"] == "1"\n'
+                       'assert os.environ["TMPDIR"] == str(trial / "tmp")\n'
+                       'assert os.environ["SKILL_EVAL_LOG"] == str(trial / "tmp/benitoite.log")\n'
+                       'assert list((trial / "dsh-home").iterdir()) == []\n'
+                       'assert list((trial / "agents-home").iterdir()) == []\n'
+                       'assert not any(n in os.environ for n in ["DSH_PERMISSION_MODE", "DSH_SYSTEM_PROMPT", '
+                       '"DSH_TOOLS_MODE", "DEEPSEEK_BASE_URL", "NODE_OPTIONS", "ANTHROPIC_API_KEY"])\n'
+                       'assert not any(n.startswith("NODE_") for n in os.environ)\n'
+                       'assert (trial / "bin").parent != Path(os.environ["TMPDIR"])\n'
+                       'assert (trial / "real").parent != Path(os.environ["TMPDIR"])\n') % self.key
+        else:
+            script += 'assert "ANTHROPIC_API_KEY" not in os.environ\n'
+        script += ('child = {n: v for n, v in os.environ.items() if n != "DEEPSEEK_API_KEY"}\n'
+                   'subprocess.run(["benitoite", "check", "main.bnt"], env=child, check=True, '
+                   'stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)\n')
+        script += after_check
+        if leak:
+            script += ('key = os.environ["DEEPSEEK_API_KEY"]\n'
+                       'target = trial / %r\n'
+                       'target.parent.mkdir(parents=True, exist_ok=True)\n'
+                       'target.write_text(key)\n'
+                       'print(key, file=sys.stderr)\n') % leak
+        script += 'print(%r)\n' % text
+        if timed:
+            script += ('import signal, time\nsys.stdout.flush()\n'
+                       'signal.signal(signal.SIGTERM, lambda *args: sys.exit(0))\n'
+                       'while True: time.sleep(.01)\n')
+        executable = self.executable('fake-harness', script)
+        name = 'deepseek-harness' if output == 'dsh-ndjson' else 'claude-code'
+        harness = copy.deepcopy(evaluation.load_harnesses()[name])
+        harness.update(start=[executable, '{trial}'], cwd='{trial}/workspace', version=[executable, '--version'])
+        if timed:
+            harness['options']['harness_timeout'] = 1
+        if output == 'dsh-ndjson':
+            harness['api_key']['command'] = [self.key_command]
+        record = os.path.join(self.directory, 'record.md')
+        with mock.patch.object(evaluation, 'load_harnesses', return_value={name: harness}), \
+                contextlib.redirect_stdout(io.StringIO()) as stdout, \
+                contextlib.redirect_stderr(io.StringIO()) as stderr:
+            status = evaluation.main(['--harness', name, '--allow-unverified', '--task', task.name,
+                '--benitoite', os.environ['BENITOITEH_TEST_BENITOITE'], '--trials', str(trials),
+                '--work-root', os.path.join(self.directory, 'work'), '--record', record] + (extra or []))
+        with open(record, encoding='utf-8') as f:
+            markdown = f.read()
+        with open(os.path.splitext(record)[0] + '.jsonl', encoding='utf-8') as f:
+            jsonl = f.read()
+        return status, [json.loads(line) for line in jsonl.splitlines()], markdown, jsonl, stdout.getvalue(), stderr.getvalue()
+
+    def test_dsh_preparation_key_once_cost_and_records(self):
+        events = [v for v in dsh_events() if v.get('tool') != 'subagent_spawn']
+        with mock.patch.dict(os.environ, NODE_TLS_REJECT_UNAUTHORIZED='0',
+                             NODE_EXTRA_CA_CERTS='/private/custom-certs'):
+            status, rows, markdown, jsonl, stdout, stderr = self.run_external(
+                'dsh-ndjson', '\n'.join(json.dumps(v) for v in events))
+        self.assertEqual(status, 0)
+        self.assertEqual(len(rows), 2)
+        self.assertTrue(all(row['success'] and row['end'] == 'completed' and row['attempts'] == 1 for row in rows))
+        self.assertAlmostEqual(rows[0]['cost_usd'], .00007218)
+        self.assertNotIn('usage excludes subagents', rows[0]['reason'])
+        self.assertIn('parent session only', markdown)
+        self.assertIn('DSH_PERMISSION_MODE', markdown)
+        self.assertIn('NODE_TLS_REJECT_UNAUTHORIZED', markdown)
+        self.assertIn('NODE_EXTRA_CA_CERTS', markdown)
+        self.assertNotIn('/private/custom-certs', markdown)
+        self.assertNotIn('danger-full-access', markdown)
+        with open(self.counter) as f:
+            self.assertEqual(f.read(), 'read\n')
+        for index in (1, 2):
+            trial = os.path.join(self.directory, 'work/json_summary', str(index))
+            self.assertTrue(os.path.isdir(os.path.join(trial, 'dsh-home')))
+            for name in ('final.txt', 'dsh-eval-overlay.yml'):
+                with open(os.path.join(trial, name)) as f:
+                    text = f.read()
+                self.assertNotIn(self.key, text)
+                if name == 'final.txt':
+                    self.assertEqual(text, 'Done.')
+                else:
+                    self.assertIn('model: "deepseek-flash"', text)
+                    self.assertIn('reasoningEffort: "high"', text)
+                    for part in ('session-log-deepseek\n  config:\n    enabled: false',
+                                 'plugin-package-inventory-deepseek\n  disabled: true',
+                                 'tool-web\n  disabled: true', 'session-title-llm\n  disabled: true'):
+                        self.assertIn(part, text)
+        for text in (markdown, jsonl, stdout, stderr):
+            self.assertNotIn(self.key, text)
+
+    def test_dsh_missing_usage_stops_cost_budget_without_changing_verdict(self):
+        events = [v for v in dsh_events(missing=True) if v.get('tool') != 'subagent_spawn']
+        status, rows, markdown, _, _, stderr = self.run_external(
+            'dsh-ndjson', '\n'.join(json.dumps(v) for v in events), extra=['--stop-cost', '10'])
+        self.assertEqual(status, 3)
+        self.assertEqual(len(rows), 1)
+        self.assertTrue(rows[0]['success'])
+        self.assertIsNone(rows[0]['cost_usd'])
+        self.assertEqual(rows[0]['usage_missing'], 1)
+        self.assertIn('cost unknown: 1 trials', markdown)
+        self.assertIn('stopped: cost unknown for deepseek', stderr)
+
+    def test_subagent_and_workflow_cost_is_unknown_and_stops_budget(self):
+        for tool in ('subagent_spawn', 'workflow_run'):
+            with self.subTest(tool=tool):
+                events = [v for v in dsh_events() if v.get('type') != 'tool_call']
+                events.insert(2, {'type': 'tool_call', 'tool': tool})
+                status, rows, markdown, _, _, stderr = self.run_external(
+                    'dsh-ndjson', '\n'.join(json.dumps(v) for v in events), extra=['--stop-cost', '10'])
+                self.assertEqual(status, 3)
+                self.assertEqual(len(rows), 1)
+                self.assertEqual(rows[0]['subagent_calls'], 1)
+                self.assertEqual(rows[0]['tool_calls'], {tool: 1})
+                self.assertTrue(rows[0]['success'])
+                self.assertEqual(rows[0]['total_tokens'], 210)
+                self.assertIsNone(rows[0]['cost_usd'])
+                self.assertIn('usage excludes subagents', rows[0]['reason'])
+                self.assertIn('cost unknown: 1 trials', markdown)
+                self.assertIn('stopped: cost unknown for deepseek', stderr)
+
+    def test_leak_scan_covers_tmp_and_agents_home_without_following_links(self):
+        for relative in ('tmp/dsh-spill-large-result', 'agents-home/output'):
+            with self.subTest(relative=relative):
+                status, rows, markdown, jsonl, stdout, stderr = self.run_external(
+                    'dsh-ndjson', '\n'.join(json.dumps(v) for v in dsh_events()), trials=1, leak=relative,
+                    after_check='os.symlink(%r, trial / "workspace/key-link")\n'
+                                'os.mkfifo(trial / "tmp/pipe")\n' % self.key_command)
+                self.assertEqual(status, 0)
+                self.assertEqual(len(rows), 1)
+                self.assertIn('SAFETY: DeepSeek key value found in ' + relative, rows[0]['reason'])
+                self.assertNotIn('workspace/key-link', rows[0]['reason'])
+                for value in (markdown, jsonl, stdout, stderr):
+                    self.assertNotIn(self.key, value)
+
+    @unittest.skipIf(hasattr(os, 'geteuid') and os.geteuid() == 0, 'root can read chmod 000 files')
+    def test_unscannable_file_does_not_discard_trial(self):
+        status, rows, markdown, jsonl, _, _ = self.run_external(
+            'dsh-ndjson', '\n'.join(json.dumps(v) for v in dsh_events()), trials=2,
+            after_check='blocked = trial / "dsh-home/unreadable"\n'
+                        'blocked.write_text("unreadable output")\nblocked.chmod(0)\n')
+        self.assertEqual(status, 0)
+        self.assertEqual(len(rows), 2)
+        for row in rows:
+            self.assertIn('SAFETY: unscannable dsh-home/unreadable', row['reason'])
+        self.assertIn('SAFETY: unscannable dsh-home/unreadable', markdown)
+        self.assertIn('SAFETY: unscannable dsh-home/unreadable', jsonl)
+
+    def test_modified_processor_copy_is_rejected_and_judgment_uses_original(self):
+        text = '\n'.join(json.dumps(v) for v in dsh_events())
+        with self.subTest(unchanged=True):
+            with mock.patch.object(evaluation, 'judge_trial_script', wraps=evaluation.judge_trial_script) as judge:
+                status, rows, _, _, _, _ = self.run_external('dsh-ndjson', text, trials=1)
+            self.assertTrue(rows[0]['success'])
+            self.assertEqual(status, 0)
+            self.assertEqual(judge.call_args.args[2], os.environ['BENITOITEH_TEST_BENITOITE'])
+        marker = os.path.join(self.directory, 'modified-processor-was-run')
+        replacement = '#!%s\nfrom pathlib import Path\nPath(%r).touch()\n' % (sys.executable, marker)
+        status, rows, markdown, _, _, _ = self.run_external(
+            'dsh-ndjson', text, trials=1,
+            after_check='(trial / "real/benitoite").write_text(%r)\n' % replacement)
+        self.assertEqual(status, 0)
+        self.assertFalse(rows[0]['success'])
+        self.assertTrue(rows[0]['reason'].startswith('SAFETY: the processor copy was modified'))
+        self.assertIn('SAFETY: the processor copy was modified', markdown)
+        self.assertFalse(os.path.exists(marker))
+
+    def test_claude_cost_is_separate_and_synced_names_are_recorded(self):
+        bundle = os.path.join(self.home, '.claude/skills/synced/standard')
+        os.makedirs(bundle)
+        with open(os.path.join(bundle, 'manifest.json'), 'w') as f:
+            json.dump({'skills': [{'name': 'standard-skill', 'description': 'private description'}]}, f)
+        result = claude_result(usage={'input_tokens': 2000000, 'output_tokens': 1})
+        status, rows, markdown, jsonl, _, _ = self.run_external(
+            'claude-json', json.dumps(result), extra=['--stop-cost', '0'])
+        self.assertEqual(status, 0)
+        self.assertEqual(len(rows), 2)
+        self.assertTrue(all(row['success'] and row['over_token_cap'] for row in rows))
+        self.assertIsNone(rows[0]['cost_usd'])
+        self.assertEqual(rows[0]['claude_reported_cost_usd'], 12.34)
+        self.assertIn('over the 2M token cap', rows[0]['reason'])
+        self.assertIn('利用者設定の確認: passed', markdown)
+        self.assertIn('standard-skill', markdown)
+        self.assertNotIn('private description', markdown + jsonl)
+        self.assertFalse(os.path.exists(self.counter))
+
+    def test_unreadable_summary_keeps_wrapper_verdict_and_continues(self):
+        status, rows, _, _, _, _ = self.run_external('dsh-ndjson', 'not a summary')
+        self.assertEqual(status, 0)
+        self.assertEqual(len(rows), 2)
+        for row in rows:
+            self.assertTrue(row['success'])
+            self.assertIsNone(row['end'])
+            self.assertIsNone(row['total_tokens'])
+            self.assertIn('; harness summary unreadable', row['reason'])
+
+    def test_timeout_overrides_completed_output_and_zero_exit(self):
+        status, rows, _, _, _, _ = self.run_external(
+            'dsh-ndjson', '\n'.join(json.dumps(v) for v in dsh_events()), trials=1, timed=True)
+        self.assertEqual(status, 0)
+        self.assertTrue(rows[0]['success'])
+        self.assertTrue(rows[0]['timed_out'])
+        self.assertEqual(rows[0]['harness_exit'], 0)
+        self.assertEqual(rows[0]['end'], 'timeout')
+        self.assertIn('; timeout:', rows[0]['reason'])
+
+    def test_key_leak_is_flagged_without_publishing_value(self):
+        events = dsh_events(reason={'kind': 'error', 'error': {'code': 'FAKE', 'message': self.key}})
+        events[-1]['text'] = self.key
+        status, rows, markdown, jsonl, stdout, stderr = self.run_external(
+            'dsh-ndjson', '\n'.join(json.dumps(v) for v in events), trials=1, leak='dsh-home/session.log')
+        self.assertEqual(status, 0)
+        self.assertTrue(rows[0]['success'])
+        self.assertTrue(rows[0]['reason'].startswith('SAFETY: DeepSeek key value found in '))
+        for path in ('harness.stdout', 'harness.stderr', 'final.txt', 'dsh-home/session.log'):
+            self.assertIn('SAFETY: DeepSeek key value found in ' + path, rows[0]['reason'])
+        self.assertIn('Rotate the DeepSeek API key', stderr)
+        for text in (markdown, jsonl, stdout, stderr):
+            self.assertNotIn(self.key, text)
+        # 保存の直前にも、理由以外の欄と見出しから値を除く。
+        path = os.path.join(self.directory, 'guard.md')
+        evaluation.write_record(path, {'header': self.key}, [dict(rows[0], model=self.key)], [])
+        for name in ('guard.md', 'guard.jsonl'):
+            with open(os.path.join(self.directory, name)) as f:
+                self.assertNotIn(self.key, f.read())
+
+    def test_key_command_failures_hide_output_and_dry_run_skips_preflight(self):
+        harness = evaluation.load_harnesses()['deepseek-harness']
+        for source, code in (('import sys\nprint(%r)\nsys.exit(7)\n' % self.key, 7), ('print("")\n', 0)):
+            harness['api_key']['command'] = [self.executable('bad-key-command', source)]
+            with self.assertRaisesRegex(ValueError, 'keychain \\(exit %d\\)' % code) as caught:
+                evaluation.read_dsh_key(harness)
+            self.assertNotIn(self.key, str(caught.exception))
+        for name in ('deepseek-harness', 'claude-code'):
+            with self.subTest(name=name):
+                trial = os.path.join(self.directory, name)
+                row = evaluation.run_trial(evaluation.Task('json_summary'), trial,
+                    os.environ['BENITOITEH_TEST_BENITOITE'], name, evaluation.load_harnesses()[name],
+                    'invalid_model', None, True)
+                self.assertTrue(row['success'])
+                self.assertIsNone(row['end'])
+        self.assertFalse(os.path.exists(self.counter))
 
 
 @unittest.skipUnless(os.environ.get('BENITOITEH_TEST_BENITOITE'), 'BENITOITEH_TEST_BENITOITE is not set')
