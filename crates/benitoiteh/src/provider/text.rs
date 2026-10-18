@@ -7,6 +7,8 @@ pub const QUOTA: &str = "Provider balance or usage limit exceeded";
 pub const INVALID_REQUEST: &str = "Invalid provider request";
 pub const THINKING_REJECTED: &str = "Provider rejected replayed thinking data";
 pub const STREAM_DISCONNECTED: &str = "Provider stream disconnected before completion";
+pub const INVALID_RESPONSE: &str =
+    "The provider returned a response that benitoiteh could not read.";
 pub const EMPTY_RESPONSE: &str = "Provider returned an empty response";
 pub const SSE_EVENT_LIMIT: &str = "SSE event exceeds the 16 MiB limit";
 pub const SSE_INVALID_UTF8: &str = "SSE field contains invalid UTF-8";

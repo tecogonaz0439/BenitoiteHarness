@@ -64,7 +64,7 @@ impl OpenAiChatError {
             Self::InvalidRequest | Self::Cancelled => ProviderError::NonRetryable {
                 reason: NonRetryableKind::InvalidRequest,
             },
-            Self::InvalidResponse | Self::Sse(_) => ProviderError::StreamDisconnected,
+            Self::InvalidResponse | Self::Sse(_) => ProviderError::InvalidResponse,
         }
     }
 

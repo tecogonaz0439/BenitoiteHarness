@@ -175,6 +175,8 @@ impl OpenAiChatAdapter {
                             fields.remove("reasoning_content");
                             fields.remove("reasoning");
                         }
+                        // Gemini が求める署名を保つため、extra_content は reasoning_replay によらず
+                        // 同じ送り先へ送り返す（設計書 02-01「OpenAI の Chat Completions API」）。
                         raw
                     } else {
                         // 別の送り先の推論は all-turns でも送らない（実装プラン P1-03「会話の変換」）。

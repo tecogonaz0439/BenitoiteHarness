@@ -2,7 +2,7 @@
 
 use std::collections::BTreeMap;
 
-use serde_json::{Value, json};
+use serde_json::{Map, Value, json};
 
 use crate::provider::ids::remap_tool_call_id;
 use crate::provider::sse::SseEvent;
@@ -13,6 +13,9 @@ use crate::provider::{
 
 use super::{OpenAiChatError, api_error, provider_error};
 
+const MAX_EXTRA_CONTENT_DEPTH: usize = 16;
+const MAX_EXTRA_CONTENT_BYTES: usize = 64 * 1024;
+
 /// 一回の要求に対応する組み立て器。Debug で受け取った本文を表示しない。
 pub struct OpenAiChatAssembler {
     destination: Destination,
@@ -20,6 +23,9 @@ pub struct OpenAiChatAssembler {
     reasoning: Option<String>,
     parts: Vec<AssistantPart>,
     calls: BTreeMap<usize, Call>,
+    indexed_calls: Option<bool>,
+    extra_content: Option<Map<String, Value>>,
+    extra_content_bytes: usize,
     usage: Value,
     reason: Option<FinishReason>,
     finished: bool,
@@ -32,6 +38,7 @@ struct Call {
     name: String,
     arguments: String,
     deltas: Vec<String>,
+    extra_content: Option<Map<String, Value>>,
 }
 
 impl std::fmt::Debug for OpenAiChatAssembler {
@@ -51,6 +58,9 @@ impl OpenAiChatAssembler {
             reasoning: None,
             parts: Vec::new(),
             calls: BTreeMap::new(),
+            indexed_calls: None,
+            extra_content: None,
+            extra_content_bytes: 0,
             usage: Value::Null,
             reason: None,
             finished: false,
@@ -77,16 +87,26 @@ impl OpenAiChatAssembler {
 
     /// 正常に受け取り終えた発言と共通の応答を取り出す。途中の内容は返さない。
     pub fn finish(self) -> Result<AssistantTurn, OpenAiChatError> {
-        if self.failed || !self.finished {
+        if self.failed {
+            return Err(OpenAiChatError::InvalidResponse);
+        }
+        if !self.finished {
             return Err(provider_error(ProviderError::StreamDisconnected));
         }
         let mut parts = self.parts;
         let mut raw_calls = Vec::new();
         for call in self.calls.into_values() {
-            raw_calls.push(json!({
+            let mut raw_call = json!({
                 "id": call.id, "type": "function",
                 "function": {"name": call.name, "arguments": call.arguments}
-            }));
+            });
+            if let Some(extra) = call.extra_content {
+                raw_call
+                    .as_object_mut()
+                    .ok_or(OpenAiChatError::InvalidResponse)?
+                    .insert("extra_content".into(), Value::Object(extra));
+            }
+            raw_calls.push(raw_call);
             parts.push(AssistantPart::ToolCall(ToolCall {
                 id: format!("openai-chat-{}", remap_tool_call_id(&call.id)),
                 provider_id: Some(call.id),
@@ -102,6 +122,9 @@ impl OpenAiChatAssembler {
         let mut raw = serde_json::Map::new();
         raw.insert("role".into(), json!("assistant"));
         raw.insert("content".into(), json!(self.content));
+        if let Some(extra) = self.extra_content {
+            raw.insert("extra_content".into(), Value::Object(extra));
+        }
         if let Some(reasoning) = self.reasoning {
             raw.insert("reasoning_content".into(), json!(reasoning));
         }
@@ -125,6 +148,11 @@ impl OpenAiChatAssembler {
             return Ok(Vec::new());
         }
         if event.data == "[DONE]" {
+            // 互換の口は道具を呼んでも stop を返す。完了の印まで届いてから
+            // 道具の番にする（設計書 02-01「OpenAI の Chat Completions API」）。
+            if self.reason == Some(FinishReason::Completed) && !self.calls.is_empty() {
+                self.reason = Some(FinishReason::ToolCalls);
+            }
             let reason = self
                 .reason
                 .clone()
@@ -150,6 +178,11 @@ impl OpenAiChatAssembler {
                 .get("delta")
                 .filter(|d| d.is_object())
                 .ok_or(OpenAiChatError::InvalidResponse)?;
+            merge_extra_content(
+                &mut self.extra_content,
+                delta,
+                &mut self.extra_content_bytes,
+            )?;
             if let Some(text) = optional_string(delta, "content")? {
                 self.content.get_or_insert_default().push_str(text);
                 if !text.is_empty() {
@@ -183,27 +216,7 @@ impl OpenAiChatAssembler {
             }
             if let Some(calls) = delta.get("tool_calls").filter(|v| !v.is_null()) {
                 for delta in calls.as_array().ok_or(OpenAiChatError::InvalidResponse)? {
-                    let index = delta
-                        .get("index")
-                        .and_then(Value::as_u64)
-                        .and_then(|i| usize::try_from(i).ok())
-                        .ok_or(OpenAiChatError::InvalidResponse)?;
-                    let call = self.calls.entry(index).or_default();
-                    if let Some(id) = optional_string(delta, "id")? {
-                        call.id.push_str(id);
-                    }
-                    if let Some(function) = delta.get("function").filter(|v| !v.is_null()) {
-                        if !function.is_object() {
-                            return Err(OpenAiChatError::InvalidResponse);
-                        }
-                        if let Some(name) = optional_string(function, "name")? {
-                            call.name.push_str(name);
-                        }
-                        if let Some(arguments) = optional_string(function, "arguments")? {
-                            call.arguments.push_str(arguments);
-                            call.deltas.push(arguments.into());
-                        }
-                    }
+                    self.read_call(delta)?;
                 }
             }
             if let Some(reason) = optional_string(choice, "finish_reason")? {
@@ -233,6 +246,67 @@ impl OpenAiChatAssembler {
         Ok(events)
     }
 
+    fn read_call(&mut self, delta: &Value) -> Result<(), OpenAiChatError> {
+        let indexed = delta.get("index").is_some();
+        if self
+            .indexed_calls
+            .is_some_and(|previous| previous != indexed)
+        {
+            return Err(OpenAiChatError::InvalidResponse);
+        }
+        self.indexed_calls = Some(indexed);
+        let index = if indexed {
+            delta
+                .get("index")
+                .and_then(Value::as_u64)
+                .and_then(|i| usize::try_from(i).ok())
+                .ok_or(OpenAiChatError::InvalidResponse)?
+        } else {
+            // 番号のない項目は完全な呼び出しであり、後続の断片とは結ばない
+            // （設計書 02-01「OpenAI の Chat Completions API」）。
+            if delta.get("type").and_then(Value::as_str) != Some("function")
+                || optional_string(delta, "id")?.is_none_or(str::is_empty)
+                || delta.get("function").is_none_or(|function| {
+                    function
+                        .get("name")
+                        .and_then(Value::as_str)
+                        .is_none_or(str::is_empty)
+                        || function.get("arguments").and_then(Value::as_str).is_none()
+                })
+            {
+                return Err(OpenAiChatError::InvalidResponse);
+            }
+            match self.calls.last_key_value() {
+                Some((&last, _)) => last
+                    .checked_add(1)
+                    .ok_or(OpenAiChatError::InvalidResponse)?,
+                None => 0,
+            }
+        };
+        let call = self.calls.entry(index).or_default();
+        merge_extra_content(
+            &mut call.extra_content,
+            delta,
+            &mut self.extra_content_bytes,
+        )?;
+        if let Some(id) = optional_string(delta, "id")? {
+            call.id.push_str(id);
+        }
+        if let Some(function) = delta.get("function").filter(|v| !v.is_null()) {
+            if !function.is_object() {
+                return Err(OpenAiChatError::InvalidResponse);
+            }
+            if let Some(name) = optional_string(function, "name")? {
+                call.name.push_str(name);
+            }
+            if let Some(arguments) = optional_string(function, "arguments")? {
+                call.arguments.push_str(arguments);
+                call.deltas.push(arguments.into());
+            }
+        }
+        Ok(())
+    }
+
     fn end_calls(&self, events: &mut Vec<StreamEvent>) -> Result<(), OpenAiChatError> {
         for (&index, call) in &self.calls {
             if call.id.is_empty() || call.name.is_empty() {
@@ -257,6 +331,54 @@ impl OpenAiChatAssembler {
             events.push(StreamEvent::ToolCallEnd { index });
         }
         Ok(())
+    }
+}
+
+fn merge_extra_content(
+    target: &mut Option<Map<String, Value>>,
+    delta: &Value,
+    total_bytes: &mut usize,
+) -> Result<(), OpenAiChatError> {
+    if let Some(extra) = delta.get("extra_content").filter(|value| !value.is_null()) {
+        check_extra_content_depth(extra, 0)?;
+        let fields = extra.as_object().ok_or(OpenAiChatError::InvalidResponse)?;
+        // 署名の中身を解釈せず、後の差分で同じ欄だけを置き換える
+        // （設計書 02-01「共通の形」「OpenAI の Chat Completions API」）。
+        let previous_bytes = target
+            .as_ref()
+            .map(serde_json::to_vec)
+            .transpose()
+            .map_err(|_| OpenAiChatError::InvalidResponse)?
+            .map_or(0, |bytes| bytes.len());
+        let mut merged = target.clone().unwrap_or_default();
+        merged.extend(fields.clone());
+        let merged_bytes = serde_json::to_vec(&merged)
+            .map_err(|_| OpenAiChatError::InvalidResponse)?
+            .len();
+        // 差分と全呼び出しの保持量を合算し、上書きで消えた値は差し引く。
+        // 記録を読み直せる深さと再送する量を制限する（設計書 02-01「OpenAI の Chat Completions API」）。
+        let updated_bytes = total_bytes
+            .checked_sub(previous_bytes)
+            .and_then(|bytes| bytes.checked_add(merged_bytes))
+            .filter(|&bytes| bytes <= MAX_EXTRA_CONTENT_BYTES)
+            .ok_or(OpenAiChatError::InvalidResponse)?;
+        *target = Some(merged);
+        *total_bytes = updated_bytes;
+    }
+    Ok(())
+}
+
+fn check_extra_content_depth(value: &Value, parent_depth: usize) -> Result<(), OpenAiChatError> {
+    let depth = parent_depth.saturating_add(1);
+    match value {
+        Value::Object(fields) if depth <= MAX_EXTRA_CONTENT_DEPTH => fields
+            .values()
+            .try_for_each(|value| check_extra_content_depth(value, depth)),
+        Value::Array(values) if depth <= MAX_EXTRA_CONTENT_DEPTH => values
+            .iter()
+            .try_for_each(|value| check_extra_content_depth(value, depth)),
+        Value::Object(_) | Value::Array(_) => Err(OpenAiChatError::InvalidResponse),
+        Value::Null | Value::Bool(_) | Value::Number(_) | Value::String(_) => Ok(()),
     }
 }
 
