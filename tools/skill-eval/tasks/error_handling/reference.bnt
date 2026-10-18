@@ -1,0 +1,20 @@
+import Benitoite.Unofficial.IO.Console
+import Benitoite.Unofficial.IO.File
+
+function check(path: String, done: Pair[Integer, Integer]) -> Pair[Integer, Integer] uses File.Read, Console.Write
+  return match File.readLines(path) with
+    case Result.Ok(lines) ->
+      Console.writeLine("${path}: ${List.length(lines)} lines")
+      Pair(Pair.first(done) + 1, Pair.second(done) + List.length(lines))
+    case Result.Error(error) ->
+      Console.writeLine(if IOError.kind(error) = IOErrorKind.NotFound then "${path}: not found" else "${path}: cannot read" end if)
+      done
+  end match
+end function
+
+function main() -> Result[Unit, String] uses File.Read, Console.Write
+  bind paths <- try File.readLines("files.txt") |> Result.mapError(r: _, f: lambda(error) return IOError.message(error) end lambda) or return
+  bind done <- List.fold(xs: paths, initial: Pair(0, 0), f: lambda(acc, value) return check(path: value, done: acc) end lambda)
+  Console.writeLine("read ${Pair.first(done)} of ${List.length(paths)} files, ${Pair.second(done)} lines")
+  return Result.Ok(())
+end function

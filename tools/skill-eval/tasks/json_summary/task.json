@@ -1,0 +1,1 @@
+{"kind": "run", "script": "main.bnt", "attempt_limit": 10, "acceptance": {"input/orders.json": "crates/benitoite/testdata/acceptance/json_summary.files/orders.json", "expected.stdout": "crates/benitoite/testdata/acceptance/json_summary.stdout"}}

@@ -1,0 +1,5 @@
+auth
+cache
+db
+components with errors: 3
+FATAL lines: none (grep exit code 1)

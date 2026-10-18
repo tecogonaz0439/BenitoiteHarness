@@ -1,0 +1,36 @@
+// 受け入れ: 00-03「初回リリース版」の完了条件の JSON の集計（07-03「受け入れ例と仕様の項目の対応」）。
+// 03-08「Json」: orders.json の注文を分類ごとに数え、金額を合計して分類の名前の順に出力する。
+import Benitoite.Unofficial.IO.Console
+import Benitoite.Unofficial.IO.File
+import Benitoite.Unofficial.Json
+
+function addOrder(totals: Map[String, Pair[Integer, Integer]], order: Json.Value) -> Result[Map[String, Pair[Integer, Integer]], String]
+  bind category <- match Option.andThen(o: Json.get(value: order, k: "category"), f: Json.asString) with
+    case Option.Some(name) -> name
+    case Option.None -> return Result.Error("an order has no category")
+  end match
+  bind amount <- match Option.andThen(o: Json.get(value: order, k: "amount"), f: Json.asInteger) with
+    case Option.Some(n) -> n
+    case Option.None -> return Result.Error("an order has no amount")
+  end match
+  bind current <- Map.get(m: totals, k: category) |> Option.unwrapOr(o: _, fallback: Pair(0, 0))
+  return Result.Ok(Map.set(m: totals, k: category, value: Pair(Pair.first(current) + 1, Pair.second(current) + amount)))
+end function
+
+function main() -> Result[Unit, String] uses File.Read, Console.Write
+  bind text <- try File.readText("orders.json") |> Result.mapError(r: _, f: lambda(error) return IOError.message(error) end lambda) or return
+  bind parsed <- try Json.parse(text) |> Result.mapError(r: _, f: lambda(error) return Json.ParseError.message(error) end lambda) or return
+  bind orders <- match Json.asArray(parsed) with
+    case Option.Some(items) -> items
+    case Option.None -> return Result.Error("orders.json is not an array")
+  end match
+  bind totals <- try List.fold(xs: orders, initial: Result.Ok(Map.empty()), f: lambda(acc, value)
+    bind current <- try acc or return
+    return addOrder(totals: current, order: value)
+  end lambda) or return
+  Map.forEach(m: totals, f: lambda(key, value)
+    Console.writeLine("${key}: ${Pair.first(value)} orders, ${Pair.second(value)}")
+  end lambda)
+  Console.writeLine("total: ${List.length(orders)} orders, ${List.fold(xs: Map.values(totals), initial: 0, f: lambda(acc, value) return acc + Pair.second(value) end lambda)}")
+  return Result.Ok(())
+end function

@@ -1,0 +1,18 @@
+import Benitoite.Unofficial.IO.Console
+import Benitoite.Unofficial.IO.File
+
+function numbered(items: List[String], index: Integer, acc: List[String]) -> List[String]
+  return match items with
+    case [] -> List.reverse(acc)
+    case [first, ..rest] -> numbered(items: rest, index: index + 1, acc: List.prepend(xs: acc, x: "${index}. ${first}"))
+  end match
+end function
+
+function main() -> Result[Unit, String] uses File.Read, File.Write, Console.Write
+  bind lines <- try File.readLines("todo.txt") |> Result.mapError(r: _, f: lambda(error) return IOError.message(error) end lambda) or return
+  bind items <- List.filter(xs: List.map(xs: lines, f: lambda(value) return String.trim(value) end lambda), p: lambda(value) return value <> "" end lambda)
+  bind output <- String.join(xs: numbered(items: items, index: 1, acc: []), separator: "\n") + "\n"
+  bind _ <- try File.writeText(path: "todo-numbered.txt", text: output) |> Result.mapError(r: _, f: lambda(error) return IOError.message(error) end lambda) or return
+  Console.writeLine("wrote ${List.length(items)} items to todo-numbered.txt")
+  return Result.Ok(())
+end function

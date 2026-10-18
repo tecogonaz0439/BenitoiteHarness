@@ -1,0 +1,5 @@
+data/a.txt: 2 lines
+data/missing.txt: not found
+data/archive: cannot read
+data/b.txt: 3 lines
+read 2 of 4 files, 5 lines

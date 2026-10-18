@@ -1,0 +1,37 @@
+import Benitoite.Unofficial.Csv
+import Benitoite.Unofficial.IO.Console
+import Benitoite.Unofficial.IO.File
+
+function field(row: Map[String, String], name: String) -> Result[Integer, String]
+  return match Option.andThen(o: Map.get(m: row, k: name), f: lambda(value) return Integer.parse(value) end lambda) with
+    case Option.Some(n) -> Result.Ok(n)
+    case Option.None -> Result.Error("a row has no number in ${name}")
+  end match
+end function
+
+function addRow(totals: Map[String, Pair[Integer, Integer]], row: Map[String, String]) -> Result[Map[String, Pair[Integer, Integer]], String]
+  bind region <- try Option.okOr(o: Map.get(m: row, k: "region"), error: "a row has no region") or return
+  bind quantity <- try field(row: row, name: "quantity") or return
+  bind price <- try field(row: row, name: "unit_price") or return
+  bind current <- Map.get(m: totals, k: region) |> Option.unwrapOr(o: _, fallback: Pair(0, 0))
+  return Result.Ok(Map.set(m: totals, k: region, value: Pair(Pair.first(current) + 1, Pair.second(current) + quantity * price)))
+end function
+
+function main() -> Result[Unit, String] uses File.Read, File.Write, Console.Write
+  bind text <- try File.readText("sales.csv") |> Result.mapError(r: _, f: lambda(error) return IOError.message(error) end lambda) or return
+  bind rows <- try Csv.parseWithHeader(text) |> Result.mapError(r: _, f: lambda(error) return Csv.ParseError.message(error) end lambda) or return
+  bind totals <- try List.fold(xs: rows, initial: Result.Ok(Map.empty()), f: lambda(acc, value)
+    bind current <- try acc or return
+    return addRow(totals: current, row: value)
+  end lambda) or return
+  bind entries <- Map.toList(totals)
+  bind table <- List.map(xs: entries, f: lambda(value)
+    return [Pair.first(value), Integer.toString(Pair.first(Pair.second(value))), Integer.toString(Pair.second(Pair.second(value)))]
+  end lambda)
+  bind _ <- try File.writeText(path: "summary.csv", text: Csv.format(List.prepend(xs: table, x: ["region", "orders", "revenue"]))) |> Result.mapError(r: _, f: lambda(error) return IOError.message(error) end lambda) or return
+  List.forEach(xs: entries, f: lambda(value)
+    Console.writeLine("${Pair.first(value)}: ${Pair.first(Pair.second(value))} orders, revenue ${Pair.second(Pair.second(value))}")
+  end lambda)
+  Console.writeLine("total revenue: ${List.fold(xs: entries, initial: 0, f: lambda(acc, value) return acc + Pair.second(Pair.second(value)) end lambda)}")
+  return Result.Ok(())
+end function

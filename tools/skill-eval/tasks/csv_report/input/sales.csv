@@ -1,0 +1,7 @@
+region,item,quantity,unit_price
+north,pen,10,120
+south,"notebook, A5",3,450
+north,eraser,5,80
+east,pen,2,120
+south,pen,7,120
+east,"stapler ""mini""",1,900

@@ -1,0 +1,48 @@
+import Benitoite.Unofficial.IO.File
+
+function parseSetting(line: String) -> Option[Pair[String, String]]
+  bind trimmed <- String.trim(line)
+  if trimmed = "" or String.startsWith(s: trimmed, prefix: "#") then return Option.None end if
+  return match String.split(s: trimmed, separator: "=") with
+    case [key, ..rest] if String.trim(key) <> "" -> Option.Some(Pair(String.trim(key), String.trim(String.join(xs: rest, separator: "="))))
+    case _ -> Option.None
+  end match
+end function
+
+function loadSettings(path: String) -> Result[Map[String, String], String] uses File.Read
+  bind lines <- try File.readLines(path) |> Result.mapError(r: _, f: lambda(error) return IOError.message(error) end lambda) or return
+  return Result.Ok(List.fold(xs: lines, initial: Map.empty(), f: lambda(acc, value)
+    return match parseSetting(value) with
+      case Option.Some(entry) -> Map.set(m: acc, k: Pair.first(entry), value: Pair.second(entry))
+      case Option.None -> acc
+    end match
+  end lambda))
+end function
+
+@test("parseSetting reads a key and a value")
+function parsesKeyValue() -> Unit uses Assert.Check
+  Assert.equal(actual: parseSetting(" port = 8080 "), expected: Option.Some(Pair("port", "8080")))
+end function
+
+@test("parseSetting keeps = in the value")
+function keepsEquals() -> Unit uses Assert.Check
+  Assert.equal(actual: parseSetting("query=a=b"), expected: Option.Some(Pair("query", "a=b")))
+end function
+
+@test("parseSetting skips comments and blank lines")
+function skipsComments() -> Unit uses Assert.Check
+  Assert.equal(actual: parseSetting("# note"), expected: Option.None)
+  Assert.equal(actual: parseSetting("   "), expected: Option.None)
+end function
+
+@test("loadSettings reads the file through File.readLines")
+function loadsFromFile() -> Unit uses Assert.Check, File.Read
+  bind result <- handle
+    loadSettings("app.conf")
+  with
+    case File.readLines(path) ->
+      Assert.equal(actual: path, expected: "app.conf")
+      resume(Result.Ok(["# server", "host = example.org", "port=80"]))
+  end handle
+  Assert.equal(actual: result, expected: Result.Ok(Map.fromList([Pair("host", "example.org"), Pair("port", "80")])))
+end function

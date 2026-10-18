@@ -1,0 +1,4 @@
+data/a.txt
+data/missing.txt
+data/archive
+data/b.txt

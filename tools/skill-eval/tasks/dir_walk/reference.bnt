@@ -1,0 +1,32 @@
+import Benitoite.Unofficial.IO.Console
+import Benitoite.Unofficial.IO.File
+
+function countLines(path: String) -> Result[Integer, String] uses File.Read
+  bind lines <- try File.readLines("docs/" + path) |> Result.mapError(r: _, f: lambda(error) return IOError.message(error) end lambda) or return
+  return Result.Ok(List.length(lines))
+end function
+
+function isMarkdownFile(path: String) -> Result[Boolean, String] uses File.Read
+  if not String.endsWith(s: path, suffix: ".md") then return Result.Ok(false) end if
+  bind info <- try File.info("docs/" + path) |> Result.mapError(r: _, f: lambda(error) return IOError.message(error) end lambda) or return
+  return Result.Ok(File.Info.kind(info) = File.EntryKind.RegularFile)
+end function
+
+function report(paths: List[String], files: Integer, total: Integer) -> Result[Unit, String] uses File.Read, Console.Write
+  return match paths with
+    case [] ->
+      Console.writeLine("markdown files: ${files}, lines: ${total}")
+      Result.Ok(())
+    case [path, ..rest] ->
+      bind markdown <- try isMarkdownFile(path) or return
+      if not markdown then return report(paths: rest, files: files, total: total) end if
+      bind count <- try countLines(path) or return
+      Console.writeLine("${path}: ${count} lines")
+      report(paths: rest, files: files + 1, total: total + count)
+  end match
+end function
+
+function main() -> Result[Unit, String] uses File.Read, Console.Write
+  bind paths <- try File.walk("docs") |> Result.mapError(r: _, f: lambda(error) return IOError.message(error) end lambda) or return
+  return report(paths: paths, files: 0, total: 0)
+end function
