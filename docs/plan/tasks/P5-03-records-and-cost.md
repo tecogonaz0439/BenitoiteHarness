@@ -117,3 +117,38 @@ P5-02 の点検で、次のことが分かった（2026-10-18 のセキュリテ
 
 - `scripts/check.sh --inside-codex` が通る（`BENITOITEH_TEST_BENITOITE` を設定して）。
 - 完了の報告に、`unittest` の結果の末尾と、模擬の提供者による記録の Markdown の例（課題一つ分の行）を書く。
+
+## 補足（2026-10-18、始める前の点検）
+
+本節は、上の各節に優先する。
+
+1. **起動の関数**（3 の具体化）: `run_command` は変えない（解の判定、`task_allow`、Skill の設置、試しの実行、包みのコマンドの確かめも使い、文字列の受け取りと 60 秒の SIGKILL を要する）。ハーネスの起動だけを、新しい関数 `run_harness(command, cwd, env, timeout, stdout_path, stderr_path, grace=TERM_GRACE) -> (exit_code, timed_out, wall_seconds)` に置き換える。
+   - 起動できないとき（`OSError`）は、理由を `harness.stderr` に書き、`(-2, False, 0.0)` を返す。
+   - 出力のファイルの読み取りは `errors='replace'` で行う。
+   - 試しの実行（`--dry-run`）の行は、`timed_out=False`、`wall_seconds=None` とする。
+   - `timed_out` が真なら、どの項目でも `end` を `timeout` にする（`benitoiteh` の項目では集計の読み取りの後に上書きする。外部の項目の `end` は、ほかの場合は `None` のまま）。
+2. **中断のとき**: 待っている間に例外（`KeyboardInterrupt` を含む）が起きたら、プロセスのグループに SIGTERM を送り、猶予の後に SIGKILL を送ってから、記録を書き、例外を送り直す。理由: 子は `start_new_session=True` で別のグループにあり、端末の Ctrl-C が届かない。止めずに抜けると、`benitoiteh` が提供者を呼び続ける。
+   - `killpg` の `ProcessLookupError` と `PermissionError` は無視する（macOS は、回収の前のゾンビだけのグループに `EPERM` を返す）。
+   - 猶予の後に先頭のプロセスが終わっていても、グループに SIGKILL を一度送り、残ったプロセスを止める。
+   - SIGKILL で止めたときは、`benitoiteh` が自分のセッションで起動した道具の子（`setsid` と `process_group(0)`）に届かず、残りうる。そのことを `SOURCE.md` に書く。SIGTERM なら、`benitoiteh` が道具の子を止めて終了状態 130 で終わる。
+3. **絶対パスを除く時と形**（6 の具体化）: 置き換えは `write_record` で、行と見出しの写しに対して、値ごとに再帰して行う（辞書と配列の中も含む）。メモリの中の行と `ALL_ROWS` は変えない（`evaluate` が試行の後に `rows[0]['trial_dir']` を使うため）。
+   - 接頭辞は、作業の根・リポジトリ・`HOME` のそれぞれについて、`abspath` と `realpath` の両方を集める（macOS では `/var` と `/private/var` の二つの形がある）。空の値と `/` を除き、長い順に置き換える。
+   - `HOME` は、直後が `/` か文字列の終わりのときだけ置き換える。
+   - 漏れる箇所: 全体の記録と項目ごとの記録の `生の記録`、見出しの `Skill`（`--skill-dir`）、行の `trial_dir`、理由の欄（`first_line(err)` と、`benitoiteh` の `error` の行の `message`）。
+4. **行がない項目**: 止めるか中断で、行が一つもない項目は、その項目の記録を書かない（`rows[0]` を読まない）。
+5. **`--stop-cost` の細目**（4 の具体化）:
+   - 累計は、試行が終わるたびに足して比べる（走っている試行は止めない。超える額は、最大で試行一回分）。
+   - 止めたら、残りの項目も評価せず、全体の記録にも止めた旨を書き、`main` は 3 を返す。
+   - `billing` のない項目は `none` と扱う。
+   - トークンの欄が `None`（集計がない、SIGKILL で止めた）の試行は `cost_usd=None` とし、`billing` が `none` でなければ見出しに `cost unknown: <n> trials` を書く。
+   - 引き算の結果（キャッシュでない入力）は `max(0, ...)` にする。
+6. **本物の項目の欄**（1 の具体化）: `benitoiteh-gemini` と `benitoiteh-opus` の `capabilities` は `{}` とする。三つとも `options` は `{"max_turns": 50, "max_run_tokens": 2000000}` とし、`mock` は書かない。
+7. **試行ごとに捕らえる範囲**（7 の具体化）: 捕らえるのは、ハーネスが終わった後の出力とセッションの記録の読み取りの部分だけとする。`task_allow` と `benitoiteh_config` の `ValueError` は、今のとおり評価を止める。`benitoiteh_output` が通り、`benitoiteh_results` だけが失敗したときは、トークンの量と費用を残す。
+8. **子の環境**（2 の具体化）: `CLAUDE_CONFIG_DIR` は除かずに残し、残したことを見出しに書く（P5-04 で Claude Code を普段のログインで走らせるときに、利用者が設定していれば要る）。この整理した環境は、ハーネスの起動と `benitoiteh --version` に使い、判定のための処理系の起動の環境は変えない。`benitoiteh` は `ANTHROPIC*`・`CLAUDE*` の変数を読まず、本物の項目のキーは `/usr/bin/security`（`HOME` だけを要する）で読むので、除いても壊れない。
+9. **記録の Markdown**（5 の具体化）: 見出しの時間の上限は、実際に使う値（`options.harness_timeout` か `HARNESS_TIMEOUT`）を書く。検査と修正の回数の欄は、`benitoiteh` の項目では `attempts (after_write_checks)`、外部の項目では `attempts` とする。
+10. **テストの継ぎ目**:
+    - 複数の項目の試しは、`run_trial` を `unittest.mock` で差し替え、`RESULTS_DIR` を一時ディレクトリに差し替える（全体の記録はリポジトリの `results/` に書かれるため）。`--benitoite` と `--benitoiteh` には、`--version` に答える小さな実行ファイルを渡す。
+    - `spill` のファイルがない記録の試しは、Python で書いた偽の `benitoiteh`（決まった集計の行を書き、壊れたセッションの記録を置く）で行う。ループバックを要さないので、`--inside-codex` でも走る。
+    - SIGTERM の試しの子は、ハンドラを置いた後に `ready` を書いて flush し、親はそれを読んでから時間の上限を待つ（競合を避ける）。
+    - 模擬の提供者の 400 の試しは、`putrequest`・`putheader` で大きすぎる `Content-Length` を送り、本文を送らない。
+11. **完了の前の検査**: `scripts/check.sh` の模擬の提供者による通しの確かめに、各行の `cost_usd` が 0 で、`wall_seconds` が数であることを加える。
