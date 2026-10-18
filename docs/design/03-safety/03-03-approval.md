@@ -35,6 +35,7 @@
 
 - そのスクリプト（テストでは指定したファイルとディレクトリの組）を、セッションで初めて実行するとき。
 - `main`（テストでは、選んだテストの関数の和）の宣言したエフェクトが、そのスクリプトについて前に確認したときより増えたとき。エフェクトは、確認の直前に得た処理系の検査の報告から取る（[Benitoite の処理系との連携](../04-benitoite/04-01-benitoite-integration.md)の「実行の前の検査の報告」）。`Assert.Check` は、増えたかの判定に数えず、確認の画面にも示さない（同節）。
+- 【方針】そのスクリプトが、`read` の開かないファイルを取り込むとき（毎回。一時的なスクリプトも含む）。確認の画面には、取り込む読まないファイルの数を示す（同節）。
 
 エフェクトが確認した範囲に収まるときは、スクリプトの中身が変わっていても確認しない。これは ADR 0345 の決定 1 のとおりである。理由: 検査を通ったスクリプトは、エフェクトにない組み込みの操作を行わず、OS のサンドボックスもエフェクトに応じて範囲を狭める（[OS のサンドボックス](03-02-sandbox.md)の「制限モードの方針」）。中身の変化ごとに確認すると、確認の回数が増えて確認を読まずに許可するようになる。
 
@@ -85,6 +86,7 @@
 【方針】非対話（`benitoiteh exec`）では、対話の確認ができないので、次のように扱う。ADR 0345 の決定 4 を元にする。
 
 - 制限モードでは、許可するエフェクトを `--allow` で指定する（例: `--allow File.Read,File.Write`）。名前は、処理系の `--allow-effects` と同じ原子の名前（`IO.All` は受け付けない）とする。エフェクトが確認なしの範囲と `--allow` の和に収まるスクリプトだけを実行する。テストの `Assert.Check` は、いつも収まるものとして扱う。`--allow` を省いたときは、確認なしの範囲だけを許す。
+- 【方針】`read` の開かないファイルを取り込むスクリプトとテストは、範囲に収まっても実行せず、`<paths> import files that benitoiteh does not read; run them interactively to confirm.` を返す（[Benitoite の処理系との連携](../04-benitoite/04-01-benitoite-integration.md)の「実行の前の検査の報告」）。
 - 範囲を超えるスクリプトは実行せず、`This non-interactive run allows only these effects: <list>. <path> uses: <list>. Narrow the uses of main, or stop and report.` を道具の結果として LLM に返す。テスト（`benitoite_test`）では、【方針】`This non-interactive run allows only these effects: <list>. <paths> use: <list>. Narrow the uses of the tests, or stop and report.` を返す（`<paths>` は指定した対象の表示用のパスを `, ` で繋いだもの）。理由: テストのエフェクトは `main` でなく選んだテストの関数の宣言の和なので、`main` を狭めるよう求める文では LLM が直す箇所を誤る。同じ一連の処理で 3 回続いたら、処理を止めて、終了状態で失敗を示す。
 - 通常モードでは、承認の方針を `never` とする。起動のときに `--sandbox danger-full-access` を指定すれば、サンドボックスなしで動かす。
 - `web_fetch` は利用者の設定の一覧のドメインだけを取得し、`create_project` は `--project-parent` の下にだけ作る。
