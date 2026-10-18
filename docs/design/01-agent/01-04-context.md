@@ -51,7 +51,7 @@
 - `references/<name>.md` は `benitoite_reference` の道具で `name` を指定して読む。
 - 診断のコード（`E0405` など）の説明は、`benitoite_explain` の道具で引く。
 - Skill の「Check the version first」の手順（`--version` と `--version=json`）と、`skill list`・`skill show` は、`benitoiteh` が起動のときに済ませているので行わない。
-- Skill の、確認の直前の `check --report=json`・`test --check --report=json` と、実行の `--allow-effects` は、`benitoite_run` と `benitoite_test` が行う。LLM は報告を読まず、許す集合を渡さない。
+- Skill の、確認の直前の `check --report=json`・`test --check --report=json` と、実行の `--allow-effects` は、`benitoite_run`・`benitoite_test`・`benitoite_scratch` が行う。LLM は報告を読まず、許す集合を渡さない。
 - Skill の「Before running」の確認は `benitoiteh` が画面で行うので、LLM は利用者に確認を求めなくてよい。ただし、エフェクトの意味を応答の文で説明するのはよい。
 
 【決定】本文の先頭の HTML の注釈（`<!--` から最初の `-->` まで）は、LLM に見せるときにいつも除く。通常モードで `benitoite_reference` に `SKILL` を指定して読ませるときも同じである。2026-10-17 に設計者が決めた。理由: この注釈は、処理系の側のテストが文書の中の例をどう確かめるかの説明であり、LLM の作業に要らない。`v0.0.6` と `v0.0.7` の時点で 878 バイトある。

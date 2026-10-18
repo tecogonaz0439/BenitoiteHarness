@@ -238,7 +238,7 @@ P0-04 で作った型: 方針の入力 `PolicyConfig`（`readable: ReadAccess`�
 - `benitoite::test_results`（`pub(crate)`）: `Results::new(other)`・`end_line()`・`summary(code, completed) -> (String, bool)`・`render(...)`。失敗したテストの出力は全体で 32 KiB、保つ失敗は 1,000 件かつ 16 MiB（保った量で数える）。`benitoite::display`（`pub(crate)`）: `one_line`・`quoted`・`line_with_budget`・`quoted_with_budget`・`source_line`（C0・DEL・C1・U+2028・U+2029・双方向の書式を `\n`・`\u{..}` に逃がし、2,000 文字で切る）。診断の一行の形 `render_one_line` は `benitoite_check`・`benitoite_run` と共有する。
 - `benitoite::diagnostics`: `unread_imports(sources, resolver, cancelled) -> usize`（`pub(crate)`。（表示のパス、ハッシュ）の組で数え、解いたファイルの SHA-256 を `contentHash` と照合する）。`DiagnosticSources::content_hash(file, cancelled) -> Option<String>`（既定は `None` で、照合できないものは読まないに数える。`ToolContext` が `read` と同じ開き方で実装する）。
 - `benitoite::RunContext.test_timeout`。
-- `tools`: `ToolId::BenitoiteTest`、`tools/benitoite_process.rs`（`benitoite_run` と共有する準備・描き方・後始末）、`Invocation.noninteractive`、`ConfirmKey::Test(Vec<PathBuf>)`（並べて重ねを除く）。`tools::text`・`tools::process_output` は `pub(crate)`。
+- `tools`: `ToolId::BenitoiteTest`、`tools/benitoite_process.rs`（`benitoite_run` と共有する準備・描き方・後始末）、`ToolContext.noninteractive`（`pub(crate)`。`AgentConfig.allow_effects.is_some()` から立てる）、`ConfirmKey::Test(Vec<PathBuf>)`（並べて重ねを除く）。`tools::text`・`tools::process_output` は `pub(crate)`。
 - `approval`: `ApprovalKind::TestEffects`、`ApprovalFacts.unread_imports: usize`（0 のときは記録から省く）、`test_effects_summary`・`allow_denied`・`unread_imports_denied`。
 - `agent`: `AgentConfig.allow_effects: Option<BTreeSet<Effect>>`、`AgentError::EffectsNotAllowed(String)`（範囲の外で 3 回続けて断ったとき）。`cli`: `ExecArgs.allow`（制限モードだけ）。
 - 読まないファイルを取り込む実行は、対話では毎回確認を求め、非対話では断る（`benitoite_run` と `benitoite_test`。`benitoite_scratch` は P2-09 で当てる）。
