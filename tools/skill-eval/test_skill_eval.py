@@ -2,13 +2,19 @@
 # -*- coding: utf-8 -*-
 """評価の道具の入出力の契約を確かめる（実装プラン P5-02）。"""
 import copy
+import contextlib
 import http.client
+import io
 import json
 import os
 import shutil
 import sys
 import tempfile
+import signal
+import subprocess
+import time
 import unittest
+from unittest import mock
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import mock_provider
@@ -94,6 +100,14 @@ class OutputTests(unittest.TestCase):
         fields, _, final = evaluation.benitoiteh_output('\n'.join(
             [out[0], '{"type":"turn_start","turn":3}', out[1], out[2]]), 0)
         self.assertEqual(final, '')
+        events = [json.loads(line) for line in event_output().splitlines()]
+        events[-1]['tokens']['input'] = None
+        fields, _, _ = evaluation.benitoiteh_output('\n'.join(json.dumps(event) for event in events), 0)
+        self.assertIsNone(fields['total_tokens'])
+        self.assertIsNone(evaluation.estimate_cost(fields, evaluation.load_harnesses()['benitoiteh-mock']))
+        events[-1]['tokens']['input'] = '3000'
+        with self.assertRaises(ValueError):
+            evaluation.benitoiteh_output('\n'.join(json.dumps(event) for event in events), 0)
 
 
 class SessionTests(unittest.TestCase):
@@ -249,6 +263,416 @@ class MockProviderTests(unittest.TestCase):
         self.assertEqual(self.request(server, False)[0], 400)
         self.assertEqual(len(server.problems), 2)
         self.assertTrue(all('no final user tool_result' in problem for problem in server.problems))
+
+    def test_invalid_content_lengths(self):
+        for length in (None, '-1', str(8 * 1024 * 1024 + 1)):
+            with self.subTest(length=length):
+                server = self.start_server('run')
+                connection = http.client.HTTPConnection('127.0.0.1', server.server_address[1], timeout=2)
+                try:
+                    connection.putrequest('POST', '/v1/messages')
+                    if length is not None:
+                        connection.putheader('Content-Length', length)
+                    connection.endheaders()
+                    response = connection.getresponse()
+                    self.assertEqual(response.status, 400)
+                    response.read()
+                finally:
+                    connection.close()
+
+
+class RecordsAndCostTests(unittest.TestCase):
+    def test_environment_removes_keys_and_lists_only_removed_names(self):
+        parent = dict(HOME='/home/test', PATH='/bin', CLAUDECODE='secret', CLAUDE_CODE_SESSION_ID='secret',
+                      CLAUDE_CONFIG_DIR='/config', ANTHROPIC_API_KEY='secret', ANTHROPIC_OTHER='secret',
+                      DEEPSEEK_API_KEY='secret', GEMINI_API_KEY='secret', GOOGLE_API_KEY='secret',
+                      OPENAI_API_KEY='secret')
+        with mock.patch.dict(os.environ, parent, clear=True):
+            env, removed = evaluation.harness_environment()
+        self.assertEqual(env, {'HOME': '/home/test', 'PATH': '/bin', 'CLAUDE_CONFIG_DIR': '/config'})
+        self.assertEqual(removed, sorted(set(parent) - set(env)))
+
+    def test_real_provider_configs_reference_keys_and_declare_prices(self):
+        for name in ('deepseek', 'gemini', 'opus'):
+            with self.subTest(name=name):
+                harness = evaluation.load_harnesses()['benitoiteh-' + name]
+                self.assertFalse(harness['verified'])
+                self.assertFalse(harness['default'])
+                self.assertNotIn('mock', harness)
+                self.assertEqual(set(harness['provider']['api_key']), {'command'})
+                self.assertEqual(set(harness['price']), {'input', 'cache_read', 'cache_write', 'output'})
+                self.assertIn(harness['billing'], ('deepseek', 'google', 'anthropic'))
+                evaluation.benitoiteh_config(harness, harness['model'], '/processor')
+
+    def test_cost_counts_cached_input_once_and_clamps_uncached_input(self):
+        harness = {'price': {'input': 4, 'cache_read': .2, 'cache_write': 5, 'output': 20}}
+        tokens = dict(input_tokens=1000000, cache_read_tokens=200000, cache_write_tokens=100000,
+                      output_tokens=50000)
+        self.assertAlmostEqual(evaluation.estimate_cost(tokens, harness), 4.34)
+        tokens['input_tokens'] = 0
+        self.assertAlmostEqual(evaluation.estimate_cost(tokens, harness), 1.54)
+        tokens['output_tokens'] = None
+        self.assertIsNone(evaluation.estimate_cost(tokens, harness))
+        self.assertIsNone(evaluation.estimate_cost(tokens, {}))
+
+    def test_timeout_preserves_output_and_kills_after_grace(self):
+        for ignore in (False, True):
+            with self.subTest(ignore=ignore), tempfile.TemporaryDirectory(prefix='skill-eval-timeout-') as directory:
+                out = os.path.join(directory, 'stdout')
+                err = os.path.join(directory, 'stderr')
+                script = ('import signal, time, sys\n'
+                          'def stop(*args):\n print("summary", flush=True)\n sys.exit(130)\n'
+                          'signal.signal(signal.SIGTERM, %s)\n'
+                          'print("ready", flush=True)\n'
+                          'print("error output", file=sys.stderr, flush=True)\n'
+                          'while True: time.sleep(.01)\n') % ('signal.SIG_IGN' if ignore else 'stop')
+                original_wait = subprocess.Popen.wait
+                ready = [False]
+                def wait(process, timeout=None):
+                    # 子がハンドラを置いてから上限の待機を始め、遅い機械でも競合させない。
+                    if not ready[0]:
+                        deadline = time.monotonic() + 5
+                        while time.monotonic() < deadline:
+                            with open(out, encoding='utf-8') as f:
+                                if 'ready' in f.read():
+                                    ready[0] = True
+                                    break
+                            time.sleep(.01)
+                        self.assertTrue(ready[0], 'child did not become ready')
+                    return original_wait(process, timeout)
+                with mock.patch.object(subprocess.Popen, 'wait', wait):
+                    code, timed_out, wall = evaluation.run_harness(
+                        [sys.executable, '-c', script], directory, dict(os.environ), .05, out, err, grace=.05)
+                self.assertTrue(timed_out)
+                self.assertEqual(code, -signal.SIGKILL if ignore else 130)
+                self.assertFalse(os.path.exists(os.path.join(directory, 'harness.pgid')))
+                self.assertGreater(wall, 0)
+                with open(out, encoding='utf-8') as f:
+                    self.assertEqual(f.read(), 'ready\n' if ignore else 'ready\nsummary\n')
+                with open(err, encoding='utf-8') as f:
+                    self.assertIn('error output', f.read())
+
+    def run_main(self, directory, trial, names='benitoiteh-mock', extra=None):
+        executable = os.path.join(directory, 'version')
+        with open(executable, 'w', encoding='utf-8') as f:
+            f.write('#!%s\nprint("test version")\n' % sys.executable)
+        os.chmod(executable, 0o755)
+        # 本物の起動を差し替える。集計と記録は main から本物の処理を通す（P5-03 の継ぎ目）。
+        with mock.patch.object(evaluation, 'run_trial', side_effect=trial), \
+                mock.patch.object(evaluation, 'RESULTS_DIR', os.path.join(directory, 'results')), \
+                contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()) as err:
+            handlers = {sig: signal.getsignal(sig) for sig in (signal.SIGTERM, signal.SIGHUP)}
+            try:
+                status = evaluation.main(['--harness', names, '--allow-unverified', '--task', 'json_summary',
+                                          '--benitoite', executable, '--benitoiteh', executable,
+                                          '--work-root', os.path.join(directory, 'work'), '--trials', '3'] + (extra or []))
+            finally:
+                self.assertEqual({sig: signal.getsignal(sig) for sig in handlers}, handlers)
+        return status, err.getvalue()
+
+    def row(self, trial_dir, harness, cost):
+        skill = os.path.join(trial_dir, 'workspace', '.agents', 'skills', 'benitoite')
+        os.makedirs(skill)
+        with open(os.path.join(skill, 'SKILL.md'), 'w', encoding='utf-8') as f:
+            f.write('benitoite-version: 0.0.7\n')
+        return dict(task='json_summary', harness=harness, model='mock', kind='benitoiteh', success=True,
+                    attempts=1, after_write_checks=2, trial_dir=trial_dir, reason='ok ' + trial_dir,
+                    diagnostics=evaluation.diagnostic_stats([]), final_codes=[], log_exists=True,
+                    total_tokens=3150, cache_read_tokens=600, wall_seconds=1.2, turns=3,
+                    cost_usd=cost, end='completed', benitoiteh_version='session version',
+                    system_prompt_sha256='prompt-hash', tools_sha256='tools-hash')
+
+    def test_cost_limit_across_harnesses_and_redaction_in_all_records(self):
+        with tempfile.TemporaryDirectory(prefix='skill-eval-budget-') as directory:
+            calls = []
+            def trial(task, trial_dir, processor, name, *args):
+                calls.append(name)
+                row = self.row(trial_dir, name, 100 if name.endswith('mock') else .25)
+                row['reason'] += ' ' + evaluation.REPO + ' ' + os.environ['HOME'] + '/private.txt'
+                row['nested'] = {'paths': [trial_dir, os.path.realpath(trial_dir)]}
+                return row
+            # 同じ提供者の別項目を設け、evaluate をまたぐ累計と none の除外を一度に確かめる。
+            harnesses = evaluation.load_harnesses()
+            harnesses['second'] = copy.deepcopy(harnesses['benitoiteh-deepseek'])
+            harnesses['second']['billing'] = 'deepseek'
+            with mock.patch.object(evaluation, 'load_harnesses', return_value=harnesses):
+                status, err = self.run_main(directory, trial,
+                                            'benitoiteh-mock,benitoiteh-gemini,benitoiteh-deepseek,second,benitoiteh-opus',
+                                            ['--stop-cost', '1', '--skill-dir',
+                                             os.path.join(directory, 'work', 'private-skill')])
+            self.assertEqual(status, 3)
+            self.assertEqual(calls, ['benitoiteh-mock'] * 3 + ['benitoiteh-gemini'] * 3
+                             + ['benitoiteh-deepseek'] * 3 + ['second'])
+            self.assertIn('stopped: estimated cost reached 1 USD for deepseek', err)
+            results = os.path.join(directory, 'results')
+            self.assertEqual(len(os.listdir(results)), 10)
+            for name in os.listdir(results):
+                with open(os.path.join(results, name), encoding='utf-8') as f:
+                    text = f.read()
+                for prefix in (os.path.join(directory, 'work'), evaluation.REPO, os.environ['HOME']):
+                    self.assertNotIn(prefix, text)
+                if name.endswith('.md'):
+                    self.assertIn('<work-root>', text)
+                    self.assertIn('--skill-dir <work-root>/private-skill', text)
+            self.assertTrue(os.path.isabs(str(evaluation.ALL_ROWS[0]['trial_dir'])))
+            overall = next(name for name in os.listdir(results) if name.endswith('-overall.md'))
+            with open(os.path.join(results, overall), encoding='utf-8') as f:
+                self.assertIn('stopped: estimated cost reached 1 USD for deepseek', f.read())
+
+    def test_partial_records_survive_interrupt_and_exception_and_next_main_is_fresh(self):
+        for exception, failure_at in ((KeyboardInterrupt, 2), (RuntimeError, 2), (RuntimeError, 4), (RuntimeError, 1)):
+            with self.subTest(exception=exception, failure_at=failure_at), \
+                    tempfile.TemporaryDirectory(prefix='skill-eval-interrupt-') as directory:
+                calls = []
+                def trial(task, trial_dir, processor, name, *args):
+                    calls.append(name)
+                    if len(calls) == failure_at:
+                        raise exception('interrupted')
+                    return self.row(trial_dir, name, None)
+                with self.assertRaises(exception):
+                    self.run_main(directory, trial, 'benitoiteh-deepseek,benitoiteh-opus')
+                results = os.path.join(directory, 'results')
+                if failure_at == 1:
+                    self.assertFalse(os.path.exists(results))
+                    self.assertEqual(evaluation.ALL_ROWS, [])
+                    continue
+                self.assertEqual(len(os.listdir(results)), 4)
+                for name in os.listdir(results):
+                    if name.endswith('.md'):
+                        with open(os.path.join(results, name), encoding='utf-8') as f:
+                            self.assertIn('cost unknown: %d trials' % (failure_at - 1), f.read())
+                self.assertEqual(len(evaluation.ALL_ROWS), failure_at - 1)
+
+    def test_record_redaction_aliases_home_boundary_and_safety_warning(self):
+        with tempfile.TemporaryDirectory(prefix='skill-eval-redaction-') as directory:
+            alias = os.path.join(directory, 'alias')
+            real = os.path.join(directory, 'real')
+            os.mkdir(real)
+            os.symlink(real, alias)
+            row = self.row(os.path.join(real, '1'), 'mock', 0)
+            home = os.path.join(directory, 'home')
+            row.update(shell_output_seen=True, end='timeout', reason=home + ' ' + home + '/x ' + home + '-other')
+            row['nested'] = [alias + '/file', {'real': real + '/file', 'home': home}]
+            original = copy.deepcopy(row)
+            path = os.path.join(directory, 'record.md')
+            with mock.patch.dict(os.environ, HOME=home):
+                evaluation.write_record(path, {'Skill': alias}, [row], [evaluation.Task('json_summary')], alias)
+            self.assertEqual(row, original)
+            with open(path, encoding='utf-8') as f:
+                text = f.read()
+            self.assertIn('SAFETY: shell output seen in json_summary trial 1', text)
+            self.assertIn('~ ~/x ', text)
+            self.assertIn('/home-other', text)
+            self.assertIn('| json_summary | 1 / 1 | 1 | 1.2 | 3150 | 1 |', text)
+            with open(os.path.splitext(path)[0] + '.jsonl', encoding='utf-8') as f:
+                saved = json.loads(f.readline())
+            self.assertEqual(saved['nested'], ['<work-root>/file', {'real': '<work-root>/file', 'home': '~'}])
+
+    def test_private_aliases_home_punctuation_temporary_paths_and_residual_username(self):
+        for prefix in ('var', 'tmp', 'etc'):
+            with self.subTest(prefix=prefix):
+                public = '/%s/x/real' % prefix
+                private = '/private' + public
+                for root in (public, private):
+                    paths = evaluation.path_prefixes(root)
+                    self.assertIn(public, paths)
+                    self.assertIn(private, paths)
+        with mock.patch.dict(os.environ, HOME='/Users/alice'), \
+                mock.patch.object(tempfile, 'gettempdir', return_value='/private/var/example/T'):
+            value = ["got '/Users/alice'", 'cannot start /Users/alice: error', '(/Users/alice)',
+                     '/Users/alice/child', '/else/alice/file', '/Users/alice-other',
+                     '/var/example/T/file', '/private/var/example/T/file',
+                     '/var/x/real/file', '/private/var/x/real/file']
+            self.assertEqual(evaluation.redact_record(value, '/private/var/x/real'),
+                             ["got '~'", 'cannot start ~: error', '(~)', '~/child', '/else/<user>/file',
+                              '/Users/alice-other', '<tmp>/file', '<tmp>/file',
+                              '<work-root>/file', '<work-root>/file'])
+
+    def test_unknown_paid_cost_stops_after_first_trial_and_billing_is_required(self):
+        with tempfile.TemporaryDirectory(prefix='skill-eval-unknown-cost-') as directory:
+            calls = []
+            def trial(task, trial_dir, processor, name, *args):
+                calls.append(name)
+                return self.row(trial_dir, name, None)
+            status, err = self.run_main(directory, trial, 'benitoiteh-deepseek,benitoiteh-gemini',
+                                        ['--stop-cost', '0'])
+            self.assertEqual(status, 3)
+            self.assertEqual(calls, ['benitoiteh-deepseek'])
+            self.assertIn('stopped: cost unknown for deepseek', err)
+            for name in os.listdir(os.path.join(directory, 'results')):
+                if name.endswith('.md'):
+                    with open(os.path.join(directory, 'results', name), encoding='utf-8') as f:
+                        self.assertIn('stopped: cost unknown for deepseek', f.read())
+            config = os.path.join(directory, 'harnesses.json')
+            for harness in ({'kind': 'benitoiteh'}, {'price': {'input': 1}}):
+                with self.subTest(harness=harness):
+                    with open(config, 'w', encoding='utf-8') as f:
+                        json.dump({'paid': harness}, f)
+                    with mock.patch.object(evaluation, 'HARNESSES_FILE', config), self.assertRaises(ValueError):
+                        evaluation.load_harnesses()
+
+    def test_termination_signals_stop_harness_group_and_save_completed_rows(self):
+        for sig in (signal.SIGTERM, signal.SIGHUP):
+            with self.subTest(sig=sig), tempfile.TemporaryDirectory(prefix='skill-eval-signal-') as directory:
+                heartbeat = os.path.join(directory, 'heartbeat')
+                grandchild = os.path.join(directory, 'grandchild')
+                beat = ('import os, time\n'
+                        'while True:\n with open(%r, "a") as f: f.write(str(os.getpgrp()) + "\\n")\n time.sleep(.02)\n')
+                child = ('import subprocess, sys\nsubprocess.Popen([sys.executable, "-c", %r])\n' %
+                         (beat % grandchild)) + beat % heartbeat
+                driver = ('import os, sys\nfrom unittest import mock\n'
+                          'sys.path.insert(0, %r)\nimport skill_eval as e\nfrom test_skill_eval import RecordsAndCostTests\n'
+                          'count = 0\n'
+                          'def trial(task, trial_dir, processor, name, *args):\n'
+                          ' global count\n count += 1\n'
+                          ' if count == 2:\n'
+                          '  e.run_harness([sys.executable, "-c", %r], trial_dir, dict(os.environ), 60, '
+                          'os.path.join(trial_dir, "harness.stdout"), os.path.join(trial_dir, "harness.stderr"), grace=.1)\n'
+                          ' return RecordsAndCostTests().row(trial_dir, name, 0)\n'
+                          'with mock.patch.object(e, "run_trial", side_effect=trial):\n'
+                          ' RecordsAndCostTests().run_main(%r, trial)\n') % (evaluation.HERE, child, directory)
+                env = dict(os.environ)
+                for variable in ('XDG_CONFIG_HOME', 'XDG_STATE_HOME', 'TMPDIR'):
+                    env[variable] = os.path.join(directory, variable)
+                    os.mkdir(env[variable])
+                pgid_path = os.path.join(directory, 'work', 'json_summary', '2', 'harness.pgid')
+                pgid = None
+                with open(os.path.join(directory, 'driver.stderr'), 'wb') as err:
+                    process = subprocess.Popen([sys.executable, '-I', '-c', driver], env=env,
+                                               stdout=subprocess.DEVNULL, stderr=err, start_new_session=True)
+                    try:
+                        deadline = time.monotonic() + 10
+                        while time.monotonic() < deadline:
+                            if all(os.path.isfile(path) and os.path.getsize(path) > 0
+                                   for path in (heartbeat, grandchild, pgid_path)):
+                                break
+                            if process.poll() is not None:
+                                break
+                            time.sleep(.01)
+                        if os.path.isfile(pgid_path):
+                            with open(pgid_path, encoding='utf-8') as f:
+                                pgid = int(f.read())
+                        self.assertTrue(os.path.isfile(grandchild), 'harness did not start')
+                        process.send_signal(sig)
+                        process.wait(timeout=10)
+                        sizes = [os.path.getsize(path) for path in (heartbeat, grandchild)]
+                        time.sleep(.15)
+                        self.assertEqual(sizes, [os.path.getsize(path) for path in (heartbeat, grandchild)])
+                        self.assertFalse(os.path.exists(pgid_path))
+                        records = os.path.join(directory, 'results')
+                        with open(os.path.join(records, next(name for name in os.listdir(records)
+                                                            if name.endswith('.jsonl'))), encoding='utf-8') as f:
+                            self.assertEqual(len(f.readlines()), 1)
+                    finally:
+                        if process.poll() is None:
+                            process.kill()
+                        process.wait()
+                        if pgid is None and os.path.isfile(heartbeat):
+                            with open(heartbeat, encoding='utf-8') as f:
+                                pgid = int(f.readline())
+                        if pgid is not None:
+                            try:
+                                os.killpg(pgid, signal.SIGKILL)
+                            except (ProcessLookupError, PermissionError):
+                                pass
+
+    @unittest.skipUnless(os.environ.get('BENITOITEH_TEST_BENITOITE'), 'BENITOITEH_TEST_BENITOITE is not set')
+    def test_judged_script_cannot_read_parent_session_or_provider_key(self):
+        task = evaluation.Task('http_client')
+        source = ('import Benitoite.Unofficial.IO.Console\nimport Benitoite.Unofficial.IO.Process\n'
+                  'function main() -> Result[Unit, String] uses Process.Environment, Console.Write\n')
+        for number, name in enumerate(('CLAUDE_CODE_SESSION_ID', 'ANTHROPIC_API_KEY')):
+            source += ('  bind value%d <- try Process.environmentVariable("%s") |> Result.mapError(r: _, '
+                       'f: lambda(error) return IOError.message(error) end lambda) or return\n'
+                       '  Console.writeLine(Option.unwrapOr(o: value%d, fallback: "absent"))\n') % (number, name, number)
+        source += '  return Result.Ok(())\nend function\n'
+        with mock.patch.dict(os.environ, CLAUDE_CODE_SESSION_ID='parent-session-secret',
+                             ANTHROPIC_API_KEY='parent-provider-secret'):
+            verdict = evaluation.judge(task, source, os.environ['BENITOITEH_TEST_BENITOITE'], None)
+        self.assertNotIn('parent-session-secret', verdict.reason)
+        self.assertNotIn('parent-provider-secret', verdict.reason)
+        self.assertIn('absent', verdict.reason)
+
+    def test_interrupt_stops_running_child_and_start_failure_is_recorded(self):
+        with tempfile.TemporaryDirectory(prefix='skill-eval-stop-') as directory:
+            out, err = [os.path.join(directory, name) for name in ('stdout', 'stderr')]
+            original_wait = subprocess.Popen.wait
+            processes = []
+            def interrupt(process, timeout=None):
+                if not processes:
+                    processes.append(process)
+                    raise KeyboardInterrupt()
+                return original_wait(process, timeout)
+            with mock.patch.object(subprocess.Popen, 'wait', interrupt), self.assertRaises(KeyboardInterrupt):
+                evaluation.run_harness([sys.executable, '-c', 'import time; time.sleep(60)'],
+                                       directory, dict(os.environ), 60, out, err, grace=.05)
+            self.assertIsNotNone(processes[0].returncode)
+            self.assertEqual(evaluation.run_harness(['/no/such/harness'], directory, dict(os.environ),
+                                                    60, out, err), (-2, False, 0.0))
+            with open(err, encoding='utf-8') as f:
+                self.assertIn('cannot start /no/such/harness', f.read())
+            # 群れへの合図が拒まれても、先頭の子は直接止めて回収する。
+            with mock.patch.object(os, 'killpg', side_effect=PermissionError):
+                code, timed_out, _ = evaluation.run_harness(
+                    [sys.executable, '-c', 'import time; time.sleep(2)'], directory, dict(os.environ),
+                    .05, out, err, grace=.05)
+            self.assertTrue(timed_out)
+            self.assertEqual(code, -signal.SIGKILL)
+
+    @unittest.skipUnless(os.environ.get('BENITOITEH_TEST_BENITOITE'), 'BENITOITEH_TEST_BENITOITE is not set')
+    def test_unreadable_session_fails_only_one_trial_and_retains_cost(self):
+        cases = [({'type': 'tool_result', 'name': 'benitoite_run',
+                   'result': {'id': 'id', 'text': 'ok'}, 'spill': {'path': 'spill/missing'}}, 'FileNotFoundError'),
+                 ({'type': 'tool_result', 'name': 'benitoite_run', 'result': {'id': 'id', 'text': None}}, 'TypeError'),
+                 ({'type': 'spilled', 'parts': 'bad'}, 'TypeError'),
+                 ({'type': 'tool_call'}, 'KeyError'),
+                 ({'type': 'tool_result', 'name': 'benitoite_run', 'result': {'id': 'id', 'text': 'ok'},
+                   'spill': {'path': '../outside'}}, 'ValueError')]
+        for record, error in cases:
+            with self.subTest(error=error), tempfile.TemporaryDirectory(prefix='skill-eval-bad-session-') as directory:
+                task = evaluation.Task('json_summary')
+                with open(task.path('reference.bnt'), encoding='utf-8') as f:
+                    source = f.read()
+                executable = os.path.join(directory, 'fake-benitoiteh')
+                script = ('#!%s\nimport os, json\n'
+                          'from pathlib import Path\n'
+                          'assert all(k == "CLAUDE_CONFIG_DIR" or not k.startswith(("CLAUDE", "ANTHROPIC")) '
+                          'for k in os.environ)\n'
+                          'assert not {"DEEPSEEK_API_KEY", "GEMINI_API_KEY", "GOOGLE_API_KEY", "OPENAI_API_KEY"}'
+                          '.intersection(os.environ)\n'
+                          'assert "HOME" in os.environ and "PATH" in os.environ\n'
+                          'Path("main.bnt").write_text(%r)\n'
+                          'session = Path(os.environ["XDG_STATE_HOME"]) / "benitoiteh/sessions/test-session"\n'
+                          'session.mkdir(parents=True)\n'
+                          'record = %r if Path.cwd().parent.name == "1" else None\n'
+                          'session.joinpath("session.jsonl").write_text(json.dumps(record) if record else "")\n'
+                          'print(%r)\n') % (sys.executable, source, record, event_output())
+                with open(executable, 'w', encoding='utf-8') as f:
+                    f.write(script)
+                os.chmod(executable, 0o755)
+                harness = copy.deepcopy(evaluation.load_harnesses()['benitoiteh-mock'])
+                harness.pop('mock')
+                path = os.path.join(directory, 'record.md')
+                with mock.patch.dict(os.environ, CLAUDECODE='test-parent', ANTHROPIC_API_KEY='test-key',
+                                     OPENAI_API_KEY='test-key', DEEPSEEK_API_KEY='test-key',
+                                     GEMINI_API_KEY='test-key', GOOGLE_API_KEY='test-key'), \
+                        mock.patch.object(evaluation, 'load_harnesses', return_value={'fake': harness}), \
+                        contextlib.redirect_stdout(io.StringIO()):
+                    status = evaluation.main(['--harness', 'fake', '--task', task.name, '--trials', '2',
+                                              '--benitoite', os.environ['BENITOITEH_TEST_BENITOITE'],
+                                              '--benitoiteh', executable, '--work-root', os.path.join(directory, 'work'),
+                                              '--record', path])
+                self.assertEqual(status, 0)
+                with open(os.path.splitext(path)[0] + '.jsonl', encoding='utf-8') as f:
+                    rows = [json.loads(line) for line in f]
+                self.assertEqual([row['success'] for row in rows], [False, True])
+                self.assertEqual(rows[0]['reason'], 'unreadable session record: ' + error)
+                self.assertEqual(rows[0]['total_tokens'], 3150)
+                self.assertEqual(rows[0]['cost_usd'], 0)
+                with open(path, encoding='utf-8') as f:
+                    self.assertIn('| json_summary | 1 / 2 |', f.read())
+
+
 
 
 @unittest.skipUnless(os.environ.get('BENITOITEH_TEST_BENITOITE'), 'BENITOITEH_TEST_BENITOITE is not set')
