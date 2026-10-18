@@ -4,6 +4,8 @@ use crate::provider::ArgumentType;
 use serde_json::Value;
 
 pub const READ: (&str, &str) = prompt_parts(include_str!("../../prompts/tools/read.md"));
+pub const READ_PLAIN: (&str, &str) =
+    prompt_parts(include_str!("../../prompts/tools/read-plain.md"));
 pub const GLOB: (&str, &str) = prompt_parts(include_str!("../../prompts/tools/glob.md"));
 pub const GREP: (&str, &str) = prompt_parts(include_str!("../../prompts/tools/grep.md"));
 pub const WRITE: (&str, &str) = prompt_parts(include_str!("../../prompts/tools/write.md"));

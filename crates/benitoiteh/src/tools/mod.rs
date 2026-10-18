@@ -155,6 +155,18 @@ pub struct Invocation<'a> {
 }
 
 impl ToolSet {
+    /// 評価用に read の要約と説明を行番号に触れない文へ替える。
+    pub fn plain_read(mut self) -> Self {
+        for tool in &mut self.definitions {
+            if tool.id == ToolId::Read {
+                tool.summary = text::READ_PLAIN.0;
+                tool.spec.description = text::READ_PLAIN.0.into();
+                tool.rules = &[text::READ_PLAIN.1];
+            }
+        }
+        self
+    }
+
     /// モードで許す道具を、決まった順序で用意する。
     pub fn new(mode: Mode) -> Self {
         Self {
@@ -356,6 +368,8 @@ pub struct WebFetchContext {
 
 /// 最大八つの道具が共有する文脈。変わる版の記録だけを Mutex で守る。
 pub struct ToolContext {
+    pub(crate) after_write_check: bool,
+    pub(crate) read_line_numbers: bool,
     pub(crate) noninteractive: bool,
     pub(crate) project_parent: Option<PathBuf>,
     pub mode: Mode,
@@ -424,6 +438,8 @@ impl ToolContext {
     ) -> Self {
         Self {
             noninteractive: false,
+            after_write_check: true,
+            read_line_numbers: true,
             project_parent: None,
             project_creation: None,
             project_candidates: Mutex::new(BTreeMap::new()),
@@ -445,6 +461,13 @@ impl ToolContext {
             search_limits: SearchLimits::default(),
             scratch_state: Mutex::new(benitoite_scratch::ScratchState::default()),
         }
+    }
+
+    /// 利用者の設定だけから、評価で比べる振る舞いを固定する（設計書 01-03）。
+    pub fn with_eval_switches(mut self, after_write_check: bool, read_line_numbers: bool) -> Self {
+        self.after_write_check = after_write_check;
+        self.read_line_numbers = read_line_numbers;
+        self
     }
 
     /// 作る前の書ける場所の検査に使う、起動時のデータの場所と実行ファイル。

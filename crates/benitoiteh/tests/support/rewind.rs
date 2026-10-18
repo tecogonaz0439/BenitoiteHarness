@@ -135,6 +135,8 @@ impl Fixture {
             benitoite: None,
             system_prompt_sha256: "test".into(),
             tools_sha256: "test".into(),
+            after_write_check: None,
+            read_line_numbers: None,
         }))?;
         let context = self.context()?;
         Ok(CheckpointRecorder::new(

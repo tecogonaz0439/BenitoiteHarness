@@ -175,7 +175,15 @@ def benitoiteh_config(harness: Dict[str, object], model: str, processor: str,
     lines = ['default_mode = "restricted"', 'default_provider = "eval"', '', '[providers.eval]']
     lines += ['%s = %s' % (key, toml_value(value)) for key, value in provider.items()]
     lines += ['', '[benitoite]', 'path = ' + toml_value(processor), '', '[restricted]',
-              'allowed_programs = ["/usr/bin/sort"]', '']
+              'allowed_programs = ["/usr/bin/sort"]']
+    config = harness.get('config', {})
+    lines += ['%s = %s' % (key, toml_value(value))
+              for key, value in sorted(config.get('restricted', {}).items())]
+    if 'read' in config:
+        lines += ['', '[read]']
+        lines += ['%s = %s' % (key, toml_value(value))
+                  for key, value in sorted(config['read'].items())]
+    lines.append('')
     return '\n'.join(lines)
 
 
@@ -1011,6 +1019,17 @@ def load_harnesses() -> Dict[str, Dict[str, object]]:
         data = json.load(f)
     harnesses = {k: v for k, v in data.items() if not k.startswith('_')}
     for name, harness in harnesses.items():
+        if 'config' in harness:
+            config = harness['config']
+            allowed = {'restricted': {'after_write_check'}, 'read': {'line_numbers'}}
+            if harness.get('kind') != 'benitoiteh' or not isinstance(config, dict):
+                raise ValueError('harness %s config requires a benitoiteh table dictionary' % name)
+            for table, values in config.items():
+                if table not in allowed or not isinstance(values, dict):
+                    raise ValueError('harness %s has an invalid config table' % name)
+                if any(key not in allowed[table] or type(value) is not bool
+                       for key, value in values.items()):
+                    raise ValueError('harness %s has an invalid config key or non-boolean value' % name)
         if ('price' in harness or (harness.get('kind') == 'benitoiteh' and not harness.get('mock'))):
             if not harness.get('billing'):
                 raise ValueError('harness %s requires billing' % name)
@@ -1631,6 +1650,7 @@ def evaluation_header(args: argparse.Namespace, benitoite: str, harness_name: st
         'ハーネス': '%s（%s）' % (harness_name, harness_version),
         '提供者': harness.get('provider', {}), 'モデル': args.model or str(harness['model']),
         'effort': harness.get('effort', options.get('effort', options.get('reasoning_effort', '-'))),
+        'config': json.dumps(harness['config'], sort_keys=True) if 'config' in harness else '-',
         'max_turns': options.get('max_turns', '-'), 'max_run_tokens': options.get('max_run_tokens', '-'),
         'HARNESS_TIMEOUT': options.get('harness_timeout', HARNESS_TIMEOUT),
         '除いた環境変数': ', '.join(removed) or '-',

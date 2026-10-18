@@ -54,6 +54,116 @@ fn check_script(path: &str) -> ResponseScript {
     ResponseScript::sse(calls(&[check(path)], "tool_calls"))
 }
 
+// 関門: 切り替えが write・edit・一時ファイルの注記に届き、起動も集計も止まる契約。
+// 本物の道具と模擬の提供者を通し、query の呼び出しを集計とは独立に数える。
+#[test]
+fn after_write_switch_controls_checks_without_changing_edits_or_normal_mode() -> TestResult {
+    use std::sync::atomic::AtomicU64;
+    for (mode, enabled, expected) in [
+        (Mode::Restricted, true, 2),
+        (Mode::Restricted, false, 0),
+        (Mode::Normal, true, 0),
+        (Mode::Normal, false, 0),
+    ] {
+        let f = Fixture::new()?;
+        let session = Session::create(&f.paths, SessionId::generate(SystemTime::now())?)?;
+        let spill = session.directory().join("spill");
+        let temporary_file = session.temporary_dir().join("scratch.bnt");
+        let mut server = MockProvider::start(vec![
+            ResponseScript::sse(calls(
+                &[
+                    ("write", json!({"path":"new.bnt","content":"before\n"})),
+                    (
+                        "edit",
+                        json!({"path":"new.bnt","old_string":"before","new_string":"after"}),
+                    ),
+                    (
+                        "write",
+                        json!({"path":temporary_file,"content":"temporary\n"}),
+                    ),
+                ],
+                "tool_calls",
+            )),
+            final_text(),
+        ])?;
+        let mut config = f.config(&server, AdapterKind::OpenAiChat);
+        config.mode = mode;
+        let launches = Arc::new(AtomicU64::new(0));
+        let count = Arc::clone(&launches);
+        let base = query(vec![Response::Passed; 2]);
+        let query: Arc<CheckQuery> = Arc::new(move |args, limits, cancelled| {
+            count.fetch_add(1, Ordering::Relaxed);
+            base(args, limits, cancelled)
+        });
+        let context = ToolContext::new(
+            mode,
+            ScopeRoot::open(&f.project)?,
+            ScopeRoot::open(session.temporary_dir())?,
+            ScopeRoot::open(&spill)?,
+            ExcludeRules::new(
+                &f.project,
+                &f.paths,
+                &spill,
+                &ReadConfig::default(),
+                &ReadConfig::default(),
+            )?,
+        )
+        .with_eval_switches(enabled, true)
+        .with_skill(support::skills()?)
+        .with_check_query(query)
+        .with_session(session.clone());
+        let environment = Environment::capture(
+            &f.project,
+            mode,
+            &[f.project.clone(), session.temporary_dir().into()],
+            false,
+            SystemTime::now(),
+        )?;
+        let mut agent = Agent::new(
+            config,
+            "synthetic-key".into(),
+            context,
+            environment,
+            session,
+        )?;
+        let (report, _) = complete(&mut agent)?;
+        assert_eq!(report.outcome, Outcome::Completed);
+        assert_eq!(launches.load(Ordering::Relaxed), expected);
+        assert_eq!(
+            (report.summary.checks, report.summary.after_write_checks),
+            (expected, expected)
+        );
+        let outputs = results(&agent);
+        assert_eq!(outputs.len(), 3);
+        let write = outputs.first().ok_or("write result")?;
+        assert!(!write.is_error);
+        if expected > 0 {
+            assert_eq!(
+                write.text,
+                "Wrote new.bnt (1 lines).\nCheck of new.bnt after this change: ok"
+            );
+        } else {
+            assert_eq!(write.text, "Wrote new.bnt (1 lines).");
+        }
+        let edit = outputs.get(1).ok_or("edit result")?;
+        assert!(!edit.is_error);
+        assert_eq!(
+            edit.text.contains("Check of new.bnt after this change: ok"),
+            expected > 0
+        );
+        let temporary = outputs.last().ok_or("temporary result")?;
+        assert!(!temporary.is_error, "{}", temporary.text);
+        assert_eq!(
+            temporary.text.contains("Not checked automatically:"),
+            mode == Mode::Restricted && enabled
+        );
+        assert_eq!(fs::read_to_string(f.project.join("new.bnt"))?, "after\n");
+        assert_eq!(fs::read_to_string(temporary_file)?, "temporary\n");
+        server.shutdown()?;
+    }
+    Ok(())
+}
+
 // 関門: 10 回を番数で数える、最後の番の結果を落とす、止めたキーを戻さない退行は
 // 診断の部品では検出できない。模擬の提供者から本物の道具を通して守る。
 #[test]

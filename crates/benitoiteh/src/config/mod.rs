@@ -207,12 +207,24 @@ pub struct BenitoiteConfig {
 }
 
 /// 制限モードで利用者だけが広げられる範囲。
-#[derive(Clone, Debug, Default, Deserialize)]
+#[derive(Clone, Debug, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct RestrictedConfig {
     pub allowed_programs: Vec<PathBuf>,
     /// 既定の効果の集合に追加する効果。
     pub scratch_auto_effects: Vec<String>,
+    /// 評価で比較する、書いた後の自動検査。
+    pub after_write_check: bool,
+}
+
+impl Default for RestrictedConfig {
+    fn default() -> Self {
+        Self {
+            allowed_programs: Vec::new(),
+            scratch_auto_effects: Vec::new(),
+            after_write_check: true,
+        }
+    }
 }
 
 /// 通常モードの方針。
@@ -257,6 +269,23 @@ pub struct ReadConfig {
     pub exclude: Vec<String>,
 }
 
+/// 利用者だけが読み取りの表示を切り替えられる設定（設計書 05-01）。
+#[derive(Clone, Debug, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct UserReadConfig {
+    pub exclude: Vec<String>,
+    pub line_numbers: bool,
+}
+
+impl Default for UserReadConfig {
+    fn default() -> Self {
+        Self {
+            exclude: Vec::new(),
+            line_numbers: true,
+        }
+    }
+}
+
 /// セッションを残す期間。
 #[derive(Clone, Debug, Deserialize)]
 #[serde(default, deny_unknown_fields)]
@@ -281,7 +310,7 @@ pub struct UserConfig {
     pub normal: NormalConfig,
     pub limits: Limits,
     pub web_fetch: WebFetchConfig,
-    pub read: ReadConfig,
+    pub read: UserReadConfig,
     pub sessions: SessionsConfig,
 }
 
@@ -424,6 +453,7 @@ impl UserConfig {
                 max_run_tokens: args.max_run_tokens.or(self.limits.max_run_tokens),
             },
             read: ReadConfig { exclude },
+            read_line_numbers: self.read.line_numbers,
         })
     }
 
@@ -475,6 +505,7 @@ pub struct ResolvedExec {
     pub api_key: Option<ApiKeyRef>,
     pub limits: Limits,
     pub read: ReadConfig,
+    pub read_line_numbers: bool,
 }
 
 /// プロジェクトにはモデルの変更と除外の追加だけを許す。

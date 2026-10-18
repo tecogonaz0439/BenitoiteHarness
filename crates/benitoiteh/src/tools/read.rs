@@ -51,7 +51,12 @@ pub(super) fn execute(context: &ToolContext, arguments: &Value) -> Result<ToolOu
     let metadata = opened.file.metadata()?;
     check_text_file(&opened.real_path, &metadata)?;
     let version = FileVersion::from_metadata(&metadata);
-    let mut lines = ReadLines::new(offset, limit, LineStyle::Numbered);
+    let style = if context.read_line_numbers {
+        LineStyle::Numbered
+    } else {
+        LineStyle::Plain
+    };
+    let mut lines = ReadLines::new(offset, limit, style);
     let mut buffer = [0; 8192];
     let mut pending = Vec::new();
     let mut bytes_read = 0u64;
@@ -83,6 +88,7 @@ pub(super) fn execute(context: &ToolContext, arguments: &Value) -> Result<ToolOu
 #[derive(Clone, Copy)]
 pub(super) enum LineStyle {
     Numbered,
+    Plain,
     Reference,
 }
 
@@ -212,9 +218,9 @@ impl ReadLines {
             let number = self.total.saturating_add(1);
             let mut record = match self.style {
                 LineStyle::Numbered => text::numbered(number, &self.prefix),
-                LineStyle::Reference => self.prefix.clone(),
+                LineStyle::Plain | LineStyle::Reference => self.prefix.clone(),
             };
-            if matches!(self.style, LineStyle::Numbered) && self.count > 2000 {
+            if !matches!(self.style, LineStyle::Reference) && self.count > 2000 {
                 record.push_str(&text::long_line(number, self.count));
             }
             record.push('\n');

@@ -125,7 +125,8 @@ pub(super) fn after_write(
     mut output: ToolOutput,
     cancelled: &AtomicBool,
 ) -> ToolOutput {
-    if context.mode != Mode::Restricted
+    if !context.after_write_check
+        || context.mode != Mode::Restricted
         || context.check_query.is_none()
         || real_path.extension().is_none_or(|ext| ext != "bnt")
     {

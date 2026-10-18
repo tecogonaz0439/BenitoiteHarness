@@ -79,6 +79,8 @@ fn header(session: &Session) -> Record {
         benitoite: None,
         system_prompt_sha256: "a".repeat(64),
         tools_sha256: "b".repeat(64),
+        after_write_check: None,
+        read_line_numbers: None,
     })
 }
 
@@ -137,6 +139,15 @@ fn result(call: &ToolCall, text: &str) -> ToolResult {
 fn records_replay_conversation_losslessly_and_finish_with_summary() -> TestResult {
     let fixture = Fixture::new()?;
     let session = fixture.session()?;
+    // 新しい欄を省略した従来の形式を、そのまま読める（P5-06）。
+    let legacy = serde_json::to_value(header(&session))?;
+    assert!(legacy.get("after_write_check").is_none());
+    assert!(legacy.get("read_line_numbers").is_none());
+    let Record::Header(loaded) = serde_json::from_value(legacy)? else {
+        return Err("header required".into());
+    };
+    assert_eq!(loaded.after_write_check, None);
+    assert_eq!(loaded.read_line_numbers, None);
     let mut writer = session.writer()?;
     let mut summary_writer = session.writer()?;
     writer.append(&header(&session))?;

@@ -9,6 +9,96 @@ mod support;
 mod fixture;
 use fixture::*;
 
+// 関門: 設定の値が起動の準備から read とプロンプトとヘッダへ届く契約。
+// 道具単体では見つけられない接続漏れを、普段の設定を使わない exec で捕まえる。
+#[test]
+fn evaluation_switches_reach_read_and_recorded_hashes_from_user_config() -> TestResult {
+    let mut hashes = Vec::new();
+    for enabled in [true, false] {
+        let protocol = Protocol::Chat;
+        let mut server = MockProvider::start(vec![
+            ResponseScript::sse(protocol.response(
+                Some(("read", "read", json!({"path":"a.bnt","limit":2}))),
+                "",
+                false,
+            )),
+            ResponseScript::sse(protocol.response(None, "done", false)),
+        ])?;
+        let f = Fixture::new(protocol, &server)?;
+        fs::write(f.root.join("project/a.bnt"), "one\ntwo\nthree\n")?;
+        if !enabled {
+            let path = f.root.join("config/benitoiteh/config.toml");
+            let contents = fs::read_to_string(&path)?;
+            fs::write(
+                path,
+                format!(
+                    "{contents}\n[restricted]\nafter_write_check=false\n[read]\nline_numbers=false\n"
+                ),
+            )?;
+        }
+        let output = f.command("read the file").arg("--json").output()?;
+        assert_eq!(
+            output.status.code(),
+            Some(0),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let (_, records) = f.records()?;
+        let header = records.first().ok_or("header")?;
+        assert_eq!(header.get("format"), Some(&json!(1)));
+        for key in ["after_write_check", "read_line_numbers"] {
+            assert_eq!(header.get(key), (!enabled).then_some(&Value::Bool(false)));
+        }
+        hashes.push((
+            header
+                .get("system_prompt_sha256")
+                .ok_or("prompt hash")?
+                .clone(),
+            header.get("tools_sha256").ok_or("tools hash")?.clone(),
+        ));
+        let result = records
+            .iter()
+            .find(|record| record.get("type").and_then(Value::as_str) == Some("tool_result"))
+            .ok_or("tool result")?;
+        assert_eq!(
+            result.pointer("/result/text").and_then(Value::as_str),
+            Some(if enabled {
+                "     1\tone\n     2\ttwo\n[Showing lines 1-2 of 3. Use offset=3 to continue.]"
+            } else {
+                "one\ntwo\n[Showing lines 1-2 of 3. Use offset=3 to continue.]"
+            })
+        );
+        let requests = server.requests()?;
+        let request = &requests.first().ok_or("request")?.body;
+        let read = request
+            .get("tools")
+            .and_then(Value::as_array)
+            .and_then(|tools| {
+                tools.iter().find(|tool| {
+                    tool.pointer("/function/name").and_then(Value::as_str) == Some("read")
+                })
+            })
+            .ok_or("read definition")?;
+        assert_eq!(
+            read.pointer("/function/description")
+                .and_then(Value::as_str),
+            Some(if enabled {
+                "Read a text file with line numbers."
+            } else {
+                "Read a text file."
+            })
+        );
+        server.shutdown()?;
+    }
+    let (numbered, plain) = (
+        hashes.first().ok_or("numbered hashes")?,
+        hashes.get(1).ok_or("plain hashes")?,
+    );
+    assert_ne!(numbered.0, plain.0);
+    assert_ne!(numbered.1, plain.1);
+    Ok(())
+}
+
 #[test]
 fn startup_failure_preserves_earlier_project_diagnostics() -> TestResult {
     let mut server = MockProvider::start(Vec::new())?;
