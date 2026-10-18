@@ -45,6 +45,12 @@ fn inspection_precedes_confirmation_and_rejects_bad_paths_reports_and_changes() 
     let request = first.approval.as_ref().ok_or("request")?;
     assert_eq!(request.kind, ApprovalKind::Effects);
     assert!(request.facts.effects.is_empty() && request.facts.added_effects.is_empty());
+    assert!(request.facts.restricted.is_none());
+    assert!(
+        serde_json::to_value(&request.facts)?
+            .get("restricted")
+            .is_none()
+    );
     assert!(!request.facts.sources.is_empty());
     assert_eq!(request.summary, "Run -pure.bnt with effects: none");
     assert_eq!(
@@ -106,6 +112,85 @@ fn inspection_precedes_confirmation_and_rejects_bad_paths_reports_and_changes() 
             .is_some_and(|r| r.facts.shell_reference && r.facts.effects == ["Process.Run"]),
         "{shell:?}"
     );
+    Ok(())
+}
+
+// 関門: 実行前の確認が、再検査で使いうる和の権限より狭い範囲を示す退行を守る。
+#[test]
+fn restricted_facts_cover_current_and_previously_confirmed_effects() -> TestResult {
+    let mut f = Fixture::new()?;
+    f.sandbox()?;
+    let run = f.context.run.as_mut().ok_or("run context")?;
+    run.allowed_programs = vec!["/usr/bin/sort".into()];
+    let processor = run.processor.clone();
+    let stop = AtomicBool::new(false);
+    for (uses, write, network, programs) in [
+        ("", false, false, false),
+        ("File.Write", true, false, false),
+        ("Http.Connect", false, true, false),
+        ("Process.Run", false, false, true),
+        ("Console.Write", true, true, true),
+    ] {
+        let declaration = if uses.is_empty() {
+            String::new()
+        } else {
+            format!(" uses {uses}")
+        };
+        fs::write(
+            f.project.join("scope.bnt"),
+            format!(
+                "import Benitoite.Unofficial.IO.File\nimport Benitoite.Unofficial.Network.Http\nimport Benitoite.Unofficial.IO.Process\nimport Benitoite.Unofficial.IO.Console\nfunction main() -> Unit{declaration}\n return ()\nend function\n"
+            ),
+        )?;
+        let key = ConfirmKey::Run(f.project.join("scope.bnt"));
+        f.confirmed.clear();
+        if uses == "Console.Write" {
+            f.confirmed.insert(
+                key,
+                [Effect::FileWrite, Effect::HttpConnect, Effect::ProcessRun]
+                    .into_iter()
+                    .collect(),
+            );
+        }
+        let output = f.call(json!({"path":"scope.bnt"}), false, "scope", &stop);
+        let facts = &output.approval.as_ref().ok_or(format!("{output:?}"))?.facts;
+        let restricted = facts.restricted.as_ref().ok_or("restricted facts")?;
+        let mut writable = Vec::new();
+        if write {
+            writable.push(f.project.clone());
+        }
+        writable.push(f.session.temporary_dir().into());
+        assert_eq!(restricted.writable, writable, "{uses}");
+        assert_eq!(restricted.network, network, "{uses}");
+        assert_eq!(restricted.process_run, programs, "{uses}");
+        let mut expected_programs = vec![processor.clone()];
+        if programs {
+            expected_programs.push("/usr/bin/sort".into());
+        }
+        assert_eq!(restricted.programs, expected_programs, "{uses}");
+        // 確認の記録で使う直列化でも実の範囲を失わない。
+        let json = serde_json::to_value(facts)?;
+        assert_eq!(
+            json.get("restricted")
+                .and_then(|value| value.get("network")),
+            Some(&serde_json::Value::Bool(network))
+        );
+        assert_eq!(
+            serde_json::from_value::<approval::ApprovalFacts>(json)?,
+            *facts
+        );
+        if uses.is_empty() {
+            // 欄の追加より前の確認の記録も読める。
+            let mut legacy = serde_json::to_value(facts)?;
+            legacy
+                .get_mut("restricted")
+                .and_then(serde_json::Value::as_object_mut)
+                .ok_or("restricted record")?
+                .remove("process_run");
+            let legacy: approval::ApprovalFacts = serde_json::from_value(legacy)?;
+            assert!(!legacy.restricted.ok_or("legacy restricted")?.process_run);
+        }
+    }
     Ok(())
 }
 

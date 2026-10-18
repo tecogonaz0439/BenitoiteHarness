@@ -137,6 +137,7 @@ pub(super) fn execute_script(
     };
     let key = ConfirmKey::from_facts(ApprovalKind::Effects, &facts).ok_or(ToolError::State)?;
     let previous = invocation.confirmed_effects.get(&key);
+    facts.restricted = super::benitoite_process::restricted_facts(context, &confirmation, previous);
     if facts.unread_imports > 0 && context.noninteractive && approval == ApprovalStatus::Approved {
         return Ok(ToolOutput {
             processor_launches: 1,

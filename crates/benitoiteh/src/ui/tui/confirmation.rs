@@ -108,21 +108,13 @@ impl Confirmation {
         }
         if let Some(prompt) = &self.prompt {
             let request = &prompt.request;
-            let cwd = request
-                .facts
-                .cwd
-                .as_ref()
-                .map(|path| path.to_string_lossy());
-            let path = request
-                .facts
-                .path
-                .as_ref()
-                .map(|path| path.to_string_lossy());
+            let cwd = request.facts.cwd.as_deref().map(SafeText::path);
+            let path = request.facts.path.as_deref().map(SafeText::path);
             let mut rows = Vec::new();
             for (label, value) in [
                 (text::COMMAND, request.facts.command.as_deref()),
-                (text::DIRECTORY, cwd.as_deref()),
-                (text::PATH, path.as_deref()),
+                (text::DIRECTORY, cwd.as_ref().map(SafeText::as_str)),
+                (text::PATH, path.as_ref().map(SafeText::as_str)),
                 (text::SANDBOX, request.facts.sandbox_policy.as_deref()),
                 (text::URL, request.facts.url.as_deref()),
                 (text::DOMAIN, request.facts.domain.as_deref()),
@@ -139,24 +131,10 @@ impl Confirmation {
                     .facts
                     .targets
                     .iter()
-                    .map(|p| p.to_string_lossy())
+                    .map(|path| SafeText::path(path).as_str().to_owned())
                     .collect::<Vec<_>>()
                     .join("\n");
                 rows.extend(fact(text::TARGETS, &targets, width, compact));
-                let effects = if request.facts.effects.is_empty() {
-                    text::NO_EFFECTS.into()
-                } else {
-                    request.facts.effects.join(", ")
-                };
-                rows.extend(fact(text::EFFECTS, &effects, width, compact));
-                if !request.facts.added_effects.is_empty() {
-                    rows.extend(fact(
-                        text::ADDED_EFFECTS,
-                        &request.facts.added_effects.join(", "),
-                        width,
-                        compact,
-                    ));
-                }
                 if request.facts.unread_imports > 0 {
                     rows.extend(fact(
                         text::UNREAD_IMPORTS,
@@ -164,6 +142,48 @@ impl Confirmation {
                         width,
                         compact,
                     ));
+                }
+                let mut ordered: Vec<_> = request.facts.effects.iter().collect();
+                ordered.sort_by_key(|name| (!request.facts.added_effects.contains(name), *name));
+                let effects = if ordered.is_empty() {
+                    text::NO_EFFECTS.into()
+                } else {
+                    ordered
+                        .into_iter()
+                        .map(|name| {
+                            text::effect_line(name, request.facts.added_effects.contains(name))
+                        })
+                        .collect::<Vec<_>>()
+                        .join("\n")
+                };
+                rows.extend(fact(text::EFFECTS, &effects, width, compact));
+                if let Some(restricted) = &request.facts.restricted {
+                    rows.extend(fact(
+                        text::SANDBOX,
+                        &text::sandbox_scope(restricted),
+                        width,
+                        compact,
+                    ));
+                    if restricted.process_run {
+                        let mut programs = restricted
+                            .programs
+                            .iter()
+                            .map(|path| SafeText::path(path).as_str().to_owned())
+                            .collect::<Vec<_>>();
+                        programs.push(text::OTHER_PROGRAMS_BLOCKED.into());
+                        programs.push(text::PROCESS_RUN_SCOPE.into());
+                        if cfg!(target_os = "macos")
+                            && restricted.programs.first().is_some_and(|processor| {
+                                restricted
+                                    .programs
+                                    .iter()
+                                    .any(|program| program != processor)
+                            })
+                        {
+                            programs.push(text::MACOS_PROCESS_GROUPS.into());
+                        }
+                        rows.extend(fact(text::PROGRAMS, &programs.join("\n"), width, compact));
+                    }
                 }
                 if request.facts.shell_reference {
                     rows.extend(fact(text::SHELL, text::SHELL_REFERENCE, width, compact));

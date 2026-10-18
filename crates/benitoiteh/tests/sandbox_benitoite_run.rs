@@ -562,6 +562,30 @@ fn approved_runs_count_launches_checkpoint_and_confirm_again_after_resume() -> T
         Some(vec!["Console.Write".into()])
     );
     let records = read_records(f.session.directory())?;
+    let recorded_facts: Vec<_> = records
+        .iter()
+        .filter_map(|record| {
+            if let Record::Approval { facts, .. } = record {
+                Some(facts)
+            } else {
+                None
+            }
+        })
+        .collect();
+    assert!(!recorded_facts.is_empty());
+    for facts in recorded_facts {
+        let restricted = facts
+            .restricted
+            .as_ref()
+            .ok_or("recorded restricted facts")?;
+        assert_eq!(
+            restricted.writable,
+            vec![f.session.temporary_dir().to_owned()]
+        );
+        assert!(!restricted.network);
+        assert!(!restricted.process_run);
+        assert_eq!(restricted.programs, vec![support::benitoite()?]);
+    }
     let checkpoints: Vec<_> = records
         .iter()
         .filter_map(|r| {
