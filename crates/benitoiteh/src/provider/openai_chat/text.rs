@@ -2,5 +2,5 @@
 
 pub const PROVIDER: &str = "The provider rejected or could not complete the request.";
 pub const INVALID_REQUEST: &str = "Could not build the provider request.";
-pub const INVALID_RESPONSE: &str = "The provider returned an invalid stream.";
+pub const INVALID_RESPONSE: &str = super::super::text::INVALID_RESPONSE;
 pub const CANCELLED: &str = "The provider request was cancelled.";

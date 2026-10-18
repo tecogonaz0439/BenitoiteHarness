@@ -244,6 +244,8 @@ pub enum ProviderError {
     NonRetryable { reason: NonRetryableKind },
     /// 応答の途中の切断。受け取った内容を捨ててやり直す。
     StreamDisconnected,
+    /// 応答の形や SSE を読み取れない。
+    InvalidResponse,
     /// 内容が空の応答。やり直す。
     EmptyResponse,
 }
@@ -260,6 +262,7 @@ impl fmt::Display for ProviderError {
                 NonRetryableKind::ThinkingRejected => text::THINKING_REJECTED,
             },
             Self::StreamDisconnected => text::STREAM_DISCONNECTED,
+            Self::InvalidResponse => text::INVALID_RESPONSE,
             Self::EmptyResponse => text::EMPTY_RESPONSE,
         })
     }

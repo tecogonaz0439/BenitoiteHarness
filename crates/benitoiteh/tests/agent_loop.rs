@@ -8,6 +8,8 @@ mod checks;
 mod compaction;
 #[path = "agent_loop/create_project.rs"]
 mod create_project;
+#[path = "agent_loop/gemini.rs"]
+mod gemini;
 #[path = "agent_loop/interaction.rs"]
 mod interaction;
 mod support;
@@ -556,55 +558,63 @@ fn both_output_limits_return_errors_without_writing_and_continue() -> TestResult
 }
 
 #[test]
-fn disconnection_retries_four_times_without_committing_or_executing_tools() -> TestResult {
-    let f = Fixture::new()?;
-    let full = calls(
-        &[(
-            "write",
-            json!({"path":"must-not-exist.bnt","content":"bad"}),
-        )],
-        "tool_calls",
-    );
-    let cut_at = full.len().saturating_sub("data: [DONE]\n\n".len());
-    let scripts = (0..5)
-        .map(|_| {
-            let mut script = ResponseScript::sse(full.clone());
-            script.delivery = Delivery::Disconnect { after: cut_at };
-            script
-        })
-        .collect();
-    let mut server = MockProvider::start(scripts)?;
-    let (mut agent, directory) = f.agent(f.config(&server, AdapterKind::OpenAiChat))?;
-    let (report, events) = complete(&mut agent)?;
-    assert_eq!(report.outcome, Outcome::Failed);
-    assert_eq!(report.summary.turns, 0);
-    assert!(!f.project.join("must-not-exist.bnt").exists());
-    assert_eq!(
-        events
-            .iter()
-            .filter_map(|e| {
-                if let AgentEvent::Retry { attempt, .. } = e {
-                    Some(*attempt)
+fn retry_limits_distinguish_invalid_responses_from_disconnects_without_executing_tools()
+-> TestResult {
+    for invalid in [false, true] {
+        let f = Fixture::new()?;
+        let full = calls(
+            &[(
+                "write",
+                json!({"path":"must-not-exist.bnt","content":"bad"}),
+            )],
+            "tool_calls",
+        );
+        let cut_at = full.len().saturating_sub("data: [DONE]\n\n".len());
+        let scripts = (0..5)
+            .map(|_| {
+                let mut script = ResponseScript::sse(full.clone());
+                if invalid {
+                    script.body.truncate(cut_at);
+                    script.body.extend_from_slice(b"data: {broken}\n\n");
                 } else {
-                    None
+                    script.delivery = Delivery::Disconnect { after: cut_at };
                 }
+                script
             })
-            .collect::<Vec<_>>(),
-        [1, 2, 3, 4]
-    );
-    assert!(
-        !read_records(&directory)?
-            .iter()
-            .any(|r| matches!(r, Record::Assistant { .. } | Record::ToolStart { .. }))
-    );
-    let requests = server.requests()?;
-    assert_eq!(requests.len(), 5);
-    assert!(
-        requests
-            .windows(2)
-            .all(|pair| pair.first().map(|r| &r.body) == pair.get(1).map(|r| &r.body))
-    );
-    server.shutdown()?;
+            .collect();
+        let mut server = MockProvider::start(scripts)?;
+        let (mut agent, directory) = f.agent(f.config(&server, AdapterKind::OpenAiChat))?;
+        let (report, events) = complete(&mut agent)?;
+        assert_eq!(report.outcome, Outcome::Failed);
+        assert_eq!(report.summary.turns, 0);
+        assert!(!f.project.join("must-not-exist.bnt").exists());
+        assert_eq!(
+            events
+                .iter()
+                .filter_map(|e| {
+                    if let AgentEvent::Retry { attempt, .. } = e {
+                        Some(*attempt)
+                    } else {
+                        None
+                    }
+                })
+                .collect::<Vec<_>>(),
+            if invalid { vec![1] } else { vec![1, 2, 3, 4] }
+        );
+        assert!(
+            !read_records(&directory)?
+                .iter()
+                .any(|r| matches!(r, Record::Assistant { .. } | Record::ToolStart { .. }))
+        );
+        let requests = server.requests()?;
+        assert_eq!(requests.len(), if invalid { 2 } else { 5 });
+        assert!(
+            requests
+                .windows(2)
+                .all(|pair| pair.first().map(|r| &r.body) == pair.get(1).map(|r| &r.body))
+        );
+        server.shutdown()?;
+    }
     Ok(())
 }
 

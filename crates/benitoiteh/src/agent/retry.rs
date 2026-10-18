@@ -26,15 +26,17 @@ impl Agent {
             if cancelled.load(Ordering::Acquire) {
                 return Ok(None);
             }
-            match error {
+            let max_retries = match error {
                 ProviderError::ContextOverflow | ProviderError::NonRetryable { .. } => {
                     return Err(error.into());
                 }
+                // 形の違いで課金済みの応答を繰り返し捨てない（設計書 01-01「やり直し」）。
+                ProviderError::InvalidResponse => 1,
                 ProviderError::Retryable { .. }
                 | ProviderError::StreamDisconnected
-                | ProviderError::EmptyResponse => {}
-            }
-            if attempt >= 4 {
+                | ProviderError::EmptyResponse => 4,
+            };
+            if attempt >= max_retries {
                 return Err(error.into());
             }
             let delay = self.retry_delay(attempt, &error)?;

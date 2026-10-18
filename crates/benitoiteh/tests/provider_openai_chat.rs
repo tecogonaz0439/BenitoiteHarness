@@ -1,5 +1,7 @@
 //! 模擬 HTTP サーバーを通した Chat Completions の契約（設計書 02-01、07-01「持ち主の境界」）。
 
+#[path = "provider_openai_chat/gemini.rs"]
+mod gemini;
 mod support;
 
 use std::error::Error;
@@ -140,10 +142,12 @@ fn fragmented_parallel_calls_preserve_index_order_raw_messages_and_late_usage() 
             json!({"choices":[{"delta":{"reasoning":" more"}}]}),
             json!({"choices":[{"delta":{"tool_calls":[
                 {"index":1,"id":"call_","type":"function","function":{"name":"re","arguments":"{bad"}},
-                {"index":0,"id":"call_","type":"function","function":{"name":"r","arguments":"{ \"path\":"}}
+                {"index":0,"id":"call_","type":"function","function":{"name":"r","arguments":"{ \"path\":"},
+                 "extra_content":{"google":{"thought_signature":"old"},"retained":true}}
             ]}}]}),
             json!({"choices":[{"delta":{"tool_calls":[
-                {"index":0,"id":"A","function":{"name":"ead","arguments":"\"a.bnt\" }"}},
+                {"index":0,"id":"A","function":{"name":"ead","arguments":"\"a.bnt\" }"},
+                 "extra_content":{"google":{"thought_signature":"fake-indexed-signature"}}},
                 {"index":1,"id":"B","function":{"name":"ad","arguments":" json"}}
             ]}}]}),
             json!({"choices":[{"delta":{},"finish_reason":"tool_calls"}]}),
@@ -168,7 +172,8 @@ fn fragmented_parallel_calls_preserve_index_order_raw_messages_and_late_usage() 
     let (events, mut turn) = request(&adapter, &conversation(), RequestOptions::default())?;
     let raw = json!({"role":"assistant","content":"Before 日本語","reasoning_content":"Plan more",
     "tool_calls":[
-        {"id":"call_A","type":"function","function":{"name":"read","arguments":"{ \"path\":\"a.bnt\" }"}},
+        {"id":"call_A","type":"function","function":{"name":"read","arguments":"{ \"path\":\"a.bnt\" }"},
+         "extra_content":{"google":{"thought_signature":"fake-indexed-signature"},"retained":true}},
         {"id":"call_B","type":"function","function":{"name":"read","arguments":"{bad json"}}
     ]});
     assert_eq!(turn.raw_items.items, vec![raw.clone()]);
@@ -722,12 +727,13 @@ fn incomplete_and_malformed_streams_never_commit_partial_turns() -> TestResult {
             ],
             true,
         )),
+        ResponseScript::sse(b"data: \xff\n\n".to_vec()),
     ];
     let mut server = MockProvider::start(scripts)?;
     let adapter =
         OpenAiChatAdapter::new(destination(&server), Capabilities::default(), String::new());
     let client = client();
-    for index in 0..6 {
+    for index in 0..7 {
         let request = adapter.build_request(
             &conversation(),
             "System",
@@ -756,17 +762,22 @@ fn incomplete_and_malformed_streams_never_commit_partial_turns() -> TestResult {
                 return Err(io::Error::from(io::ErrorKind::TimedOut).into());
             }
         };
-        assert_eq!(error.classification(), ProviderError::StreamDisconnected);
+        let expected = if index < 2 {
+            ProviderError::StreamDisconnected
+        } else {
+            ProviderError::InvalidResponse
+        };
+        assert_eq!(error.classification(), expected);
         assert_eq!(
             stream
                 .poll(Duration::ZERO)
                 .err()
                 .map(|e| e.classification()),
-            Some(ProviderError::StreamDisconnected)
+            Some(expected.clone())
         );
         assert_eq!(
             stream.finish().err().map(|e| e.classification()),
-            Some(ProviderError::StreamDisconnected)
+            Some(expected)
         );
     }
     server.shutdown()?;
