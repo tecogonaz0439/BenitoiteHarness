@@ -57,6 +57,7 @@ fn targets_are_canonical_deduplicated_and_confirmed_as_an_unordered_set() -> Tes
         vec![f.project.join("tests"), f.project.join("a.bnt")]
     );
     assert!(request.facts.effects.is_empty() && !request.facts.sources.is_empty());
+    assert!(request.facts.restricted.is_none());
     assert_eq!(
         request.summary,
         "Run tests in tests, a.bnt with effects: none"
@@ -107,6 +108,59 @@ fn targets_are_canonical_deduplicated_and_confirmed_as_an_unordered_set() -> Tes
             && bad.text.contains("error["),
         "{bad:?}"
     );
+    Ok(())
+}
+
+// 関門: テストの報告からも、前の確認を含む書き込み・通信・起動の範囲を欠かさず示す。
+#[test]
+fn test_restricted_facts_cover_current_and_previously_confirmed_effects() -> TestResult {
+    use benitoiteh::{benitoite::Effect, tools::ConfirmKey};
+    let mut f = Fixture::new()?;
+    f.sandbox()?;
+    let run = f.context.run.as_mut().ok_or("run context")?;
+    run.allowed_programs = vec!["/usr/bin/sort".into()];
+    let processor = run.processor.clone();
+    for (uses, write, network, programs) in [
+        ("", false, false, false),
+        (", File.Write", true, false, false),
+        (", Http.Connect", false, true, false),
+        (", Process.Run", false, false, true),
+        (", Console.Write", true, true, true),
+    ] {
+        fs::write(
+            f.project.join("scope.bnt"),
+            format!(
+                "import Benitoite.Unofficial.IO.File\nimport Benitoite.Unofficial.Network.Http\nimport Benitoite.Unofficial.IO.Process\nimport Benitoite.Unofficial.IO.Console\n{}",
+                TEST.replace("uses Assert.Check", &format!("uses Assert.Check{uses}"))
+            ),
+        )?;
+        f.confirmed.clear();
+        if uses == ", Console.Write" {
+            f.confirmed.insert(
+                ConfirmKey::Test(vec![f.project.join("scope.bnt")]),
+                [Effect::FileWrite, Effect::HttpConnect, Effect::ProcessRun]
+                    .into_iter()
+                    .collect(),
+            );
+        }
+        let output = call(&f, json!({"paths":["scope.bnt"]}), false);
+        let facts = &output.approval.as_ref().ok_or(format!("{output:?}"))?.facts;
+        let restricted = facts.restricted.as_ref().ok_or("restricted facts")?;
+        let mut writable = Vec::new();
+        if write {
+            writable.push(f.project.clone());
+        }
+        writable.push(f.session.temporary_dir().into());
+        assert_eq!(restricted.writable, writable, "{uses}");
+        assert_eq!(restricted.network, network, "{uses}");
+        assert_eq!(restricted.process_run, programs, "{uses}");
+        let mut expected_programs = vec![processor.clone()];
+        if programs {
+            expected_programs.push("/usr/bin/sort".into());
+        }
+        assert_eq!(restricted.programs, expected_programs, "{uses}");
+        assert!(!facts.effects.iter().any(|name| name == "Assert.Check"));
+    }
     Ok(())
 }
 // 関門: 多すぎる対象、拡張子、範囲外の拒否を報告の起動より前に守る。

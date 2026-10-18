@@ -4,7 +4,7 @@ use std::io::{self, Write};
 
 use crossterm::{cursor, event, queue, style, terminal};
 
-/// 制御文字を可視化し、タブを空白にした文字列。生の文字列からの抜け道を設けない。
+/// 制御文字を可視化した文字列。生の文字列からの抜け道を設けない。
 #[derive(Clone, Debug, Default)]
 pub(super) struct SafeText(String);
 
@@ -18,6 +18,15 @@ impl SafeText {
             super::unicode::visible(&super::super::terminal_text(value, multiline))
                 .replace('\t', "    "),
         )
+    }
+
+    /// パス中の改行・タブから、事実の値と同じ形の行を作らせない（設計書 05-02「確認の画面」）。
+    pub fn path(path: &std::path::Path) -> Self {
+        let value = path
+            .to_string_lossy()
+            .replace('\n', "\\x0a")
+            .replace('\t', "\\x09");
+        Self::strict(&value, false)
     }
 
     pub fn as_str(&self) -> &str {

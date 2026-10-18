@@ -53,6 +53,23 @@ pub struct ApprovalFacts {
     /// 読まない利用者のソースの件数。パスは画面に示さない。
     #[serde(default, skip_serializing_if = "is_zero")]
     pub unread_imports: usize,
+    /// 制限モードで、承認後の再検査が使いうる OS の範囲。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub restricted: Option<RestrictedFacts>,
+}
+
+/// 確認したエフェクトの和に対応するサンドボックスの範囲（設計書 03-03）。
+#[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+pub struct RestrictedFacts {
+    /// 書ける場所。最後の要素はセッションの一時ディレクトリ。
+    pub writable: Vec<PathBuf>,
+    /// IP の通信を許すか。
+    pub network: bool,
+    /// 前の確認と今回の報告の和が Process.Run を含むか。
+    #[serde(default)]
+    pub process_run: bool,
+    /// 処理系を先頭に置いた、許すプログラムの実のパス。
+    pub programs: Vec<PathBuf>,
 }
 
 fn is_zero(n: &usize) -> bool {

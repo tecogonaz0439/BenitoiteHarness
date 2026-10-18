@@ -31,6 +31,34 @@ use std::{
     path::Path,
 };
 pub(super) const DIAGNOSTICS_BYTES: usize = 16 * 1024 * 1024;
+
+pub(super) fn restricted_facts(
+    context: &ToolContext,
+    current: &BTreeSet<Effect>,
+    previous: Option<&BTreeSet<Effect>>,
+) -> Option<crate::approval::RestrictedFacts> {
+    let run = context.run.as_ref()?;
+    // 再検査は前の確認を含む集合で実行しうるため、今回の報告だけでは範囲が足りない
+    // （設計書 04-01「実行の前の検査の報告」、実装プラン P2-10）。
+    let combined: BTreeSet<_> = current
+        .iter()
+        .chain(previous.into_iter().flatten())
+        .copied()
+        .collect();
+    let access = effects::restricted_access(&combined, &run.processor, &run.allowed_programs);
+    let mut writable = Vec::new();
+    if access.write_project {
+        writable.push(run.locations.project.clone());
+    }
+    writable.push(run.locations.temporary.clone());
+    Some(crate::approval::RestrictedFacts {
+        writable,
+        network: access.allow_ip,
+        process_run: combined.contains(&Effect::ProcessRun),
+        programs: access.programs,
+    })
+}
+
 pub(super) fn prepare(
     run: &RunContext,
     effects: &BTreeSet<Effect>,

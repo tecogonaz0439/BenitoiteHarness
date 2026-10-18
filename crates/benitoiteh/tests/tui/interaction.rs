@@ -1,7 +1,7 @@
 //! 確認の安全の性質と履歴を、画面とファイルの境界で確かめる（実装プラン P4-07）。
 
 use super::*;
-use benitoiteh::approval::{ApprovalPrompt, ApprovalRecord};
+use benitoiteh::approval::{ApprovalPrompt, ApprovalRecord, RestrictedFacts};
 use std::sync::mpsc;
 
 fn key(code: KeyCode, modifiers: KeyModifiers) -> Event {
@@ -903,6 +903,15 @@ fn oversized_facts_disable_approval_keep_decline_and_never_overflow_the_screen()
             (120, 24),
             format!("https://evil.example/{}", "segment/".repeat(500)),
         ),
+        (ApprovalKind::Effects, (120, 24), "programs".into()),
+        (
+            ApprovalKind::Effects,
+            (120, 24),
+            format!(
+                "/project/\x1b[2J\x1b]0;forged\x07{}main.bnt",
+                "\n".repeat(1000)
+            ),
+        ),
     ] {
         for answer in ['n', 'm'] {
             let mut screen = Screen::new(size, status());
@@ -910,6 +919,29 @@ fn oversized_facts_disable_approval_keep_decline_and_never_overflow_the_screen()
             if kind == ApprovalKind::WebFetch {
                 request.request.facts.url = request.request.facts.command.take();
                 request.request.facts.domain = Some("evil.example".into());
+            }
+            if kind == ApprovalKind::Effects {
+                request.request.facts = ApprovalFacts {
+                    targets: vec![if command == "programs" {
+                        "/project/main.bnt".into()
+                    } else {
+                        command.clone().into()
+                    }],
+                    effects: vec!["Process.Run".into()],
+                    restricted: Some(RestrictedFacts {
+                        writable: vec!["/tmp/session".into()],
+                        network: false,
+                        process_run: true,
+                        programs: if command == "programs" {
+                            (0..60)
+                                .map(|i| format!("/usr/bin/program-{i}").into())
+                                .collect()
+                        } else {
+                            vec!["/opt/benitoite".into()]
+                        },
+                    }),
+                    ..ApprovalFacts::default()
+                };
             }
             screen.open_approval(request);
             let shown = Instant::now();
@@ -926,6 +958,13 @@ fn oversized_facts_disable_approval_keep_decline_and_never_overflow_the_screen()
             if size == (120, 24) {
                 assert!(visible.contains("approval is disabled"), "{visible}");
                 assert!(visible.contains("fact lines"), "{visible}");
+                if command.contains('\x1b') {
+                    assert!(
+                        visible.contains("\\x1b[2J") && visible.contains("\\x1b]0;forged"),
+                        "{visible}"
+                    );
+                    assert!(!visible.contains("main.bnt"), "{visible}");
+                }
                 if command.contains("cargo test") {
                     assert!(visible.contains("␠×3000"), "{visible}");
                 } else if command.starts_with("dangerous-first") {
@@ -1054,93 +1093,370 @@ fn effect_confirmation_displays_all_facts_but_not_source_hashes_and_must_fit() -
         (ApprovalKind::TestEffects, false),
         (ApprovalKind::TestEffects, true),
     ] {
-        let mut screen = Screen::new((140, 40), status());
-        let (mut prompt, receiver) = prompt(kind, "unused");
-        prompt.request.facts = ApprovalFacts {
-            targets: vec!["/project/main.bnt".into(), "/project/other.bnt".into()],
-            effects: if empty {
-                vec![]
-            } else {
-                vec!["Console.Write".into(), "Process.Run".into()]
-            },
-            added_effects: if empty {
-                vec![]
-            } else {
-                vec!["Process.Run".into()]
-            },
-            shell_reference: !empty,
-            unread_imports: if empty { 0 } else { 2 },
-            sources: vec![benitoiteh::approval::ApprovalSource {
-                display_path: "HIDDEN_SOURCE".into(),
-                content_hash: benitoiteh::approval::ContentHash {
-                    algorithm: "sha256".into(),
-                    value: "HIDDEN_HASH".into(),
+        for (external, shell) in [(false, false), (true, false), (true, true)] {
+            let mut screen = Screen::new((140, 50), status());
+            let (mut prompt, receiver) = prompt(kind, "unused");
+            prompt.request.facts = ApprovalFacts {
+                targets: vec!["/project/main.bnt".into(), "/project/other.bnt".into()],
+                effects: if empty {
+                    vec![]
+                } else {
+                    vec!["Console.Write".into(), "Process.Run".into()]
                 },
-            }],
-            ..ApprovalFacts::default()
-        };
-        screen.open_approval(prompt);
-        let mut bytes = Vec::new();
-        screen.draw(&mut bytes, None)?;
-        let rendered = String::from_utf8(bytes)?;
-        let visible = controls()?.replace_all(&rendered, "");
-        for value in [
-            if kind == ApprovalKind::TestEffects {
-                "Run Benitoite tests?"
-            } else {
-                "Run Benitoite script?"
-            },
-            "Targets",
-            "/project/main.bnt",
-            "/project/other.bnt",
-            "Effects",
-            "[y] run  [n] decline  [m] decline with a message",
-        ] {
-            assert!(visible.contains(value), "{visible}");
-        }
-        assert!(!visible.contains("HIDDEN") && !visible.contains("sha256"));
-        if empty {
-            assert!(
-                visible.contains("none")
-                    && !visible.contains("Added effects")
-                    && !visible.contains("Shell")
-            );
-        } else {
+                added_effects: if empty {
+                    vec![]
+                } else {
+                    vec!["Process.Run".into()]
+                },
+                shell_reference: !empty && shell,
+                restricted: Some(RestrictedFacts {
+                    writable: vec!["/project".into(), "/tmp/session".into()],
+                    network: !empty,
+                    process_run: !empty,
+                    programs: if external {
+                        vec!["/opt/benitoite".into(), "/usr/bin/sort".into()]
+                    } else {
+                        vec!["/opt/benitoite".into()]
+                    },
+                }),
+                unread_imports: if empty { 0 } else { 2 },
+                sources: vec![benitoiteh::approval::ApprovalSource {
+                    display_path: "HIDDEN_SOURCE".into(),
+                    content_hash: benitoiteh::approval::ContentHash {
+                        algorithm: "sha256".into(),
+                        value: "HIDDEN_HASH".into(),
+                    },
+                }],
+                ..ApprovalFacts::default()
+            };
+            screen.open_approval(prompt);
+            let mut bytes = Vec::new();
+            screen.draw(&mut bytes, None)?;
+            let rendered = String::from_utf8(bytes)?;
+            let visible = controls()?.replace_all(&rendered, "");
             for value in [
-                "Added effects",
-                "Imports files that benitoiteh does not read",
-                "Shell",
-                "The script references Process.shell",
-                "OS sandbox blocks starting a shell",
+                if kind == ApprovalKind::TestEffects {
+                    "Run Benitoite tests?"
+                } else {
+                    "Run Benitoite script?"
+                },
+                "Targets",
+                "/project/main.bnt",
+                "/project/other.bnt",
+                "Effects",
+                "[y] run and allow these effects for this session  [n] decline  [m] decline with a message",
             ] {
                 assert!(visible.contains(value), "{visible}");
             }
+            assert!(!visible.contains("HIDDEN") && !visible.contains("sha256"));
+            assert!(!visible.contains("Added effects"));
+            assert!(!visible.contains("approval is disabled"), "{visible}");
+            assert!(visible.contains("can write: /project and the session temporary directory"));
+            assert_eq!(visible.contains("Programs:"), !empty, "{visible}");
+            assert_eq!(visible.contains("Shell:"), !empty && shell, "{visible}");
+            assert_eq!(
+                visible.contains("On macOS, processes"),
+                !empty && external && cfg!(target_os = "macos"),
+                "{visible}"
+            );
+            if empty {
+                assert!(visible.contains("none") && visible.contains("network: blocked"));
+            } else {
+                let ordered = [
+                    "Targets:",
+                    "Imports files that benitoiteh does not read:",
+                    "Effects:",
+                    "+ Process.Run  starts external commands",
+                    "  Console.Write  writes to standard output and standard error",
+                    "Sandbox:",
+                    "network: allowed",
+                    "Programs:",
+                    "/opt/benitoite",
+                    "The OS sandbox blocks starting any other program.",
+                    "Allowing Process.Run lets the script start benitoite on another script,",
+                ];
+                let mut rest: &str = &visible;
+                for value in ordered {
+                    rest = rest
+                        .split_once(value)
+                        .ok_or(format!("missing/out of order {value}: {visible}"))?
+                        .1;
+                }
+                let body = visible
+                    .lines()
+                    .filter_map(|row| row.strip_prefix("│   "))
+                    .collect::<String>();
+                assert!(
+                    body.contains("including effects not listed above."),
+                    "{visible}"
+                );
+                if shell {
+                    assert!(rest.contains("Shell:"));
+                    assert!(rest.contains("The script references Process.shell"));
+                    assert!(rest.contains("OS sandbox blocks starting a shell"));
+                }
+            }
+            let shown = Instant::now();
+            screen.presented(shown);
+            let at = shown + Duration::from_millis(300);
+            screen.input_at(Event::Resize(30, 8), at, Duration::ZERO, true);
+            screen.draw(&mut Vec::new(), None)?;
+            screen.presented(at);
+            let at = at + Duration::from_millis(300);
+            screen.input_at(
+                key(KeyCode::Char('y'), KeyModifiers::NONE),
+                at,
+                Duration::ZERO,
+                true,
+            );
+            assert!(receiver.try_recv().is_err());
+            screen.input_at(
+                key(KeyCode::Char('n'), KeyModifiers::NONE),
+                at,
+                Duration::ZERO,
+                true,
+            );
+            assert_eq!(
+                receiver.recv_timeout(Duration::from_secs(1))?.outcome,
+                ApprovalOutcome::Denied
+            );
         }
-        let shown = Instant::now();
-        screen.presented(shown);
-        let at = shown + Duration::from_millis(300);
-        screen.input_at(Event::Resize(30, 8), at, Duration::ZERO, true);
-        screen.draw(&mut Vec::new(), None)?;
-        screen.presented(at);
-        let at = at + Duration::from_millis(300);
-        screen.input_at(
-            key(KeyCode::Char('y'), KeyModifiers::NONE),
-            at,
-            Duration::ZERO,
-            true,
+    }
+    Ok(())
+}
+
+// 関門: 今回の報告から消えた Process.Run が再検査で戻りうる場合も、和の起動範囲を画面に示す。
+#[test]
+fn security_followup_previous_process_run_remains_visible_in_confirmation() -> TestResult {
+    use benitoiteh::{benitoite::Effect, tools::ConfirmKey};
+    for tests in [false, true] {
+        let mut f = benitoite_fixture::Fixture::new()?;
+        f.sandbox()?;
+        f.context
+            .run
+            .as_mut()
+            .ok_or("run context")?
+            .allowed_programs = vec!["/usr/bin/sort".into()];
+        let source = if tests {
+            "@test\nfunction example() -> Unit uses File.Write\n return ()\nend function\n"
+        } else {
+            "function main() -> Unit uses File.Write\n return ()\nend function\n"
+        };
+        fs::write(
+            f.project.join("main.bnt"),
+            format!("import Benitoite.Unofficial.IO.File\n{source}"),
+        )?;
+        let key = if tests {
+            ConfirmKey::Test(vec![f.project.join("main.bnt")])
+        } else {
+            ConfirmKey::Run(f.project.join("main.bnt"))
+        };
+        f.confirmed
+            .insert(key, [Effect::ProcessRun].into_iter().collect());
+        let stop = AtomicBool::new(false);
+        let output = f.call_tool(
+            if tests {
+                "benitoite_test"
+            } else {
+                "benitoite_run"
+            },
+            if tests {
+                json!({"paths":["main.bnt"]})
+            } else {
+                json!({"path":"main.bnt"})
+            },
+            false,
+            "scope",
+            &stop,
         );
-        assert!(receiver.try_recv().is_err());
-        screen.input_at(
-            key(KeyCode::Char('n'), KeyModifiers::NONE),
-            at,
-            Duration::ZERO,
-            true,
-        );
+        let request = output.approval.ok_or(output.text)?;
+        assert_eq!(request.facts.effects, ["File.Write"]);
+        let mut screen = Screen::new((240, 50), status());
+        let (mut prompt, _receiver) = prompt(request.kind, "unused");
+        prompt.request.facts = request.facts;
+        screen.open_approval(prompt);
+        let mut bytes = Vec::new();
+        screen.draw(&mut bytes, None)?;
+        let visible = safe_output(&bytes)?;
+        for expected in [
+            "Programs:",
+            "/usr/bin/sort",
+            "The OS sandbox blocks starting any other program.",
+            "Allowing Process.Run lets the script start benitoite on another script",
+        ] {
+            assert!(visible.contains(expected), "{visible}");
+        }
         assert_eq!(
-            receiver.recv_timeout(Duration::from_secs(1))?.outcome,
-            ApprovalOutcome::Denied
+            visible.contains("On macOS, processes"),
+            cfg!(target_os = "macos"),
+            "{visible}"
         );
     }
+    Ok(())
+}
+
+// 関門: パスに含む改行・タブが事実の値の行を偽装する退行を、画面の出力で守る。
+#[test]
+fn security_followup_confirmation_paths_escape_newlines_and_tabs_before_joining() -> TestResult {
+    for kind in [
+        ApprovalKind::Command,
+        ApprovalKind::Escalate,
+        ApprovalKind::WriteScope,
+        ApprovalKind::Effects,
+        ApprovalKind::TestEffects,
+    ] {
+        let effects = matches!(kind, ApprovalKind::Effects | ApprovalKind::TestEffects);
+        let mut screen = Screen::new((300, 60), status());
+        let (mut request, _receiver) = prompt(kind, "unused");
+        request.request.facts = ApprovalFacts {
+            command: (kind == ApprovalKind::Command).then(|| "echo first\nsecond\tpart".into()),
+            cwd: Some("/project\nnetwork: allowed\t".into()),
+            path: Some("/project/main\nnetwork: allowed\t.bnt".into()),
+            targets: if effects {
+                vec![
+                    "/project/main\nnetwork: allowed\t.bnt".into(),
+                    "/project/second\tname\nfile.bnt".into(),
+                ]
+            } else {
+                vec![]
+            },
+            effects: if effects {
+                vec!["Process.Run".into()]
+            } else {
+                vec![]
+            },
+            restricted: effects.then(|| RestrictedFacts {
+                writable: vec!["/project\nnetwork: allowed\t".into(), "/tmp/session".into()],
+                network: false,
+                process_run: true,
+                programs: vec![
+                    "/opt/benitoite".into(),
+                    "/opt/tool\nnetwork: allowed\t".into(),
+                ],
+            }),
+            ..ApprovalFacts::default()
+        };
+        screen.open_approval(request);
+        let mut bytes = Vec::new();
+        screen.draw(&mut bytes, None)?;
+        let visible = safe_output(&bytes)?;
+        assert!(
+            visible.contains("│ Directory:\n│   /project\\x0anetwork: allowed\\x09\n"),
+            "{visible}"
+        );
+        assert!(
+            visible.contains("│ Path:\n│   /project/main\\x0anetwork: allowed\\x09.bnt\n"),
+            "{visible}"
+        );
+        assert!(!visible.contains("│   network: allowed"), "{visible}");
+        if effects {
+            assert!(visible.contains("│ Targets: (2 lines)\n│   /project/main\\x0anetwork: allowed\\x09.bnt\n│   /project/second\\x09name\\x0afile.bnt\n"), "{visible}");
+            assert!(visible.contains("can write: /project\\x0anetwork: allowed\\x09 and the session temporary directory"), "{visible}");
+            let heading = if cfg!(target_os = "macos") {
+                "│ Programs: (5 lines)\n"
+            } else {
+                "│ Programs: (4 lines)\n"
+            };
+            assert!(visible.contains(heading), "{visible}");
+            assert!(
+                visible.contains("│   /opt/tool\\x0anetwork: allowed\\x09\n"),
+                "{visible}"
+            );
+        }
+        if kind == ApprovalKind::Command {
+            assert!(
+                visible.contains("│ Command: (2 lines)\n│   echo first\n│   second    part\n"),
+                "{visible}"
+            );
+        }
+        assert!(!visible.contains("approval is disabled"), "{visible}");
+    }
+    Ok(())
+}
+
+// 関門: 同梱の Skill と説明がずれる退行を画面の出力で検出し、普通の実行は 80×24 で許せる。
+#[test]
+fn effect_descriptions_match_bundled_skill_and_common_effects_fit() -> TestResult {
+    let skill = fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../assets/benitoite/v0.0.7/skill/SKILL.md"),
+    )?;
+    let table = skill
+        .split_once("| Effect | Tell the user |\n")
+        .ok_or("effect table")?
+        .1;
+    let descriptions: Vec<_> = table
+        .lines()
+        .take_while(|line| line.starts_with('|'))
+        .filter_map(|line| {
+            let (name, description) = line.strip_prefix("| `")?.split_once("` | ")?;
+            if matches!(name, "Assert.Check" | "IO.All") {
+                return None;
+            }
+            let description = description.strip_suffix(" |")?;
+            Some((
+                name,
+                description
+                    .strip_suffix(" (name them)")
+                    .unwrap_or(description),
+            ))
+        })
+        .collect();
+    assert_eq!(descriptions.len(), 12);
+    let mut screen = Screen::new((300, 60), status());
+    let (mut request, _receiver) = prompt(ApprovalKind::Effects, "unused");
+    request.request.facts = ApprovalFacts {
+        targets: vec!["/project/main.bnt".into()],
+        effects: descriptions
+            .iter()
+            .map(|(name, _)| (*name).into())
+            .collect(),
+        ..ApprovalFacts::default()
+    };
+    screen.open_approval(request);
+    let mut bytes = Vec::new();
+    screen.draw(&mut bytes, None)?;
+    let visible = safe_output(&bytes)?;
+    for (name, description) in &descriptions {
+        assert!(
+            visible.contains(&format!("{name}  {description}")),
+            "{visible}"
+        );
+    }
+
+    let mut screen = Screen::new((80, 24), status());
+    let (mut request, receiver) = prompt(ApprovalKind::Effects, "unused");
+    request.request.facts = ApprovalFacts {
+        targets: vec!["/project/main.bnt".into()],
+        effects: ["Console.Write", "File.Read", "File.Write", "Process.Exit"]
+            .map(str::to_owned)
+            .into(),
+        restricted: Some(RestrictedFacts {
+            writable: vec!["/project".into(), "/tmp/session".into()],
+            network: false,
+            process_run: false,
+            programs: vec!["/opt/benitoite".into()],
+        }),
+        ..ApprovalFacts::default()
+    };
+    screen.open_approval(request);
+    let mut bytes = Vec::new();
+    screen.draw(&mut bytes, None)?;
+    let visible = safe_output(&bytes)?;
+    assert!(!visible.contains("approval is disabled"), "{visible}");
+    assert!(!visible.contains("Programs:"), "{visible}");
+    let shown = Instant::now();
+    screen.presented(shown);
+    screen.input_at(
+        key(KeyCode::Char('y'), KeyModifiers::NONE),
+        shown + Duration::from_millis(300),
+        Duration::ZERO,
+        true,
+    );
+    assert_eq!(
+        receiver.recv_timeout(Duration::from_secs(1))?.outcome,
+        ApprovalOutcome::Approved
+    );
     Ok(())
 }
 

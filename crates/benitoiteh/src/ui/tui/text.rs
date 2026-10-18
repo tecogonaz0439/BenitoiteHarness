@@ -152,7 +152,7 @@ pub fn answer_keys(kind: Option<crate::approval::ApprovalKind>) -> &'static str 
             "[y] run outside the sandbox once  [n] decline  [m] decline with a message"
         }
         Some(ApprovalKind::Effects | ApprovalKind::TestEffects) => {
-            "[y] run  [n] decline  [m] decline with a message"
+            "[y] run and allow these effects for this session  [n] decline  [m] decline with a message"
         }
         Some(ApprovalKind::WriteScope) => "[y] write  [n] decline  [m] decline with a message",
         Some(ApprovalKind::WebFetch) => {
@@ -425,9 +425,74 @@ pub fn interpreter(path: Option<&std::path::Path>, version: Option<&str>) -> Str
 
 pub const TARGETS: &str = "Targets";
 pub const EFFECTS: &str = "Effects";
-pub const ADDED_EFFECTS: &str = "Added effects";
 pub const SHELL: &str = "Shell";
 pub const NO_EFFECTS: &str = "none";
 pub const SHELL_REFERENCE: &str = "The script references Process.shell; the OS sandbox blocks starting a shell in restricted mode.";
 
 pub const UNREAD_IMPORTS: &str = "Imports files that benitoiteh does not read";
+
+pub const PROGRAMS: &str = "Programs";
+pub const OTHER_PROGRAMS_BLOCKED: &str = "The OS sandbox blocks starting any other program.";
+pub const PROCESS_RUN_SCOPE: &str = "Allowing Process.Run lets the script start benitoite on another script, which can use any operation the OS sandbox allows, including effects not listed above.";
+pub const MACOS_PROCESS_GROUPS: &str = "On macOS, processes that an allowed program starts in a new session or process group are not stopped when the tool ends.";
+
+/// 書ける場所と IP の通信の範囲を、確認の一つの事実として示す。
+pub fn sandbox_scope(facts: &crate::approval::RestrictedFacts) -> String {
+    let project = facts
+        .writable
+        .split_last()
+        .map(|(_, paths)| paths)
+        .unwrap_or_default();
+    let write = if project.is_empty() {
+        "can write: only the session temporary directory".into()
+    } else {
+        let paths = project
+            .iter()
+            .map(|path| super::control::SafeText::path(path).as_str().to_owned())
+            .collect::<Vec<_>>()
+            .join(" and ");
+        format!("can write: {paths} and the session temporary directory")
+    };
+    let network = if facts.network {
+        "network: allowed"
+    } else {
+        "network: blocked"
+    };
+    format!("{write}\n{network}")
+}
+
+/// 追加の印、処理系の綴り、利用者向けの説明を一行にする。
+pub fn effect_line(name: &str, added: bool) -> String {
+    let description = crate::benitoite::Effect::from_name(name).map_or("", effect_description);
+    let mark = if added { "+ " } else { "  " };
+    format!("{mark}{name}  {description}")
+}
+
+// Benitoite v0.0.7 の同梱 Skill「Before running」の表から写した。
+// Process.Run の末尾の (name them) はエージェント向けの指示なので含めない。
+/// 同梱 Skill の確認用の説明。表明は道具の側で表示から除く。
+pub fn effect_description(effect: crate::benitoite::Effect) -> &'static str {
+    use crate::benitoite::Effect;
+    match effect {
+        Effect::ConsoleWrite => "writes to standard output and standard error",
+        Effect::ConsoleRead => "reads standard input",
+        Effect::FileRead => "reads files and directories",
+        Effect::FileWrite => "creates, changes, moves, or deletes files and directories",
+        Effect::ProcessRun => "starts external commands",
+        Effect::ProcessExit => {
+            "ends the run with a chosen exit code; `or die` reports its cause and optional message to standard error and exits with status 1"
+        }
+        Effect::ProcessEnvironment => {
+            "reads command-line arguments, environment variables, the working directory, and the script directory"
+        }
+        Effect::ClockTime => "reads the clock and waits for time to pass",
+        Effect::RandomGenerate => "generates random numbers",
+        Effect::HttpListen => "accepts network connections as an HTTP server",
+        Effect::HttpConnect => "connects to HTTP servers over the network",
+        Effect::State => {
+            "uses mutable cells and concurrent tasks inside the program (no outside effect)"
+        }
+        // 表明は道具が表示用の集合から除く（設計書 04-01「実行の前の検査の報告」）。
+        Effect::AssertCheck => "",
+    }
+}
