@@ -75,6 +75,24 @@ impl SandboxPolicy {
                 }
             }
         }
+        for (i, path) in config.readable_data_roots.iter().enumerate() {
+            let param = profile.parameter(format!("READ_DATA_{i}"), path.as_os_str());
+            profile
+                .source
+                .push_str(&format!("(allow file-read* (subpath {param}))\n"));
+        }
+        for (i, path) in config.readable_files.iter().enumerate() {
+            let param = profile.parameter(format!("READ_FILE_{i}"), path.as_os_str());
+            profile
+                .source
+                .push_str(&format!("(allow file-read* (literal {param}))\n"));
+        }
+        for (i, path) in config.readable_metadata.iter().enumerate() {
+            let param = profile.parameter(format!("READ_METADATA_{i}"), path.as_os_str());
+            profile
+                .source
+                .push_str(&format!("(allow file-read-metadata (literal {param}))\n"));
+        }
         for (i, path) in config.denied_read.iter().enumerate() {
             let param = profile.parameter(format!("DENIED_READ_{i}"), path.as_os_str());
             profile.source.push_str(&format!(
@@ -86,9 +104,9 @@ impl SandboxPolicy {
             ProgramAccess::Only(paths) => {
                 for (i, path) in paths.iter().enumerate() {
                     let param = profile.parameter(format!("EXEC_{i}"), path.as_os_str());
-                    profile
-                        .source
-                        .push_str(&format!("(allow process-exec (literal {param}))\n"));
+                    profile.source.push_str(&format!(
+                        "(allow process-exec file-map-executable (literal {param}))\n"
+                    ));
                 }
             }
         }

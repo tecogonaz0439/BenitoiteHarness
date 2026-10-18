@@ -339,6 +339,7 @@ pub fn checkpoint_row(point: &crate::rewind::CheckpointInfo) -> String {
         crate::rewind::CheckpointReason::Bash => "bash",
         crate::rewind::CheckpointReason::BenitoiteRun => "benitoite_run",
         crate::rewind::CheckpointReason::BenitoiteTest => "benitoite_test",
+        crate::rewind::CheckpointReason::BenitoiteScratch => "benitoite_scratch",
         crate::rewind::CheckpointReason::Write => "write",
         crate::rewind::CheckpointReason::Edit => "edit",
         crate::rewind::CheckpointReason::BeforeRewind => "before rewind",

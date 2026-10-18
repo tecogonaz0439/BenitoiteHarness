@@ -102,7 +102,7 @@ if ! "$inside_codex"; then
         test_args=()
         for test_file in "${manifest%/Cargo.toml}"/tests/*.rs; do
             test_name=${test_file##*/}
-            if [[ "$test_name" == sandbox_linux.rs || "$test_name" == sandbox_benitoite.rs || "$test_name" == sandbox_exec_restricted.rs || "$test_name" == sandbox_benitoite_run.rs || "$test_name" == sandbox_benitoite_test.rs ]]; then
+            if [[ "$test_name" == sandbox_linux.rs || "$test_name" == sandbox_benitoite.rs || "$test_name" == sandbox_exec_restricted.rs || "$test_name" == sandbox_benitoite_run.rs || "$test_name" == sandbox_benitoite_test.rs || "$test_name" == sandbox_benitoite_scratch.rs ]]; then
                 aarch64_skipped+=("${test_file}: the container kernel lacks Landlock")
                 continue
             fi

@@ -529,7 +529,9 @@ fn new_after_restricted_resume_preserves_mode_and_project_and_normal_preserves_p
             serde_json::to_string(&alias)?
         ))?;
         let mut config = fs::read_to_string(&paths.config_file)?;
-        config.push_str("[restricted]\nallowed_programs = []\n");
+        config.push_str(
+            "[restricted]\nallowed_programs = []\nscratch_auto_effects = ['File.Read']\n",
+        );
         fs::write(&paths.config_file, config)?;
         let mut original = f.args(&[
             "--mode",
@@ -560,12 +562,13 @@ fn new_after_restricted_resume_preserves_mode_and_project_and_normal_preserves_p
             assert_eq!(old_safety.writable_roots, std::slice::from_ref(&old_root));
         } else {
             assert!(old_safety.allowed_programs.is_empty());
+            assert_eq!(old_safety.scratch_auto_effects, ["File.Read"]);
         }
         // 元の起動の依頼を送らず、設定の変更のうち provider/model は読み直す。
         fs::write(
             &paths.config_file,
             format!(
-                "default_mode = 'normal'\ndefault_provider = 'changed'\n[providers.changed]\nkind = 'openai-chat'\nmodel = 'new-model'\n[normal]\nsandbox = 'danger-full-access'\napproval = 'never'\nnetwork = true\nwritable_roots = [{}]\n[restricted]\nallowed_programs = ['/bin/ls']\n",
+                "default_mode = 'normal'\ndefault_provider = 'changed'\n[providers.changed]\nkind = 'openai-chat'\nmodel = 'new-model'\n[normal]\nsandbox = 'danger-full-access'\napproval = 'never'\nnetwork = true\nwritable_roots = [{}]\n[restricted]\nallowed_programs = ['/bin/ls']\nscratch_auto_effects = ['Clock.Time']\n",
                 serde_json::to_string(&extra_root)?
             ),
         )?;

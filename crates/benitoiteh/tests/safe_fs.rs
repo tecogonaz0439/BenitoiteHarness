@@ -101,6 +101,7 @@ fn project_configuration_is_confined_and_is_discarded_as_a_whole_on_error() -> T
         "default_provider='evil'",
         "default_mode='normal'",
         "api_key={env='KEY'}",
+        "[restricted]\nscratch_auto_effects=['File.Read']",
     ] {
         fs::write(&path, format!("model='discard-me'\n{forbidden}"))?;
         let rejected = ProjectConfig::load(&root);

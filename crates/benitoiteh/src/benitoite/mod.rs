@@ -189,6 +189,7 @@ mod tests;
 /// 制限モードの実行用に起動時に固定した値（設計書 03-02、04-01）。
 #[derive(Clone, Debug)]
 pub struct RunContext {
+    pub scratch_auto_effects: std::collections::BTreeSet<Effect>,
     pub test_timeout: std::time::Duration,
     pub processor: PathBuf,
     pub helper: PathBuf,

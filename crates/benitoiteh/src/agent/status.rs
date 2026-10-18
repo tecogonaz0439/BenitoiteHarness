@@ -12,6 +12,7 @@ pub struct SessionSafety {
     /// プロジェクトとセッションの一時領域を除く、追加の書ける場所。
     pub writable_roots: Vec<PathBuf>,
     pub allowed_programs: Vec<PathBuf>,
+    pub scratch_auto_effects: Vec<String>,
 }
 
 /// セッションの設定と文脈。使用量はプロセス内の働き手が別に集計する。

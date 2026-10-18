@@ -36,6 +36,12 @@ pub(super) fn restrict(policy: &SandboxPolicy, required: u64) -> Result<()> {
             AccessFs::ReadFile | AccessFs::ReadDir,
         )?;
     }
+    for path in &config.readable_data_roots {
+        grant(&mut rules, path, AccessFs::ReadFile | AccessFs::ReadDir)?;
+    }
+    for path in &config.readable_files {
+        grant(&mut rules, path, AccessFs::ReadFile.into())?;
+    }
     match &config.programs {
         ProgramAccess::Unrestricted => {
             let excluded = if config.deny_exec_in_writable {

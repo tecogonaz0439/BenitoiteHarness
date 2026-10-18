@@ -196,7 +196,7 @@ fn execute_report(
         .into(),
     ];
     args.extend(targets.iter().map(|p| p.as_os_str().to_owned()));
-    let command = prepare(run, &report.effects, args, false).map_err(|e| failure(&e))?;
+    let command = prepare(run, &report.effects, args, false, false).map_err(|e| failure(&e))?;
     let stdout = Arc::new(Mutex::new(Results::new(Output::new(
         session
             .spill_writer(&format!("{}-stdout", invocation.call_id))
