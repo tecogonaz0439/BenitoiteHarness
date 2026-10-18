@@ -116,4 +116,18 @@ Linux の処理系は aarch64 で読み取り専用のマウント、x86_64 で 
 
 一時スクリプトの書き込みと IP は、方針の値を確認する範囲にとどまる。Linux の i386・x32・io_uring は P4 の BPF 判定の範囲であり、実際の syscall の実行済みとはしない。ほかの CPU とカーネルでの成功、利用者が許したプログラム自体の安全、macOS の検出できない子孫まで保証する結果ではない（設計書 03-01「保証しないこと」「Linux での保証の範囲」、BH-090）。
 
-本物の LLM の提供者で Benitoite の課題を一つ完了する確認は、**設計者の了承待ち**である。この作業では実行していない。提供者・モデル・回数・見込みの費用を提示して了承を得た後、オーケストレータが行う。
+## 本物の提供者での課題の完了（2026-10-18、オーケストレータ）
+
+設計者の了承（1 回）を得て、本物の提供者で Benitoite の課題を一つ完了できることを確かめた。生の対話の記録はリポジトリに置かない。
+
+| 項目 | 内容 |
+|---|---|
+| 提供者とモデル | Anthropic、`claude-opus-5-5`（effort high、`anthropic-messages`）。キーは利用者のキーチェーンからコマンドの参照で得た |
+| 課題 | Benitoite `v0.0.7` の `tools/skill-eval/tasks/json_summary`（`git archive v0.0.7` で取り出した）。`orders.json` を読み、種類ごとの件数と合計を示す `main.bnt` を書く |
+| 走らせ方 | リポジトリの外の空のディレクトリに `orders.json` だけを置き、`benitoiteh exec --mode restricted --allow File.Read,Console.Write --max-turns 40 --max-run-tokens 600000 --json "<task.md の本文>"`（macOS、処理系 `v0.0.7`、SHA-256 `ee8eaf0e…f46e`） |
+| 結果 | 成功。終了状態 0、`The run completed.`。6 番、道具の呼び出し 8 回（`benitoite_reference` 3、`glob` 1、`read` 1、`write` 1、`benitoite_run` 1、`benitoite_scratch` 1）、検査 6 回、修正 0 回、確認 0 回（範囲は `--allow` に収まった）、58 秒 |
+| 判定 | 書かれた `main.bnt` は `check` を通り、エフェクトは `Console.Write`・`File.Read` だった。`run` の標準出力は課題の `expected.stdout` と一致した。配列でない入力とないファイルでは、理由を示して終了状態 1 で終わった |
+| トークン | 入力 177,955（うちキャッシュの読み取り 142,761、書き込み 35,180）、出力 3,637 |
+| 費用の概算 | 約 $0.28〜0.38（2026-10-18 の公式の価格表の単価: 入力 $4、キャッシュの書き込み $5（1 時間なら $8）、読み取り $0.20、出力 $20。いずれも 100 万トークンあたり） |
+
+一回の成功であり、成功率や手数の比較の根拠にはしない（評価は P5 で行う）。
