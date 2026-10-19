@@ -1,6 +1,7 @@
 //! 行番号と続きの位置を付けてテキストを読む（設計書 01-03「read」）。
 
 mod image;
+pub(crate) use image::helper::run_helper as run_image_helper;
 
 pub(crate) use image::inspect as inspect_image;
 
