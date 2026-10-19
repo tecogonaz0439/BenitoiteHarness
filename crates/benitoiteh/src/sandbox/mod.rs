@@ -7,7 +7,7 @@ mod normal;
 mod policy;
 mod restricted;
 pub use normal::{check_availability, normal_policy};
-pub use restricted::{RestrictedAccess, restricted_policy, scratch_policy};
+pub use restricted::{RestrictedAccess, image_policy, restricted_policy, scratch_policy};
 pub mod run;
 pub mod session;
 mod text;

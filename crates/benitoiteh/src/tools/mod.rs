@@ -14,6 +14,7 @@ pub mod exclude;
 mod paths;
 pub(crate) mod process_output;
 mod read;
+pub(crate) use read::run_image_helper;
 mod search;
 mod search_notices;
 pub(crate) mod text;
@@ -391,6 +392,7 @@ pub struct ToolContext {
     pub check_query: Option<Arc<crate::benitoite::CheckQuery>>,
     pub run: Option<crate::benitoite::RunContext>,
     pub shell: Option<ShellContext>,
+    pub(crate) image_helper: Option<ImageHelperContext>,
     pub web_fetch: WebFetchContext,
     pub session: Option<Session>,
     read_versions: Mutex<BTreeMap<PathBuf, FileVersion>>,
@@ -400,6 +402,21 @@ pub struct ToolContext {
     project_creation: Option<(crate::config::paths::DataPaths, PathBuf)>,
     pub(crate) project_candidates: Mutex<BTreeMap<String, create_project::Candidate>>,
     pub(crate) created_projects: Mutex<BTreeMap<String, ScopeRoot>>,
+}
+
+/// 画像の補助専用の起動情報。通常モードの権限の設定から独立して持つ。
+#[derive(Clone, Debug)]
+pub struct ImageHelperContext {
+    /// benitoiteh 自身の正規の実行ファイルのパス。
+    pub helper: PathBuf,
+    /// Linux の補助を準備する非公開の場所。
+    pub scratch: PathBuf,
+    /// Linux の守る名前の錠を置く場所。
+    pub placeholders: PathBuf,
+    /// 補助ごとの空の作業ディレクトリを作る非公開の親。
+    pub work_parent: PathBuf,
+    #[cfg(test)]
+    pub(crate) test_command: Option<(String, std::time::Duration)>,
 }
 
 /// 現在の根に触れずに準備した、道具のプロジェクトの状態。
@@ -464,6 +481,7 @@ impl ToolContext {
             skill: None,
             check_query: None,
             shell: None,
+            image_helper: None,
             run: None,
             web_fetch: WebFetchContext::default(),
             session: None,
@@ -472,6 +490,12 @@ impl ToolContext {
             search_limits: SearchLimits::default(),
             scratch_state: Mutex::new(benitoite_scratch::ScratchState::default()),
         }
+    }
+
+    /// 利用可能性を確かめた画像の補助だけを追加する。
+    pub fn with_image_helper(mut self, helper: ImageHelperContext) -> Self {
+        self.image_helper = Some(helper);
+        self
     }
 
     /// 提供者が画像を受け付けるかを設定する。

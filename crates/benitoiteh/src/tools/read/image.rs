@@ -1,13 +1,15 @@
 //! 画像の見出しを確かめ、上限を超える PNG と JPEG を縮めて保持する（設計書 01-03「画像のファイルの読み取り」）。
 
-use std::io::{Cursor, Read};
+use std::io::Read;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Mutex, MutexGuard};
 
-use image::codecs::jpeg::JpegEncoder;
-use image::codecs::png::PngEncoder;
-use image::imageops::FilterType;
-use image::{DynamicImage, ImageDecoder, ImageFormat, ImageReader, Limits};
+#[path = "image_helper.rs"]
+pub(super) mod helper;
+#[path = "image_process.rs"]
+mod process;
+
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 
@@ -17,7 +19,6 @@ use crate::tools::{
 };
 
 const MAX_RESIZE_PIXELS: u64 = 40_000_000;
-const MAX_DECODED_BYTES: u64 = 160_000_000;
 static RESIZE: Mutex<()> = Mutex::new(());
 
 #[derive(Clone, Copy)]
@@ -63,6 +64,10 @@ pub(super) fn execute(
         MAX_IMAGE_BYTES
     };
     let size = version.size;
+    check_cancelled(cancelled)?;
+    if context.image_helper.is_none() && size > MAX_IMAGE_BYTES {
+        return Err(invalid(text::image_too_large(size, MAX_IMAGE_BYTES)));
+    }
     if size > limit {
         return Err(invalid(text::image_too_large(size, limit)));
     }
@@ -104,15 +109,29 @@ pub(super) fn execute(
                 MAX_RESIZE_PIXELS,
             )));
         }
-        let format = match format {
-            Format::Png => ImageFormat::Png,
-            Format::Jpeg => ImageFormat::Jpeg,
-            Format::Gif | Format::Webp => return Err(invalid(text::IMAGE_INVALID)),
+        let unavailable = || {
+            invalid(if size > MAX_IMAGE_BYTES {
+                text::image_too_large(size, MAX_IMAGE_BYTES)
+            } else {
+                text::image_dimensions(original_width, original_height, MAX_IMAGE_DIMENSION)
+            })
         };
+        let helper = context.image_helper.as_ref().ok_or_else(unavailable)?;
         if resize_guard.is_none() {
             resize_guard = Some(lock_resize(cancelled)?);
         }
-        bytes = resize(&bytes, format, original_width, original_height, cancelled)?;
+        bytes = process::resize(
+            helper,
+            bytes,
+            format,
+            original_width,
+            original_height,
+            cancelled,
+        )
+        .map_err(|error| match error {
+            process::ProcessError::Unavailable => unavailable(),
+            process::ProcessError::Tool(error) => error,
+        })?;
     }
     drop(resize_guard);
     if resized {
@@ -194,77 +213,14 @@ fn header(bytes: &[u8]) -> Result<(Format, &'static str, u32, u32), ToolError> {
     Ok((format, media_type, width, height))
 }
 
-fn resize(
-    bytes: &[u8],
-    format: ImageFormat,
+#[derive(Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct OutputHeader {
+    media_type: String,
     width: u32,
     height: u32,
-    cancelled: &AtomicBool,
-) -> Result<Vec<u8>, ToolError> {
-    let mut reader = ImageReader::with_format(Cursor::new(bytes), format);
-    let mut limits = Limits::default();
-    limits.max_image_width = Some(width);
-    limits.max_image_height = Some(height);
-    // PNG のメタデータと行のバッファの制限を、出力する画素の制限と分ける
-    // （設計書 01-03「画像のファイルの読み取り」）。
-    limits.max_alloc = Some(16 * 1024 * 1024);
-    reader.limits(limits);
-    let mut decoder = reader
-        .into_decoder()
-        .map_err(|_| invalid(text::IMAGE_DECODE))?;
-    if decoder.total_bytes() > MAX_DECODED_BYTES {
-        return Err(invalid(text::IMAGE_DECODE));
-    }
-    // png 0.18.1 は iCCP の展開の失敗も無視する。上限を超えたプロファイルを
-    // 黙って落とした場合を拒む（設計書 01-03「画像のファイルの読み取り」）。
-    if format == ImageFormat::Png
-        && png_has_icc_profile(bytes)
-        && decoder
-            .icc_profile()
-            .map_err(|_| invalid(text::IMAGE_DECODE))?
-            .is_none()
-    {
-        return Err(invalid(text::IMAGE_DECODE));
-    }
-    let orientation = decoder
-        .orientation()
-        .map_err(|_| invalid(text::IMAGE_DECODE))?;
-    let mut image = DynamicImage::from_decoder(decoder).map_err(|_| invalid(text::IMAGE_DECODE))?;
-    check_cancelled(cancelled)?;
-    if image.width() > MAX_IMAGE_DIMENSION || image.height() > MAX_IMAGE_DIMENSION {
-        image = image.resize(
-            MAX_IMAGE_DIMENSION,
-            MAX_IMAGE_DIMENSION,
-            FilterType::Triangle,
-        );
-    }
-    check_cancelled(cancelled)?;
-    image.apply_orientation(orientation);
-    let mut output = Vec::new();
-    if has_transparency(&image) {
-        DynamicImage::ImageRgba8(image.into_rgba8())
-            .write_with_encoder(PngEncoder::new(&mut output))
-            .map_err(|_| invalid(text::IMAGE_DECODE))?;
-    } else {
-        let image = DynamicImage::ImageRgb8(image.into_rgb8());
-        for quality in [80, 60, 40] {
-            output.clear();
-            image
-                .write_with_encoder(JpegEncoder::new_with_quality(&mut output, quality))
-                .map_err(|_| invalid(text::IMAGE_DECODE))?;
-            if u64::try_from(output.len()).unwrap_or(u64::MAX) <= MAX_IMAGE_BYTES {
-                return Ok(output);
-            }
-        }
-    }
-    let size = u64::try_from(output.len()).unwrap_or(u64::MAX);
-    if size > MAX_IMAGE_BYTES {
-        return Err(invalid(text::image_too_large_after_resizing(
-            size,
-            MAX_IMAGE_BYTES,
-        )));
-    }
-    Ok(output)
+    original_width: u32,
+    original_height: u32,
 }
 
 fn lock_resize(cancelled: &AtomicBool) -> Result<MutexGuard<'static, ()>, ToolError> {
@@ -282,42 +238,6 @@ fn check_cancelled(cancelled: &AtomicBool) -> Result<(), ToolError> {
         return Err(invalid(text::IMAGE_CANCELLED));
     }
     Ok(())
-}
-
-fn png_has_icc_profile(bytes: &[u8]) -> bool {
-    let mut offset = 8_usize;
-    while let Some(length) = be32(bytes, offset).and_then(|n| usize::try_from(n).ok()) {
-        let Some(kind) = array::<4>(bytes, offset.saturating_add(4)) else {
-            return false;
-        };
-        if &kind == b"IDAT" {
-            return false;
-        }
-        if &kind == b"iCCP" {
-            return true;
-        }
-        let Some(next) = offset.checked_add(12).and_then(|n| n.checked_add(length)) else {
-            return false;
-        };
-        offset = next;
-    }
-    false
-}
-
-fn has_transparency(image: &DynamicImage) -> bool {
-    if !image.color().has_alpha() {
-        return false;
-    }
-    if let Some(rgba) = image.as_rgba8() {
-        rgba.pixels().any(|pixel| pixel.0[3] < u8::MAX)
-    } else if let Some(luma) = image.as_luma_alpha8() {
-        luma.pixels().any(|pixel| pixel.0[1] < u8::MAX)
-    } else {
-        image
-            .to_rgba16()
-            .pixels()
-            .any(|pixel| pixel.0[3] < u16::MAX)
-    }
 }
 
 fn invalid(message: impl Into<String>) -> ToolError {

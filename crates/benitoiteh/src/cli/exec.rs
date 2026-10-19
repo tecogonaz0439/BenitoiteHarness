@@ -385,6 +385,7 @@ pub(super) fn prepare(
             }
             sandbox_disabled = true;
         }
+        let image_helper_available = availability.is_ok() && !sandbox_disabled;
         let launcher = select_query_launcher(resolved.mode, sandbox_disabled);
         let mut processor_notices = Vec::new();
         let processor_result = if let Err(error) = availability
@@ -551,6 +552,16 @@ pub(super) fn prepare(
             allowed_domains: user.web_fetch.allowed_domains.iter().cloned().collect(),
             client: crate::http::HttpClient::default(),
         });
+        if image_helper_available {
+            context = context.with_image_helper(crate::tools::ImageHelperContext {
+                helper: helper.clone(),
+                scratch: scratch.clone(),
+                placeholders: placeholders.clone(),
+                work_parent: scratch.clone(),
+                #[cfg(test)]
+                test_command: None,
+            });
+        }
         if let Some(processor) = &processor {
             let processor = Arc::clone(processor);
             context = context.with_check_query(Arc::new(move |args, limits, cancelled| {

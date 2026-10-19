@@ -595,6 +595,7 @@ pub const IMAGE_UNSUPPORTED: &str =
     "The current provider does not accept images; this file cannot be shown.";
 pub const IMAGE_INVALID: &str = "The image header is invalid or truncated.";
 pub const IMAGE_DECODE: &str = "The image could not be decoded.";
+pub const IMAGE_HELPER_UNAVAILABLE: &str = "The image resizing helper could not be started.";
 pub const IMAGE_CANCELLED: &str = "Image reading was cancelled.";
 pub const IMAGE_ANIMATED_PNG: &str = "Animated PNG images cannot be shown.";
 pub fn image_too_large(bytes: u64, limit: u64) -> String {
