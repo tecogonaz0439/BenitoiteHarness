@@ -11,9 +11,12 @@ pub enum Command {
     Status,
     Compact(Option<String>),
     Rewind,
+    Tree,
     New,
     /// 選択を終えた時点と範囲を、働き手へ渡す。
     PreviewRewind(String, crate::rewind::RewindScope),
+    /// 木で選んだ移動先と範囲を、働き手で確かめる。
+    PreviewBranch(crate::agent::BranchTarget, crate::rewind::RewindScope),
 }
 
 /// 新しいセッションの準備。端末と panic の書き先は CLI が設定する。
@@ -84,7 +87,7 @@ impl Screen {
             self.notice(text::COMMAND_RUNNING);
             return Action::None;
         }
-        if matches!(name, "help" | "status" | "rewind" | "new" | "quit")
+        if matches!(name, "help" | "status" | "rewind" | "tree" | "new" | "quit")
             && !arguments.trim().is_empty()
         {
             self.notice(text::COMMAND_ARGUMENTS);
@@ -97,6 +100,7 @@ impl Screen {
                 (!arguments.trim().is_empty()).then(|| arguments.to_owned()),
             )),
             "rewind" => Action::Command(Command::Rewind),
+            "tree" => Action::Command(Command::Tree),
             "new" => Action::Command(Command::New),
             "quit" => Action::Quit,
             _ => {

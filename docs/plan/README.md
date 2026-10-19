@@ -77,7 +77,7 @@
 | [P5-15](tasks/P5-15-image-helper.md) | 画像を縮める処理を補助のプロセス（`benitoiteh __image`）に移し、OS のサンドボックスとメモリーと時間の上限を掛ける | P5-14 | 完了 |
 | [P5-18](tasks/P5-18-image-helper-hardening.md) | 画像の補助に書ける場所を持たせない、`fork`・ファイルの書き込み・コアのダンプを止める、出力の `flush`、古いセッションの削除の失敗で起動を止めない | P5-15 | 完了 |
 | [P5-16](tasks/P5-16-session-tree.md) | セッションの木の記録（節点の番号、枝を移る記録、道での組み立て、形式の版 2）と、枝を移る操作、`/rewind` の会話を戻す操作を枝の移動にする | P5-18 | 完了 |
-| [P5-17](tasks/P5-17-tree-screen.md) | 対話の画面の `/tree`（木の行の並び、選んで移る、確認、依頼の文を入力の欄に戻す） | P5-16 | 未着手 |
+| [P5-17](tasks/P5-17-tree-screen.md) | 対話の画面の `/tree`（木の行の並び、選んで移る、確認、依頼の文を入力の欄に戻す） | P5-16 | 完了 |
 | [P5-19](tasks/P5-19-fork.md) | `/fork`（今の道を新しいセッションに写す。参照する `spill/`・`objects/` も写す） | P5-17 | 未着手 |
 | [P5-20](tasks/P5-20-askpass.md) | 秘密の入力の段 2（サンドボックスの外のコマンドの `SSH_ASKPASS`・`GIT_ASKPASS`・`SUDO_ASKPASS` の仲介） | P5-18 | 未着手 |
 | [P5-21](tasks/P5-21-chatgpt-login.md) | Sign in with ChatGPT のログイン・保存・更新・ログアウト（ID トークンの検証、BH-114） | P5-18 | 未着手 |

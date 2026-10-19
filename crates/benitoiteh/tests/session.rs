@@ -24,6 +24,86 @@ use serde_json::json;
 
 type TestResult = Result<(), Box<dyn Error>>;
 
+// 関門: 記録順の平坦な一覧では、兄弟の前順・根での分岐・途中の現在地を表せない。
+// 記録を受ける公開の表示行の境界で、依頼と先端の重複も検出する。
+#[test]
+fn tree_rows_preserve_preorder_branch_depth_and_combined_marks() -> TestResult {
+    use benitoiteh::session::{SessionTree, tree_rows};
+    let request = |node, text: &str| Record::User {
+        node,
+        kind: UserKind::Request,
+        message: UserMessage {
+            parts: vec![UserPart {
+                kind: UserPartKind::Request,
+                text: text.into(),
+            }],
+        },
+    };
+    let assistant = |node| Record::Assistant {
+        node,
+        turn: 1,
+        response: response(&[]),
+    };
+    let mut records = vec![
+        request(1, "shared"),
+        assistant(2),
+        request(3, "left"),
+        assistant(4),
+        Record::Branch {
+            to: Some(2),
+            from: Some(4),
+            checkpoint: None,
+        },
+        request(5, "right without answer"),
+        Record::Branch {
+            to: None,
+            from: Some(5),
+            checkpoint: None,
+        },
+        request(6, "other root"),
+        Record::Branch {
+            to: Some(2),
+            from: Some(6),
+            checkpoint: None,
+        },
+    ];
+    let rows = tree_rows(&records, &SessionTree::from_records(&records)?);
+    assert_eq!(
+        rows.iter()
+            .map(|row| (
+                row.node,
+                row.depth,
+                row.request.as_deref(),
+                row.is_tip,
+                row.is_current
+            ))
+            .collect::<Vec<_>>(),
+        vec![
+            (None, 0, None, false, false),
+            (Some(1), 1, Some("shared"), false, false),
+            (Some(2), 1, None, false, true),
+            (Some(3), 2, Some("left"), false, false),
+            (Some(4), 2, None, true, false),
+            (Some(5), 2, Some("right without answer"), true, false),
+            (Some(6), 1, Some("other root"), true, false),
+        ]
+    );
+    for tip in [None, Some(3), Some(4), Some(5)] {
+        records.push(Record::Branch {
+            to: tip,
+            from: Some(2),
+            checkpoint: None,
+        });
+        let rows = tree_rows(&records, &SessionTree::from_records(&records)?);
+        let current = rows.iter().filter(|row| row.is_current).collect::<Vec<_>>();
+        assert_eq!(current.len(), 1);
+        assert_eq!(current.first().map(|row| row.node), Some(tip));
+        assert_eq!(rows.len(), 6); // 依頼でも先端でもない 2 の行は現在地のときだけ現れる。
+    }
+    assert!(tree_rows(&[], &SessionTree::from_records(&[])?).is_empty());
+    Ok(())
+}
+
 struct Fixture {
     root: PathBuf,
     paths: DataPaths,

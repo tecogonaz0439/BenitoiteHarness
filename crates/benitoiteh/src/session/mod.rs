@@ -11,6 +11,7 @@ mod resume;
 mod scan;
 mod storage;
 pub(crate) mod text;
+mod tree;
 
 pub use files::FileHistory;
 pub use id::SessionId;
@@ -22,6 +23,8 @@ pub use scan::{
     SessionEntry, continue_session, list_sessions, previous_benitoite, recorded_benitoite,
 };
 pub use storage::{SessionWriter, SpillWriter};
+pub(crate) use tree::request_heading;
+pub use tree::{TreeRow, tree_rows};
 
 use std::fmt;
 use std::fs::{self, DirBuilder, File};

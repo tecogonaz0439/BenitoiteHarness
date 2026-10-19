@@ -59,6 +59,7 @@ struct RewindConfirmation {
     extra: Vec<String>,
     incomplete: bool,
     irreversible_count: usize,
+    branch: bool,
 }
 
 impl Confirmation {
@@ -73,7 +74,11 @@ impl Confirmation {
 
     fn title(&self) -> &'static str {
         if let Some(rewind) = &self.rewind {
-            if rewind.incomplete {
+            if rewind.branch && rewind.incomplete {
+                text::INCOMPLETE_BRANCH_TITLE
+            } else if rewind.branch {
+                text::BRANCH_TITLE
+            } else if rewind.incomplete {
                 text::INCOMPLETE_TITLE
             } else {
                 text::REWIND_TITLE
@@ -199,7 +204,11 @@ impl Confirmation {
         self.rewind.as_ref().map_or_else(
             || text::answer_keys(self.kind()),
             |rewind| {
-                if rewind.incomplete {
+                if rewind.branch && rewind.incomplete {
+                    text::INCOMPLETE_BRANCH_KEYS
+                } else if rewind.branch {
+                    text::BRANCH_KEYS
+                } else if rewind.incomplete {
                     text::INCOMPLETE_KEYS
                 } else {
                     text::REWIND_KEYS
@@ -541,19 +550,51 @@ impl Screen {
         if !preview.selected.checkpoint.incomplete.is_empty() {
             facts.push((text::WARNING, text::INCOMPLETE_TARGET.into()));
         }
+        self.open_move(facts, &preview.irreversible, incomplete, false);
+    }
+
+    pub(super) fn open_branch(
+        &mut self,
+        preview: &crate::agent::BranchPreview,
+        incomplete: Option<(String, Vec<String>)>,
+    ) {
+        self.flush_pending();
+        self.confirmation_result = None;
+        let mut facts = vec![
+            (text::BRANCH_TARGET, text::branch_target(&preview.selected)),
+            (text::SCOPE, text::scope(preview.scope).into()),
+        ];
+        if let Some(point) = &preview.checkpoint {
+            facts.push((text::CHECKPOINT, point.checkpoint.id.clone()));
+            if !point.checkpoint.incomplete.is_empty() {
+                facts.push((text::WARNING, text::INCOMPLETE_TARGET.into()));
+            }
+        }
+        if preview.scope != crate::rewind::RewindScope::Conversation {
+            facts.push((text::BACKUP, text::BACKUP_NOTICE.into()));
+        }
+        self.open_move(facts, &preview.irreversible, incomplete, true);
+    }
+
+    fn open_move(
+        &mut self,
+        mut facts: Vec<(&'static str, String)>,
+        irreversible: &[crate::rewind::IrreversibleOperation],
+        incomplete: Option<(String, Vec<String>)>,
+        branch: bool,
+    ) {
         let mut extra = Vec::new();
-        if !preview.irreversible.is_empty() {
+        if !irreversible.is_empty() {
             extra.push(text::IRREVERSIBLE.into());
         }
         extra.extend(
-            preview
-                .irreversible
+            irreversible
                 .iter()
                 .take(20)
                 .map(|operation| operation.summary.clone()),
         );
-        if preview.irreversible.len() > 20 {
-            extra.push(text::more(preview.irreversible.len().saturating_sub(20)));
+        if irreversible.len() > 20 {
+            extra.push(text::more(irreversible.len().saturating_sub(20)));
         }
         let retry = incomplete.is_some();
         if let Some((id, reasons)) = incomplete {
@@ -572,7 +613,8 @@ impl Screen {
                 facts,
                 extra,
                 incomplete: retry,
-                irreversible_count: preview.irreversible.len(),
+                irreversible_count: irreversible.len(),
+                branch,
             }),
             guard: ConfirmationGuard::default(),
             message: None,

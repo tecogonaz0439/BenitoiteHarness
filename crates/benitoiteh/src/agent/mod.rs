@@ -11,7 +11,7 @@ mod retry;
 mod rewind;
 mod status;
 pub(crate) mod text;
-pub use rewind::{BranchInfo, BranchTarget, RewindPreview};
+pub use rewind::{BranchInfo, BranchPreview, BranchTarget, BranchTreeRow, RewindPreview};
 pub use status::{AgentStatus, SessionSafety};
 mod transport;
 

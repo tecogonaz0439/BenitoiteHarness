@@ -322,6 +322,11 @@ fn creation_switches_scope_before_later_calls_and_records_before_result() -> Tes
         resumed
             .switch_branch(
                 old_request.target,
+                resumed
+                    .branch_preview(old_request.target, RewindScope::Conversation)?
+                    .selected
+                    .checkpoint
+                    .as_deref(),
                 RewindScope::FilesAndConversation,
                 false,
                 sender
@@ -329,7 +334,17 @@ fn creation_switches_scope_before_later_calls_and_records_before_result() -> Tes
             .is_err()
     );
     let (sender, _receiver) = mpsc::sync_channel(64);
-    resumed.switch_branch(old_request.target, RewindScope::Conversation, false, sender)?;
+    resumed.switch_branch(
+        old_request.target,
+        resumed
+            .branch_preview(old_request.target, RewindScope::Conversation)?
+            .selected
+            .checkpoint
+            .as_deref(),
+        RewindScope::Conversation,
+        false,
+        sender,
+    )?;
     assert_eq!(resumed.status().project, destination);
     let (sender, _receiver) = mpsc::sync_channel(64);
     resumed.run(

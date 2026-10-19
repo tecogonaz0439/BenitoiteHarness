@@ -830,3 +830,200 @@ fn limit_error_keeps_diagnostic_lines_and_escapes_terminal_controls() {
         ]
     );
 }
+
+// 関門: 文字数をバイト数・行単位で切る退行と、切る前の可視化で印を失う退行を、
+// 画面の入力と描画で守る。時点のない枝でも範囲の段を省略してはならない。
+#[test]
+fn tree_selection_truncates_chars_before_sanitizing_and_shows_conversation_only_scope()
+-> io::Result<()> {
+    use crate::agent::{BranchInfo, BranchTarget, BranchTreeRow};
+    use crate::session::TreeRow;
+    let row = BranchTreeRow {
+        row: TreeRow {
+            node: Some(9),
+            depth: 2,
+            request: Some(crate::session::request_heading(&format!(
+                "{}\n\t\x1b\u{3164}hidden",
+                "日".repeat(56)
+            ))),
+            request_lines: 2,
+            is_tip: true,
+            is_current: false,
+        },
+        branch: Some(BranchInfo {
+            target: BranchTarget::BeforeRequest(9),
+            request: None,
+            checkpoint: None,
+        }),
+    };
+    let mut screen = Screen::new((300, 20), status());
+    screen.select_branches(vec![row]);
+    let mut bytes = Vec::new();
+    screen.draw(&mut bytes, None)?;
+    let visible = screen
+        .selection
+        .as_ref()
+        .map(|selection| selection.bottom((300, 20)))
+        .unwrap_or_default()
+        .iter()
+        .flatten()
+        .map(|(value, _)| value.as_str())
+        .collect::<String>();
+    assert!(
+        visible.contains(&format!(
+            "    {}  \\x1b\\u{{3164}}... (2 lines) [tip]",
+            "日".repeat(56)
+        )),
+        "{visible:?}"
+    );
+    assert!(!visible.contains("hidden"));
+    assert!(!visible.contains('\u{3164}'));
+    assert_eq!(
+        screen.input(
+            key(KeyCode::Enter, KeyModifiers::NONE),
+            Duration::ZERO,
+            false
+        ),
+        Action::None
+    );
+    bytes.clear();
+    screen.draw(&mut bytes, None)?;
+    let visible = String::from_utf8_lossy(&bytes);
+    assert!(visible.contains("Select branch move scope"));
+    assert!(visible.contains("conversation only"));
+    assert!(!visible.contains("files and conversation"));
+    screen.input(
+        key(KeyCode::Down, KeyModifiers::NONE),
+        Duration::ZERO,
+        false,
+    );
+    assert_eq!(
+        screen.input(
+            key(KeyCode::Enter, KeyModifiers::NONE),
+            Duration::ZERO,
+            false
+        ),
+        Action::Command(Command::PreviewBranch(
+            BranchTarget::BeforeRequest(9),
+            crate::rewind::RewindScope::Conversation
+        ))
+    );
+    Ok(())
+}
+
+// 関門: 深い分岐の字下げと、依頼による印の偽装を、描画に渡す Line の区間で守る。
+#[test]
+fn deep_tree_indentation_is_capped_and_shows_the_actual_depth()
+-> Result<(), Box<dyn std::error::Error>> {
+    use crate::provider::{UserMessage, UserPart, UserPartKind};
+    use crate::session::{Record, SessionTree, UserKind, tree_rows};
+    let user = |node, text: &str| Record::User {
+        node,
+        kind: UserKind::Request,
+        message: UserMessage {
+            parts: vec![UserPart {
+                kind: UserPartKind::Request,
+                text: text.into(),
+            }],
+        },
+    };
+    let mut records = Vec::new();
+    let mut parent = None;
+    for depth in 1..=20u64 {
+        let node = 2 * depth - 1;
+        records.push(user(node, "request [current] [tip] (conversation start)"));
+        records.push(Record::Branch {
+            to: parent,
+            from: Some(node),
+            checkpoint: None,
+        });
+        records.push(user(node + 1, "side"));
+        records.push(Record::Branch {
+            to: Some(node),
+            from: Some(node + 1),
+            checkpoint: None,
+        });
+        parent = Some(node);
+    }
+    let rows = tree_rows(&records, &SessionTree::from_records(&records)?)
+        .into_iter()
+        .map(|row| crate::agent::BranchTreeRow { row, branch: None })
+        .collect();
+    let mut screen = Screen::new((160, 24), status());
+    screen.select_branches(rows);
+    let lines = screen
+        .selection
+        .as_ref()
+        .ok_or("selection")?
+        .bottom((160, 24));
+    let selected = lines
+        .iter()
+        .find(|line| {
+            line.iter()
+                .map(|(value, _)| value.as_str())
+                .collect::<String>()
+                .starts_with("> ")
+        })
+        .ok_or("selected request")?;
+    let value = selected
+        .iter()
+        .map(|(value, _)| value.as_str())
+        .collect::<String>();
+    assert!(
+        value.contains(&format!("{}[d20] request", "  ".repeat(8))),
+        "{value:?}"
+    );
+    assert!(!value.contains(&"  ".repeat(9)));
+    Ok(())
+}
+
+// 関門: 依頼に書かれた印と、ハーネスが付けた印を同じ装飾にする退行を捕まえる。
+#[test]
+fn tree_request_marks_are_plain_and_real_marks_are_dim() {
+    let row = crate::session::TreeRow {
+        node: Some(1),
+        depth: 0,
+        request: Some("request [current] [tip] (conversation start)".into()),
+        request_lines: 1,
+        is_tip: true,
+        is_current: true,
+    };
+    let mut screen = Screen::new((160, 24), status());
+    let root = crate::session::TreeRow {
+        node: None,
+        depth: 0,
+        request: None,
+        request_lines: 0,
+        is_tip: false,
+        is_current: false,
+    };
+    screen.select_branches(vec![
+        crate::agent::BranchTreeRow {
+            row: root,
+            branch: None,
+        },
+        crate::agent::BranchTreeRow { row, branch: None },
+    ]);
+    let lines = screen
+        .selection
+        .as_ref()
+        .map(|selection| selection.bottom((160, 24)))
+        .unwrap_or_default();
+    assert!(lines.iter().flatten().any(
+        |(value, style)| value.as_str().contains("request [current]")
+            && *style == Decoration::Plain
+    ));
+    for marker in ["[current]", "[tip]", "(conversation start)"] {
+        assert!(
+            lines
+                .iter()
+                .flatten()
+                .any(|(value, style)| value.as_str().contains(marker) && *style == Decoration::Dim)
+        );
+        assert!(
+            lines.iter().flatten().any(
+                |(value, style)| value.as_str().contains(marker) && *style == Decoration::Plain
+            )
+        );
+    }
+}
