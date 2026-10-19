@@ -119,5 +119,5 @@
     - JPEG: `0xFF` の詰め物を飛ばす。`D0`〜`D7`・`01`・`D8` は長さを持たない。SOF の区切りの +3 に高さ、+5 に幅（大端の u16）。
     - GIF: 6・8 バイト目の小端の u16。
     - WebP の `VP8 `: 中身の +3 に `9d 01 2a`、幅は +6 の小端の u16 の下位 14 ビット、高さは +8 の同じ。`VP8L`: 中身の 0 バイト目が `0x2f`、+1 の小端の u32 の 0〜13 ビットが幅 − 1、14〜27 ビットが高さ − 1。`VP8X`: 中身の +4 の小端の 24 ビットが幅 − 1、+7 が高さ − 1。
-16. **道具の説明は変えない**: `prompts/tools/read.md`・`read-plain.md` と、`tests/expected/` の写しは変えない（設計書 01-03 の BH-110）。
+16. **道具の説明**: 設計書 01-03 の決定（BH-110 を閉じた）に従い、`prompts/tools/read.md` と `read-plain.md` の一行目の後に、`PNG, JPEG, GIF and WebP images are returned as images when the current model accepts them (offset and limit do not apply).` の一文を加える。`image_input` で説明を変えない。`tests/expected/` の写しは `examples/update_context_expected.rs` で作り直し、道具の定義の値の変化を完了の報告に書く。
 17. **会話に残る画像の数**: 枚数や合計の大きさの上限は、この作業では設けない（設計書 02-01 の BH-111）。
