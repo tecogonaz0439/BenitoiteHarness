@@ -13,3 +13,8 @@ pub const EMPTY_RESPONSE: &str = "Provider returned an empty response";
 pub const SSE_EVENT_LIMIT: &str = "SSE event exceeds the 16 MiB limit";
 pub const SSE_INVALID_UTF8: &str = "SSE field contains invalid UTF-8";
 pub const SSE_CLOSED: &str = "SSE decoder has already finished";
+
+pub const IMAGE_UNSUPPORTED: &str = "(Image omitted: the current provider does not accept images.)";
+pub const IMAGE_UNAVAILABLE: &str = "(Image omitted: the image data is not available.)";
+pub const IMAGE_ATTACHED: &str = "(The image is attached in the next user message.)";
+pub const IMAGE_ATTACHMENTS: &str = "Attached image(s) from tool results:";

@@ -589,3 +589,20 @@ pub fn project_switch_failed(path: &std::path::Path, error: &dyn std::fmt::Displ
         crate::benitoite::display::quoted(&path.to_string_lossy())
     )
 }
+
+pub const IMAGE_LINES: &str = "offset and limit cannot be used when reading an image.";
+pub const IMAGE_UNSUPPORTED: &str =
+    "The current provider does not accept images; this file cannot be shown.";
+pub const IMAGE_INVALID: &str = "The image header is invalid or truncated.";
+pub const IMAGE_ANIMATED_PNG: &str = "Animated PNG images cannot be shown.";
+pub fn image_too_large(bytes: u64, limit: u64) -> String {
+    format!("Image size is {bytes} bytes; the limit is {limit} bytes.")
+}
+pub fn image_dimensions(width: u32, height: u32, limit: u32) -> String {
+    format!(
+        "Image dimensions are {width}x{height}; each dimension must be between 1 and {limit} pixels."
+    )
+}
+pub fn read_image(media_type: &str, width: u32, height: u32, bytes: u64) -> String {
+    format!("Read image file {media_type} ({width}x{height}, {bytes} bytes)")
+}

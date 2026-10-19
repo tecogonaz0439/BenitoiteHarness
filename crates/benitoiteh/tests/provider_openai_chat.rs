@@ -275,6 +275,7 @@ fn fragmented_parallel_calls_preserve_index_order_raw_messages_and_late_usage() 
                 provider_id: Some("ignored-result-id".into()),
                 text: "result".into(),
                 is_error: call.arguments.is_null(),
+                images: Vec::new(),
             }));
         }
     }
@@ -539,6 +540,7 @@ fn destination_changes_remap_calls_and_results_without_collisions_or_reasoning()
                 provider_id: Some("wrong-provider-id".into()),
                 text: "ok".into(),
                 is_error: false,
+                images: Vec::new(),
             }));
         }
         let adapter = OpenAiChatAdapter::new(
@@ -838,5 +840,98 @@ fn header_only_streams_support_cancellation_and_idle_timeout() -> TestResult {
         assert!(stream.finish().is_err());
         server.shutdown()?;
     }
+    Ok(())
+}
+
+#[path = "support/images.rs"]
+mod image_support;
+
+// 作成時の関門: 既存のテキストの要求では、画像の API ごとの包みと、誤り・未対応・
+// 欠落時の抑止を検出できない。公開の要求作成と HTTP 送信を通し、本文を確かめる。
+#[test]
+fn tool_images_use_api_blocks_and_omit_unavailable_or_unsupported_data() -> TestResult {
+    let cases = [
+        (true, true, false, false),
+        (true, true, false, true),
+        (false, true, false, false),
+        (true, false, false, false),
+        (true, true, true, false),
+    ];
+    let mut server = MockProvider::start(
+        cases
+            .iter()
+            .map(|_| Ok(ResponseScript::sse(simple("stop"))))
+            .collect::<Result<Vec<_>, Box<dyn Error>>>()?,
+    )?;
+    for (enabled, available, is_error, trailing_user) in cases {
+        let adapter = OpenAiChatAdapter::new(
+            destination(&server),
+            Capabilities {
+                image_input: enabled,
+                ..Capabilities::default()
+            },
+            KEY.into(),
+        );
+        let mut history = image_support::history(available, is_error);
+        if trailing_user {
+            history.items.extend(conversation().items);
+        }
+        request(&adapter, &history, RequestOptions::default())?;
+    }
+    let requests = server.requests()?;
+    for (index, (enabled, available, is_error, trailing_user)) in cases.into_iter().enumerate() {
+        let body = &requests.get(index).ok_or("missing request")?.body;
+        let messages = body
+            .get("messages")
+            .and_then(Value::as_array)
+            .ok_or("missing messages")?;
+        assert_eq!(
+            messages.get(2).and_then(|v| v.get("role")),
+            Some(&json!("tool"))
+        );
+        assert_eq!(
+            messages.get(3).and_then(|v| v.get("role")),
+            Some(&json!("tool"))
+        );
+        let content = body
+            .pointer("/messages/2/content")
+            .ok_or("missing tool content")?;
+        assert!(content.is_string());
+        if enabled && available && !is_error {
+            assert_eq!(
+                content,
+                &json!(
+                    "Read image file image/png (1x1, 6 bytes)\n(The image is attached in the next user message.)"
+                )
+            );
+            assert_eq!(messages.len(), if trailing_user { 6 } else { 5 });
+            if trailing_user {
+                assert_eq!(
+                    messages.get(5).and_then(|value| value.get("role")),
+                    Some(&json!("user"))
+                );
+            }
+            assert_eq!(
+                messages.get(4),
+                Some(&json!({"role":"user", "content":[
+                    {"type":"text", "text":"Attached image(s) from tool results:"},
+                    {"type":"image_url", "image_url":{"url":"data:image/png;base64,Zm9vYmFy"}},
+                    {"type":"image_url", "image_url":{"url":"data:image/png;base64,Zm9vYmFy"}}
+                ]}))
+            );
+        } else {
+            assert_eq!(messages.len(), 4);
+            let expected = if !enabled {
+                "Read image file image/png (1x1, 6 bytes)\n(Image omitted: the current provider does not accept images.)"
+            } else if !available {
+                "Read image file image/png (1x1, 6 bytes)\n(Image omitted: the image data is not available.)"
+            } else {
+                "Read image file image/png (1x1, 6 bytes)"
+            };
+            assert_eq!(content, &json!(expected));
+            assert!(!body.to_string().contains("Zm9vYmFy"));
+        }
+    }
+    server.shutdown()?;
     Ok(())
 }

@@ -30,7 +30,19 @@ pub(super) fn item_bytes(item: &Item, replay: ReasoningReplay, destination: &Des
             })
             .sum(),
     };
-    u64::try_from(bytes).unwrap_or(u64::MAX)
+    let image_bytes = match item {
+        Item::ToolResult(result) => result.images.iter().fold(0_u64, |total, image| {
+            let tokens = u64::from(image.width)
+                .div_ceil(28)
+                .saturating_mul(u64::from(image.height).div_ceil(28))
+                .min(1568);
+            total.saturating_add(tokens.saturating_mul(3))
+        }),
+        Item::UserMessage(_) | Item::AssistantTurn(_) => 0,
+    };
+    u64::try_from(bytes)
+        .unwrap_or(u64::MAX)
+        .saturating_add(image_bytes)
 }
 
 pub(super) fn previous_summary(conversation: &Conversation) -> Option<String> {

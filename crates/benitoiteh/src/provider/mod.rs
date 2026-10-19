@@ -2,6 +2,7 @@
 
 pub mod anthropic;
 pub mod ids;
+mod images;
 pub mod openai_chat;
 pub mod openai_responses;
 pub mod sse;
@@ -13,5 +14,5 @@ pub use tool_schema::{ArgumentSpec, ArgumentType, SchemaKind, ToolSpec};
 pub use types::{
     AdapterKind, AssistantPart, AssistantTurn, Capabilities, Conversation, Destination,
     FinishReason, Item, NonRetryableKind, ProviderError, RawItems, Reasoning, ReasoningReplay,
-    StreamEvent, ToolCall, ToolResult, Usage, UserMessage, UserPart, UserPartKind,
+    StreamEvent, ToolCall, ToolImage, ToolResult, Usage, UserMessage, UserPart, UserPartKind,
 };

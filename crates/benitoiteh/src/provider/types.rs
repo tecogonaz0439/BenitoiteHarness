@@ -154,7 +154,51 @@ pub struct ToolResult {
     pub text: String,
     /// 実行または検証の誤りか。
     pub is_error: bool,
+    /// 画像の参照。中身は objects/ に保存し、記録には含めない。
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub images: Vec<ToolImage>,
 }
+
+/// 道具が読んだ画像の参照（設計書 02-01「画像の受け渡し」）。
+#[derive(Clone, Serialize, Deserialize)]
+pub struct ToolImage {
+    /// MIME の型。
+    pub media_type: String,
+    /// 中身の SHA-256（小文字の十六進 64 字）。
+    pub sha256: String,
+    /// 横の画素数。
+    pub width: u32,
+    /// 縦の画素数。
+    pub height: u32,
+    /// 中身のバイト数。
+    pub bytes: u64,
+    /// 要求を送るときだけ使う中身。記録と診断には含めない。
+    #[serde(skip)]
+    pub data: Option<std::sync::Arc<[u8]>>,
+}
+
+impl fmt::Debug for ToolImage {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("ToolImage")
+            .field("media_type", &self.media_type)
+            .field("sha256", &self.sha256)
+            .field("width", &self.width)
+            .field("height", &self.height)
+            .field("bytes", &self.bytes)
+            .finish()
+    }
+}
+
+impl PartialEq for ToolImage {
+    fn eq(&self, other: &Self) -> bool {
+        self.media_type == other.media_type
+            && self.sha256 == other.sha256
+            && self.width == other.width
+            && self.height == other.height
+            && self.bytes == other.bytes
+    }
+}
+impl Eq for ToolImage {}
 
 /// 報告なしと 0 を区別するトークンの量。
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
@@ -286,6 +330,9 @@ pub enum ReasoningReplay {
 /// 互換の口は既定では追加の機能を使わない。
 #[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
 pub struct Capabilities {
+    /// 道具の結果の画像を送るか。
+    #[serde(default)]
+    pub image_input: bool,
     /// Anthropic のキャッシュの区切り。
     pub cache_control: bool,
     /// 厳密な道具の引数の生成。
@@ -325,6 +372,7 @@ impl AdapterKind {
     pub fn official_capabilities(self) -> Option<Capabilities> {
         match self {
             Self::AnthropicMessages => Some(Capabilities {
+                image_input: true,
                 cache_control: true,
                 strict_tools: true,
                 eager_input_streaming: true,
@@ -340,6 +388,7 @@ impl AdapterKind {
                 ..Capabilities::default()
             }),
             Self::OpenAiResponses => Some(Capabilities {
+                image_input: true,
                 strict_tools: true,
                 tool_choice_none: true,
                 parallel_tool_calls: true,

@@ -131,6 +131,7 @@ fn result(call: &ToolCall, text: &str) -> ToolResult {
         provider_id: call.provider_id.clone(),
         text: text.to_owned(),
         is_error: false,
+        images: Vec::new(),
     }
 }
 

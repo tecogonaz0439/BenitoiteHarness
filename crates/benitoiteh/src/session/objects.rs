@@ -10,6 +10,32 @@ use sha2::{Digest, Sha256};
 use super::{Session, SessionError, create_file, id, open_existing_file, text};
 
 impl Session {
+    /// 再開の会話の画像をハッシュで確かめ、戻せない画像には断りの文を残す。
+    pub(crate) fn restore_images(&self, conversation: &mut crate::provider::Conversation) {
+        for item in &mut conversation.items {
+            let crate::provider::Item::ToolResult(result) = item else {
+                continue;
+            };
+            let mut omitted = false;
+            result.images.retain_mut(|image| {
+                match self.read_object(&image.sha256, crate::tools::MAX_IMAGE_BYTES) {
+                    Ok(bytes) if u64::try_from(bytes.len()).ok() == Some(image.bytes) => {
+                        image.data = Some(bytes.into());
+                        true
+                    }
+                    _ => {
+                        omitted = true;
+                        false
+                    }
+                }
+            });
+            if omitted {
+                result.text.push('\n');
+                result.text.push_str(text::IMAGE_RESTORE_OMITTED);
+            }
+        }
+    }
+
     // 保存した名前の再確認は省き、復元時には必ず中身をハッシュと照合する。
     pub(crate) fn object_known(&self, hash: &str) -> bool {
         self.inner
