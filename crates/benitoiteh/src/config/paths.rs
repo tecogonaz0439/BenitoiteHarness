@@ -21,6 +21,8 @@ pub struct DataPaths {
     pub sessions_dir: PathBuf,
     /// プロジェクトごとの入力の履歴。
     pub history_dir: PathBuf,
+    /// ChatGPT の許可の保存先。
+    pub auth_dir: PathBuf,
     /// 一時ディレクトリを作る親。
     pub temporary_root: PathBuf,
 }
@@ -73,6 +75,7 @@ impl DataPaths {
             instructions_file: config_dir.join("AGENTS.md"),
             sessions_dir: data_dir.join("sessions"),
             history_dir: data_dir.join("history"),
+            auth_dir: data_dir.join("auth"),
             config_dir,
             data_dir,
             temporary_root,

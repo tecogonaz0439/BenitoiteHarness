@@ -2,6 +2,7 @@
 
 pub mod agent;
 pub mod approval;
+pub mod auth;
 pub mod benitoite;
 pub mod cli;
 pub mod config;

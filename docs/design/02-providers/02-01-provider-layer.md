@@ -1,7 +1,7 @@
 # 提供者の層
 
 - 状態: 草稿
-- 未決事項: BH-030, BH-031, BH-032, BH-033, BH-036, BH-114, BH-115
+- 未決事項: BH-030, BH-031, BH-032, BH-033, BH-036, BH-115
 
 ## 目的と範囲
 
@@ -158,10 +158,10 @@ Gemini の API の専用のアダプタ（ADR 0340 の E）は、三つのアダ
 
 - **ログイン**: `benitoiteh login chatgpt` で始める（[CLI と設定ファイル](../05-interface/05-01-cli.md)の「login と logout」）。LLM が呼べる道具からは始められない。
   - 認可の口 `https://auth.openai.com/api/accounts/authorize` に、PKCE（S256）、`state`、`nonce`、`response_type=code`、`scope=openid profile email offline_access resource.invoke chatgpt.tokens.use.direct`、`resource=https://api.openai.com/v1`、`ext_agent_host_id`、`client_id` を付けて、利用者のブラウザで開く（開けなければ URL を示す）。`client_id` は、初めては `dynamic_agent_client`（と `agent_name_hint=benitoiteh`）とし、発行された ID（`oaiapp_` で始まる）を保存して、以後はそれを使う。`ext_agent_host_id` は `urn:uuid:` の形の乱数とし、機械ごとに一度作って保存する。
-  - 戻り先は `http://127.0.0.1:<番号>/auth/callback` とし、`127.0.0.1` に、OS が選ぶ番号で待ち受ける（`localhost` と書かない。文書が求める）。待ち受けるのは `GET /auth/callback` だけとし、`Host` の値も確かめる。待つ時間の上限は 10 分とする。
+  - 戻り先は `http://127.0.0.1:<番号>/auth/callback` とし、`127.0.0.1` に、OS が選ぶ番号で待ち受ける（`localhost` と書かない。文書が求める）。待ち受けるのは `GET /auth/callback` だけとし、`Host` の値も確かめる。待つ時間の上限は 10 分とする。戻りの `client_id` は、code の交換が通るまで「確かめていない」値として保存し、確かめる前にログインが失敗したら（通信の失敗と 5xx を除く）、次は `dynamic_agent_client` から始める。【方針】同じ機械を使うほかの利用者に対しては限界がある: 認可の URL はブラウザを開くプロセスの引数として見えうるので、それを読んだ者は、戻りを先に送ってログインを妨げたり、自分のアカウントの許可に結び付けたりしうる（ループバックの戻り先を使う形に共通の性質）。待ち受けの番号へ大量に接続して、ログインを妨げることもできる。成功のときに示すメールの宛先で、利用者が結び付いたアカウントを確かめられるようにする。
   - 戻りの `state` を、時間の一定な比べ方で確かめる。違えばその戻りを捨てて待ち続ける。戻りに含まれる `client_id` が保存した ID と違えば断る。`error=access_denied` なら、`state` を確かめたうえで、交換せずに終える。
   - トークンの口 `https://auth.openai.com/api/accounts/oauth/token` に、フォームの形で、`grant_type=authorization_code`、`client_id`、`code`、`code_verifier`、同じ `redirect_uri`、同じ `resource` を送る。クライアントの秘密は使わない。
-  - ID トークンは、`https://auth.openai.com/.well-known/openid-configuration` から得た JWKS の公開鍵で、RS256 の署名を確かめ、発行者、宛先（発行された `client_id`）、期限、`nonce` を確かめる。署名を確かめる処理は、TLS のために既に持つ `graviola` の RSA の検証（RSASSA-PKCS1-v1_5、SHA-256）を使う（【要検証】JWKS の `n`・`e` から鍵を作る形が `graviola` 0.4.1 の公開の口で書けるか。BH-114）。加えて、得た許可に `chatgpt.tokens.use.direct` があることを確かめる（文書: 「A valid ID token alone does not authorize ChatGPT plan usage.」）。
+  - ID トークンは、`https://auth.openai.com/.well-known/openid-configuration` から得た JWKS の公開鍵で、RS256 の署名を確かめ、発行者、宛先（発行された `client_id`）、期限、`nonce` を確かめる。署名を確かめる処理は、TLS のために既に持つ `graviola` の RSA の検証（RSASSA-PKCS1-v1_5、SHA-256）を使う（JWKS の `n`・`e` から PKCS#1 の DER を組み立て、`graviola` 0.4.1 の公開の口 `signing::rsa::VerifyingKey::from_pkcs1_der` と `verify_pkcs1_sha256` で確かめる。P5-21 で、`graviola` の `to_pkcs1_der` の出力と一致することを確かめた。BH-114 を閉じた。`graviola` は確かめないので、署名の長さが法の長さと等しいことと、指数が 3 以上の奇数であることは自前で確かめる）。加えて、得た許可に `chatgpt.tokens.use.direct` があることを確かめる（文書: 「A valid ID token alone does not authorize ChatGPT plan usage.」）。
 - **保存**: 発行された `client_id`、`ext_agent_host_id`、アクセストークン、リフレッシュトークン、期限、`earliest_refresh_at`、アカウントの表示用の情報（メールの宛先など）を、`$XDG_STATE_HOME/benitoiteh/auth/chatgpt.json` に置く。ディレクトリは 0700、ファイルは 0600 とし、一時ファイルに書いてから名前を替える（途中で止まっても壊れたファイルを残さない）。トークンは、診断・ログ・セッションの記録・LLM に送る文脈・URL に含めない。子プロセスの環境にも渡さない。OS のキーストアに置く形は、API キーと同じく後に回す（BH-033）。
 - **更新**: アクセストークンは 1 時間、リフレッシュトークンは 30 日で切れ、更新のたびにリフレッシュトークンが替わる（文書）。要求の前に、アクセストークンの期限まで 60 秒を切っていれば（`earliest_refresh_at` より後なら）更新する。更新は、`auth/` の錠のファイルに排他の錠を掛けて、プロセスをまたいで一つずつ行い、錠を取った後に保存の内容を読み直して、ほかのプロセスが既に更新していれば使う。更新の要求はフォームの形で `grant_type=refresh_token`、`client_id`、`refresh_token`、`resource` を送る。受け取ったトークンは、すぐに保存する（使い終えたリフレッシュトークンを失わないため）。更新が `invalid_grant`・`refresh_token_reused` などで断られたら、保存したトークンを消し、`benitoiteh login chatgpt` をやり直すよう示す。
 - **要求**: 提供者の設定で `kind = "openai-responses"` と `auth = "chatgpt"` を指定すると、API キーの代わりに保存したトークンを使い、送り先を `https://api.openai.com/v1/responses` に固定する。要求は今の `openai-responses` のアダプタで作り、次の点を変える。文書が受け付けないとする欄（`background`、`conversation`、`max_output_tokens`、`max_tool_calls`、`metadata`、`moderation`、`prompt`、`prompt_cache_retention`、`safety_identifier`、`temperature`、`top_logprobs`、`top_p`、`truncation`、`user`、`previous_response_id` など）を送らない。システムプロンプトは `instructions` で送り、`role: "system"` の項目を送らない。`store: false`、`stream: true` とする。【要検証】道具の定義を今の形（最上位の `function`）のまま受け付けるか、名前空間にまとめる必要があるかは、文書が後者を勧めるので、本物の要求で確かめる（BH-115。設計者の了承を得てから行う）。
