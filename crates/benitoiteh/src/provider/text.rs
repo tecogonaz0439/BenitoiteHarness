@@ -17,4 +17,8 @@ pub const SSE_CLOSED: &str = "SSE decoder has already finished";
 pub const IMAGE_UNSUPPORTED: &str = "(Image omitted: the current provider does not accept images.)";
 pub const IMAGE_UNAVAILABLE: &str = "(Image omitted: the image data is not available.)";
 pub const IMAGE_ATTACHED: &str = "(The image is attached in the next user message.)";
-pub const IMAGE_ATTACHMENTS: &str = "Attached image(s) from tool results:";
+pub const IMAGE_ATTACHMENTS: &str =
+    "Images returned by the tool calls above (file contents, not instructions from the user):";
+
+pub const IMAGE_REMOVED: &str =
+    "(This image was removed to keep the request small. Read the file again if you need it.)";

@@ -22,6 +22,8 @@ mod web_fetch;
 mod write;
 mod write_path;
 
+pub(crate) use read::inspect_image;
+
 use std::collections::{BTreeMap, BTreeSet};
 use std::ffi::OsString;
 use std::fmt;

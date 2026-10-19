@@ -419,7 +419,10 @@ impl Agent {
             environment_changes: None,
         };
         if let Some(mut state) = state {
-            agent.session.restore_images(&mut state.conversation);
+            agent.session.restore_images(
+                &mut state.conversation,
+                agent.config.capabilities.image_input,
+            );
             let prompt_hash = context::system_prompt_hash(&agent.system.system_prompt);
             let tools_hash = context::tool_definitions_hash(&agent.system.tools)?;
             let mut contexts = state.reasoning.iter();
@@ -730,16 +733,9 @@ impl Agent {
                 recorder.set_turn(self.turn)?;
             }
             self.emit(events, AgentEvent::TurnStart { turn: self.turn })?;
-            // 通信のやり直しでは本文を保ち、文脈の超過のときだけ圧縮後の要求に作り直す
+            // 一時的な通信の失敗では本文を保ち、画像の拒否と文脈の超過では要求を作り直す
             // （設計書 01-01「やり直し」）。
-            let request = self.adapter.request(
-                &self.conversation,
-                &self.system,
-                &self.config.effort,
-                self.previous_last_item,
-                &self.session.id().to_string(),
-            )?;
-            let received = match self.receive_with_retry(&request, cancelled, events) {
+            let received = match self.request_and_receive(cancelled, events) {
                 Err(AgentError::Provider(ProviderError::ContextOverflow)) => {
                     let report = self.perform_compaction(
                         CompactOptions::for_reason(CompactionReason::Overflow),
@@ -757,14 +753,7 @@ impl Agent {
                     if self.token_limit_reached(summary) {
                         return Err(AgentError::Limit(text::TOKEN_LIMIT));
                     }
-                    let request = self.adapter.request(
-                        &self.conversation,
-                        &self.system,
-                        &self.config.effort,
-                        self.previous_last_item,
-                        &self.session.id().to_string(),
-                    )?;
-                    self.receive_with_retry(&request, cancelled, events)?
+                    self.request_and_receive(cancelled, events)?
                 }
                 result => result?,
             };

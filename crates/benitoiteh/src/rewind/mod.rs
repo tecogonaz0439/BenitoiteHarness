@@ -113,6 +113,7 @@ impl CheckpointRecorder {
                 | Record::ToolStart { .. }
                 | Record::ToolResult { .. }
                 | Record::Approval { .. }
+                | Record::ImagesRemoved { .. }
                 | Record::Retry { .. }
                 | Record::Error { .. }
                 | Record::TurnEnd { .. }

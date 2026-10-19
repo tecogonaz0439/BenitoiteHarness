@@ -868,3 +868,52 @@ fn tool_images_use_api_blocks_and_omit_unavailable_or_unsupported_data() -> Test
     server.shutdown()?;
     Ok(())
 }
+
+// 作成時の関門: 画像の選別結果が API の各形式に反映され、一部だけ除く結果でも
+// 断りの文が一つになることを HTTP 本文で守る。規則そのものは共通層で確かめる。
+#[test]
+fn bounded_images_are_omitted_with_one_notice_per_result() -> TestResult {
+    let mut server = MockProvider::start(vec![
+        ResponseScript::sse(simple("end_turn", None)?),
+        ResponseScript::sse(simple("end_turn", None)?),
+    ])?;
+    let adapter = AnthropicAdapter::new(
+        destination(&server),
+        Capabilities {
+            image_input: true,
+            ..Capabilities::default()
+        },
+        KEY.into(),
+    );
+    for partial in [false, true] {
+        let mut history =
+            image_support::sized_history(true, false, if partial { 1 } else { 13 }, 1_048_576);
+        if partial && let Some(Item::ToolResult(result)) = history.items.last_mut() {
+            result.images = (0..13)
+                .flat_map(|_| result.images.iter().cloned())
+                .collect();
+        }
+        request(&adapter, &history, RequestOptions::default())?;
+    }
+    let requests = server.requests()?;
+    for (index, partial) in [false, true].into_iter().enumerate() {
+        let body = &requests.get(index).ok_or("missing request")?.body;
+        let results = body
+            .pointer("/messages/1/content")
+            .and_then(Value::as_array)
+            .ok_or("missing results")?;
+        let content = results
+            .first()
+            .and_then(|v| v.get("content"))
+            .ok_or("missing content")?;
+        let notice = "(This image was removed to keep the request small. Read the file again if you need it.)";
+        assert_eq!(content.to_string().matches(notice).count(), 1);
+        assert_eq!(body.to_string().matches("\"type\":\"image\"").count(), 7);
+        assert_eq!(
+            body.to_string().matches(notice).count(),
+            if partial { 1 } else { 6 }
+        );
+    }
+    server.shutdown()?;
+    Ok(())
+}

@@ -264,7 +264,14 @@ impl Agent {
             );
             // 再開した会話などで元の要求を組み立てられない場合も、文字化して作り直す。
             if let Ok(request) = request {
-                match self.receive_summary(&request, cancelled, events, summary, usage)? {
+                match self.receive_summary(
+                    &request,
+                    Some(&conversation),
+                    cancelled,
+                    events,
+                    summary,
+                    usage,
+                )? {
                     SummaryResponse::Text(text) if !text.is_empty() => result = Some(text),
                     SummaryResponse::Text(_) => {}
                     SummaryResponse::Overflow => shorten = true,
@@ -301,7 +308,7 @@ impl Agent {
                     false,
                 )
                 .map_err(|_| AgentError::Compaction)?;
-            match self.receive_summary(&request, cancelled, events, summary, usage)? {
+            match self.receive_summary(&request, None, cancelled, events, summary, usage)? {
                 SummaryResponse::Text(text) if !text.is_empty() => result = Some(text),
                 SummaryResponse::Cancelled => report.outcome = CompactOutcome::Cancelled,
                 SummaryResponse::Text(_) => return Err(AgentError::Compaction),
@@ -416,13 +423,38 @@ impl Agent {
     fn receive_summary(
         &mut self,
         request: &super::transport::Request,
+        conversation: Option<&Conversation>,
         cancelled: &AtomicBool,
         events: &SyncSender<AgentEvent>,
         summary: &mut Summary,
         usage: &mut Usage,
     ) -> Result<SummaryResponse, AgentError> {
         self.suppress_deltas = true;
-        let received = self.receive_with_retry(request, cancelled, events);
+        let mut received = self.receive_with_retry(request, cancelled, events);
+        if matches!(
+            received,
+            Err(AgentError::Provider(ProviderError::NonRetryable {
+                reason: crate::provider::NonRetryableKind::InvalidRequest
+            }))
+        ) && let Some(conversation) = conversation
+            && crate::provider::image_plan(conversation, self.config.capabilities.image_input)
+                .has_images()
+        {
+            // 続ける形でも画像だけを外して再試行する。会話は圧縮の成功時に置き換える。
+            let mut conversation = conversation.clone();
+            crate::provider::remove_images(&mut conversation, None);
+            received = match self.adapter.request_with(
+                &conversation,
+                &self.system,
+                &self.config.effort,
+                self.previous_last_item,
+                &self.session.id().to_string(),
+                self.config.kind != crate::provider::AdapterKind::AnthropicMessages,
+            ) {
+                Ok(request) => self.receive_with_retry(&request, cancelled, events),
+                Err(error) => Err(error.into()),
+            };
+        }
         self.suppress_deltas = false;
         match received {
             Ok(Some(response)) => {

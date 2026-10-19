@@ -10,6 +10,8 @@ mod text;
 pub mod tool_schema;
 pub mod types;
 
+pub(crate) use images::{plan as image_plan, remove_images};
+
 pub use tool_schema::{ArgumentSpec, ArgumentType, SchemaKind, ToolSpec};
 pub use types::{
     AdapterKind, AssistantPart, AssistantTurn, Capabilities, Conversation, Destination,

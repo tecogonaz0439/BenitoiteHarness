@@ -11,7 +11,14 @@ use super::{Session, SessionError, create_file, id, open_existing_file, text};
 
 impl Session {
     /// 再開の会話の画像をハッシュで確かめ、戻せない画像には断りの文を残す。
-    pub(crate) fn restore_images(&self, conversation: &mut crate::provider::Conversation) {
+    pub(crate) fn restore_images(
+        &self,
+        conversation: &mut crate::provider::Conversation,
+        image_input: bool,
+    ) {
+        if !image_input {
+            return;
+        }
         for item in &mut conversation.items {
             let crate::provider::Item::ToolResult(result) = item else {
                 continue;
@@ -19,7 +26,16 @@ impl Session {
             let mut omitted = false;
             result.images.retain_mut(|image| {
                 match self.read_object(&image.sha256, crate::tools::MAX_IMAGE_BYTES) {
-                    Ok(bytes) if u64::try_from(bytes.len()).ok() == Some(image.bytes) => {
+                    Ok(bytes)
+                        if u64::try_from(bytes.len()).ok() == Some(image.bytes)
+                            && crate::tools::inspect_image(&bytes).is_ok_and(
+                                |(mime, width, height)| {
+                                    mime == image.media_type
+                                        && width == image.width
+                                        && height == image.height
+                                },
+                            ) =>
+                    {
                         image.data = Some(bytes.into());
                         true
                     }

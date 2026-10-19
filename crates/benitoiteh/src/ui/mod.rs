@@ -130,6 +130,7 @@ impl ExecOutput {
             AgentEvent::ProjectDirChanged { project_dir } => {
                 Some(text::project_changed(project_dir))
             }
+            AgentEvent::ImagesRemoved { .. } => Some(text::IMAGES_REMOVED.into()),
             AgentEvent::Checkpoint { checkpoint } => Some(text::checkpoint(checkpoint)),
             AgentEvent::HardLinks { paths } => Some(text::hard_links(paths)),
             AgentEvent::Error { .. } => None,

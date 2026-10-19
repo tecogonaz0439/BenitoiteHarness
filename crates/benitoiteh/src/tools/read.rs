@@ -2,6 +2,8 @@
 
 mod image;
 
+pub(crate) use image::inspect as inspect_image;
+
 use super::{FileVersion, ToolContext, ToolError, ToolOutput, text, truncate};
 use serde_json::Value;
 use std::io::Read;

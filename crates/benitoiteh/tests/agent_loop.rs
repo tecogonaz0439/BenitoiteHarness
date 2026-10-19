@@ -10,6 +10,8 @@ mod compaction;
 mod create_project;
 #[path = "agent_loop/gemini.rs"]
 mod gemini;
+#[path = "agent_loop/images.rs"]
+mod images;
 #[path = "agent_loop/interaction.rs"]
 mod interaction;
 mod support;

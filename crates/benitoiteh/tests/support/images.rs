@@ -7,14 +7,24 @@ use benitoiteh::provider::{
 
 /// 続けて二つの画像の結果を持つ会話を作る。
 pub fn history(available: bool, is_error: bool) -> Conversation {
-    let calls = ["first", "second"].map(|id| ToolCall {
-        id: id.into(),
-        provider_id: Some(id.into()),
-        provider_item_id: None,
-        name: "read".into(),
-        arguments: serde_json::json!({"path":"image"}),
-        raw_arguments: "{\"path\":\"image\"}".into(),
-    });
+    sized_history(available, is_error, 2, 6)
+}
+
+/// 任意の枚数・記録上の大きさで上限の要求を作る。中身は短いままにする。
+pub fn sized_history(available: bool, is_error: bool, count: usize, bytes: u64) -> Conversation {
+    let calls = (0..count)
+        .map(|index| {
+            let id = format!("image-{index}");
+            ToolCall {
+                id: id.clone(),
+                provider_id: Some(id),
+                provider_item_id: None,
+                name: "read".into(),
+                arguments: serde_json::json!({"path":"image"}),
+                raw_arguments: "{\"path\":\"image\"}".into(),
+            }
+        })
+        .collect::<Vec<_>>();
     let mut items = vec![Item::AssistantTurn(AssistantTurn {
         parts: calls.iter().cloned().map(AssistantPart::ToolCall).collect(),
         // 別の送り先からの会話とし、三つのアダプタが呼び出しを変換する。
@@ -41,7 +51,7 @@ pub fn history(available: bool, is_error: bool) -> Conversation {
                 sha256: "0".repeat(64),
                 width: 1,
                 height: 1,
-                bytes: 6,
+                bytes,
                 data: available.then(|| std::sync::Arc::from(b"foobar".as_slice())),
             }],
         }));

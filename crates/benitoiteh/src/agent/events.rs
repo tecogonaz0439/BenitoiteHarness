@@ -135,6 +135,8 @@ pub enum AgentEvent {
         #[serde(with = "super::event_paths")]
         paths: Vec<PathBuf>,
     },
+    /// 画像を除いた要求の送り直しが通った。
+    ImagesRemoved { results: Vec<String> },
     /// 同じ要求のやり直し。
     Retry {
         attempt: u64,
@@ -232,6 +234,9 @@ impl AgentEvent {
                 facts: facts.clone(),
                 justification: justification.clone(),
                 user_message: user_message.clone(),
+            },
+            Self::ImagesRemoved { results } => Record::ImagesRemoved {
+                results: results.clone(),
             },
             Self::Retry {
                 attempt,

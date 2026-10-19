@@ -519,3 +519,5 @@ pub fn skill_loaded(name: &str, path: &std::path::Path) -> String {
 pub fn skill_skipped(path: &std::path::Path, reason: &str) -> String {
     super::super::text::skill_skipped(path, reason)
 }
+
+pub const IMAGES_REMOVED: &str = "Images were removed and the request was sent again successfully.";
