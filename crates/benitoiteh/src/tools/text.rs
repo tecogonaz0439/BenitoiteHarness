@@ -594,9 +594,19 @@ pub const IMAGE_LINES: &str = "offset and limit cannot be used when reading an i
 pub const IMAGE_UNSUPPORTED: &str =
     "The current provider does not accept images; this file cannot be shown.";
 pub const IMAGE_INVALID: &str = "The image header is invalid or truncated.";
+pub const IMAGE_DECODE: &str = "The image could not be decoded.";
+pub const IMAGE_CANCELLED: &str = "Image reading was cancelled.";
 pub const IMAGE_ANIMATED_PNG: &str = "Animated PNG images cannot be shown.";
 pub fn image_too_large(bytes: u64, limit: u64) -> String {
     format!("Image size is {bytes} bytes; the limit is {limit} bytes.")
+}
+/// 縮めた中身も送信の上限を超えることを示す。
+pub fn image_too_large_after_resizing(bytes: u64, limit: u64) -> String {
+    format!("Image size after resizing is {bytes} bytes; the limit is {limit} bytes.")
+}
+/// 解く前の画素の数と、縮小を受け付ける上限を示す。
+pub fn image_pixels(width: u32, height: u32, limit: u64) -> String {
+    format!("Image has {width}x{height} pixels; the limit for resizing is {limit} pixels.")
 }
 pub fn image_dimensions(width: u32, height: u32, limit: u32) -> String {
     format!(
@@ -605,4 +615,17 @@ pub fn image_dimensions(width: u32, height: u32, limit: u32) -> String {
 }
 pub fn read_image(media_type: &str, width: u32, height: u32, bytes: u64) -> String {
     format!("Read image file {media_type} ({width}x{height}, {bytes} bytes)")
+}
+/// 送る画像の属性と、向きを直す前の元の寸法を示す。
+pub fn read_resized_image(
+    media_type: &str,
+    width: u32,
+    height: u32,
+    bytes: u64,
+    original_width: u32,
+    original_height: u32,
+) -> String {
+    format!(
+        "Read image file {media_type} ({width}x{height}, {bytes} bytes; resized from {original_width}x{original_height})"
+    )
 }

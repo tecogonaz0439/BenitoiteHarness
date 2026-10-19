@@ -1345,6 +1345,7 @@ fn read_image_limits_reject_invalid_headers_and_preserve_text_fallback() -> Test
             .execute(&context, "read", json!({"path":"image"}))
             .is_error
     );
+    fs::write(&path, b"GIF89a\xd0\x07\xd0\x07")?;
     fs::OpenOptions::new()
         .write(true)
         .open(&path)?
@@ -1352,8 +1353,18 @@ fn read_image_limits_reject_invalid_headers_and_preserve_text_fallback() -> Test
     let output = tools.execute(&context, "read", json!({"path":"image"}));
     assert!(output.is_error);
     assert!(output.text.contains("3932161") && output.text.contains("3932160"));
-    for (width, height) in [(2001, 123), (123, 2001), (0, 123), (123, 0)] {
-        fs::write(&path, png_header(width, height))?;
+    for (width, height, bytes) in [
+        (2001, 123, b"GIF89a\xd1\x07\x7b\0".to_vec()),
+        (123, 2001, b"GIF89a\x7b\0\xd1\x07".to_vec()),
+        (
+            2001,
+            123,
+            webp_header(b"VP8X", &[0, 0, 0, 0, 0xd0, 7, 0, 0x7a, 0, 0])?,
+        ),
+        (0, 123, png_header(0, 123)),
+        (123, 0, png_header(123, 0)),
+    ] {
+        fs::write(&path, bytes)?;
         let output = tools.execute(&context, "read", json!({"path":"image"}));
         assert!(output.is_error);
         assert!(output.text.contains(&format!("{width}x{height}")) && output.text.contains("2000"));

@@ -272,7 +272,7 @@ impl ToolSet {
         }
         let call_id = invocation.call_id;
         let result = match call.id {
-            ToolId::Read => read::execute(context, &call.arguments),
+            ToolId::Read => read::execute(context, &call.arguments, invocation.cancelled),
             ToolId::Glob => search::glob(context, &call.arguments, invocation.cancelled)
                 .map(ToolOutput::success),
             ToolId::Grep => search::grep(context, &call.arguments, invocation.cancelled)
