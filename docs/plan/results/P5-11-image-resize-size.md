@@ -16,6 +16,6 @@
 | `image` の PNG と JPEG | 5,259,184 | +298,112（+6.0%） |
 | `image` の PNG、JPEG、GIF、WebP | 5,391,664 | +430,592（+8.7%） |
 
-4 つの形式の構成で加わるクレートは、`image`、`png`、`zune-jpeg`、`zune-core`、`gif`、`image-webp`、`moxcms`、`pxfm`、`fdeflate`、`weezl`、`color_quant`、`bytemuck`、`byteorder-lite`、`quick-error` などである（`flate2` と `miniz_oxide` は今の依存にもある）。
+4 つの形式の構成で加わるクレートは、`image`、`png`、`zune-jpeg`、`zune-core`、`gif`、`image-webp`、`moxcms`、`pxfm`、`fdeflate`、`weezl`、`color_quant`、`bytemuck`、`byteorder-lite`、`quick-error` などである（`flate2`、`miniz_oxide`、`crc32fast`、`adler2` も新しく加わる。2026-10-19 の P5-14 の点検で、今の `Cargo.lock` にないことを確かめた）。
 
 6,016×6,016 の JPEG を解いて縮めたときの最大の常駐の大きさ（`/usr/bin/time -l`）は約 339 MB、時間は約 0.3 秒だった。ファイルの大きさを 3.75 MiB に抑えても、画素の数の多い JPEG は解くと大きくなるので、縮めるなら、解く前に見出しの寸法で画素の数の上限（例: 4,000 万画素）を掛ける必要がある。

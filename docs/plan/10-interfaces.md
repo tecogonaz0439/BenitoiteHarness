@@ -63,6 +63,7 @@ P0 で作るモジュールは `cli`（`--version`・`--help`・`__sandbox` の�
 | `libc` | `=0.2.190` | P0-05 | Linux だけ。seccomp の規則の呼び出しの番号と `AF_*`・`SOCK_*` の定数を得るためだけに使い、`unsafe` の関数を呼ばない。Benitoite の `v0.0.6` の `Cargo.lock` と同じ版 |
 | `crossterm` | `=0.29.0` | P0-06（`[dev-dependencies]`）、P4 | |
 | `unicode-width` | `=0.2.2` | P0-06（`[dev-dependencies]`）、P4 | |
+| `image` | `=0.25.10` | P5-14 | `default-features = false`、機能 `png`・`jpeg`。上限を超える PNG と JPEG を縮める（設計書 01-03「画像のファイルの読み取り」） |
 
 `rustls-platform-verifier` などを直接使う必要が生じたときは、`ureq` が依存する版（`Cargo.lock` の版）に揃える。これは表にないクレートとして止まらなくてよい。`crossterm`・`unicode-width` は、P0-06 では大きさの測定のためだけに `[dev-dependencies]` に置き、P4 で `[dependencies]` に移す。
 
