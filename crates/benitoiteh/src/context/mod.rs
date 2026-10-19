@@ -2,6 +2,7 @@
 
 mod environment;
 pub mod instructions;
+pub mod skills;
 mod text;
 
 use std::fmt;

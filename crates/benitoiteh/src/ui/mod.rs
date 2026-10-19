@@ -73,9 +73,17 @@ impl ExecOutput {
         if let AgentEvent::SessionStart {
             instruction_files,
             skipped_instructions,
+            skills,
+            skipped_skills,
             ..
         } = event
         {
+            for skill in skills {
+                Self::diagnostic(&text::skill_loaded(&skill.name, &skill.path))?;
+            }
+            for skipped in skipped_skills {
+                Self::diagnostic(&text::skill_skipped(&skipped.path, &skipped.reason))?;
+            }
             for path in instruction_files {
                 Self::diagnostic(&text::instruction_loaded(path))?;
             }

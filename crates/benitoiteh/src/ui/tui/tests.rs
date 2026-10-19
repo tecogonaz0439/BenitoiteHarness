@@ -652,6 +652,16 @@ fn status_prints_all_fields_and_sanitizes_values_without_a_base_url() {
         safety: crate::agent::SessionSafety::default(),
         estimate: 123,
         context_window: Some(456),
+        skills: vec![crate::session::RecordedSkill {
+            name: "sample".into(),
+            path: "/skills/sample/SKILL.md".into(),
+            source: crate::session::SkillSource::User,
+            sha256: "a".repeat(64),
+        }],
+        skipped_skills: vec![crate::session::SkippedInstruction {
+            path: "/skills/bad".into(),
+            reason: "invalid\x1b".into(),
+        }],
         instruction_files: vec!["/project/AGENTS.md".into()],
         skipped_instructions: vec![crate::session::SkippedInstruction {
             path: "/project/secret".into(),
@@ -680,6 +690,8 @@ fn status_prints_all_fields_and_sanitizes_values_without_a_base_url() {
         "Context: 123 / 456",
         "/project/AGENTS.md",
         "/project/secret: denied\\x1b",
+        "Skill loaded: sample (/skills/sample/SKILL.md)",
+        "Skill skipped: /skills/bad: invalid\\x1b",
     ] {
         assert!(value.contains(expected), "{expected}: {value}");
     }

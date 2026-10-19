@@ -298,7 +298,7 @@ class ConfigTests(unittest.TestCase):
         harness['config'] = {'restricted': {'after_write_check': False}, 'read': {'line_numbers': False}}
         text = evaluation.benitoiteh_config(harness, harness['model'], '/processor')
         self.assertTrue(text.endswith('[restricted]\nallowed_programs = ["/usr/bin/sort"]\n'
-                                      'after_write_check = false\n\n[read]\nline_numbers = false\n'))
+                                      'after_write_check = false\n\n[read]\nline_numbers = false\n\n[skills]\nuser = false\n'))
         with tempfile.TemporaryDirectory(prefix='skill-eval-config-header-') as directory:
             processor = os.path.join(directory, 'processor')
             with open(processor, 'wb') as f:
@@ -340,6 +340,7 @@ class ConfigTests(unittest.TestCase):
         self.assertIn('[benitoite]\npath = "/trial/real/benitoite"', text)
         self.assertIn('allowed_programs = ["/usr/bin/sort"]', text)
         self.assertIn('[providers.eval]\n', text)
+        self.assertTrue(text.endswith('\n[skills]\nuser = false\n'))
         self.assertIn('context_window = 200000', text)
         self.assertIn('model = "override-model"', text)
         self.assertIn('base_url = "http://127.0.0.1:1234"', text)

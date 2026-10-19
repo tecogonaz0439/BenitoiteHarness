@@ -7,7 +7,9 @@ use serde_json::Value;
 
 use crate::approval::{ApprovalFacts, ApprovalKind, ApprovalOutcome};
 use crate::provider::{FinishReason, ProviderError, Usage};
-use crate::session::{ApprovalPhase, CompactionReason, Record, RecordedMode, SkippedInstruction};
+use crate::session::{
+    ApprovalPhase, CompactionReason, Record, RecordedMode, RecordedSkill, SkippedInstruction,
+};
 
 /// 一連の処理の終了状態。
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -57,6 +59,10 @@ pub enum AgentEvent {
         instruction_files: Vec<PathBuf>,
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         skipped_instructions: Vec<SkippedInstruction>,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        skills: Vec<RecordedSkill>,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        skipped_skills: Vec<SkippedInstruction>,
     },
     /// 操縦を会話に加えた。
     Steered { text: String },
@@ -158,6 +164,8 @@ impl AgentEvent {
                 notice,
                 instruction_files,
                 skipped_instructions,
+                skills,
+                skipped_skills,
             } => Record::SessionStart {
                 session_id: session_id.clone(),
                 resumed: *resumed,
@@ -172,6 +180,8 @@ impl AgentEvent {
                 notice: notice.clone(),
                 instruction_files: instruction_files.clone(),
                 skipped_instructions: skipped_instructions.clone(),
+                skills: skills.clone(),
+                skipped_skills: skipped_skills.clone(),
             },
             Self::ProjectDirChanged { project_dir } => Record::ProjectDirChanged {
                 project_dir: project_dir.clone(),

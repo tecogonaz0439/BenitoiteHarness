@@ -108,3 +108,13 @@ pub fn project_changed(path: &std::path::Path) -> String {
         super::terminal_text(&path.to_string_lossy(), false)
     )
 }
+
+/// 起動時に受け付けた Skill の実のパス。
+pub fn skill_loaded(name: &str, path: &std::path::Path) -> String {
+    format!("Skill loaded: {name} ({})", path.display())
+}
+
+/// 起動時に読まなかった Skill と理由。
+pub fn skill_skipped(path: &std::path::Path, reason: &str) -> String {
+    format!("Skill skipped: {}: {reason}", path.display())
+}

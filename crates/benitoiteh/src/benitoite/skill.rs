@@ -84,22 +84,28 @@ pub struct SkillParts<'a> {
     pub body: &'a str,
 }
 
-/// 属性と先頭の注釈を解析し、プロンプトへ入れる本文の境界と量を確かめる。版の置換は行わない。
-pub fn skill_parts(skill: &str) -> Result<SkillParts<'_>, BenitoiteError> {
+/// 先頭の欄を読み、本文を未検証のまま返す（設計書 01-04）。
+pub(crate) fn frontmatter(skill: &str) -> Option<SkillParts<'_>> {
     let (attributes, body) = skill
         .strip_prefix("---\n")
-        .and_then(|skill| skill.split_once("\n---\n"))
-        .ok_or_else(invalid)?;
+        .and_then(|skill| skill.split_once("\n---\n"))?;
     let attribute = |key: &str| {
         attributes
             .lines()
-            .find_map(|line| {
-                line.strip_prefix(key)
-                    .map(str::trim)
-                    .filter(|value| !value.is_empty())
-            })
-            .ok_or_else(invalid)
+            .find_map(|line| line.strip_prefix(key).map(str::trim))
+            .filter(|value| !value.is_empty())
     };
+    Some(SkillParts {
+        name: attribute("name:")?,
+        description: attribute("description:")?,
+        body,
+    })
+}
+
+/// 属性と先頭の注釈を解析し、プロンプトへ入れる本文の境界と量を確かめる。版の置換は行わない。
+pub fn skill_parts(skill: &str) -> Result<SkillParts<'_>, BenitoiteError> {
+    let parts = frontmatter(skill).ok_or_else(invalid)?;
+    let body = parts.body;
     let mut start = body;
     while let Some((line, rest)) = start.split_once('\n') {
         if !line.trim().is_empty() {
@@ -125,8 +131,8 @@ pub fn skill_parts(skill: &str) -> Result<SkillParts<'_>, BenitoiteError> {
         return Err(invalid());
     }
     Ok(SkillParts {
-        name: attribute("name:")?,
-        description: attribute("description:")?,
+        name: parts.name,
+        description: parts.description,
         body,
     })
 }

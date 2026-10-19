@@ -376,6 +376,7 @@ pub struct ToolContext {
     pub project: ScopeRoot,
     pub temporary: ScopeRoot,
     pub spill: ScopeRoot,
+    skill_roots: Vec<ScopeRoot>,
     pub exclude: ExcludeRules,
     pub benitoite: Option<Arc<crate::benitoite::Processor>>,
     pub skill: Option<Arc<crate::benitoite::skill::SkillDocuments>>,
@@ -448,6 +449,7 @@ impl ToolContext {
             project,
             temporary,
             spill,
+            skill_roots: Vec::new(),
             exclude,
             benitoite: None,
             skill: None,
@@ -532,6 +534,12 @@ impl ToolContext {
     /// セッションの間共有する Skill の問い合わせとキャッシュを追加する。
     pub fn with_skill(mut self, skill: Arc<crate::benitoite::skill::SkillDocuments>) -> Self {
         self.skill = Some(skill);
+        self
+    }
+
+    /// 探索時に開いた Skill の根を保持し、読み取りの範囲だけに加える。
+    pub fn with_skill_roots(mut self, roots: Vec<ScopeRoot>) -> Self {
+        self.skill_roots = roots;
         self
     }
 

@@ -2,7 +2,7 @@
 
 use super::{Agent, AgentError};
 use crate::config::{Approval, Mode, Sandbox};
-use crate::session::{Record, SkippedInstruction};
+use crate::session::{Record, RecordedSkill, SkippedInstruction};
 use std::path::PathBuf;
 
 /// 設定を読み直しても置き換えない、解決済みの安全設定（実装プラン P4-08）。
@@ -34,6 +34,8 @@ pub struct AgentStatus {
     pub context_window: Option<u64>,
     pub instruction_files: Vec<PathBuf>,
     pub skipped_instructions: Vec<SkippedInstruction>,
+    pub skills: Vec<RecordedSkill>,
+    pub skipped_skills: Vec<SkippedInstruction>,
 }
 
 impl Agent {
@@ -77,6 +79,8 @@ impl Agent {
                 .map(|file| file.path.clone())
                 .collect(),
             skipped_instructions: self.environment.skipped_instructions().to_vec(),
+            skills: self.environment.skills().recorded(),
+            skipped_skills: self.environment.skills().skipped.clone(),
         }
     }
 

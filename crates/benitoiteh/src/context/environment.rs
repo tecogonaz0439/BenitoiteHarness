@@ -6,6 +6,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use crate::config::Mode;
 
 use super::instructions::{InstructionFile, ProjectInstructions};
+use super::skills::UserSkills;
 use super::{ContextError, text};
 use crate::session::SkippedInstruction;
 
@@ -20,6 +21,7 @@ pub struct Environment {
     network_allowed: bool,
     benitoite_version: String,
     instructions: ProjectInstructions,
+    skills: UserSkills,
     startup_notice: Vec<String>,
 }
 
@@ -46,6 +48,7 @@ impl Environment {
             network_allowed,
             benitoite_version: text::NOT_CONFIGURED.into(),
             instructions: ProjectInstructions::default(),
+            skills: UserSkills::default(),
             startup_notice: Vec::new(),
         })
     }
@@ -74,6 +77,17 @@ impl Environment {
     pub fn with_project_instructions(mut self, instructions: ProjectInstructions) -> Self {
         self.instructions = instructions;
         self
+    }
+
+    /// 起動時の Skill の索引を固定し、プロジェクトの切り替えでも引き継ぐ。
+    pub fn with_skills(mut self, skills: UserSkills) -> Self {
+        self.skills = skills;
+        self
+    }
+
+    /// 開始の記録と表示に渡す、今の Skill の一覧。
+    pub fn skills(&self) -> &UserSkills {
+        &self.skills
     }
 
     /// 起動の安全に関する通知を session_start に添える。
@@ -114,7 +128,7 @@ impl Environment {
             .fields()
             .into_iter()
             .map(|(name, value)| {
-                if name == "project_instructions" {
+                if matches!(name, "project_instructions" | "skills") {
                     value
                 } else {
                     format!("<{name}>{}</{name}>", escape(&value))
@@ -143,7 +157,7 @@ impl Environment {
             }) {
                 continue;
             }
-            if name == "project_instructions" {
+            if matches!(name, "project_instructions" | "skills") {
                 lines.push(value);
             } else {
                 lines.push(format!("<{name}>{}</{name}>", escape(&value)));
@@ -183,6 +197,9 @@ impl Environment {
                 ),
             )
         }));
+        if let Some(skills) = self.skills.render() {
+            fields.push(("skills", skills));
+        }
         fields
     }
 }

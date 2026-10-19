@@ -20,7 +20,7 @@ use crate::config::writable::{WritableError, validate_writable_with_executable};
 use crate::config::{
     Approval, ConfigError, Mode, ProjectConfig, ReadConfig, Sandbox, UserConfig, child_environment,
 };
-use crate::context::{ContextError, Environment, instructions};
+use crate::context::{ContextError, Environment, instructions, skills};
 use crate::provider::{AssistantPart, Item};
 use crate::safe_fs::{self, SafeFsError, ScopeRoot};
 use crate::sandbox::{self, SandboxError};
@@ -518,18 +518,20 @@ pub(super) fn prepare(
             &ReadConfig::default(),
         )
         .map_err(StartupError::Tools)?;
-        let instructions = if resolved.mode == Mode::Normal {
-            let home = std::fs::canonicalize(&paths.home).map_err(StartupError::Io)?;
+        let home = std::fs::canonicalize(&paths.home);
+        let instructions = if resolved.mode == Mode::Normal && home.is_ok() {
             instructions::collect(
                 resolved.mode,
                 root.real_path(),
                 &paths.instructions_file,
-                &home,
+                home.as_deref().unwrap_or(&paths.home),
                 &exclude,
             )
         } else {
             instructions::ProjectInstructions::default()
         };
+        let (skills, skill_roots) =
+            skills::collect(root.real_path(), &paths.home, &resolved.skills, &exclude);
         let mut context = ToolContext::new(
             resolved.mode,
             root,
@@ -537,6 +539,7 @@ pub(super) fn prepare(
             ScopeRoot::open(&spill).map_err(StartupError::SafeFs)?,
             exclude,
         )
+        .with_skill_roots(skill_roots)
         .with_eval_switches(
             user.restricted.after_write_check,
             resolved.read_line_numbers,
@@ -593,7 +596,8 @@ pub(super) fn prepare(
         let mut environment =
             Environment::capture(&locations.project, resolved.mode, &writable, network, now)
                 .map_err(StartupError::Context)?
-                .with_project_instructions(instructions);
+                .with_project_instructions(instructions)
+                .with_skills(skills);
         if let Some(processor) = &processor {
             environment = environment.with_benitoite_version(&processor.version);
         }

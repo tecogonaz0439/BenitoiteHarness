@@ -354,6 +354,7 @@ impl Agent {
                 tools_sha256: context::tool_definitions_hash(&system.tools)?,
                 after_write_check: (!tool_context.after_write_check).then_some(false),
                 read_line_numbers: (!tool_context.read_line_numbers).then_some(false),
+                skills: environment.skills().recorded(),
             }))?;
         }
         let mut approval_policy = ApprovalPolicy {
@@ -546,6 +547,8 @@ impl Agent {
                         .map(|file| file.path.clone())
                         .collect(),
                     skipped_instructions: self.environment.skipped_instructions().to_vec(),
+                    skills: self.environment.skills().recorded(),
+                    skipped_skills: self.environment.skills().skipped.clone(),
                     notice: Some({
                         let mut notice = context::transmission_notice(
                             &self.config.destination.provider,

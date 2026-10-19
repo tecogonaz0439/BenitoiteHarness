@@ -315,6 +315,18 @@ pub fn session_status(
             .iter()
             .map(|entry| format!("  {}: {}", entry.path.display(), entry.reason)),
     );
+    lines.extend(
+        status
+            .skills
+            .iter()
+            .map(|skill| skill_loaded(&skill.name, &skill.path)),
+    );
+    lines.extend(
+        status
+            .skipped_skills
+            .iter()
+            .map(|skill| skill_skipped(&skill.path, &skill.reason)),
+    );
     lines
         .iter()
         .map(|line| crate::ui::terminal_text(line, false))
@@ -499,4 +511,11 @@ pub fn effect_description(effect: crate::benitoite::Effect) -> &'static str {
         // 表明は道具が表示用の集合から除く（設計書 04-01「実行の前の検査の報告」）。
         Effect::AssertCheck => "",
     }
+}
+
+pub fn skill_loaded(name: &str, path: &std::path::Path) -> String {
+    super::super::text::skill_loaded(name, path)
+}
+pub fn skill_skipped(path: &std::path::Path, reason: &str) -> String {
+    super::super::text::skill_skipped(path, reason)
 }

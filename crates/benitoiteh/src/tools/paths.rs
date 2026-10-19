@@ -2,7 +2,7 @@
 
 use super::{ToolContext, ToolError, text};
 use crate::config::Mode;
-use crate::safe_fs::{ScopeRoot, resolved_path};
+use crate::safe_fs::{ScopeRelPath, ScopeRoot, resolved_path};
 use std::fs::File;
 use std::path::{Path, PathBuf};
 
@@ -25,11 +25,14 @@ impl ToolContext {
         requested: &Path,
         search: bool,
     ) -> Result<OpenedFile, ToolError> {
-        let roots = if search {
+        let mut roots = if search {
             vec![&self.project]
         } else {
             vec![&self.project, &self.temporary, &self.spill]
         };
+        if !search {
+            roots.extend(&self.skill_roots);
+        }
         let mut last_error = ToolError::OutsideScope;
         for root in roots {
             match root.resolve_path(self.project.real_path(), requested) {
@@ -88,7 +91,7 @@ impl ToolContext {
         Ok(OpenedFile { file, real_path })
     }
 
-    pub(super) fn search_path(&self, requested: &Path) -> Result<PathBuf, ToolError> {
+    pub(super) fn search_path(&self, requested: &Path) -> Result<SearchPath<'_>, ToolError> {
         let absolute = self.requested_path(requested);
         let real_path = std::fs::canonicalize(&absolute)?;
         if let Some(reason) = self.exclude.reason(&real_path) {
@@ -98,19 +101,73 @@ impl ToolContext {
             if real_path == self.project.real_path()
                 && (requested == Path::new(".") || absolute == self.project.real_path())
             {
-                return Ok(real_path);
+                return Ok(SearchPath {
+                    real_path,
+                    scope: Some(&self.project),
+                    relative: None,
+                });
             }
             // 起点を開く処理は検索側で行うが、従来の相対パスの構文と範囲の
             // 検査は残す（設計書 01-03「道具の定義の共通の規則」）。
-            let _relative = self
-                .project
-                .resolve_path(self.project.real_path(), requested)?;
-            if !real_path.starts_with(self.project.real_path()) {
-                return Err(ToolError::OutsideScope);
+            for root in std::iter::once(&self.project).chain(&self.skill_roots) {
+                // 根そのものには ScopeRelPath を作れない。絶対パスの構文は
+                // 一つ下の候補で確かめ、起点は保持した記述子を複製する。
+                if real_path == root.real_path() {
+                    root.resolve_path(self.project.real_path(), &requested.join("SKILL.md"))?;
+                    return Ok(SearchPath {
+                        real_path,
+                        scope: Some(root),
+                        relative: None,
+                    });
+                }
+                if root
+                    .resolve_path(self.project.real_path(), requested)
+                    .is_ok()
+                    && real_path.starts_with(root.real_path())
+                {
+                    // resolve_path は最後のリンクの名前を保つ。検索の起点には
+                    // 実のファイルの親を使い、記述子もその親から開く（設計書 01-03「glob」）。
+                    let relative = ScopeRelPath::new(
+                        real_path
+                            .strip_prefix(root.real_path())
+                            .map_err(|_| ToolError::OutsideScope)?,
+                    )?;
+                    return Ok(SearchPath {
+                        real_path,
+                        scope: Some(root),
+                        relative: Some(relative),
+                    });
+                }
+            }
+            return Err(ToolError::OutsideScope);
+        }
+        // 通常モードは従来どおり範囲を限らない。保持した根に当たるときは
+        // 検索もその記述子から始める（設計書 01-04「利用者の Agent Skill」）。
+        for root in std::iter::once(&self.project).chain(&self.skill_roots) {
+            if let Ok(relative) = real_path.strip_prefix(root.real_path()) {
+                return Ok(SearchPath {
+                    scope: Some(root),
+                    relative: if relative.as_os_str().is_empty() {
+                        None
+                    } else {
+                        Some(ScopeRelPath::new(relative)?)
+                    },
+                    real_path,
+                });
             }
         }
-        Ok(real_path)
+        Ok(SearchPath {
+            real_path,
+            scope: None,
+            relative: None,
+        })
     }
+}
+
+pub(super) struct SearchPath<'a> {
+    pub real_path: PathBuf,
+    pub scope: Option<&'a ScopeRoot>,
+    pub relative: Option<ScopeRelPath>,
 }
 
 impl crate::benitoite::diagnostics::DiagnosticSources for ToolContext {

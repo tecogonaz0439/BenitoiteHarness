@@ -103,6 +103,16 @@ fn every_untrusted_surface_emits_only_harness_controls() -> TestResult {
             host: attack.into(),
             benitoiteh_version: "test".into(),
             notice: Some(attack.into()),
+            skills: vec![benitoiteh::session::RecordedSkill {
+                name: attack.into(),
+                path: attack.into(),
+                sha256: "a".repeat(64),
+                source: benitoiteh::session::SkillSource::User,
+            }],
+            skipped_skills: vec![SkippedInstruction {
+                path: attack.into(),
+                reason: attack.into(),
+            }],
             instruction_files: vec![attack.into()],
             skipped_instructions: vec![SkippedInstruction {
                 path: attack.into(),

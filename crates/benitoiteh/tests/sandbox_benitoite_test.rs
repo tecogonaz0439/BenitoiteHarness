@@ -14,6 +14,20 @@ use std::{
     time::Duration,
 };
 const PASS: &str = "import Benitoite.Assert\n@test(\"passes\")\nfunction passes() -> Unit uses Assert.Check\n Assert.equal(actual: 1, expected: 1)\nend function\n";
+
+// 関門: Skill のテストが、確認の後に本物のサンドボックスの中で動くことを守る。
+#[test]
+fn loaded_skill_tests_run_after_confirmation() -> TestResult {
+    let mut f = Fixture::with_user_skill(PASS)?;
+    f.sandbox()?;
+    let directory = f.paths.home.join(".agents/skills/sample");
+    let output = execute(&mut f, json!([directory]), "skill")?;
+    assert!(
+        !output.is_error && output.text.contains("Tests: 1 passed, 0 failed."),
+        "{output:?}"
+    );
+    Ok(())
+}
 fn call(f: &Fixture, paths: Value, approved: bool, id: &str, stop: &AtomicBool) -> ToolOutput {
     let call = match f.tools.validate("benitoite_test", json!({"paths":paths})) {
         Ok(c) => c,

@@ -245,6 +245,8 @@ impl Screen {
                 notice,
                 instruction_files,
                 skipped_instructions,
+                skills,
+                skipped_skills,
                 ..
             } => {
                 self.status.provider.clone_from(provider);
@@ -253,6 +255,12 @@ impl Screen {
                 // notice に base_url を組み込まず、イベントが持つ通知も可視化する。
                 if let Some(notice) = notice {
                     self.notice(notice);
+                }
+                for skill in skills {
+                    self.notice(&text::skill_loaded(&skill.name, &skill.path));
+                }
+                for skipped in skipped_skills {
+                    self.notice(&text::skill_skipped(&skipped.path, &skipped.reason));
                 }
                 for path in instruction_files {
                     self.notice(&text::instruction_loaded(path));

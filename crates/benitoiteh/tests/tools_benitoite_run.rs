@@ -12,6 +12,37 @@ use serde_json::json;
 use std::fs;
 use std::sync::atomic::AtomicBool;
 
+// 関門: 実の取り込み先を Skill の根で読めないと、読める兄弟まで毎回の確認になる。
+#[test]
+fn loaded_skill_scripts_and_sibling_imports_are_readable_for_confirmation() -> TestResult {
+    let f = Fixture::with_user_skill(
+        "import Helper\nfunction main() -> Unit\n Helper.value()\nend function\n",
+    )?;
+    let directory = f.paths.home.join(".agents/skills/sample");
+    fs::write(
+        directory.join("Helper.bnt"),
+        "public function value() -> Unit\n return ()\nend function\n",
+    )?;
+    let output = f.call(
+        json!({"path":directory.join("main.bnt")}),
+        false,
+        "skill",
+        &AtomicBool::new(false),
+    );
+    let request = output.approval.as_ref().ok_or(format!("{output:?}"))?;
+    assert_eq!(request.facts.unread_imports, 0, "{request:?}");
+    assert_eq!(request.facts.targets, [directory.join("main.bnt")]);
+    assert_eq!(
+        request.summary,
+        format!(
+            "Run {} with effects: none",
+            directory.join("main.bnt").display()
+        )
+    );
+    assert!(request.facts.sources.len() >= 2);
+    Ok(())
+}
+
 // 関門: 実際の check --report の警告、パス解決、検査の誤りを実行器の境界で守る。
 #[test]
 fn inspection_precedes_confirmation_and_rejects_bad_paths_reports_and_changes() -> TestResult {

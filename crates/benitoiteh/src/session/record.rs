@@ -54,6 +54,25 @@ impl From<Mode> for RecordedMode {
     }
 }
 
+/// Skill を見つけた場所の分類。
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SkillSource {
+    /// 利用者のホームの中。
+    User,
+    /// プロジェクトの探索範囲の中。
+    Project,
+}
+
+/// 起動時に読んだ Skill の識別情報。全文は記録しない。
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct RecordedSkill {
+    pub name: String,
+    pub path: PathBuf,
+    pub sha256: String,
+    pub source: SkillSource,
+}
+
 /// 最初の行。キーや HTTP のヘッダを受け取る欄を持たない。
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Header {
@@ -71,6 +90,8 @@ pub struct Header {
     pub after_write_check: Option<bool>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub read_line_numbers: Option<bool>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub skills: Vec<RecordedSkill>,
 }
 
 /// 利用者の入力を記録するときの用途（操縦の綴りは記録では steer）。
@@ -229,6 +250,10 @@ pub enum Record {
         instruction_files: Vec<PathBuf>,
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         skipped_instructions: Vec<SkippedInstruction>,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        skills: Vec<RecordedSkill>,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        skipped_skills: Vec<SkippedInstruction>,
     },
     /// 番の開始。
     TurnStart { turn: u64 },

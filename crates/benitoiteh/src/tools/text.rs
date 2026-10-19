@@ -33,7 +33,7 @@ pub const MODE_MISMATCH: &str =
     "Tool set and execution context modes differ. Use the session's tool set.";
 pub const SAFE_FS: &str = "Cannot open this path safely. Use a path within the allowed scope.";
 pub const IO: &str = "File operation failed. Check the path and permissions, then retry.";
-pub const OUTSIDE_SCOPE: &str = "Path is outside the allowed scope. Use a project-relative path; read also allows this session's temporary and spill directories.";
+pub const OUTSIDE_SCOPE: &str = "Path is outside the allowed scope. Use a project-relative path; read also allows this session's temporary and spill directories, and read, glob, grep, and the benitoite tools allow the loaded skill directories.";
 pub const NOT_TEXT: &str = "Cannot read a binary or image file. Choose a text file.";
 pub const STATE: &str = "Read-version state is unavailable. Restart the session before retrying.";
 pub const CHANGED: &str = "File changed while it was being read. Read it again, then retry.";
