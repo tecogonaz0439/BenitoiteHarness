@@ -26,6 +26,87 @@ fn done(a: &mut OpenAiChatAssembler) -> Result<Vec<StreamEvent>, OpenAiChatError
     })
 }
 
+// 作成時の関門: total にだけ含まれる推論を、最後の使用量から一度だけ数える契約。
+// 既存のテストは推論の明示値か completion だけを扱い、この過少計上を捕まえない。
+#[test]
+fn final_usage_counts_reasoning_reported_only_in_total_once() -> TestResult {
+    let mut a = assembler();
+    feed(
+        &mut a,
+        &json!({"choices":[{"delta":{"content":"Text"}}],
+            "usage":{"prompt_tokens":36,"completion_tokens":1,"total_tokens":37}}),
+    )?;
+    let raw = json!({"prompt_tokens":36,"completion_tokens":5,"total_tokens":290});
+    let expected = Usage {
+        input_tokens: Some(36),
+        output_tokens: Some(254),
+        reasoning_tokens: Some(249),
+        raw: raw.clone(),
+        ..Usage::default()
+    };
+    let events = feed(
+        &mut a,
+        &json!({"choices":[{"delta":{},"finish_reason":"stop"}],"usage":raw}),
+    )?;
+    assert_eq!(
+        events,
+        vec![StreamEvent::Usage {
+            usage: expected.clone()
+        }]
+    );
+    done(&mut a)?;
+    assert_eq!(a.finish()?.usage, expected);
+    // 明示された推論は内数のままにし、不足した報告や溢れる和から推測しない。
+    for (raw, output, reasoning) in [
+        (
+            json!({"prompt_tokens":36,"completion_tokens":5,"total_tokens":290,
+            "completion_tokens_details":{"reasoning_tokens":2}}),
+            5,
+            Some(2),
+        ),
+        (
+            json!({"prompt_tokens":36,"completion_tokens":5,"total_tokens":290,
+            "completion_tokens_details":{"reasoning_tokens":0}}),
+            5,
+            Some(0),
+        ),
+        (
+            json!({"prompt_tokens":36,"completion_tokens":5,"total_tokens":41}),
+            5,
+            None,
+        ),
+        (
+            json!({"prompt_tokens":36,"completion_tokens":5,"total_tokens":40}),
+            5,
+            None,
+        ),
+        (json!({"prompt_tokens":36,"completion_tokens":5}), 5, None),
+        (
+            json!({"prompt_tokens":u64::MAX,"completion_tokens":5,"total_tokens":u64::MAX}),
+            5,
+            None,
+        ),
+        (
+            json!({"prompt_tokens":36,"completion_tokens":5,"total_tokens":290,
+            "completion_tokens_details":{"reasoning_tokens":null}}),
+            254,
+            Some(249),
+        ),
+    ] {
+        let mut a = assembler();
+        feed(
+            &mut a,
+            &json!({"choices":[{"delta":{"content":"Text"},"finish_reason":"stop"}],"usage":raw}),
+        )?;
+        done(&mut a)?;
+        let usage = a.finish()?.usage;
+        assert_eq!(usage.output_tokens, Some(output));
+        assert_eq!(usage.reasoning_tokens, reasoning);
+        assert_eq!(usage.raw, raw);
+    }
+    Ok(())
+}
+
 // 2026-10-18 に受け取った形。署名は短い偽の値だけを使う（実装プラン P1-12）。
 fn call(id: &str) -> Value {
     json!({"id":id,"type":"function","function":{"name":"read","arguments":"{\"path\":\"a.bnt\"}"},

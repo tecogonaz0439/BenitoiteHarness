@@ -229,3 +229,7 @@ python3 -I tools/skill-eval/skill_eval.py \
 ### P5-09 利用者の Agent Skill
 
 - `benitoiteh` の評価の設定に `[skills] user = false` を加え、利用者の Skill を読まないようにした。
+
+### P5-10 openai-chat の reasoning_effort
+
+- `benitoiteh-gemini` の `provider.capabilities.reasoning_effort` を真にし、生成する設定に `capabilities = { reasoning_effort = true }` が入ることを確かめるテストを加えた。

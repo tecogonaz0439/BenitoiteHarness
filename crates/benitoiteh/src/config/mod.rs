@@ -122,6 +122,7 @@ pub struct CapabilityOverrides {
     pub tool_choice_none: Option<bool>,
     pub reasoning_replay: Option<ReasoningReplay>,
     pub parallel_tool_calls: Option<bool>,
+    pub reasoning_effort: Option<bool>,
     pub context_window: Option<u64>,
     pub max_output_tokens: Option<u64>,
 }
@@ -181,6 +182,9 @@ impl ProviderConfig {
         }
         if let Some(value) = overrides.parallel_tool_calls {
             result.parallel_tool_calls = value;
+        }
+        if let Some(value) = overrides.reasoning_effort {
+            result.reasoning_effort = value;
         }
         result.context_window = self
             .context_window

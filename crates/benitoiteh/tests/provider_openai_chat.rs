@@ -307,14 +307,17 @@ fn fragmented_parallel_calls_preserve_index_order_raw_messages_and_late_usage() 
 
 #[test]
 fn requests_follow_capabilities_and_omit_authorization_without_a_key() -> TestResult {
-    let cases = [(false, false, None, false), (true, true, Some(123), true)];
+    let cases = [
+        (false, false, None, false, false),
+        (true, true, Some(123), true, true),
+    ];
     let mut server = MockProvider::start(
         cases
             .iter()
             .map(|_| ResponseScript::sse(simple("stop")))
             .collect(),
     )?;
-    for (index, (strict, parallel, limit, key)) in cases.into_iter().enumerate() {
+    for (index, (strict, parallel, limit, key, effort)) in cases.into_iter().enumerate() {
         let adapter = OpenAiChatAdapter::new(
             Destination {
                 base_url: format!("{}/v1/", server.base_url()),
@@ -325,6 +328,7 @@ fn requests_follow_capabilities_and_omit_authorization_without_a_key() -> TestRe
                 parallel_tool_calls: parallel,
                 max_output_tokens: limit,
                 tool_choice_none: true,
+                reasoning_effort: effort,
                 ..Capabilities::default()
             },
             if key { KEY.into() } else { String::new() },
@@ -407,7 +411,11 @@ fn requests_follow_capabilities_and_omit_authorization_without_a_key() -> TestRe
                 json!("integer")
             })
         );
-        assert!(body.get("reasoning_effort").is_none());
+        if effort {
+            assert_eq!(body.get("reasoning_effort"), Some(&json!("high")));
+        } else {
+            assert!(body.get("reasoning_effort").is_none());
+        }
     }
     server.shutdown()?;
     Ok(())

@@ -182,6 +182,11 @@ fn capabilities_use_official_defaults_only_at_the_exact_official_destination() -
         [providers.responses]
         kind = "openai-responses"
         model = "m"
+        [providers.chat_effort]
+        kind = "openai-chat"
+        base_url = "https://compatible.example/v1"
+        model = "m"
+        capabilities = { reasoning_effort = true }
     "#,
     )?;
     let official = provider(&config, "official")?;
@@ -189,10 +194,12 @@ fn capabilities_use_official_defaults_only_at_the_exact_official_destination() -
     assert_eq!(official.effort, None);
     assert!(!official.resolved_capabilities().cache_control);
     assert!(official.resolved_capabilities().tool_choice_none);
+    assert!(!official.resolved_capabilities().reasoning_effort);
     let compatible = provider(&config, "compatible")?.resolved_capabilities();
     assert!(!compatible.cache_control);
     assert!(!compatible.tool_choice_none);
     assert!(!compatible.parallel_tool_calls);
+    assert!(!compatible.reasoning_effort);
     assert!(compatible.strict_tools);
     assert_eq!(compatible.reasoning_replay, ReasoningReplay::AllTurns);
     assert_eq!(compatible.context_window, Some(12345));
@@ -205,6 +212,17 @@ fn capabilities_use_official_defaults_only_at_the_exact_official_destination() -
     let responses = provider(&config, "responses")?;
     assert_eq!(responses.base_url(), "https://api.openai.com/v1");
     assert!(responses.resolved_capabilities().strict_tools);
+    assert!(!responses.resolved_capabilities().reasoning_effort);
+    assert!(
+        !provider(&config, "chat")?
+            .resolved_capabilities()
+            .reasoning_effort
+    );
+    assert!(
+        provider(&config, "chat_effort")?
+            .resolved_capabilities()
+            .reasoning_effort
+    );
     Ok(())
 }
 
