@@ -268,6 +268,14 @@ pub enum StreamEvent {
 pub enum NonRetryableKind {
     /// 認証の失敗。
     Authentication,
+    /// ChatGPT のプランの利用上限。
+    SubscriptionUsageLimit,
+    /// ChatGPT のアカウントに利用資格がない。
+    SubscriptionNotEligible,
+    /// ChatGPT のプランが要求に対応しない。
+    SubscriptionUnsupported,
+    /// ChatGPT の許可を取り直す必要がある。
+    LoginRequired,
     /// 残高または利用の上限。
     Quota,
     /// 要求の形の誤り。
@@ -304,6 +312,10 @@ impl fmt::Display for ProviderError {
             Self::NonRetryable { reason } => match reason {
                 NonRetryableKind::Authentication => text::AUTHENTICATION,
                 NonRetryableKind::Quota => text::QUOTA,
+                NonRetryableKind::SubscriptionUsageLimit => text::SUBSCRIPTION_USAGE_LIMIT,
+                NonRetryableKind::SubscriptionNotEligible => text::SUBSCRIPTION_NOT_ELIGIBLE,
+                NonRetryableKind::SubscriptionUnsupported => text::SUBSCRIPTION_UNSUPPORTED,
+                NonRetryableKind::LoginRequired => text::LOGIN_REQUIRED,
                 NonRetryableKind::InvalidRequest | NonRetryableKind::RequestRejected => {
                     text::INVALID_REQUEST
                 }

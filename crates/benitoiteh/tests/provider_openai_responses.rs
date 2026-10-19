@@ -121,7 +121,16 @@ fn receive(
         if started.elapsed() > Duration::from_secs(6) {
             return Err(OpenAiResponsesError::InvalidResponse);
         }
-        let next = stream.poll(Duration::from_millis(20))?;
+        let next = match stream.poll(Duration::from_millis(20)) {
+            Ok(next) => next,
+            Err(error) => {
+                stream.cancellation().cancel();
+                stream
+                    .join()
+                    .map_err(|_| OpenAiResponsesError::InvalidResponse)?;
+                return Err(error);
+            }
+        };
         let ended = next
             .iter()
             .any(|e| matches!(e, StreamEvent::Finished { .. }));
@@ -848,6 +857,26 @@ fn http_and_stream_errors_classify_quota_context_authentication_and_retries() ->
         }
         cases.push((status, "other", "insufficient_quota", quota.clone()));
     }
+    for (code, reason) in [
+        (
+            "subscription_sharing_usage_limit_exceeded",
+            NonRetryableKind::SubscriptionUsageLimit,
+        ),
+        (
+            "subscription_sharing_user_not_eligible",
+            NonRetryableKind::SubscriptionNotEligible,
+        ),
+        (
+            "subscription_sharing_unsupported_capability",
+            NonRetryableKind::SubscriptionUnsupported,
+        ),
+    ] {
+        for status in [Some(400), Some(403), Some(429), Some(500), None] {
+            let expected = ProviderError::NonRetryable { reason };
+            cases.push((status, code, "error_type", expected.clone()));
+            cases.push((status, "other", code, expected));
+        }
+    }
     let mut scripts = Vec::new();
     for (status, code, error_type, _) in &cases {
         let error = json!({"code":code,"type":error_type,"message":KEY});
@@ -874,7 +903,11 @@ fn http_and_stream_errors_classify_quota_context_authentication_and_retries() ->
                 .err()
                 .ok_or(io::Error::from(io::ErrorKind::InvalidData))?;
             // error の最上位 type はイベントの種類なので、error.type による quota は failed だけ。
-            let expected = if status.is_none() && kind == 0 && error_type == "insufficient_quota" {
+            let expected = if status.is_none()
+                && kind == 0
+                && (error_type == "insufficient_quota"
+                    || error_type.starts_with("subscription_sharing_"))
+            {
                 ProviderError::NonRetryable {
                     reason: NonRetryableKind::InvalidRequest,
                 }
@@ -882,6 +915,28 @@ fn http_and_stream_errors_classify_quota_context_authentication_and_retries() ->
                 expected.clone()
             };
             assert_eq!(error.classification(), expected, "{status:?} {code} {kind}");
+            let message = match expected {
+                ProviderError::NonRetryable {
+                    reason: NonRetryableKind::SubscriptionUsageLimit,
+                } => Some(
+                    "ChatGPT plan usage limit reached. See https://chatgpt.com/settings/usage.",
+                ),
+                ProviderError::NonRetryable {
+                    reason: NonRetryableKind::SubscriptionNotEligible,
+                } => Some("This ChatGPT account is not eligible for ChatGPT plan usage."),
+                ProviderError::NonRetryable {
+                    reason: NonRetryableKind::SubscriptionUnsupported,
+                } => Some("ChatGPT plan usage does not support this request."),
+                ProviderError::Retryable { .. }
+                | ProviderError::ContextOverflow
+                | ProviderError::NonRetryable { .. }
+                | ProviderError::StreamDisconnected
+                | ProviderError::InvalidResponse
+                | ProviderError::EmptyResponse => None,
+            };
+            if let Some(message) = message {
+                assert_eq!(error.classification().to_string(), message);
+            }
             assert!(!format!("{error:?} {error}").contains(KEY));
             let OpenAiResponsesError::Provider {
                 details: Some(details),
@@ -1151,6 +1206,468 @@ fn bounded_images_are_omitted_with_one_notice_per_result() -> TestResult {
             if partial { 1 } else { 6 }
         );
     }
+    server.shutdown()?;
+    Ok(())
+}
+
+#[path = "support/chatgpt.rs"]
+mod chatgpt;
+
+struct ChatGptFixture(std::path::PathBuf);
+impl ChatGptFixture {
+    fn new() -> Result<Self, Box<dyn Error>> {
+        let mut random = [0; 16];
+        getrandom::fill(&mut random)?;
+        let path =
+            std::env::temp_dir().join(format!("bh-requests-{:032x}", u128::from_ne_bytes(random)));
+        std::fs::create_dir(&path)?;
+        Ok(Self(path))
+    }
+    fn store(&self, expires_at: u64) -> Result<benitoiteh::auth::Store, Box<dyn Error>> {
+        let store = benitoiteh::auth::Store::open(&self.0.join("state/benitoiteh/auth"))?;
+        store.lock()?.save(&chatgpt::credentials(expires_at))?;
+        Ok(store)
+    }
+}
+impl Drop for ChatGptFixture {
+    fn drop(&mut self) {
+        let _removed = std::fs::remove_dir_all(&self.0);
+    }
+}
+
+fn chatgpt_adapter(
+    server: &MockProvider,
+    store: benitoiteh::auth::Store,
+) -> OpenAiResponsesAdapter {
+    OpenAiResponsesAdapter::new(
+        destination(server),
+        Capabilities {
+            max_output_tokens: Some(123),
+            ..AdapterKind::OpenAiResponses
+                .official_capabilities()
+                .unwrap_or_default()
+        },
+        String::new(),
+    )
+    .with_chatgpt_tokens(benitoiteh::provider::openai_responses::ChatGptTokens::new(
+        store,
+        chatgpt::endpoints(&server.base_url()),
+    ))
+}
+
+fn refreshed_token() -> io::Result<ResponseScript> {
+    ResponseScript::json(
+        200,
+        &json!({"access_token":chatgpt::NEW_ACCESS,"expires_in":3600}),
+    )
+}
+
+// 関門: 本文と保存の接続をアダプタの公開の境界で確かめる。
+// API キーの試験では、保存の再読み取りや ChatGPT 固有の欄の省略は検出できない。
+#[test]
+fn chatgpt_requests_omit_unsupported_fields_and_read_tokens_for_each_send() -> TestResult {
+    let fixture = ChatGptFixture::new()?;
+    let store = fixture.store(4_000_000_000)?;
+    let writer = benitoiteh::auth::Store::open(&fixture.0.join("state/benitoiteh/auth"))?;
+    let mut server = MockProvider::start(vec![
+        ResponseScript::sse(simple()),
+        ResponseScript::sse(simple()),
+    ])?;
+    let adapter = chatgpt_adapter(&server, store);
+    let request = adapter.build_request(
+        &conversation(),
+        "System",
+        &tools(),
+        RequestOptions {
+            prompt_cache_key: Some("test-session"),
+            ..RequestOptions::default()
+        },
+    )?;
+    for index in 0..2 {
+        if index == 1 {
+            let mut saved = chatgpt::credentials(4_000_000_000);
+            let tokens = saved.tokens.as_mut().ok_or("tokens")?;
+            tokens.access_token = benitoiteh::auth::Secret::new(chatgpt::NEW_ACCESS.into());
+            writer.lock()?.save(&saved)?;
+        }
+        let stream = adapter.stream(&client(), &request)?;
+        for secret in [chatgpt::ACCESS, chatgpt::REFRESH, chatgpt::NEW_ACCESS] {
+            assert!(!format!("{adapter:?} {request:?} {stream:?}").contains(secret));
+        }
+        receive(stream)?;
+    }
+    let requests = server.requests()?;
+    assert_eq!(requests.len(), 2);
+    for (request, token) in requests.iter().zip([chatgpt::ACCESS, chatgpt::NEW_ACCESS]) {
+        assert_eq!(
+            request.headers.get("authorization"),
+            Some(&format!("Bearer {token}"))
+        );
+        assert_eq!(request.path, "/responses");
+        let body = &request.body;
+        assert_eq!(body.get("instructions"), Some(&json!("System")));
+        assert_eq!(body.get("store"), Some(&json!(false)));
+        assert_eq!(body.get("stream"), Some(&json!(true)));
+        assert_eq!(body.get("prompt_cache_key"), Some(&json!("test-session")));
+        for field in [
+            "background",
+            "conversation",
+            "max_output_tokens",
+            "max_tool_calls",
+            "metadata",
+            "moderation",
+            "prompt",
+            "prompt_cache_retention",
+            "safety_identifier",
+            "temperature",
+            "top_logprobs",
+            "top_p",
+            "truncation",
+            "user",
+            "previous_response_id",
+        ] {
+            assert!(body.get(field).is_none(), "{field}");
+        }
+        assert!(
+            !body
+                .get("input")
+                .and_then(Value::as_array)
+                .ok_or("input")?
+                .iter()
+                .any(|item| item.get("role") == Some(&json!("system")))
+        );
+        for token in [chatgpt::ACCESS, chatgpt::REFRESH, chatgpt::NEW_ACCESS] {
+            assert!(!body.to_string().contains(token));
+        }
+    }
+    server.shutdown()?;
+    Ok(())
+}
+
+// 関門: 401 の一度だけの更新と分類は、HTTP の順序と認証ヘッダを観察して確かめる。
+#[test]
+fn chatgpt_refreshes_once_on_401_and_classifies_refresh_failures() -> TestResult {
+    for case in [
+        "success",
+        "second-401",
+        "permanent",
+        "communication",
+        "forbidden",
+        "before-send",
+    ] {
+        let fixture = ChatGptFixture::new()?;
+        let store = fixture.store(if case == "before-send" {
+            1
+        } else {
+            4_000_000_000
+        })?;
+        let unauthorized = || {
+            ResponseScript::json(
+                401,
+                &json!({"error":{"code":"invalid_token","message":chatgpt::ACCESS}}),
+            )
+        };
+        let scripts = match case {
+            "success" => vec![
+                unauthorized()?,
+                refreshed_token()?,
+                ResponseScript::sse(simple()),
+            ],
+            "second-401" => vec![
+                unauthorized()?,
+                refreshed_token()?,
+                ResponseScript::json(
+                    401,
+                    &json!({"error":{"code":"invalid_token","message":chatgpt::NEW_ACCESS}}),
+                )?,
+            ],
+            "permanent" => vec![
+                unauthorized()?,
+                ResponseScript::json(400, &json!({"error":"invalid_grant"}))?,
+            ],
+            "communication" => vec![
+                unauthorized()?,
+                ResponseScript::json(503, &json!({"error":"unavailable"}))?,
+            ],
+            "forbidden" => vec![ResponseScript::json(
+                403,
+                &json!({"error":{"code":"forbidden"}}),
+            )?],
+            "before-send" => vec![ResponseScript::json(503, &json!({"error":"unavailable"}))?],
+            _ => return Err("unknown case".into()),
+        };
+        let mut server = MockProvider::start(scripts)?;
+        let adapter = chatgpt_adapter(&server, store);
+        let result = request(&adapter, &conversation(), RequestOptions::default());
+        if case == "success" {
+            assert!(result.is_ok());
+        } else {
+            let error = result.err().ok_or("expected failure")?;
+            let expected = match case {
+                "second-401" | "permanent" => ProviderError::NonRetryable {
+                    reason: NonRetryableKind::LoginRequired,
+                },
+                "before-send" => ProviderError::Retryable {
+                    retry_after_secs: None,
+                },
+                _ => ProviderError::NonRetryable {
+                    reason: NonRetryableKind::Authentication,
+                },
+            };
+            assert_eq!(error.classification(), expected, "{case}");
+            if case == "second-401" {
+                let OpenAiResponsesError::Provider {
+                    details: Some(details),
+                    status,
+                    ..
+                } = &error
+                else {
+                    return Err("missing error details".into());
+                };
+                assert_eq!(*status, Some(401));
+                assert_eq!(details.message.as_deref(), Some("[redacted]"));
+            }
+            for token in [chatgpt::ACCESS, chatgpt::NEW_ACCESS, chatgpt::REFRESH] {
+                assert!(!format!("{error:?} {error}").contains(token));
+            }
+        }
+        let requests = server.requests()?;
+        assert_eq!(
+            requests.len(),
+            match case {
+                "success" | "second-401" => 3,
+                "permanent" | "communication" => 2,
+                _ => 1,
+            }
+        );
+        if let Some(refresh) = requests.iter().find(|request| request.path == "/token") {
+            assert!(!refresh.headers.contains_key("authorization"));
+            let form = std::str::from_utf8(&refresh.raw_body)?;
+            assert!(form.contains("grant_type=refresh_token"));
+            assert!(form.contains(chatgpt::REFRESH));
+        }
+        if let Some(resent) = requests.get(2) {
+            assert_eq!(
+                resent.headers.get("authorization"),
+                Some(&format!("Bearer {}", chatgpt::NEW_ACCESS))
+            );
+            assert_eq!(resent.body, requests.first().ok_or("first request")?.body);
+        }
+        server.shutdown()?;
+    }
+    Ok(())
+}
+
+// 関門: 更新中と再送中で同じ取り消しハンドルが働くことを、同期した模擬通信で確かめる。
+#[test]
+fn chatgpt_cancellation_survives_resend_and_prevents_send_after_refresh() -> TestResult {
+    use std::sync::mpsc;
+    for during_refresh in [true, false] {
+        let fixture = ChatGptFixture::new()?;
+        let (entered, arrival) = mpsc::channel();
+        let (release, permit) = mpsc::channel();
+        let controlled = Delivery::Controlled {
+            entered,
+            release: permit,
+        };
+        let mut refresh = refreshed_token()?;
+        let mut response = ResponseScript::sse(simple());
+        if during_refresh {
+            refresh.delivery = controlled;
+        } else {
+            response.delivery = controlled;
+        }
+        let mut server = MockProvider::start(vec![
+            ResponseScript::json(401, &json!({"error":{"code":"invalid_token"}}))?,
+            refresh,
+            response,
+        ])?;
+        let adapter = chatgpt_adapter(&server, fixture.store(4_000_000_000)?);
+        let request = adapter.build_request(
+            &conversation(),
+            "System",
+            &tools(),
+            RequestOptions::default(),
+        )?;
+        let mut stream = adapter.stream(&client(), &request)?;
+        let cancellation = stream.cancellation();
+        let (probe, probes) = mpsc::channel();
+        let (observed, observation) = mpsc::channel();
+        let worker = std::thread::spawn(move || {
+            loop {
+                let polled = stream.poll(Duration::from_millis(20));
+                if probes.try_recv().is_ok() {
+                    let _sent = observed.send(());
+                }
+                if let Err(error) = polled {
+                    stream.cancellation().cancel();
+                    stream
+                        .join()
+                        .map_err(|_| OpenAiResponsesError::InvalidResponse)?;
+                    return Err::<(), _>(error);
+                }
+            }
+        });
+        // 本文が保留されてから poll の往復を確かめる。秒数で進捗を判定しない。
+        let arrived = arrival.recv_timeout(Duration::from_secs(5));
+        let _sent = probe.send(());
+        let responsive = observation.recv_timeout(Duration::from_secs(5));
+        cancellation.cancel();
+        if during_refresh {
+            release.send(())?;
+        } else {
+            server.shutdown()?;
+        }
+        let result = worker.join().map_err(|_| "receiver thread failed")?;
+        arrived?;
+        responsive?;
+        assert!(matches!(result, Err(OpenAiResponsesError::Cancelled)));
+        let paths = server
+            .requests()?
+            .into_iter()
+            .map(|r| r.path)
+            .collect::<Vec<_>>();
+        let expected = if during_refresh {
+            vec!["/responses", "/token"]
+        } else {
+            vec!["/responses", "/token", "/responses"]
+        };
+        assert_eq!(paths, expected);
+        assert!(cancellation.is_cancelled());
+        let saved = benitoiteh::auth::Store::open(&fixture.0.join("state/benitoiteh/auth"))?
+            .load()?
+            .ok_or("saved authorization")?;
+        assert_eq!(
+            saved
+                .tokens
+                .ok_or("saved tokens")?
+                .access_token
+                .expose_secret(),
+            chatgpt::NEW_ACCESS
+        );
+        server.shutdown()?;
+    }
+    Ok(())
+}
+
+// 関門: 再送の応答に旧・新の両トークンが含まれる場合も、詳細と Retry-After を外へ漏らさない。
+#[test]
+fn chatgpt_resend_errors_redact_both_rejected_and_current_tokens() -> TestResult {
+    for status in [Some(401), Some(400), None] {
+        let fixture = ChatGptFixture::new()?;
+        let echoed = format!("{} | {}", chatgpt::ACCESS, chatgpt::NEW_ACCESS);
+        let error = json!({"type":echoed,"code":echoed,"message":echoed});
+        let response = if let Some(status) = status {
+            let mut response = ResponseScript::json(status, &json!({"error":error}))?;
+            response.headers.push(("Retry-After".into(), echoed));
+            response
+        } else {
+            ResponseScript::sse(sse(&[
+                json!({"type":"response.failed","response":{"status":"failed","error":error}}),
+            ]))
+        };
+        let mut server = MockProvider::start(vec![
+            ResponseScript::json(401, &json!({"error":{"code":"invalid_token"}}))?,
+            refreshed_token()?,
+            response,
+        ])?;
+        let adapter = chatgpt_adapter(&server, fixture.store(4_000_000_000)?);
+        let error = request(&adapter, &conversation(), RequestOptions::default())
+            .err()
+            .ok_or("expected rejection")?;
+        let OpenAiResponsesError::Provider {
+            details: Some(details),
+            retry_after,
+            ..
+        } = &error
+        else {
+            return Err("missing error details".into());
+        };
+        for value in [&details.code, &details.error_type, &details.message] {
+            assert_eq!(value.as_deref(), Some("[redacted] | [redacted]"));
+        }
+        assert_eq!(
+            retry_after.as_deref(),
+            status.map(|_| "[redacted] | [redacted]")
+        );
+        assert_eq!(
+            server
+                .requests()?
+                .iter()
+                .map(|r| r.path.as_str())
+                .collect::<Vec<_>>(),
+            ["/responses", "/token", "/responses"]
+        );
+        for secret in [chatgpt::ACCESS, chatgpt::NEW_ACCESS] {
+            assert!(!format!("{error:?} {error} {details:?}").contains(secret));
+        }
+        server.shutdown()?;
+    }
+    Ok(())
+}
+
+// 関門: 送信前の更新待ちでも stream を返し、取り消しの後には推論を開始しない。
+// 応答の送信をチャネルで制御し、要求の順序と保存の結果で確かめる。
+#[test]
+fn chatgpt_initial_token_wait_can_be_cancelled_without_sending_inference() -> TestResult {
+    use std::sync::mpsc;
+    let fixture = ChatGptFixture::new()?;
+    let (entered, arrival) = mpsc::channel();
+    let (release, permit) = mpsc::channel();
+    let mut refresh = refreshed_token()?;
+    refresh.delivery = Delivery::Controlled {
+        entered,
+        release: permit,
+    };
+    let mut server = MockProvider::start(vec![refresh, ResponseScript::sse(simple())])?;
+    let adapter = chatgpt_adapter(&server, fixture.store(1)?);
+    let request = adapter.build_request(
+        &conversation(),
+        "System",
+        &tools(),
+        RequestOptions::default(),
+    )?;
+    let (created, ready) = mpsc::channel();
+    let creator = std::thread::spawn(move || {
+        let stream = adapter.stream(&client(), &request);
+        let _sent = created.send(stream);
+    });
+    // タイムアウトは不具合によるデッドロックの打ち切りだけに使う。
+    let arrival_result = arrival.recv_timeout(Duration::from_secs(5));
+    let stream_result = ready.recv_timeout(Duration::from_secs(5));
+    if arrival_result.is_err() || stream_result.is_err() {
+        let _released = release.send(());
+        creator.join().map_err(|_| "creator thread failed")?;
+        return Err("stream() must return while the initial token response is withheld".into());
+    }
+    let mut stream = stream_result??;
+    creator.join().map_err(|_| "creator thread failed")?;
+    stream.cancellation().cancel();
+    release.send(())?;
+    assert!(matches!(
+        stream.poll(Duration::ZERO),
+        Err(OpenAiResponsesError::Cancelled)
+    ));
+    stream.join()?;
+    assert_eq!(
+        server
+            .requests()?
+            .iter()
+            .map(|r| r.path.as_str())
+            .collect::<Vec<_>>(),
+        ["/token"]
+    );
+    let saved = benitoiteh::auth::Store::open(&fixture.0.join("state/benitoiteh/auth"))?
+        .load()?
+        .ok_or("saved authorization")?;
+    assert_eq!(
+        saved
+            .tokens
+            .ok_or("saved tokens")?
+            .access_token
+            .expose_secret(),
+        chatgpt::NEW_ACCESS
+    );
     server.shutdown()?;
     Ok(())
 }

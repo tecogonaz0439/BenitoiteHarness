@@ -81,7 +81,7 @@
 | [P5-19](tasks/P5-19-fork.md) | `/fork`（今の道を新しいセッションに写す。参照する `spill/`・`objects/` も写す） | P5-17 | 完了 |
 | [P5-20](tasks/P5-20-askpass.md) | 秘密の入力の段 2（サンドボックスの外のコマンドの `SSH_ASKPASS`・`GIT_ASKPASS`・`SUDO_ASKPASS` の仲介） | P5-18 | 完了 |
 | [P5-21](tasks/P5-21-chatgpt-login.md) | Sign in with ChatGPT のログイン・保存・更新・ログアウト（ID トークンの検証、BH-114） | P5-18 | 完了 |
-| [P5-22](tasks/P5-22-chatgpt-requests.md) | Sign in with ChatGPT の要求（`auth = "chatgpt"` の提供者） | P5-21 | 未着手 |
+| [P5-22](tasks/P5-22-chatgpt-requests.md) | Sign in with ChatGPT の要求（`auth = "chatgpt"` の提供者） | P5-21 | 完了 |
 | [P5-23](tasks/P5-23-plugin-skills.md) | Agent Plugins のプラグインの Skill を読む（MCP は読まない） | P5-18 | 未着手 |
 
 P1 の作業は P0-04・P0-05（OS のサンドボックス）の結果に依らないので、P0-04・P0-05 が設計者の判断を待つ間に先に進めてよい。

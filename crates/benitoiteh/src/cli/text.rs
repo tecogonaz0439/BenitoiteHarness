@@ -169,3 +169,9 @@ pub fn fork_retained(id: &crate::session::SessionId) -> String {
 
 /// fork で引き継ぐ提供者の設定が削除された場合は、別の提供者へ切り替えない。
 pub const FORK_PROVIDER_MISSING: &str = "The current provider is no longer configured.";
+
+pub const CHATGPT_NOT_SIGNED_IN: &str = "Not signed in to ChatGPT. Run benitoiteh login chatgpt.";
+pub const CHATGPT_STORAGE: &str =
+    "Could not read saved ChatGPT authorization securely. Run benitoiteh login chatgpt.";
+
+pub const CHATGPT_DESTINATION: &str = "ChatGPT authentication requires https://api.openai.com/v1.";

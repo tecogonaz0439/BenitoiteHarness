@@ -13,7 +13,19 @@ use crate::provider::{
     AdapterKind, AssistantTurn, Conversation, NonRetryableKind, ProviderError, StreamEvent,
 };
 
-use super::AgentConfig;
+use super::{Agent, AgentConfig, AgentError};
+use crate::provider::openai_responses::ChatGptTokens;
+
+impl Agent {
+    /// 起動時に検査済みの ChatGPT の保存を Responses のアダプタに渡す。
+    pub fn with_chatgpt_tokens(mut self, source: ChatGptTokens) -> Result<Self, AgentError> {
+        let Adapter::Responses(adapter) = self.adapter else {
+            return Err(AgentError::InvalidConfiguration);
+        };
+        self.adapter = Adapter::Responses(adapter.with_chatgpt_tokens(source));
+        Ok(self)
+    }
+}
 
 pub(super) enum Adapter {
     Anthropic(AnthropicAdapter),

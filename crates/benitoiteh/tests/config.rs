@@ -758,3 +758,38 @@ fn askpass_is_enabled_by_default_and_only_user_config_can_disable_it() -> TestRe
     assert!(loaded.read && loaded.error.is_some());
     Ok(())
 }
+
+// 関門: 認証と送り先の組み合わせを設定の境界で断り、プロジェクトから認証を選べなくする。
+#[test]
+fn chatgpt_authentication_is_only_allowed_for_fixed_responses_destination() -> TestResult {
+    use benitoiteh::config::ProviderAuth;
+    let input = "default_provider='p'\n[providers.p]\nkind='openai-responses'\nmodel='arbitrary-model'\nauth='chatgpt'\nmax_output_tokens=123\n";
+    let config = UserConfig::parse(input)?;
+    let resolved = config.resolve_exec(
+        &ExecArgs::parse(["request"])?,
+        &ProjectConfig::default(),
+        Path::new("/project"),
+    )?;
+    assert_eq!(resolved.auth, Some(ProviderAuth::Chatgpt));
+    assert_eq!(resolved.destination.base_url, "https://api.openai.com/v1");
+    assert_eq!(resolved.capabilities.max_output_tokens, Some(123));
+    for invalid in [
+        input.replace("openai-responses", "openai-chat"),
+        input.replace("openai-responses", "anthropic-messages"),
+        format!("{input}base_url='http://127.0.0.1:1/secret-value'\n"),
+        format!("{input}api_key={{env='secret-value'}}\n"),
+        input.replace("chatgpt", "secret-value"),
+    ] {
+        let error = UserConfig::parse(&invalid)
+            .err()
+            .ok_or("accepted invalid authentication")?;
+        assert!(!error.to_string().contains("secret-value"));
+    }
+    let f = Fixture::new()?;
+    let project = f.dir("project/.benitoiteh")?;
+    fs::write(project.join("config.toml"), "auth='chatgpt'")?;
+    let root = benitoiteh::safe_fs::ScopeRoot::open(f.0.join("project"))?;
+    let loaded = ProjectConfig::load(&root);
+    assert!(loaded.error.is_some());
+    Ok(())
+}

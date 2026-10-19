@@ -1751,3 +1751,49 @@ fn startup_reports_inherited_askpass_settings_when_helper_links_cannot_be_create
     assert!(!directory.join("benitoiteh-git-askpass").exists());
     Ok(())
 }
+
+// 関門: 設定解析後の送り先の変更を、exec が認証元を開く境界でも拒否する。
+// 設定の解析だけの試験では、この独立した防御を確かめられない。
+#[test]
+fn chatgpt_startup_rechecks_resolved_destination_before_opening_credentials()
+-> Result<(), Box<dyn Error>> {
+    let fixture = Fixture::new()?;
+    let paths = fixture.paths("sandbox = 'danger-full-access'")?;
+    let user = UserConfig::parse(
+        "default_provider='p'\n[providers.p]\nkind='openai-responses'\nmodel='m'\nauth='chatgpt'\n",
+    )?;
+    let mut resolved =
+        user.resolve_exec(&fixture.args(&[])?, &ProjectConfig::default(), &fixture.0)?;
+    for url in [
+        "http://127.0.0.1:1/v1",
+        "https://api.openai.com/v1/",
+        "https://api.openai.com/v1?redirect=other",
+        "https://other.invalid/v1",
+    ] {
+        resolved.destination.base_url = url.into();
+        let result = chatgpt_tokens(&resolved, &paths);
+        assert!(
+            matches!(
+                result,
+                Err(StartupError::Invalid(
+                    "ChatGPT authentication requires https://api.openai.com/v1."
+                ))
+            ),
+            "unexpected result for a non-official destination"
+        );
+        assert!(!paths.auth_dir.exists());
+    }
+    resolved.destination.base_url = "https://api.openai.com/v1".into();
+    assert!(matches!(
+        chatgpt_tokens(&resolved, &paths),
+        Err(StartupError::Invalid(text::CHATGPT_NOT_SIGNED_IN))
+    ));
+    resolved.auth = None;
+    resolved.destination.base_url = "http://127.0.0.1:1/v1".into();
+    assert!(
+        chatgpt_tokens(&resolved, &paths)
+            .map_err(|e| e.to_string())?
+            .is_none()
+    );
+    Ok(())
+}

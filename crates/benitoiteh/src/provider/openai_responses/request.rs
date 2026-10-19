@@ -27,6 +27,7 @@ pub struct RequestOptions<'a> {
 }
 
 /// 認証と本文を診断へ出さない送信専用の要求。
+#[derive(Clone)]
 pub struct OpenAiResponsesRequest {
     pub(super) uri: Uri,
     pub(super) headers: HeaderMap,
@@ -69,8 +70,10 @@ impl OpenAiResponsesAdapter {
             return Err(OpenAiResponsesError::InvalidRequest);
         }
         let mut headers = HeaderMap::new();
-        if !self.api_key.is_empty() {
-            let mut key = HeaderValue::from_str(&format!("Bearer {}", self.api_key))
+        if let super::Authentication::ApiKey(api_key) = &self.authentication
+            && !api_key.is_empty()
+        {
+            let mut key = HeaderValue::from_str(&format!("Bearer {api_key}"))
                 .map_err(|_| OpenAiResponsesError::InvalidRequest)?;
             key.set_sensitive(true);
             headers.insert("authorization", key);
@@ -91,7 +94,9 @@ impl OpenAiResponsesAdapter {
         let fields = body
             .as_object_mut()
             .ok_or(OpenAiResponsesError::InvalidRequest)?;
-        if let Some(limit) = self.capabilities.max_output_tokens {
+        if !matches!(self.authentication, super::Authentication::Chatgpt(_))
+            && let Some(limit) = self.capabilities.max_output_tokens
+        {
             fields.insert("max_output_tokens".into(), json!(limit));
         }
         if let Some(key) = options.prompt_cache_key {
