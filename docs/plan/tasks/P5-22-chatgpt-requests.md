@@ -43,3 +43,25 @@
 
 - `scripts/check.sh --inside-codex` が通る（`BENITOITEH_TEST_BENITOITE` を設定して）。
 - 完了の報告に、`auth = "chatgpt"` のときの要求の本文の例を書く。
+
+## 補足（2026-10-20、始める前の点検）
+
+本節は、上の各節に優先する。行の番号は `main`（`e15f50b`）のもの。P5-21 の型と関数の名前（例: `auth::Store`、保存の型、使えるトークンを返す関数、強制して更新する口、`Endpoints`）は作業中に見た仮のものなので、P5-21 を取り込んだ `main` の実際の名前に合わせる。
+
+1. **設定**（`src/config/mod.rs`）: `ProviderConfig`（134-144 行。`deny_unknown_fields`）に `auth: Option<ProviderAuth>`（値 `"chatgpt"` だけの列挙）を加える。検証は `UserConfig::parse` の提供者の繰り返し（404-414 行）で行い、`kind` が `openai-responses` でない、`base_url` がある、`api_key` がある、のどれかなら、値を含めない文（`config/text.rs`）で誤りとする。送り先は `official_base_url()`（152-157 行）の `https://api.openai.com/v1` のままでよく、機能は本家の Responses の機能（`provider/types.rs:394-401`）になる。`ProjectConfig` は `auth` を書けない（`deny_unknown_fields`）ので、断られることだけをテストで確かめる。`ResolvedExec`（538-550 行）に `auth` を加え、`resolve_exec`（472-497 行）で写す。`AgentConfig` には欄を足さない（構造体を直書きするテストが多いため）。
+2. **起動**（`src/cli/exec.rs` 301-306 行付近）: `auth = chatgpt` なら、P5-21 の保存を開いて読む（通信しない）。保存がないかトークンがなければ、`Not signed in to ChatGPT. Run benitoiteh login chatgpt.` の形の文で起動を止める（終了状態 2）。`Agent::new`・`Agent::resume` の引数は変えず、作った後にアダプタの認証を差し替える組み立ての関数（例: `Agent::with_chatgpt_tokens(self, source) -> Result<Self, AgentError>`。Responses のアダプタ以外では誤り）を呼ぶ。対話の画面も同じ起動の処理を通る。保存のファイルは、サンドボックスの拒む場所（`cli/mod.rs:122-126` の `data_dir`）と道具の除く場所（`tools/exclude.rs:37`）に入っている。
+3. **要求の本文**（`provider/openai_responses/request.rs:79-107`）: 今送る欄は `model`、`instructions`、`input`、`tools`、`tool_choice`、`parallel_tool_calls`、`store: false`、`stream: true`、`include: ["reasoning.encrypted_content"]`、`reasoning`、条件付きの `max_output_tokens`（94-96 行）と `prompt_cache_key`（97-99 行）である。受け付けない欄の一覧に当たるのは `max_output_tokens` だけなので、`auth = chatgpt` のときは送らない（`capabilities.max_output_tokens` は圧縮の判定に使うので、設定では断らない）。システムプロンプトは既に `instructions` で送り、`role: "system"` の項目は作らない（確かめのテストだけを加える）。ほかの欄はそのまま送り、本物の口が受け付けるかは BH-115 で確かめる。
+4. **認証のヘッダ**: 今は `build_request`（`request.rs:71-77`）が `Bearer` を入れ、作った要求を `retry.rs:18-25`・`58-105` のやり直しで使い回す。`auth = chatgpt` のときは `build_request` ではヘッダを付けず、`OpenAiResponsesAdapter::stream`（`provider/openai_responses.rs:143-161`）の中で、送るたびに使えるトークンを得て、要求の頭の写しに `set_sensitive(true)` で `authorization` を入れる。アダプタの認証の持ち方を `api_key: String`（122 行目）から、API キーか ChatGPT の許可かの列挙に替える（`Send`、`Debug` は値を出さない）。伏せる処理（71-94 行の `redact`）は、その要求に使ったトークンの文字列で行う。
+5. **401**: 今は 401 も 403 も `NonRetryableKind::Authentication`（`openai_responses.rs:301-304`）。送り直しは `retry.rs` を変えずに、アダプタの `stream()` の中で行う（401 は応答の頭で返るので、出力の課金は起きていない）。401 なら、拒まれたトークンを渡して強制の更新を一度だけ呼び、新しいトークンで一度だけ送り直す。二度目の 401、または更新が永久の誤りなら、新しい `NonRetryableKind::LoginRequired` で止める。強制の更新が通信の失敗なら `Authentication`、送る前の更新が通信の失敗なら `Retryable { retry_after_secs: None }` とする。403 では更新しない。401 を見分けるため、`OpenAiResponsesError::Provider` に `status: Option<u16>` を足す。
+6. **誤りの分類**（`api_error`、`openai_responses.rs:282-339`）: `details` を作った直後、301 行目より前で、`error.code` と `error.type` の両方を見て、三つの符号を状態によらず（ストリームの中の誤りは `status = None` で来る。`assembly.rs:107-115`）分類する。`NonRetryableKind`（`provider/types.rs:268-279`）に次を加え、表示の文（303-310 行）と定数（`provider/text.rs`）を加える。どれも `RequestRejected` と別なので、画像を外す送り直しは起きない。
+
+   | 種類 | 文 |
+   |---|---|
+   | `SubscriptionUsageLimit` | `ChatGPT plan usage limit reached. See https://chatgpt.com/settings/usage.` |
+   | `SubscriptionNotEligible` | `This ChatGPT account is not eligible for ChatGPT plan usage.` |
+   | `SubscriptionUnsupported` | `ChatGPT plan usage does not support this request.` |
+   | `LoginRequired` | `ChatGPT sign-in is no longer valid. Run benitoiteh login chatgpt.` |
+
+7. **doctor**（`cli/doctor/mod.rs` の `providers()` 276-332 行、`credential()` 334-355 行）: `auth = chatgpt` の提供者は、`credential()` の代わりに保存の状態を示す。doctor はファイルやディレクトリを作らない（P5-21 の保存を開く関数が `auth/` を作るなら呼ばず、`symlink_metadata` で有無を先に確かめ、あるときだけ開く。必要なら「あるときだけ開く」関数を足す。`tests/doctor.rs:395` を壊さないため）。許可がなければ `Not signed in to ChatGPT; run benitoiteh login chatgpt.`（状態は今のキーと同じく、既定の提供者なら使えない、ほかは注意）。保存が壊れているか権限が違えば使えない。許可があれば確かめたとし、メールの宛先（`ui::terminal_text` を通す）、アクセストークンの期限の UTC（過ぎていれば次の要求で更新する旨）、`chatgpt.tokens.use.direct` の有無を示す。トークンは値も長さも示さない。doctor は更新しない（通信しない）。
+8. **テスト**: アダプタは `tests/provider_openai_responses.rs`（145 行目からの形。`MockProvider::start`、`server.requests()`）に倣い、`Destination.base_url` に模擬の口を与えて作る。本文（`max_output_tokens` がない、`instructions` がある、`role: "system"` がない、`store: false`・`stream: true`、`authorization` が保存のトークン）、401 の一度だけの更新（401、トークンの口の 200、SSE の順。二度目の `Bearer` が新しいトークン）、二度目の 401（要求がちょうど三つで `LoginRequired`）、三つの符号（頭の誤りとストリームの中の誤りの両方。763 行目からの表に加える）を確かめる。偽の保存は、P5-21 の公開の保存の関数で、試しの `XDG_STATE_HOME/benitoiteh/auth/chatgpt.json` に書く。設定（`tests/config.rs`）、doctor（`tests/doctor.rs` の 226 行目の表の形。保存がないときにファイルが増えないこと、文と JSON にトークンが出ないこと）、exec（保存がないと終了状態 2 で、要求を送らないこと）も確かめる。
+9. **決め方**: モデルの名前は確かめない。ログインしていなければ起動の時点で止め、要求の途中で許可が無効になったら `LoginRequired`（終了状態 1）とする。非対話の `exec` でも更新してよい（親のプロセスが、サンドボックスの外で行う）。複数のプロセスの更新は P5-21 の錠に任せる。API キーの提供者から `auth = chatgpt` に切り替えたセッションの再開は、この作業では扱わない。完了の報告に、`auth = chatgpt` のときの要求の本文の例を書く。
