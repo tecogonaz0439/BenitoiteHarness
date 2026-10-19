@@ -62,6 +62,12 @@ impl ResponseScript {
 /// テストの中だけで読む要求。キーを含むヘッダと本文を Debug に出さない。
 #[derive(Clone)]
 pub struct RecordedRequest {
+    /// 接続を受け付けた直後の時刻。
+    #[allow(dead_code)]
+    pub accepted_at: Instant,
+    /// 要求のバイト列を読み終えた時刻。
+    #[allow(dead_code)]
+    pub received_at: Instant,
     /// HTTP のメソッド。
     pub method: String,
     /// 要求のパス。
@@ -83,6 +89,8 @@ pub struct MockProvider {
     address: SocketAddr,
     stop: Arc<AtomicBool>,
     requests: Arc<Mutex<Vec<RecordedRequest>>>,
+    #[allow(dead_code)]
+    chunk_times: Arc<Mutex<Vec<Vec<Instant>>>>,
     worker: Option<JoinHandle<io::Result<()>>>,
 }
 
@@ -94,6 +102,8 @@ impl MockProvider {
         listener.set_nonblocking(true)?;
         let stop = Arc::new(AtomicBool::new(false));
         let requests = Arc::new(Mutex::new(Vec::new()));
+        let chunk_times = Arc::new(Mutex::new(Vec::new()));
+        let thread_chunks = Arc::clone(&chunk_times);
         let thread_stop = Arc::clone(&stop);
         let thread_requests = Arc::clone(&requests);
         let worker = thread::Builder::new().spawn(move || {
@@ -110,10 +120,11 @@ impl MockProvider {
                         Err(error) => return Err(error),
                     }
                 };
+                let accepted_at = Instant::now();
                 stream.set_read_timeout(Some(Duration::from_millis(20)))?;
                 stream.set_write_timeout(Some(Duration::from_secs(1)))?;
                 stream.set_nodelay(true)?;
-                let request = read_request(&mut stream, &thread_stop)?;
+                let request = read_request(&mut stream, &thread_stop, accepted_at)?;
                 let Some(request) = request else {
                     return Ok(());
                 };
@@ -121,7 +132,11 @@ impl MockProvider {
                     .lock()
                     .map_err(|_| io::Error::from(io::ErrorKind::Other))?
                     .push(request);
-                respond(&mut stream, &script, &thread_stop)?;
+                thread_chunks
+                    .lock()
+                    .map_err(|_| io::ErrorKind::Other)?
+                    .push(Vec::new());
+                respond(&mut stream, &script, &thread_stop, &thread_chunks)?;
             }
             Ok(())
         })?;
@@ -129,6 +144,7 @@ impl MockProvider {
             address,
             stop,
             requests,
+            chunk_times,
             worker: Some(worker),
         })
     }
@@ -143,6 +159,15 @@ impl MockProvider {
         self.requests
             .lock()
             .map(|r| r.clone())
+            .map_err(|_| io::ErrorKind::Other.into())
+    }
+
+    /// 台本ごとの、各塊を書き終えた時刻の写し。
+    #[allow(dead_code)]
+    pub fn chunk_times(&self) -> io::Result<Vec<Vec<Instant>>> {
+        self.chunk_times
+            .lock()
+            .map(|times| times.clone())
             .map_err(|_| io::ErrorKind::Other.into())
     }
 
@@ -165,7 +190,11 @@ impl Drop for MockProvider {
     }
 }
 
-fn read_request(stream: &mut TcpStream, stop: &AtomicBool) -> io::Result<Option<RecordedRequest>> {
+fn read_request(
+    stream: &mut TcpStream,
+    stop: &AtomicBool,
+    accepted_at: Instant,
+) -> io::Result<Option<RecordedRequest>> {
     let started = Instant::now();
     let mut bytes = Vec::new();
     let mut buffer = [0; 4096];
@@ -211,6 +240,7 @@ fn read_request(stream: &mut TcpStream, stop: &AtomicBool) -> io::Result<Option<
         if let Some(end) = head_end
             && bytes.len() >= end.saturating_add(length)
         {
+            let received_at = Instant::now();
             let head = std::str::from_utf8(bytes.get(..end).ok_or(io::ErrorKind::InvalidData)?)
                 .map_err(|_| io::ErrorKind::InvalidData)?;
             let mut lines = head.lines();
@@ -230,6 +260,8 @@ fn read_request(stream: &mut TcpStream, stop: &AtomicBool) -> io::Result<Option<
                     .ok_or(io::ErrorKind::InvalidData)?,
             )?;
             return Ok(Some(RecordedRequest {
+                accepted_at,
+                received_at,
                 method,
                 path,
                 headers,
@@ -239,7 +271,12 @@ fn read_request(stream: &mut TcpStream, stop: &AtomicBool) -> io::Result<Option<
     }
 }
 
-fn respond(stream: &mut TcpStream, script: &ResponseScript, stop: &AtomicBool) -> io::Result<()> {
+fn respond(
+    stream: &mut TcpStream,
+    script: &ResponseScript,
+    stop: &AtomicBool,
+    chunk_times: &Mutex<Vec<Vec<Instant>>>,
+) -> io::Result<()> {
     let length = if matches!(script.delivery, Delivery::HeadersOnly) {
         script.body.len().max(1)
     } else {
@@ -262,6 +299,13 @@ fn respond(stream: &mut TcpStream, script: &ResponseScript, stop: &AtomicBool) -
                     return Ok(());
                 }
                 stream.write_all(chunk)?;
+                let written_at = Instant::now();
+                chunk_times
+                    .lock()
+                    .map_err(|_| io::ErrorKind::Other)?
+                    .last_mut()
+                    .ok_or(io::ErrorKind::Other)?
+                    .push(written_at);
                 pause(delay, stop);
             }
             Ok(())
