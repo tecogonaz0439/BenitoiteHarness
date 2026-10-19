@@ -72,6 +72,43 @@ impl fmt::Display for StartupError {
     }
 }
 
+fn chatgpt_tokens(
+    resolved: &crate::config::ResolvedExec,
+    paths: &DataPaths,
+) -> Result<Option<crate::provider::openai_responses::ChatGptTokens>, StartupError> {
+    if resolved.auth.is_none() {
+        return Ok(None);
+    }
+    // 設定解析後の値も検査し、保存を開く前に送り先を固定する。
+    if resolved.destination.base_url != "https://api.openai.com/v1" {
+        return Err(StartupError::Invalid(text::CHATGPT_DESTINATION));
+    }
+    // Store::open はディレクトリを作るため、未ログインでは先に有無だけ調べる。
+    match std::fs::symlink_metadata(paths.auth_dir.join("chatgpt.json")) {
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {
+            return Err(StartupError::Invalid(text::CHATGPT_NOT_SIGNED_IN));
+        }
+        Err(_) => return Err(StartupError::Invalid(text::CHATGPT_STORAGE)),
+        Ok(_) => {}
+    }
+    let store = crate::auth::Store::open(&paths.auth_dir)
+        .map_err(|_| StartupError::Invalid(text::CHATGPT_STORAGE))?;
+    let saved = store
+        .load()
+        .map_err(|_| StartupError::Invalid(text::CHATGPT_STORAGE))?;
+    if saved
+        .as_ref()
+        .and_then(|saved| saved.tokens.as_ref())
+        .is_none()
+    {
+        return Err(StartupError::Invalid(text::CHATGPT_NOT_SIGNED_IN));
+    }
+    Ok(Some(crate::provider::openai_responses::ChatGptTokens::new(
+        store,
+        crate::auth::Endpoints::official(),
+    )))
+}
+
 /// 起動の誤りと、失敗する前に積んだ診断。raw の開始前にも呼び出し側で示す。
 pub(super) struct PreparationError {
     pub error: StartupError,
@@ -297,6 +334,7 @@ pub(super) fn prepare(
         } else {
             Approval::Never
         };
+        let chatgpt = chatgpt_tokens(&resolved, paths)?;
         diagnostics.push(text::destination(&resolved.destination));
         let key = resolved
             .api_key
@@ -719,6 +757,11 @@ pub(super) fn prepare(
             None => Agent::new(config, api_key, context, environment, session.clone()),
         }
         .map_err(StartupError::Agent)?;
+        if let Some(source) = chatgpt {
+            agent = agent
+                .with_chatgpt_tokens(source)
+                .map_err(StartupError::Agent)?;
+        }
         agent = agent
             .with_approvals(Box::new(NonInteractiveApprover), approval_policy)
             .with_session_safety(crate::agent::SessionSafety {

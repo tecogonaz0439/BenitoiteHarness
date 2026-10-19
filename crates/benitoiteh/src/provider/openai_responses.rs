@@ -1,6 +1,7 @@
 //! Responses API の要求とストリームを共通の形に変える（設計書 02-01「OpenAI の Responses API」）。
 
 mod assembly;
+mod authentication;
 mod request;
 mod text;
 
@@ -9,7 +10,10 @@ use std::time::Duration;
 
 use serde_json::Value;
 
-use crate::http::{Cancellation, HttpClient, HttpError, HttpStream};
+use crate::auth::Secret;
+use crate::http::{HttpClient, HttpError, HttpStream};
+use authentication::authorize;
+pub use authentication::{ChatGptTokens, ResponsesCancellation};
 
 use super::sse::{SseDecoder, SseError};
 use super::{Capabilities, Destination, NonRetryableKind, ProviderError, StreamEvent};
@@ -41,6 +45,8 @@ pub enum OpenAiResponsesError {
     Provider {
         /// ループがやり直しを判定する分類。
         error: ProviderError,
+        /// HTTP の状態。ストリーム内の誤りにはない。
+        status: Option<u16>,
         /// API の誤り。表示と記録には使わない。
         details: Option<ApiErrorDetails>,
         /// HTTP の Retry-After の未解釈の値。
@@ -119,7 +125,12 @@ impl std::error::Error for OpenAiResponsesError {}
 pub struct OpenAiResponsesAdapter {
     destination: Destination,
     capabilities: Capabilities,
-    api_key: String,
+    authentication: Authentication,
+}
+
+enum Authentication {
+    ApiKey(String),
+    Chatgpt(ChatGptTokens),
 }
 
 impl fmt::Debug for OpenAiResponsesAdapter {
@@ -135,8 +146,14 @@ impl OpenAiResponsesAdapter {
         Self {
             destination,
             capabilities,
-            api_key,
+            authentication: Authentication::ApiKey(api_key),
         }
+    }
+
+    /// API キーに代えて、保存した ChatGPT の許可を使う。
+    pub fn with_chatgpt_tokens(mut self, source: ChatGptTokens) -> Self {
+        self.authentication = Authentication::Chatgpt(source);
+        self
     }
 
     /// 構築した要求を HTTP の経路へ渡す。受け取りの取り消しは戻り値から行える。
@@ -145,14 +162,48 @@ impl OpenAiResponsesAdapter {
         client: &HttpClient,
         request: &OpenAiResponsesRequest,
     ) -> Result<OpenAiResponsesStream, OpenAiResponsesError> {
-        let http = client
-            .post_json(&request.uri, &request.headers, &request.body)
-            .map_err(|e| classify_http(e).redact(&self.api_key))?;
+        let (http, token, resend) = match &self.authentication {
+            Authentication::ApiKey(key) => {
+                let http = client
+                    .post_json(&request.uri, &request.headers, &request.body)
+                    .map_err(|e| classify_http(e).redact(key))?;
+                (Some(http), Some(Secret::new(key.clone())), None)
+            }
+            Authentication::Chatgpt(source) => {
+                let mut request = request.clone();
+                request.headers.remove("authorization");
+                let worker_source = source.clone();
+                // 錠や通信を待つ処理を、エージェントの取り消しの監視から分ける。
+                let refresh = std::thread::Builder::new()
+                    .spawn(move || worker_source.access_token())
+                    .map_err(|_| {
+                        provider_error(ProviderError::Retryable {
+                            retry_after_secs: None,
+                        })
+                    })?;
+                (
+                    None,
+                    None,
+                    Some(Box::new(Resend {
+                        source: source.clone(),
+                        client: client.clone(),
+                        request,
+                        refreshed: false,
+                        refresh: Some(refresh),
+                    })),
+                )
+            }
+        };
+        let cancellation = ResponsesCancellation::new(http.as_ref().map(HttpStream::cancellation));
         Ok(OpenAiResponsesStream {
             http,
+            cancellation,
             decoder: SseDecoder::new(),
             assembler: Some(OpenAiResponsesAssembler::new(self.destination.clone())),
-            api_key: self.api_key.clone(),
+            token,
+            rejected_token: None,
+            resend,
+            delivered_events: false,
             ended: false,
             received_headers: false,
             failed: None,
@@ -162,13 +213,36 @@ impl OpenAiResponsesAdapter {
 
 /// HTTP と SSE の読み取りを結び、応答全体の確認まで部分的な結果を保持する。
 pub struct OpenAiResponsesStream {
-    http: HttpStream,
+    http: Option<HttpStream>,
     decoder: SseDecoder,
     assembler: Option<OpenAiResponsesAssembler>,
-    api_key: String,
+    token: Option<Secret>,
+    rejected_token: Option<Secret>,
+    cancellation: ResponsesCancellation,
+    resend: Option<Box<Resend>>,
+    delivered_events: bool,
     ended: bool,
     received_headers: bool,
     failed: Option<OpenAiResponsesError>,
+}
+
+struct Resend {
+    source: ChatGptTokens,
+    client: HttpClient,
+    request: OpenAiResponsesRequest,
+    refreshed: bool,
+    refresh: Option<std::thread::JoinHandle<Result<Secret, OpenAiResponsesError>>>,
+}
+
+impl Drop for Resend {
+    fn drop(&mut self) {
+        // 更新でローテーションしたトークンは保存まで終える必要がある。
+        // 呼び出し側が取り消してストリームを捨てても、更新だけは回収する
+        // （設計書 02-01「Sign in with ChatGPT」）。
+        if let Some(worker) = self.refresh.take() {
+            let _result = worker.join();
+        }
+    }
 }
 
 impl fmt::Debug for OpenAiResponsesStream {
@@ -182,17 +256,32 @@ impl fmt::Debug for OpenAiResponsesStream {
 impl OpenAiResponsesStream {
     /// 取り消した要求の読み取りのスレッドが終了したかを返す。
     pub fn is_finished(&self) -> bool {
-        self.http.is_finished()
+        self.http.as_ref().is_none_or(HttpStream::is_finished)
+            && self.resend.as_ref().is_none_or(|resend| {
+                resend
+                    .refresh
+                    .as_ref()
+                    .is_none_or(std::thread::JoinHandle::is_finished)
+            })
     }
 
     /// 読み取りのスレッドの終了を待つ。途中では先に取り消す。
     pub fn join(&mut self) -> Result<(), HttpError> {
-        self.http.join()
+        if let Some(http) = &mut self.http {
+            http.join()?;
+        }
+        if let Some(resend) = &mut self.resend
+            && let Some(worker) = resend.refresh.take()
+        {
+            // 更新の結果の分類は poll が担当し、回収ではスレッドの失敗だけを返す。
+            let _result = worker.join().map_err(|_| HttpError::Worker)?;
+        }
+        Ok(())
     }
 
     /// 別のスレッドからも要求を取り消せるハンドルを返す。
-    pub fn cancellation(&self) -> Cancellation {
-        self.http.cancellation()
+    pub fn cancellation(&self) -> ResponsesCancellation {
+        self.cancellation.clone()
     }
 
     /// 最大 wait 待って、今届いた共通のイベントを返す。空なら受け取りを続ける。
@@ -206,10 +295,31 @@ impl OpenAiResponsesStream {
         }
         let result = self.poll_inner(wait);
         match result {
-            Ok(events) => Ok(events),
+            Ok(events) => {
+                self.delivered_events |= !events.is_empty();
+                Ok(events)
+            }
             Err(error) => {
-                self.http.cancel();
-                let error = error.redact(&self.api_key);
+                if let Some(http) = &self.http {
+                    http.cancel();
+                }
+                let current = self
+                    .token
+                    .as_ref()
+                    .map(Secret::expose_secret)
+                    .unwrap_or_default();
+                let rejected = self
+                    .rejected_token
+                    .as_ref()
+                    .map(Secret::expose_secret)
+                    .unwrap_or_default();
+                // 一方が他方の接頭辞でも、長い値を先に伏せて一部を残さない。
+                let (first, second) = if current.len() >= rejected.len() {
+                    (current, rejected)
+                } else {
+                    (rejected, current)
+                };
+                let error = error.redact(first).redact(second);
                 self.failed = Some(error.clone());
                 Err(error)
             }
@@ -217,17 +327,49 @@ impl OpenAiResponsesStream {
     }
 
     fn poll_inner(&mut self, wait: Duration) -> Result<Vec<StreamEvent>, OpenAiResponsesError> {
+        if self.cancellation.is_cancelled() {
+            return Err(OpenAiResponsesError::Cancelled);
+        }
+        if self
+            .resend
+            .as_ref()
+            .is_some_and(|resend| resend.refresh.is_some())
+        {
+            return self.poll_refresh(wait);
+        }
+        let http = self
+            .http
+            .as_mut()
+            .ok_or(OpenAiResponsesError::InvalidRequest)?;
+        let event = match http.poll(wait) {
+            Ok(event) => event,
+            Err(error) => {
+                let error = if self.received_headers && !matches!(error, HttpError::Cancelled) {
+                    provider_error(ProviderError::StreamDisconnected)
+                } else {
+                    classify_http(error)
+                };
+                if matches!(
+                    error,
+                    OpenAiResponsesError::Provider {
+                        status: Some(401),
+                        error: ProviderError::NonRetryable {
+                            reason: NonRetryableKind::Authentication
+                        },
+                        ..
+                    }
+                ) && !self.delivered_events
+                    && self.resend.is_some()
+                {
+                    return self.refresh_and_resend(error);
+                }
+                return Err(error);
+            }
+        };
         let assembler = self
             .assembler
             .as_mut()
             .ok_or(OpenAiResponsesError::InvalidResponse)?;
-        let event = self.http.poll(wait).map_err(|error| {
-            if self.received_headers && !matches!(error, HttpError::Cancelled) {
-                provider_error(ProviderError::StreamDisconnected)
-            } else {
-                classify_http(error)
-            }
-        })?;
         match event {
             crate::http::StreamEvent::Headers(_) => {
                 self.received_headers = true;
@@ -245,7 +387,7 @@ impl OpenAiResponsesStream {
                     if assembler.is_finished() {
                         self.ended = true;
                         // 終端イベントを確認したので、HTTP の EOF を待たずに止める。
-                        self.http.cancel();
+                        http.cancel();
                         break;
                     }
                 }
@@ -257,6 +399,95 @@ impl OpenAiResponsesStream {
                 Err(provider_error(ProviderError::StreamDisconnected))
             }
         }
+    }
+
+    fn refresh_and_resend(
+        &mut self,
+        mut original: OpenAiResponsesError,
+    ) -> Result<Vec<StreamEvent>, OpenAiResponsesError> {
+        let resend = self
+            .resend
+            .as_mut()
+            .ok_or(OpenAiResponsesError::InvalidRequest)?;
+        if resend.refreshed {
+            if let OpenAiResponsesError::Provider { error, .. } = &mut original {
+                *error = ProviderError::NonRetryable {
+                    reason: NonRetryableKind::LoginRequired,
+                };
+            }
+            return Err(original);
+        }
+        resend.refreshed = true;
+        // 401 を受けた接続は終わっている。回収してから新しい接続へ移る。
+        self.http
+            .as_mut()
+            .ok_or(OpenAiResponsesError::InvalidRequest)?
+            .join()
+            .map_err(classify_http)?;
+        let source = resend.source.clone();
+        let rejected = self
+            .token
+            .as_ref()
+            .ok_or(OpenAiResponsesError::InvalidRequest)?
+            .clone();
+        self.rejected_token = Some(rejected.clone());
+        // 更新待ちでも poll を返し、呼び出し側が取り消しを印に伝えられるようにする。
+        resend.refresh = Some(
+            std::thread::Builder::new()
+                .spawn(move || source.refresh(&rejected))
+                .map_err(|_| {
+                    provider_error(ProviderError::NonRetryable {
+                        reason: NonRetryableKind::Authentication,
+                    })
+                })?,
+        );
+        Ok(Vec::new())
+    }
+
+    fn poll_refresh(&mut self, wait: Duration) -> Result<Vec<StreamEvent>, OpenAiResponsesError> {
+        let resend = self
+            .resend
+            .as_mut()
+            .ok_or(OpenAiResponsesError::InvalidRequest)?;
+        let worker = resend
+            .refresh
+            .as_ref()
+            .ok_or(OpenAiResponsesError::InvalidRequest)?;
+        if !worker.is_finished() {
+            std::thread::park_timeout(wait.min(Duration::from_millis(10)));
+            return Ok(Vec::new());
+        }
+        let worker = resend
+            .refresh
+            .take()
+            .ok_or(OpenAiResponsesError::InvalidRequest)?;
+        let refreshed = worker.join().map_err(|_| {
+            provider_error(if resend.refreshed {
+                ProviderError::NonRetryable {
+                    reason: NonRetryableKind::Authentication,
+                }
+            } else {
+                ProviderError::Retryable {
+                    retry_after_secs: None,
+                }
+            })
+        })?;
+        // 更新は取り消せないが、更新中の取り消しで新たな推論を送ってはならない
+        // （設計書 02-01「Sign in with ChatGPT」、P5-22 の追加指示）。
+        if self.cancellation.is_cancelled() {
+            return Err(OpenAiResponsesError::Cancelled);
+        }
+        let token = refreshed?;
+        let mut headers = resend.request.headers.clone();
+        authorize(&mut headers, &token)?;
+        self.token = Some(token);
+        let http = resend
+            .client
+            .post_json(&resend.request.uri, &headers, &resend.request.body)
+            .map_err(classify_http)?;
+        self.cancellation.replace(http.cancellation());
+        self.http = Some(http);
+        Ok(Vec::new())
     }
 
     /// 終端イベントを確かめた応答を取り出す。途中や誤りのある応答は返さない。
@@ -274,6 +505,7 @@ impl OpenAiResponsesStream {
 fn provider_error(error: ProviderError) -> OpenAiResponsesError {
     OpenAiResponsesError::Provider {
         error,
+        status: None,
         details: None,
         retry_after: None,
     }
@@ -298,7 +530,23 @@ fn api_error(
             .and_then(Value::as_str)
             .map(str::to_owned),
     };
-    let error = if matches!(status, Some(401 | 403)) {
+    let subscription = [details.code.as_deref(), details.error_type.as_deref()]
+        .into_iter()
+        .find_map(|code| match code {
+            Some("subscription_sharing_usage_limit_exceeded") => {
+                Some(NonRetryableKind::SubscriptionUsageLimit)
+            }
+            Some("subscription_sharing_user_not_eligible") => {
+                Some(NonRetryableKind::SubscriptionNotEligible)
+            }
+            Some("subscription_sharing_unsupported_capability") => {
+                Some(NonRetryableKind::SubscriptionUnsupported)
+            }
+            _ => None,
+        });
+    let error = if let Some(reason) = subscription {
+        ProviderError::NonRetryable { reason }
+    } else if matches!(status, Some(401 | 403)) {
         ProviderError::NonRetryable {
             reason: NonRetryableKind::Authentication,
         }
@@ -333,6 +581,7 @@ fn api_error(
     };
     OpenAiResponsesError::Provider {
         error,
+        status,
         details: Some(details),
         retry_after,
     }

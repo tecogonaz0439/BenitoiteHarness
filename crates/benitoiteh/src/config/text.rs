@@ -43,3 +43,6 @@ pub const CHECK_FIX_POSITIVE: &str = "--max-check-fix and limits.max_check_fix m
 
 pub const WRITABLE_PROTECTED_NAME: &str =
     "A project cannot be created inside .git or .benitoiteh (case-insensitive)";
+
+pub const CHATGPT_AUTH: &str =
+    "ChatGPT authentication requires openai-responses and forbids base_url and api_key.";

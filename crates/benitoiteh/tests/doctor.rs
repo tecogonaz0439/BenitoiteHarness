@@ -751,3 +751,125 @@ fn normal_mode_reports_configuration_and_rejects_unsafe_writable_roots() -> Test
     }
     Ok(())
 }
+
+#[allow(dead_code)]
+#[path = "support/chatgpt.rs"]
+mod chatgpt;
+
+// 関門: doctor は認証を更新・新設せず、表示用の情報だけを出す。
+// 提供者アダプタの試験では届かない CLI の秘密の漏れと保存の変化を確かめる。
+#[test]
+fn chatgpt_diagnostics_are_read_only_and_do_not_disclose_tokens() -> TestResult {
+    for state in [
+        "absent",
+        "empty",
+        "valid",
+        "expired",
+        "no-direct",
+        "broken",
+        "unsafe",
+    ] {
+        let fixture = Fixture::new()?;
+        fixture.write_config("default_provider='chatgpt'\n[providers.chatgpt]\nkind='openai-responses'\nmodel='arbitrary'\nauth='chatgpt'\ncontext_window=4096\n[providers.other]\nkind='openai-responses'\nmodel='arbitrary'\nauth='chatgpt'\ncontext_window=4096\n")?;
+        let auth_dir = fixture.root.join("state/benitoiteh/auth");
+        let path = auth_dir.join("chatgpt.json");
+        if state != "absent" {
+            let store = benitoiteh::auth::Store::open(&auth_dir)?;
+            let mut saved = chatgpt::credentials(if state == "expired" {
+                1_700_000_000
+            } else {
+                4_000_000_000
+            });
+            if state == "empty" {
+                saved.tokens = None;
+            }
+            if state == "no-direct" {
+                saved.tokens.as_mut().ok_or("tokens")?.scopes.clear();
+            }
+            saved.account.as_mut().ok_or("account")?.email =
+                Some("test\u{1b}[31m@example.invalid".into());
+            store.lock()?.save(&saved)?;
+            if state == "broken" {
+                fs::write(&path, "invalid saved authorization")?;
+            }
+            if state == "unsafe" {
+                fs::set_permissions(&path, fs::Permissions::from_mode(0o644))?;
+            }
+        }
+        let before = fs::read(&path).ok();
+        let entries_before = if auth_dir.exists() {
+            Some(fs::read_dir(&auth_dir)?.count())
+        } else {
+            None
+        };
+        for json in [true, false] {
+            let mut command = fixture.command();
+            if json {
+                command.arg("--json");
+            }
+            let output = command.output()?;
+            let stdout = String::from_utf8(output.stdout.clone())?;
+            assert!(!stdout.contains('\u{1b}'));
+            for token in [chatgpt::ACCESS, chatgpt::REFRESH, chatgpt::NEW_ACCESS] {
+                assert!(!stdout.contains(token));
+                assert!(!String::from_utf8_lossy(&output.stderr).contains(token));
+            }
+            let expected = match state {
+                "valid" | "expired" | "no-direct" => "ok",
+                _ => "unavailable",
+            };
+            if json {
+                let rows = records(&output)?;
+                assert_eq!(
+                    item(&rows, "provider.chatgpt")?.get("status"),
+                    Some(&Value::from(expected))
+                );
+                let other = if ["absent", "empty"].contains(&state) {
+                    "warning"
+                } else {
+                    expected
+                };
+                assert_eq!(
+                    item(&rows, "provider.other")?.get("status"),
+                    Some(&Value::from(other))
+                );
+            }
+            match state {
+                "absent" | "empty" => assert!(
+                    stdout.contains("Not signed in to ChatGPT; run benitoiteh login chatgpt.")
+                ),
+                "broken" | "unsafe" => assert!(stdout.contains(
+                    "Saved ChatGPT authorization is unreadable or has unsafe permissions."
+                )),
+                _ => {
+                    assert!(stdout.contains("Signed in to ChatGPT"));
+                    assert!(
+                        stdout.contains("test\\x1b[31m@example.invalid")
+                            || stdout.contains("test\\\\x1b[31m@example.invalid")
+                    );
+                    assert!(stdout.contains(if state == "expired" {
+                        "2023-11-14T22:13:20Z; expired; refresh on next request"
+                    } else {
+                        "2096-10-02T07:06:40Z"
+                    }));
+                    assert!(stdout.contains(if state == "no-direct" {
+                        "chatgpt.tokens.use.direct=false"
+                    } else {
+                        "chatgpt.tokens.use.direct=true"
+                    }));
+                }
+            }
+            assert_eq!(fs::read(&path).ok(), before);
+            let entries_after = if auth_dir.exists() {
+                Some(fs::read_dir(&auth_dir)?.count())
+            } else {
+                None
+            };
+            assert_eq!(entries_after, entries_before);
+            if state == "absent" {
+                assert!(!fixture.root.join("state/benitoiteh").exists());
+            }
+        }
+    }
+    Ok(())
+}

@@ -22,3 +22,11 @@ pub const IMAGE_ATTACHMENTS: &str =
 
 pub const IMAGE_REMOVED: &str =
     "(This image was removed to keep the request small. Read the file again if you need it.)";
+
+pub const SUBSCRIPTION_USAGE_LIMIT: &str =
+    "ChatGPT plan usage limit reached. See https://chatgpt.com/settings/usage.";
+pub const SUBSCRIPTION_NOT_ELIGIBLE: &str =
+    "This ChatGPT account is not eligible for ChatGPT plan usage.";
+pub const SUBSCRIPTION_UNSUPPORTED: &str = "ChatGPT plan usage does not support this request.";
+pub const LOGIN_REQUIRED: &str =
+    "ChatGPT sign-in is no longer valid. Run benitoiteh login chatgpt.";

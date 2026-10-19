@@ -21,6 +21,12 @@ pub enum Delivery {
     Chunks { size: usize, delay: Duration },
     /// 本文の指定したバイト数だけ送り、接続を閉じる。
     Disconnect { after: usize },
+    /// 本文を送る前に通知し、許可の受信まで待つ。
+    #[allow(dead_code)]
+    Controlled {
+        entered: mpsc::Sender<()>,
+        release: mpsc::Receiver<()>,
+    },
     /// ヘッダだけ送り、サーバーが破棄されるまで待つ。
     HeadersOnly,
 }
@@ -321,6 +327,22 @@ fn respond(
     stream.write_all(b"\r\n")?;
     match script.delivery {
         Delivery::Once => stream.write_all(&script.body),
+        Delivery::Controlled {
+            ref entered,
+            ref release,
+        } => {
+            let _notified = entered.send(());
+            loop {
+                match release.recv_timeout(TICK) {
+                    Ok(()) => return stream.write_all(&script.body),
+                    Err(mpsc::RecvTimeoutError::Disconnected) => return Ok(()),
+                    Err(mpsc::RecvTimeoutError::Timeout) if stop.load(Ordering::Acquire) => {
+                        return Ok(());
+                    }
+                    Err(mpsc::RecvTimeoutError::Timeout) => {}
+                }
+            }
+        }
         Delivery::Chunks { size, delay } => {
             for chunk in script.body.chunks(size.max(1)) {
                 if stop.load(Ordering::Acquire) {

@@ -180,3 +180,71 @@ pub fn bubblewrap(version: &str) -> String {
 pub fn item(status: &str, name: &str, detail: &str) -> String {
     format!("[{status}] {name}: {detail}")
 }
+
+pub const CHATGPT_MISSING: &str = "Not signed in to ChatGPT; run benitoiteh login chatgpt.";
+pub const CHATGPT_STORAGE: &str =
+    "Saved ChatGPT authorization is unreadable or has unsafe permissions.";
+
+/// トークンを含めず、表示用の情報と期限だけを示す。
+pub fn chatgpt(email: Option<&str>, expires_at: u64, direct: bool) -> String {
+    let email = crate::ui::terminal_text(email.unwrap_or("unknown"), false);
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
+    let expiry = if expires_at <= now {
+        "; expired; refresh on next request"
+    } else {
+        ""
+    };
+    format!(
+        "Signed in to ChatGPT; email={email}; access token expires at {}{expiry}; chatgpt.tokens.use.direct={direct}.",
+        utc(expires_at)
+    )
+}
+
+fn utc(seconds: u64) -> String {
+    // 保存した値の上限を設け、壊れた期限で長時間ループしない。
+    if seconds > 253_402_300_799 {
+        return UNKNOWN.into();
+    }
+    let mut days = seconds / 86_400;
+    let leap = |y: u64| y.is_multiple_of(4) && (!y.is_multiple_of(100) || y.is_multiple_of(400));
+    let mut year = 1970u64;
+    loop {
+        let length = if leap(year) { 366 } else { 365 };
+        if days < length {
+            break;
+        }
+        days = days.saturating_sub(length);
+        year = year.saturating_add(1);
+    }
+    let mut month = 1u64;
+    for length in [
+        31,
+        if leap(year) { 29 } else { 28 },
+        31,
+        30,
+        31,
+        30,
+        31,
+        31,
+        30,
+        31,
+        30,
+        31,
+    ] {
+        if days < length {
+            break;
+        }
+        days = days.saturating_sub(length);
+        month = month.saturating_add(1);
+    }
+    format!(
+        "{year:04}-{month:02}-{:02}T{:02}:{:02}:{:02}Z",
+        days.saturating_add(1),
+        seconds / 3600 % 24,
+        seconds / 60 % 60,
+        seconds % 60
+    )
+}

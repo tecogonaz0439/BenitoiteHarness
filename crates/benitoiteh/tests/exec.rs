@@ -1196,3 +1196,54 @@ fn temporary_cleanup_allows_only_an_owned_private_empty_parent() -> TestResult {
     }
     Ok(())
 }
+
+// 関門: ChatGPT の未ログインを、提供者への通信とサンドボックスの準備より先に終了状態 2 で断る。
+#[test]
+fn chatgpt_exec_without_saved_tokens_stops_at_startup() -> TestResult {
+    for state in ["absent", "missing-file", "empty"] {
+        let mut server = MockProvider::start(vec![])?;
+        let f = Fixture::new(Protocol::Responses, &server)?;
+        if state == "missing-file" {
+            let _store = benitoiteh::auth::Store::open(&f.root.join("state/benitoiteh/auth"))?;
+        }
+        if state == "empty" {
+            let store = benitoiteh::auth::Store::open(&f.root.join("state/benitoiteh/auth"))?;
+            let saved = benitoiteh::auth::Credentials {
+                version: 1,
+                client_id: "oaiapp_test".into(),
+                client_confirmed: true,
+                ext_agent_host_id: "urn:uuid:01234567-89ab-4cde-8fab-0123456789ab".into(),
+                account: None,
+                tokens: None,
+                saved_at: 1_700_000_000,
+            };
+            store.lock()?.save(&saved)?;
+        }
+        let config = f.root.join("config/benitoiteh/config.toml");
+        fs::write(
+            config,
+            "default_mode='normal'\ndefault_provider='chatgpt'\n[providers.chatgpt]\nkind='openai-responses'\nmodel='arbitrary'\nauth='chatgpt'\n",
+        )?;
+        let output = f.command("request").arg("--json").output()?;
+        assert_eq!(output.status.code(), Some(2));
+        assert!(
+            String::from_utf8_lossy(&output.stderr)
+                .contains("Not signed in to ChatGPT. Run benitoiteh login chatgpt.")
+        );
+        assert!(server.requests()?.is_empty());
+        assert!(!f.root.join("state/benitoiteh/sessions").exists());
+        if state == "absent" {
+            assert!(
+                !f.root.join("state/benitoiteh").exists(),
+                "unsigned startup must not create the data directory"
+            );
+        } else if state == "missing-file" {
+            assert_eq!(
+                fs::read_dir(f.root.join("state/benitoiteh/auth"))?.count(),
+                0
+            );
+        }
+        server.shutdown()?;
+    }
+    Ok(())
+}

@@ -128,6 +128,14 @@ pub struct CapabilityOverrides {
     pub max_output_tokens: Option<u64>,
 }
 
+/// API キーの代わりに使う利用者の許可。
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq)]
+#[serde(rename_all = "lowercase")]
+pub enum ProviderAuth {
+    /// 保存した ChatGPT の許可を使う。
+    Chatgpt,
+}
+
 /// 一つの提供者の接続先とモデル。
 #[derive(Clone, Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -137,6 +145,7 @@ pub struct ProviderConfig {
     pub model: String,
     pub effort: Option<String>,
     pub api_key: Option<ApiKeyRef>,
+    pub auth: Option<ProviderAuth>,
     #[serde(default)]
     pub capabilities: CapabilityOverrides,
     pub context_window: Option<u64>,
@@ -402,6 +411,13 @@ impl UserConfig {
             }
         }
         for provider in config.providers.values() {
+            if provider.auth.is_some()
+                && (provider.kind != AdapterKind::OpenAiResponses
+                    || provider.base_url.is_some()
+                    || provider.api_key.is_some())
+            {
+                return Err(ConfigError::Invalid(text::CHATGPT_AUTH));
+            }
             if provider.model.is_empty()
                 || provider.effort.as_deref() == Some("")
                 || provider.base_url().is_empty()
@@ -486,6 +502,7 @@ impl UserConfig {
                 .unwrap_or_else(|| provider.kind.default_effort())
                 .to_owned(),
             api_key: provider.api_key.clone(),
+            auth: provider.auth,
             limits: Limits {
                 max_turns: args.max_turns.unwrap_or(self.limits.max_turns),
                 max_check_fix: args.max_check_fix.unwrap_or(self.limits.max_check_fix),
@@ -543,6 +560,7 @@ pub struct ResolvedExec {
     pub capabilities: Capabilities,
     pub effort: String,
     pub api_key: Option<ApiKeyRef>,
+    pub auth: Option<ProviderAuth>,
     pub limits: Limits,
     pub read: ReadConfig,
     pub read_line_numbers: bool,

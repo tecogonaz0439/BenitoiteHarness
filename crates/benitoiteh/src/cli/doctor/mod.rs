@@ -158,7 +158,7 @@ pub(super) fn run(args: impl Iterator<Item = OsString>) -> Result<u8, CliError> 
             },
         ),
     });
-    providers(&mut items, config.as_ref());
+    providers(&mut items, config.as_ref(), paths.as_ref().ok());
     let probe = paths
         .as_ref()
         .map_err(ToString::to_string)
@@ -273,7 +273,7 @@ fn exit_status(statuses: impl IntoIterator<Item = Status>) -> u8 {
     )
 }
 
-fn providers(items: &mut Vec<Item>, config: Option<&UserConfig>) {
+fn providers(items: &mut Vec<Item>, config: Option<&UserConfig>, paths: Option<&DataPaths>) {
     let Some(config) = config else {
         items.push(Item::new(
             "provider",
@@ -314,10 +314,19 @@ fn providers(items: &mut Vec<Item>, config: Option<&UserConfig>) {
             &provider.model,
             default,
         );
-        let (mut status, key) = credential(provider);
-        if status == Status::Unavailable && !default {
-            status = Status::Warning;
-        }
+        let (mut status, key) = if provider.auth.is_some() {
+            chatgpt_credential(paths, default)
+        } else {
+            let (status, key) = credential(provider);
+            (
+                if status == Status::Unavailable && !default {
+                    Status::Warning
+                } else {
+                    status
+                },
+                key,
+            )
+        };
         detail.push_str(&format!("; {key}"));
         if provider.resolved_capabilities().context_window.is_none() {
             if status == Status::Ok {
@@ -328,6 +337,50 @@ fn providers(items: &mut Vec<Item>, config: Option<&UserConfig>) {
         let mut item = Item::new(&format!("provider.{name}"), status, detail);
         item.is_default = Some(default);
         items.push(item);
+    }
+}
+
+fn chatgpt_credential(paths: Option<&DataPaths>, default: bool) -> (Status, String) {
+    let Some(paths) = paths else {
+        return (Status::Unchecked, text::CONFIG_REQUIRED.into());
+    };
+    let missing = || {
+        (
+            if default {
+                Status::Unavailable
+            } else {
+                Status::Warning
+            },
+            text::CHATGPT_MISSING.into(),
+        )
+    };
+    // doctor は保存を新設せず、更新の通信も行わない（設計書 05-01「doctor」）。
+    match fs::symlink_metadata(&paths.auth_dir) {
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return missing(),
+        Err(_) => return (Status::Unavailable, text::CHATGPT_STORAGE.into()),
+        Ok(_) => {}
+    }
+    let saved = crate::auth::Store::open(&paths.auth_dir).and_then(|store| store.load());
+    match saved {
+        Ok(Some(saved)) => {
+            let Some(tokens) = saved.tokens else {
+                return missing();
+            };
+            let email = saved.account.and_then(|account| account.email);
+            (
+                Status::Ok,
+                text::chatgpt(
+                    email.as_deref(),
+                    tokens.expires_at,
+                    tokens
+                        .scopes
+                        .iter()
+                        .any(|scope| scope == "chatgpt.tokens.use.direct"),
+                ),
+            )
+        }
+        Ok(None) => missing(),
+        Err(_) => (Status::Unavailable, text::CHATGPT_STORAGE.into()),
     }
 }
 
