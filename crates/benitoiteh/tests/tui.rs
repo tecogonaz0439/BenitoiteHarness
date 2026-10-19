@@ -303,6 +303,27 @@ impl Fixture {
             },
             retry_initial: Duration::from_millis(2),
         };
+        let helper = fs::canonicalize(env!("CARGO_BIN_EXE_benitoiteh"))?;
+        let askpass = if mode == Mode::Normal {
+            Some(std::sync::Arc::new(benitoiteh::askpass::Broker::create(
+                &self.paths.temporary_root,
+                session.id().as_str(),
+                &helper,
+                &[self.project.clone(), session.temporary_dir().into()],
+                true,
+            )?))
+        } else {
+            None
+        };
+        let mut env = benitoiteh::config::child_environment(
+            [("PATH".into(), "/bin:/usr/bin".into())],
+            &Default::default(),
+            session.temporary_dir(),
+            None,
+        );
+        if let Some(broker) = &askpass {
+            broker.environment(&mut env);
+        }
         let mut context = ToolContext::new(
             mode,
             ScopeRoot::open(&self.project)?,
@@ -322,17 +343,13 @@ impl Fixture {
             fs::canonicalize(env!("CARGO_BIN_EXE_benitoiteh"))?,
         )
         .with_shell(benitoiteh::tools::ShellContext {
+            askpass,
             policy: None,
             policy_name: None,
-            helper: fs::canonicalize(env!("CARGO_BIN_EXE_benitoiteh"))?,
+            helper,
             scratch: directory.join("sandbox"),
             placeholders: self.paths.data_dir.join("placeholders"),
-            env: benitoiteh::config::child_environment(
-                [("PATH".into(), "/bin:/usr/bin".into())],
-                &Default::default(),
-                session.temporary_dir(),
-                None,
-            ),
+            env,
             writable_roots: vec![self.project.clone(), session.temporary_dir().into()],
             sandbox: benitoiteh::config::Sandbox::DangerFullAccess,
             sandboxed: false,
@@ -664,6 +681,61 @@ fn repeated_shutdown_returns_immediately_and_resize_is_kept_while_exiting() -> T
             assert!(visible.contains("normal | moc"), "{visible}");
         }
         server.shutdown()?;
+    }
+    Ok(())
+}
+
+// 関門: Worker の早い破棄では Agent が残っていても、補助の名前と窓口を直ちに消す。
+#[test]
+fn dropping_worker_removes_helpers_even_while_secret_input_is_pending() -> TestResult {
+    for running in [false, true] {
+        let f = Fixture::new()?;
+        let server = MockProvider::start(if running {
+            vec![ResponseScript::sse(response(
+                json!({"tool_calls":[{"index":0,"id":"secret","type":"function","function":{"name":"bash","arguments":"{\"command\":\"\\\"$GIT_ASKPASS\\\" password\"}"}}]}),
+                "tool_calls",
+            ))]
+        } else {
+            vec![]
+        })?;
+        let prepared = f.new_session(&server)?;
+        let id = prepared.session.id().to_string();
+        let name = if cfg!(target_os = "macos") {
+            id.rsplit_once('-')
+                .map_or(id.as_str(), |(_, random)| random)
+        } else {
+            id.as_str()
+        };
+        let runtime = if cfg!(target_os = "linux") {
+            std::env::var_os("XDG_RUNTIME_DIR").map(PathBuf::from)
+        } else {
+            None
+        };
+        let directory = [f.paths.temporary_root.clone(), PathBuf::from("/tmp")]
+            .into_iter()
+            .chain(runtime)
+            .map(|root| {
+                root.join(format!("bha-{}", rustix::process::geteuid().as_raw()))
+                    .join(name)
+            })
+            .find(|path| path.exists())
+            .ok_or("missing helpers")?;
+        let requests = prepared
+            .agent
+            .take_secret_requests()
+            .ok_or("missing requests")?;
+        let mut worker = Worker::start(prepared.agent, prepared.session)?;
+        let prompt = if running {
+            worker.submit("request".into(), RunControl::default())?;
+            Some(requests.recv()?)
+        } else {
+            None
+        };
+        drop(worker);
+        assert!(!directory.exists(), "{}", directory.display());
+        if let Some(prompt) = prompt {
+            assert!(!prompt.is_open());
+        }
     }
     Ok(())
 }

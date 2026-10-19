@@ -61,6 +61,9 @@ pub struct Screen {
     rows_below: u16,
     confirmation: Option<confirmation::Confirmation>,
     confirmation_result: Option<bool>,
+    secret_resume_after: Option<Instant>,
+    discard_secret_input: bool,
+    pending_secret_results: Vec<crate::askpass::Prompt>,
     followups: VecDeque<SubmittedInput>,
     original_submission: Option<String>,
     history_file: Option<history::History>,
@@ -99,6 +102,9 @@ impl Screen {
             rows_below: 0,
             confirmation: None,
             confirmation_result: None,
+            secret_resume_after: None,
+            discard_secret_input: false,
+            pending_secret_results: Vec::new(),
             followups: VecDeque::new(),
             original_submission: None,
             history_file: None,
@@ -147,6 +153,12 @@ impl Screen {
             }
             self.size = (width, height);
             return Action::None;
+        }
+        if let Some(until) = self.secret_resume_after {
+            if read_at < until && !confirmation::is_interrupt(&event) {
+                return Action::None;
+            }
+            self.secret_resume_after = None;
         }
         if self.confirming() {
             return self.confirmation_input(event, read_at, now, running);
@@ -496,6 +508,7 @@ impl Screen {
 
     /// 一つのフレームをメモリに作り、write と flush を各一回だけ呼ぶ。
     pub fn draw(&mut self, writer: &mut impl Write, elapsed: Option<Duration>) -> io::Result<()> {
+        self.finish_secret_results();
         let width = self.size.0.max(1);
         let height = usize::from(self.size.1);
         let maximum = height.saturating_sub(1);

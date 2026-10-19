@@ -649,3 +649,28 @@ pub const SELECT_FORK: &str = "Fork before request";
 pub const FORK_CANCELLED: &str = "Fork cancelled.";
 pub const STARTING_FORK: &str = "Forking session...";
 pub const CONTINUATION: &str = "| ";
+
+pub const SECRET_TITLE: &str = "╭─ Secret input requested by a command outside the sandbox";
+pub const SECRET_WARNING: &str =
+    "The command receiving this secret can disclose it outside benitoiteh.";
+pub const SECRET_HELPER: &str = "Helper report (unverified)";
+pub const SECRET_PROMPT: &str = "Untrusted prompt (up to 10 lines):";
+pub const SECRET_KEYS: &str = "[Enter] send  [Tab] show/hide  [Esc] cancel";
+pub const SECRET_CONFIRM_KEYS: &str = "[y] yes  [n] no  [Esc] cancel";
+pub const SECRET_TOUCH_KEYS: &str = "Touch notification; no answer required. [Esc] dismiss";
+pub const SECRET_DECLINE_KEYS: &str = "[Esc] cancel; enlarge the terminal to answer";
+pub const SECRET_VALUE: &str = "Secret: ";
+pub const SECRET_CALL: &str = "Tool call";
+pub const SECRET_MODE: &str = "Mode";
+pub fn secret_helper(kind: &str, pid: u32, ppid: u32, prompt: Option<&str>) -> String {
+    format!(
+        "kind={kind}, pid={pid}, ppid={ppid}, ssh_prompt={}",
+        prompt.unwrap_or("secret")
+    )
+}
+pub fn secret_history(call_id: &str, outcome: &str) -> String {
+    format!("Secret input for {call_id}: {outcome}")
+}
+
+pub const SECRET_CLOSED: &str =
+    "Secret input closed by the command; typed characters were discarded. [Esc] continue";

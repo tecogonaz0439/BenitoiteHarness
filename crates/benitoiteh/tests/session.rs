@@ -6,7 +6,7 @@ mod session_support;
 use std::error::Error;
 use std::fs::{self, OpenOptions};
 use std::io::{self, Write};
-use std::os::unix::fs::{PermissionsExt, symlink};
+use std::os::unix::fs::{DirBuilderExt, PermissionsExt, symlink};
 use std::path::PathBuf;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
@@ -681,8 +681,63 @@ fn cleanup_removes_only_inactive_matching_directories_and_expired_sessions() -> 
     let updated_dir = updated.directory().to_owned();
     fs::File::open(updated_dir.join("session.jsonl"))?.set_modified(SystemTime::now())?;
     drop(updated);
+    let active_askpass = fixture
+        .paths
+        .temporary_root
+        .join(format!("bha-{}", rustix::process::geteuid().as_raw()))
+        .join(if cfg!(target_os = "macos") {
+            "0000000000000001"
+        } else {
+            active.id().as_str()
+        });
+    let stale_askpass = fixture
+        .paths
+        .temporary_root
+        .join(format!("bha-{}", rustix::process::geteuid().as_raw()))
+        .join(if cfg!(target_os = "macos") {
+            "0000000000000002"
+        } else {
+            "20200101T000000Z-0000000000000002"
+        });
+    let parent = active_askpass.parent().ok_or("missing parent")?;
+    fs::create_dir(parent)?;
+    fs::set_permissions(parent, fs::Permissions::from_mode(0o700))?;
+    for path in [&active_askpass, &stale_askpass] {
+        fs::create_dir(path)?;
+        fs::set_permissions(path, fs::Permissions::from_mode(0o700))?;
+        fs::write(path.join("sock"), b"stale socket entry")?;
+    }
+    struct FallbackDirectory(PathBuf);
+    impl Drop for FallbackDirectory {
+        fn drop(&mut self) {
+            let _removed = fs::remove_dir_all(&self.0);
+        }
+    }
+    let fallback_session = fixture.session()?;
+    let fallback_id = fallback_session.id().clone();
+    drop(fallback_session);
+    let foreign_id = SessionId::generate(SystemTime::now())?;
+    let fallback = std::path::Path::new("/tmp")
+        .canonicalize()?
+        .join(format!("bha-{}", rustix::process::geteuid().as_raw()));
+    match fs::DirBuilder::new().mode(0o700).create(&fallback) {
+        Ok(()) => {}
+        Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {}
+        Err(error) => return Err(error.into()),
+    }
+    let known = FallbackDirectory(fallback.join(fallback_id.as_str()));
+    let unknown = FallbackDirectory(fallback.join(foreign_id.as_str()));
+    for path in [&known.0, &unknown.0] {
+        fs::create_dir(path)?;
+        fs::set_permissions(path, fs::Permissions::from_mode(0o700))?;
+        let _listener = std::os::unix::net::UnixListener::bind(path.join("sock"))?;
+    }
     let report = cleanup(&fixture.paths, DEFAULT_RETENTION_DAYS, SystemTime::now())?;
-    assert_eq!(report.temporary_removed, 2);
+    assert_eq!(report.temporary_removed, 4);
+    assert!(!known.0.exists());
+    assert!(unknown.0.join("sock").exists());
+    assert!(active_askpass.join("sock").exists());
+    assert!(!stale_askpass.exists());
     assert_eq!(report.sessions_removed, 1);
     assert!(report.failures.is_empty());
     assert!(!stale_temp.exists());
@@ -1924,5 +1979,124 @@ fn fork_origin_ids_are_checked_by_both_listing_and_opening() -> TestResult {
             assert!(error.to_string().contains("Invalid session record format"));
         }
     }
+    Ok(())
+}
+
+// 関門: 一時の根が共有されても、別のデータの根の生きている補助や記録のない補助を消さない。
+#[test]
+fn shared_temporary_cleanup_preserves_foreign_live_helpers_and_unrecorded_helpers() -> TestResult {
+    let first = Fixture::new()?;
+    let second = Fixture::new()?;
+    let mut second_paths = second.paths.clone();
+    second_paths.temporary_root = first.paths.temporary_root.clone();
+    let foreign = Session::create(&second_paths, SessionId::generate(SystemTime::now())?)?;
+    let known = first.session()?;
+    let unknown_id = SessionId::generate(SystemTime::now())?;
+    let paths = [
+        &foreign.id().to_string(),
+        &known.id().to_string(),
+        &unknown_id.to_string(),
+    ]
+    .map(|id| {
+        first
+            .paths
+            .temporary_root
+            .join(format!("bha-{}", rustix::process::geteuid().as_raw()))
+            .join(id)
+    });
+    let parent = paths
+        .first()
+        .and_then(|path| path.parent())
+        .ok_or("missing parent")?;
+    fs::create_dir(parent)?;
+    fs::set_permissions(parent, fs::Permissions::from_mode(0o700))?;
+    for path in &paths {
+        fs::create_dir(path)?;
+        fs::set_permissions(path, fs::Permissions::from_mode(0o700))?;
+        fs::write(path.join("keep"), b"keep")?;
+    }
+    let missing_record = known.directory().join("session.jsonl");
+    drop(known);
+    fs::remove_file(missing_record)?;
+    let report = cleanup(&first.paths, DEFAULT_RETENTION_DAYS, SystemTime::now())?;
+    assert!(report.failures.is_empty(), "{:?}", report.failures);
+    for path in &paths {
+        assert_eq!(fs::read(path.join("keep"))?, b"keep");
+    }
+    assert!(foreign.directory().exists());
+    Ok(())
+}
+
+// 一時の根だけが読めなくても、記録の保持期間の掃除まで中断しない。
+#[test]
+fn unavailable_temporary_root_is_diagnosed_without_skipping_session_cleanup() -> TestResult {
+    for inaccessible in [false, true] {
+        if inaccessible && rustix::process::geteuid().is_root() {
+            continue;
+        }
+        let f = Fixture::new()?;
+        let stale = Session::create(&f.paths, "20200101T000000Z-0000000000000009".parse()?)?;
+        let directory = stale.directory().to_path_buf();
+        fs::File::open(directory.join("session.jsonl"))?.set_modified(UNIX_EPOCH)?;
+        drop(stale);
+        if inaccessible {
+            fs::set_permissions(&f.paths.temporary_root, fs::Permissions::from_mode(0o000))?;
+        } else {
+            fs::remove_dir_all(&f.paths.temporary_root)?;
+            fs::write(&f.paths.temporary_root, b"not a directory")?;
+        }
+        let result = cleanup(&f.paths, DEFAULT_RETENTION_DAYS, SystemTime::now());
+        if inaccessible {
+            fs::set_permissions(&f.paths.temporary_root, fs::Permissions::from_mode(0o700))?;
+        }
+        let report = result?;
+        assert!(!directory.exists());
+        assert_eq!(report.sessions_removed, 1);
+        let diagnostic = report
+            .failures
+            .iter()
+            .find(|failure| failure.temporary && failure.id.is_none())
+            .ok_or("missing cleanup failure")?
+            .diagnostic();
+        assert!(diagnostic.contains("Skipped cleanup of"), "{diagnostic}");
+        assert!(
+            diagnostic.contains(&f.paths.temporary_root.display().to_string()),
+            "{diagnostic}"
+        );
+        assert!(
+            !diagnostic.contains("mediation was disabled"),
+            "{diagnostic}"
+        );
+    }
+    Ok(())
+}
+
+// 関門: 掃除を飛ばした診断が、進行中の仲介を止めたと誤って告げない。
+#[test]
+fn cleanup_uses_cleanup_specific_diagnostic_for_nonprivate_parent() -> TestResult {
+    let f = Fixture::new()?;
+    let parent = f
+        .paths
+        .temporary_root
+        .join(format!("bha-{}", rustix::process::geteuid().as_raw()));
+    fs::DirBuilder::new().mode(0o755).create(&parent)?;
+    // コンテナの umask によって 0700 へ変わらないよう、検査する属性を確定する。
+    fs::set_permissions(&parent, fs::Permissions::from_mode(0o755))?;
+    fs::write(parent.join("keep"), b"keep")?;
+    let report = cleanup(&f.paths, DEFAULT_RETENTION_DAYS, SystemTime::now())?;
+    let message = report
+        .failures
+        .iter()
+        .find(|failure| failure.temporary)
+        .ok_or("missing cleanup diagnostic")?
+        .diagnostic();
+    assert!(message.contains("Skipped cleanup of"), "{message}");
+    assert!(message.contains(&parent.display().to_string()), "{message}");
+    assert!(
+        message.contains("not a private directory owned by you"),
+        "{message}"
+    );
+    assert!(!message.contains("mediation was disabled"), "{message}");
+    assert_eq!(fs::read(parent.join("keep"))?, b"keep");
     Ok(())
 }

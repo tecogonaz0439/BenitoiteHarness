@@ -2,6 +2,10 @@
 
 #![cfg(target_os = "linux")]
 
+#[path = "support/temporary_cleanup.rs"]
+#[cfg(target_arch = "x86_64")]
+mod temporary_cleanup;
+
 #[path = "support/bash_sandbox.rs"]
 mod bash_sandbox;
 #[path = "support/socket_directory.rs"]
@@ -1853,7 +1857,7 @@ fn doctor_verifies_restricted_and_normal_sandboxes() -> TestResult {
     }
     assert_eq!(fs::read_dir(&fixture.project)?.count(), 0);
     assert_eq!(fs::read_dir(fixture.root.join("state"))?.count(), 0);
-    assert_eq!(fs::read_dir(fixture.root.join("tmp"))?.count(), 0);
+    temporary_cleanup::check_temporary_root(&fixture.root.join("tmp"))?;
     Ok(())
 }
 

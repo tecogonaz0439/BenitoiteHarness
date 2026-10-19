@@ -1174,3 +1174,481 @@ fn selection_and_confirmation_use_ascii_continuation_markers()
     assert!(!visible.contains('┆'));
     Ok(())
 }
+
+// 関門: 実際の窓口の求めを描画し、早いキー、伏せ字、取消、画面の履歴への漏出を捕まえる。
+#[test]
+fn secret_confirmation_masks_guards_input_and_never_copies_the_prompt_or_value_to_history()
+-> Result<(), Box<dyn std::error::Error>> {
+    let f = crate::askpass::tests::Fixture::new()?;
+    let receiver = f.broker.take_requests().ok_or("missing receiver")?;
+    let mut stream = f.request(None, "password\n\x1b[2Jforged fact")?;
+    let prompt = receiver.recv_timeout(Duration::from_secs(5))?;
+    let mut screen = Screen::new((100, 50), status());
+    screen.open_secret(prompt);
+    let shown = Instant::now();
+    screen.input_at(Event::Paste("queued".into()), shown, Duration::ZERO, true);
+    assert!(screen.presented(shown));
+    screen.input_at(
+        Event::Paste("early".into()),
+        shown + Duration::from_millis(299),
+        Duration::ZERO,
+        true,
+    );
+    let accepted = shown + Duration::from_millis(301);
+    screen.input_at(
+        Event::Paste("synthetic-value\n".into()),
+        accepted,
+        Duration::ZERO,
+        true,
+    );
+    let mut output = Vec::new();
+    screen.draw(&mut output, None)?;
+    let frame = String::from_utf8(output)?;
+    assert!(frame.contains("Helper report (unverified)"));
+    assert!(frame.contains("Tool call") && frame.contains("call-17"));
+    assert!(frame.contains("Untrusted prompt") && frame.contains("|   password"));
+    assert!(frame.contains("\\x1b[2J"));
+    assert!(frame.contains("***************"));
+    assert!(
+        !frame.contains("synthetic-value") && !frame.contains("early") && !frame.contains("queued")
+    );
+    screen.input_at(
+        key(KeyCode::Tab, KeyModifiers::NONE),
+        accepted,
+        Duration::ZERO,
+        true,
+    );
+    let mut output = Vec::new();
+    screen.draw(&mut output, None)?;
+    assert!(String::from_utf8(output)?.contains("synthetic-value"));
+    screen.input_at(
+        key(KeyCode::Enter, KeyModifiers::NONE),
+        accepted,
+        Duration::ZERO,
+        true,
+    );
+    use std::io::Read as _;
+    let mut reply = Vec::new();
+    stream.read_to_end(&mut reply)?;
+    assert_eq!(reply, b"Ssynthetic-value");
+    let mut output = Vec::new();
+    screen.draw(&mut output, None)?;
+    let history = String::from_utf8(output)?;
+    assert!(history.contains("Secret input for call-17: answered"));
+    assert!(
+        !history.contains("synthetic-value")
+            && !history.contains("password")
+            && !history.contains("********")
+    );
+    Ok(())
+}
+
+#[test]
+fn secret_confirmation_cancels_only_prompt_refuses_hidden_facts_and_closes_when_invalidated()
+-> Result<(), Box<dyn std::error::Error>> {
+    for operation in ["escape", "small", "invalidate", "confirm"] {
+        let f = crate::askpass::tests::Fixture::new()?;
+        let receiver = f.broker.take_requests().ok_or("missing receiver")?;
+        let mut stream = f.request((operation == "confirm").then_some("confirm"), "untrusted")?;
+        let prompt = receiver.recv_timeout(Duration::from_secs(5))?;
+        let mut screen = Screen::new(
+            if operation == "small" {
+                (30, 8)
+            } else {
+                (100, 50)
+            },
+            status(),
+        );
+        screen.open_secret(prompt);
+        let shown = Instant::now();
+        screen.presented(shown);
+        let at = shown + Duration::from_millis(301);
+        screen.input_at(Event::Paste("synthetic".into()), at, Duration::ZERO, true);
+        if operation == "invalidate" {
+            f.call.finish();
+            assert!(screen.close_expired_secret());
+            assert!(screen.confirming());
+            screen.input_at(
+                key(KeyCode::Esc, KeyModifiers::NONE),
+                at,
+                Duration::ZERO,
+                true,
+            );
+        } else if operation == "confirm" {
+            screen.input_at(
+                key(KeyCode::Char('y'), KeyModifiers::CONTROL),
+                at,
+                Duration::ZERO,
+                true,
+            );
+            assert!(screen.confirming());
+            screen.input_at(
+                key(KeyCode::Char('y'), KeyModifiers::NONE),
+                at,
+                Duration::ZERO,
+                true,
+            );
+        } else {
+            if operation == "small" {
+                screen.input_at(
+                    key(KeyCode::Enter, KeyModifiers::NONE),
+                    at,
+                    Duration::ZERO,
+                    true,
+                );
+                assert!(screen.confirming());
+            }
+            assert_eq!(
+                screen.input_at(
+                    key(KeyCode::Esc, KeyModifiers::NONE),
+                    at,
+                    Duration::ZERO,
+                    true
+                ),
+                Action::None
+            );
+        }
+        assert!(!screen.confirming());
+        use std::io::Read as _;
+        let mut reply = Vec::new();
+        stream.read_to_end(&mut reply)?;
+        assert_eq!(reply, if operation == "confirm" { b"Y" } else { b"N" });
+    }
+    Ok(())
+}
+
+// 作成時の関門: コマンドによる閉鎖の直後の文字を、主の入力・操縦・永続履歴へ
+// 渡さない契約。従来の正常回答のテストでは、外から閉じる競合を捕まえられない。
+// 実際の窓口を使い、呼び出しの失効と注入した時計だけで順番を決める。
+#[test]
+fn externally_closed_secret_never_submits_trailing_keystrokes_or_records_history()
+-> Result<(), Box<dyn std::error::Error>> {
+    for (running, disconnected) in [(true, false), (false, false), (true, true), (false, true)] {
+        let f = crate::askpass::tests::Fixture::new()?;
+        let receiver = f.broker.take_requests().ok_or("missing receiver")?;
+        let stream = f.request(None, "password")?;
+        let prompt = receiver.recv()?;
+        let mut screen = Screen::new((100, 50), status());
+        let paths =
+            crate::config::paths::DataPaths::from_values(Some(&f.root), None, None, Some(&f.root))?;
+        std::fs::create_dir_all(&paths.data_dir)?;
+        screen.load_history(&paths, &f.root);
+        screen.open_secret(prompt);
+        let shown = Instant::now();
+        screen.presented(shown);
+        let at = shown + Duration::from_secs(1);
+        screen.input_at(Event::Paste("hunt".into()), at, Duration::ZERO, running);
+        if disconnected {
+            stream.shutdown(std::net::Shutdown::Both)?;
+            let _next = f.request(None, "synchronize closure")?;
+            drop(receiver.recv()?);
+        } else {
+            f.call.finish();
+        }
+        assert!(screen.close_expired_secret());
+        assert!(screen.presented(at));
+        for ch in "er2!".chars() {
+            assert_eq!(
+                screen.input_at(
+                    key(KeyCode::Char(ch), KeyModifiers::NONE),
+                    at,
+                    Duration::ZERO,
+                    running
+                ),
+                Action::None
+            );
+        }
+        assert_eq!(
+            screen.input_at(
+                key(KeyCode::Enter, KeyModifiers::NONE),
+                at,
+                Duration::ZERO,
+                running
+            ),
+            Action::None
+        );
+        assert!(screen.input.text.is_empty());
+        let (_, entries) = history::History::open(&paths, &f.root)?;
+        assert!(entries.is_empty());
+        assert!(screen.confirming());
+        let mut output = Vec::new();
+        screen.draw(&mut output, None)?;
+        assert!(String::from_utf8(output)?.contains("Secret input closed by the command"));
+        screen.input_at(
+            key(KeyCode::Esc, KeyModifiers::NONE),
+            at,
+            Duration::ZERO,
+            running,
+        );
+        assert!(!screen.confirming());
+        assert!(screen.presented(at));
+        let early = at + Duration::from_millis(299);
+        for event in [
+            Event::Paste("late secret".into()),
+            key(KeyCode::Enter, KeyModifiers::NONE),
+        ] {
+            assert_eq!(
+                screen.input_at(event, early, Duration::ZERO, running),
+                Action::None
+            );
+        }
+        assert!(screen.input.text.is_empty());
+        assert!(history::History::open(&paths, &f.root)?.1.is_empty());
+    }
+    Ok(())
+}
+
+// 関門: 上限までの入力と表示切り替えでも、秘密の入力の領域を再確保しない。
+#[test]
+fn secret_input_reserves_its_limit_and_reports_omitted_untrusted_prompt_lines()
+-> Result<(), Box<dyn std::error::Error>> {
+    let f = crate::askpass::tests::Fixture::new()?;
+    let receiver = f.broker.take_requests().ok_or("missing receiver")?;
+    let _stream = f.request(
+        None,
+        &(1..=13)
+            .map(|n| format!("prompt-{n}"))
+            .collect::<Vec<_>>()
+            .join("\n"),
+    )?;
+    let prompt = receiver.recv()?;
+    let mut screen = Screen::new((120, 60), status());
+    screen.open_secret(prompt);
+    let at = Instant::now();
+    screen.presented(at);
+    let accepted = at + Duration::from_secs(1);
+    for value in ["x".repeat(2048), "x".repeat(2048)] {
+        screen.input_at(Event::Paste(value), accepted, Duration::ZERO, true);
+    }
+    // 値を戻す・表示する公開の操作で、上限まで受け取ったことも確かめる。
+    screen.input_at(
+        key(KeyCode::Tab, KeyModifiers::NONE),
+        accepted,
+        Duration::ZERO,
+        true,
+    );
+    let mut output = Vec::new();
+    screen.draw(&mut output, None)?;
+    let frame = String::from_utf8(output)?;
+    assert!(frame.contains("|   prompt-10"));
+    assert!(!frame.contains("|   prompt-11"));
+    assert!(frame.contains(text::details_omitted(3).as_str()));
+    screen.cancel_confirmation();
+    Ok(())
+}
+
+// 関門: キーと外からの取消を同じ再開の守りに通す。実時間は待たない。
+#[test]
+fn cancelled_secret_discards_trailing_input_for_every_cancellation_source()
+-> Result<(), Box<dyn std::error::Error>> {
+    for source in ["ctrl-c", "ctrl-d", "signal", "escape"] {
+        let f = crate::askpass::tests::Fixture::new()?;
+        let receiver = f.broker.take_requests().ok_or("missing receiver")?;
+        let stream = f.request(None, "password")?;
+        let mut screen = Screen::new((100, 50), status());
+        screen.open_secret(receiver.recv()?);
+        let shown = Instant::now();
+        screen.presented(shown);
+        let at = shown + Duration::from_secs(1);
+        screen.input_at(Event::Paste("hunt".into()), at, Duration::ZERO, true);
+        let action = match source {
+            "ctrl-c" => screen.input_at(
+                key(KeyCode::Char('c'), KeyModifiers::CONTROL),
+                at,
+                Duration::ZERO,
+                true,
+            ),
+            "ctrl-d" => screen.input_at(
+                key(KeyCode::Char('d'), KeyModifiers::CONTROL),
+                at,
+                Duration::ZERO,
+                true,
+            ),
+            "escape" => screen.input_at(
+                key(KeyCode::Esc, KeyModifiers::NONE),
+                at,
+                Duration::ZERO,
+                true,
+            ),
+            _ => {
+                screen.cancel_confirmation_at(at);
+                Action::None
+            }
+        };
+        assert_eq!(
+            action,
+            if source == "ctrl-c" {
+                Action::Cancel
+            } else {
+                Action::None
+            }
+        );
+        assert!(!screen.confirming());
+        assert!(screen.presented(at));
+        for event in [
+            Event::Paste("er2".into()),
+            key(KeyCode::Enter, KeyModifiers::NONE),
+        ] {
+            assert_eq!(
+                screen.input_at(event, at + Duration::from_millis(299), Duration::ZERO, true),
+                Action::None
+            );
+        }
+        assert!(screen.input.text.is_empty());
+        assert_eq!(
+            screen.input_at(
+                Event::Paste("safe".into()),
+                at + Duration::from_millis(300),
+                Duration::ZERO,
+                true
+            ),
+            Action::None
+        );
+        assert_eq!(screen.input.text, "safe");
+        drop(stream);
+    }
+    Ok(())
+}
+
+#[test]
+fn disconnected_touch_closes_automatically_and_guards_resumed_input()
+-> Result<(), Box<dyn std::error::Error>> {
+    let f = crate::askpass::tests::Fixture::new()?;
+    let receiver = f.broker.take_requests().ok_or("missing receiver")?;
+    let stream = f.request(Some("none"), "touch")?;
+    let mut screen = Screen::new((100, 50), status());
+    screen.open_secret(receiver.recv()?);
+    let shown = Instant::now();
+    screen.presented(shown);
+    stream.shutdown(std::net::Shutdown::Both)?;
+    let _next = f.request(None, "synchronize closure")?;
+    drop(receiver.recv()?);
+    let at = shown + Duration::from_secs(1);
+    assert!(screen.close_expired_secret_at(at));
+    assert!(!screen.confirming());
+    assert!(screen.presented(at));
+    assert_eq!(
+        screen.input_at(
+            Event::Paste("trailing".into()),
+            at + Duration::from_millis(299),
+            Duration::ZERO,
+            true
+        ),
+        Action::None
+    );
+    assert!(screen.input.text.is_empty());
+    Ok(())
+}
+
+// 転送の終了をソケットの EOF で同期し、入力の回答と道具の記録の食い違いを捕まえる。
+#[test]
+fn secret_history_uses_the_brokers_transfer_result_even_after_disconnect()
+-> Result<(), Box<dyn std::error::Error>> {
+    use std::io::Read;
+    for delivered in [true, false] {
+        let f = crate::askpass::tests::Fixture::new()?;
+        let receiver = f.broker.take_requests().ok_or("missing receiver")?;
+        let mut stream = f.request(None, "password")?;
+        let mut screen = Screen::new((100, 50), status());
+        screen.open_secret(receiver.recv()?);
+        let shown = Instant::now();
+        screen.presented(shown);
+        let at = shown + Duration::from_secs(1);
+        screen.input_at(Event::Paste("synthetic".into()), at, Duration::ZERO, true);
+        if !delivered {
+            stream.shutdown(std::net::Shutdown::Both)?;
+        }
+        screen.input_at(
+            key(KeyCode::Enter, KeyModifiers::NONE),
+            at,
+            Duration::ZERO,
+            true,
+        );
+        if delivered {
+            let mut answer = Vec::new();
+            stream.read_to_end(&mut answer)?;
+            assert_eq!(answer, b"Ssynthetic");
+        } else {
+            let _next = f.request(None, "synchronize transfer")?;
+            drop(receiver.recv()?);
+            if screen.confirming() {
+                screen.input_at(
+                    key(KeyCode::Esc, KeyModifiers::NONE),
+                    at,
+                    Duration::ZERO,
+                    true,
+                );
+            }
+        }
+        screen.finish_secret_results();
+        let mut output = Vec::new();
+        screen.draw(&mut output, None)?;
+        let frame = String::from_utf8(output)?;
+        let events = f.call.events();
+        let first = events.first().ok_or("missing outcome")?;
+        let expected = first
+            .rsplit(": ")
+            .next()
+            .ok_or("missing outcome name")?
+            .trim_end_matches('.');
+        assert_eq!(expected == "answered", delivered);
+        assert_eq!(frame.matches("Secret input for call-17:").count(), 1);
+        assert!(
+            frame.contains(&text::secret_history("call-17", expected)),
+            "{frame}"
+        );
+        assert!(!frame.contains("synthetic"));
+    }
+    Ok(())
+}
+
+#[test]
+fn revealed_secret_clips_at_terminal_width_and_remasks_without_changing_the_answer()
+-> Result<(), Box<dyn std::error::Error>> {
+    use std::io::Read;
+    let f = crate::askpass::tests::Fixture::new()?;
+    let receiver = f.broker.take_requests().ok_or("missing receiver")?;
+    let mut stream = f.request(None, "password")?;
+    let mut screen = Screen::new((100, 50), status());
+    screen.open_secret(receiver.recv()?);
+    let shown = Instant::now();
+    screen.presented(shown);
+    let at = shown + Duration::from_secs(1);
+    let value = "sensitive".repeat(20);
+    screen.input_at(Event::Paste(value.clone()), at, Duration::ZERO, true);
+    screen.input_at(
+        key(KeyCode::Tab, KeyModifiers::NONE),
+        at,
+        Duration::ZERO,
+        true,
+    );
+    let mut shown = Vec::new();
+    screen.draw(&mut shown, None)?;
+    let frame = visible_frame(&shown)?;
+    let row = frame
+        .lines()
+        .find(|line| line.starts_with("Secret: "))
+        .ok_or("missing secret row")?;
+    assert!(row.starts_with("Secret: sensitive"));
+    assert!(row.chars().count() <= 100);
+    assert!(!row.contains(&value));
+    screen.input_at(
+        key(KeyCode::Tab, KeyModifiers::NONE),
+        at,
+        Duration::ZERO,
+        true,
+    );
+    let mut masked = Vec::new();
+    screen.draw(&mut masked, None)?;
+    assert!(!String::from_utf8(masked)?.contains("sensitive"));
+    screen.input_at(
+        key(KeyCode::Enter, KeyModifiers::NONE),
+        at,
+        Duration::ZERO,
+        true,
+    );
+    let mut answer = Vec::new();
+    stream.read_to_end(&mut answer)?;
+    assert_eq!(answer, format!("S{value}").as_bytes());
+    Ok(())
+}

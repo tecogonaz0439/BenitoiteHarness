@@ -489,7 +489,7 @@ pub(super) fn prepare(
                     .map_err(StartupError::Sandbox)?
             };
             let policy_name = policy.as_ref().map(|_| selected.name());
-            let env = child_environment(
+            let mut env = child_environment(
                 std::env::vars_os(),
                 &user.referenced_env_vars(),
                 &locations.temporary,
@@ -508,7 +508,40 @@ pub(super) fn prepare(
                 }
                 Sandbox::DangerFullAccess => Vec::new(),
             };
+            let askpass = if user.secrets.askpass {
+                // danger-full-access でも、補助をプロジェクトや一時領域の下に置かない。
+                let mut roots = vec![locations.project.clone(), locations.temporary.clone()];
+                roots.extend(locations.additional.iter().cloned());
+                match crate::askpass::Broker::create(
+                    &paths.temporary_root,
+                    session.id().as_str(),
+                    &helper,
+                    &roots,
+                    args.interactive,
+                ) {
+                    Ok(broker) => {
+                        if let Some(message) = broker.diagnostic() {
+                            diagnostics.push(message.into());
+                        }
+                        broker.environment(&mut env);
+                        Some(Arc::new(broker))
+                    }
+                    Err(error) => {
+                        diagnostics.push(
+                            if matches!(error, crate::askpass::AskpassError::UnownedParent(_)) {
+                                error.to_string()
+                            } else {
+                                crate::askpass::text::DISABLED.into()
+                            },
+                        );
+                        None
+                    }
+                }
+            } else {
+                None
+            };
             Some(ShellContext {
+                askpass,
                 sandbox: selected,
                 sandboxed: policy.is_some(),
                 writable_roots,

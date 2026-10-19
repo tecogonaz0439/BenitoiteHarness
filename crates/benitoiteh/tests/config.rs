@@ -624,6 +624,8 @@ fn child_process_environment_removes_all_provider_keys_and_replaces_inherited_ma
         ("PAGER", "less"),
         ("GIT_PAGER", "less"),
         ("KEEP_ME", "inherited"),
+        ("BENITOITEH_ASKPASS_SOCKET", "/stale/socket"),
+        ("BENITOITEH_ASKPASS_TOKEN", "stale-token"),
     ]
     .into_iter()
     .map(|(k, v)| (k.into(), v.into()))
@@ -650,6 +652,7 @@ fn child_process_environment_removes_all_provider_keys_and_replaces_inherited_ma
         let output = String::from_utf8(output.stdout)?;
         assert!(!output.contains("secret-"), "{output}");
         assert!(!output.contains("outer"), "{output}");
+        assert!(!output.contains("BENITOITEH_ASKPASS_"), "{output}");
         for expected in [
             format!("TMPDIR={}", temporary.display()),
             "NO_COLOR=1".into(),
@@ -731,5 +734,27 @@ fn evaluation_switches_are_user_only_and_preserve_read_exclusions() -> TestResul
     ] {
         assert!(UserConfig::parse(input).is_err());
     }
+    Ok(())
+}
+
+// 関門: 秘密の仲介を変えられるのは利用者だけ。未知の欄とプロジェクト側の設定を拒む。
+#[test]
+fn askpass_is_enabled_by_default_and_only_user_config_can_disable_it() -> TestResult {
+    assert!(UserConfig::default().secrets.askpass);
+    assert!(
+        !UserConfig::parse("[secrets]\naskpass = false")?
+            .secrets
+            .askpass
+    );
+    assert!(UserConfig::parse("[secrets]\nunknown = true").is_err());
+    let fixture = Fixture::new()?;
+    let project = fixture.dir("project")?;
+    fs::create_dir(project.join(".benitoiteh"))?;
+    fs::write(
+        project.join(".benitoiteh/config.toml"),
+        "[secrets]\naskpass = false",
+    )?;
+    let loaded = ProjectConfig::load(&benitoiteh::safe_fs::ScopeRoot::open(&project)?);
+    assert!(loaded.read && loaded.error.is_some());
     Ok(())
 }

@@ -14,3 +14,6 @@ pub mod sandbox;
 pub mod session;
 pub mod tools;
 pub mod ui;
+
+/// 秘密の入力を、承認したコマンドへ仲介する。
+pub mod askpass;

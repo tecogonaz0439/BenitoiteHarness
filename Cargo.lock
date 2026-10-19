@@ -53,6 +53,7 @@ dependencies = [
  "toml",
  "unicode-width",
  "ureq",
+ "zeroize",
 ]
 
 [[package]]

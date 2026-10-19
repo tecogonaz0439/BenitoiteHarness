@@ -1,9 +1,14 @@
 //! 実行ファイルの入口で出力・記録・道具の変更を確かめる（設計書 07-01「持ち主の境界」）。
 
+#[path = "support/temporary_cleanup.rs"]
+mod temporary_cleanup;
+
 #[path = "exec/resume.rs"]
 mod resume;
 #[path = "exec/skills.rs"]
 mod skills;
+#[path = "support/socket_directory.rs"]
+mod socket_directory;
 mod support;
 
 #[allow(dead_code, unused_imports)]
@@ -329,7 +334,7 @@ fn exec_completes_tools_and_preserves_output_records_and_original_items() -> Tes
             ] {
                 assert_eq!(fs::metadata(path)?.permissions().mode() & 0o7777, mode);
             }
-            assert_eq!(fs::read_dir(f.root.join("tmp"))?.count(), 0);
+            temporary_cleanup::check_temporary_root(&f.root.join("tmp"))?;
             no_secret(&output, &records);
             let requests = server.requests()?;
             assert_eq!(requests.len(), 4);
@@ -626,7 +631,7 @@ fn signals_cancel_the_loop_and_leave_summary_after_session_end() -> TestResult {
         assert_eq!(end.get("type"), Some(&json!("session_end")));
         assert_eq!(end.get("outcome"), Some(&json!("cancelled")));
         assert_eq!(lines(&output.stdout)?.last(), records.last());
-        assert_eq!(fs::read_dir(f.root.join("tmp"))?.count(), 0);
+        temporary_cleanup::check_temporary_root(&f.root.join("tmp"))?;
         no_secret(&output, &records);
         server.shutdown()?;
     }
@@ -639,7 +644,12 @@ fn closed_event_output_still_finishes_the_session_record() -> TestResult {
     script.delivery = Delivery::HeadersOnly;
     let mut server = MockProvider::start(vec![script])?;
     let f = Fixture::new(Protocol::Chat, &server)?;
-    let mut child = Running::start(f.command("Wait").arg("--json"))?;
+    let temporary = socket_directory::SocketDirectory::new()?;
+    let mut child = Running::start(
+        f.command("Wait")
+            .arg("--json")
+            .env("TMPDIR", temporary.path()),
+    )?;
     drop(child.0.as_mut().and_then(|child| child.stdout.take()));
     let output = child.finish()?;
     assert_eq!(output.status.code(), Some(1));
@@ -652,7 +662,13 @@ fn closed_event_output_still_finishes_the_session_record() -> TestResult {
         records.iter().rev().nth(1).and_then(|v| v.get("type")),
         Some(&json!("session_end"))
     );
-    assert_eq!(fs::read_dir(f.root.join("tmp"))?.count(), 0);
+    // 長い TMPDIR の macOS でも /tmp へ逃がさず、親を残す配置を通す。
+    let parent = temporary
+        .path()
+        .join(format!("bha-{}", rustix::process::geteuid().as_raw()));
+    assert!(parent.is_dir(), "{}", parent.display());
+    temporary_cleanup::check_temporary_root(temporary.path())?;
+    temporary_cleanup::check_temporary_root(&f.root.join("tmp"))?;
     no_secret(&output, &records);
     server.shutdown()?;
     Ok(())
@@ -1127,5 +1143,56 @@ fn allow_is_rejected_for_explicit_default_and_resumed_normal_modes() -> TestResu
     assert_eq!(server.requests()?.len(), 1);
     assert_eq!(f.records()?.1.len(), records.len());
     server.shutdown()?;
+    Ok(())
+}
+
+// 親を許すことで、セッションや補助の残存、親の不正な実体まで見逃さない契約。
+#[test]
+fn temporary_cleanup_allows_only_an_owned_private_empty_parent() -> TestResult {
+    use std::os::unix::fs::{DirBuilderExt, symlink};
+    let uid = rustix::process::geteuid().as_raw();
+    let cases = [
+        "empty",
+        "parent",
+        "session",
+        "helper",
+        "file",
+        "mode",
+        "link",
+        "foreign name",
+    ];
+    for case in cases {
+        let root = socket_directory::SocketDirectory::new()?;
+        let target = socket_directory::SocketDirectory::new()?;
+        let parent = root.path().join(format!("bha-{uid}"));
+        if case == "file" {
+            fs::write(&parent, b"not a directory")?;
+        } else if case == "link" {
+            symlink(target.path(), &parent)?;
+        } else if case == "session" {
+            fs::create_dir(
+                root.path()
+                    .join("benitoiteh-20200101T000000Z-0000000000000001"),
+            )?;
+        } else if case == "foreign name" {
+            fs::DirBuilder::new()
+                .mode(0o700)
+                .create(root.path().join(format!("bha-{}", uid.saturating_add(1))))?;
+        } else if case != "empty" {
+            fs::DirBuilder::new().mode(0o700).create(&parent)?;
+            if case == "helper" {
+                fs::create_dir(parent.join("20200101T000000Z-0000000000000001"))?;
+            } else if case == "mode" {
+                fs::set_permissions(&parent, fs::Permissions::from_mode(0o755))?;
+            }
+        }
+        let result = temporary_cleanup::check_temporary_root(root.path());
+        if matches!(case, "empty" | "parent") {
+            result?;
+        } else {
+            let error = result.err().ok_or_else(|| format!("accepted {case}"))?;
+            assert_eq!(error.kind(), io::ErrorKind::InvalidData, "{case}");
+        }
+    }
     Ok(())
 }

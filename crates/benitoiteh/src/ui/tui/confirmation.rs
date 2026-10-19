@@ -49,9 +49,17 @@ pub(super) fn is_interrupt(event: &Event) -> bool {
 pub(super) struct Confirmation {
     pub prompt: Option<ApprovalPrompt>,
     rewind: Option<RewindConfirmation>,
+    secret: Option<SecretConfirmation>,
     pub guard: ConfirmationGuard,
     pub message: Option<String>,
     message_overflow: bool,
+}
+
+struct SecretConfirmation {
+    prompt: crate::askpass::Prompt,
+    value: zeroize::Zeroizing<String>,
+    reveal: bool,
+    closed: bool,
 }
 
 struct RewindConfirmation {
@@ -73,6 +81,9 @@ impl Confirmation {
     }
 
     fn title(&self) -> &'static str {
+        if self.secret.is_some() {
+            return text::SECRET_TITLE;
+        }
         if let Some(rewind) = &self.rewind {
             if rewind.branch && rewind.incomplete {
                 text::INCOMPLETE_BRANCH_TITLE
@@ -89,6 +100,28 @@ impl Confirmation {
     }
 
     fn facts(&self, width: u16, compact: bool) -> Vec<FactRow> {
+        if let Some(secret) = &self.secret {
+            let prompt = &secret.prompt;
+            let cwd = SafeText::path(&prompt.facts.cwd);
+            let report = text::secret_helper(
+                prompt.kind.name(),
+                prompt.pid,
+                prompt.ppid,
+                prompt.ssh_prompt.as_deref(),
+            );
+            let mut rows = Vec::new();
+            for (label, value) in [
+                (text::SECRET_HELPER, report.as_str()),
+                (text::SECRET_CALL, prompt.facts.call_id.as_str()),
+                (text::COMMAND, prompt.facts.command.as_str()),
+                (text::DIRECTORY, cwd.as_str()),
+                (text::SECRET_MODE, prompt.facts.mode),
+                (text::WARNING, text::SECRET_WARNING),
+            ] {
+                rows.extend(fact(label, value, width, compact));
+            }
+            return rows;
+        }
         if let Some(rewind) = &self.rewind {
             let mut rows: Vec<_> = rewind
                 .facts
@@ -201,6 +234,15 @@ impl Confirmation {
     }
 
     fn answer_keys(&self) -> &'static str {
+        if let Some(secret) = &self.secret {
+            return if secret.prompt.touch() {
+                text::SECRET_TOUCH_KEYS
+            } else if secret.prompt.confirm() {
+                text::SECRET_CONFIRM_KEYS
+            } else {
+                text::SECRET_KEYS
+            };
+        }
         self.rewind.as_ref().map_or_else(
             || text::answer_keys(self.kind()),
             |rewind| {
@@ -217,6 +259,9 @@ impl Confirmation {
         )
     }
     fn decline_keys(&self) -> &'static str {
+        if self.secret.is_some() {
+            return text::SECRET_DECLINE_KEYS;
+        }
         if self.rewind.is_some() {
             text::REWIND_DECLINE
         } else {
@@ -245,6 +290,10 @@ impl Confirmation {
             && wrapped_plain(self.title(), width, Decoration::Dim)
                 .len()
                 .saturating_add(facts.len())
+                .saturating_add(usize::from(self.secret.is_some()))
+                .saturating_add(usize::from(self.secret.as_ref().is_some_and(|secret| {
+                    !secret.prompt.touch() && !secret.prompt.confirm()
+                })))
                 .saturating_add(wrapped_plain(text::APPROVAL_BORDER, width, Decoration::Dim).len())
                 .saturating_add(wrapped_plain(self.answer_keys(), width, Decoration::Error).len())
                 <= Self::available(size)
@@ -299,6 +348,33 @@ impl Confirmation {
             rows.extend(border);
             rows.truncate(maximum);
             return rows;
+        }
+        if let Some(secret) = &self.secret {
+            let spare = maximum
+                .saturating_sub(rows.len())
+                .saturating_sub(facts.len())
+                .saturating_sub(border.len());
+            let source = prefixed_details(&secret.prompt.prompt, width);
+            let mut details = wrapped_plain(text::SECRET_PROMPT, width, Decoration::Dim);
+            if source.len() <= 10 && details.len().saturating_add(source.len()) <= spare {
+                details.extend(source);
+            } else if spare > 0 {
+                // 事実を押し出さず、短い画面でも省略の行を先に予約する。
+                details.truncate(spare.saturating_sub(1));
+                let shown = source
+                    .len()
+                    .min(10)
+                    .min(spare.saturating_sub(details.len()).saturating_sub(1));
+                details.extend(source.iter().take(shown).cloned());
+                details.push(vec![(
+                    format::clipped(
+                        &text::details_omitted(source.len().saturating_sub(shown)),
+                        width,
+                    ),
+                    Decoration::Dim,
+                )]);
+            }
+            rows.extend(details.into_iter().take(spare));
         }
         if let Some(rewind) = &self.rewind {
             let spare = maximum
@@ -386,6 +462,38 @@ impl Confirmation {
             },
             |message| format!("{}{message}", text::DECLINE_MESSAGE),
         );
+        if self.secret.as_ref().is_some_and(|secret| secret.closed) {
+            return (
+                wrapped_plain(text::SECRET_CLOSED, width, Decoration::Error)
+                    .into_iter()
+                    .take(available)
+                    .collect(),
+                (0, 0),
+            );
+        }
+        if let Some(secret) = &self.secret {
+            let mut keys = wrapped_plain(&value, width, Decoration::Error);
+            if !secret.prompt.touch() && !secret.prompt.confirm() {
+                let mut display = zeroize::Zeroizing::new(String::with_capacity(
+                    crate::askpass::MAX_SECRET.saturating_add(text::SECRET_VALUE.len()),
+                ));
+                display.push_str(text::SECRET_VALUE);
+                if secret.reveal {
+                    display.push_str(&secret.value);
+                } else {
+                    display.extend(std::iter::repeat_n('*', secret.value.chars().count()));
+                }
+                // この作業用の行だけを Zeroizing で消す。format::clipped が作る SafeText、
+                // 描画フレーム、端末の写しは消去を保証しない（設計書 03-04「段 2」）。
+                keys.push(vec![(format::clipped(&display, width), Decoration::Plain)]);
+            }
+            keys.truncate(available);
+            let mut rows = self.body(size, keys.len());
+            let cursor = (rows.len().saturating_add(keys.len()).saturating_sub(1), 0);
+            rows.extend(keys);
+            rows.truncate(available);
+            return (rows, cursor);
+        }
         let safe = SafeText::strict(&value, false);
         let (mut keys, mut cursor) = format::wrapped(
             &safe,
@@ -508,12 +616,89 @@ fn fact(label: &str, value: &str, width: u16, compact: bool) -> Vec<FactRow> {
 }
 
 impl Screen {
+    /// 値を通常の入力と履歴から切り離して、同じ入力の守りを掛ける。
+    pub fn open_secret(&mut self, prompt: crate::askpass::Prompt) {
+        self.flush_pending();
+        self.confirmation = Some(Confirmation {
+            prompt: None,
+            rewind: None,
+            secret: Some(SecretConfirmation {
+                prompt,
+                value: zeroize::Zeroizing::new(String::with_capacity(crate::askpass::MAX_SECRET)),
+                reveal: false,
+                closed: false,
+            }),
+            guard: ConfirmationGuard::default(),
+            message: None,
+            message_overflow: false,
+        });
+    }
+
+    /// 呼び出しの失効やタッチの通知の切断を、描画の前に反映する。
+    pub fn close_expired_secret(&mut self) -> bool {
+        self.close_expired_secret_at(Instant::now())
+    }
+
+    pub(super) fn close_expired_secret_at(&mut self, at: Instant) -> bool {
+        let finished = self.finish_secret_results();
+        let Some(confirmation) = &mut self.confirmation else {
+            return finished;
+        };
+        let Some(secret) = &mut confirmation.secret else {
+            return finished;
+        };
+        if secret.closed || secret.prompt.is_open() {
+            return finished;
+        }
+        if secret.prompt.touch() {
+            self.answer_secret(crate::askpass::Answer::Cancelled, at);
+            return true;
+        }
+        zeroize::Zeroize::zeroize(&mut secret.value);
+        secret.reveal = false;
+        secret.closed = true;
+        confirmation.guard = ConfirmationGuard::default();
+        self.discard_secret_input = true;
+        true
+    }
+
+    pub(super) fn finish_secret_results(&mut self) -> bool {
+        let pending = std::mem::take(&mut self.pending_secret_results);
+        let mut changed = false;
+        for prompt in pending {
+            if let Some(outcome) = prompt.outcome() {
+                self.notice(&text::secret_history(&prompt.facts.call_id, outcome));
+                changed = true;
+            } else {
+                self.pending_secret_results.push(prompt);
+            }
+        }
+        changed
+    }
+
+    fn answer_secret(&mut self, answer: crate::askpass::Answer, at: Instant) {
+        if let Some(confirmation) = self.confirmation.take()
+            && let Some(secret) = confirmation.secret
+        {
+            if matches!(answer, crate::askpass::Answer::Cancelled) {
+                self.secret_resume_after = at.checked_add(Duration::from_millis(300));
+                self.discard_secret_input = true;
+            }
+            // キューへ送れたことと、補助へ書けたことを同一視しない。
+            // 実際の転送の結果を broker が確定してから履歴へ写す。
+            let _sent = secret.prompt.reply.send(answer);
+            self.pending_secret_results.push(secret.prompt);
+            self.finish_secret_results();
+        }
+    }
+
     /// 確認前のイベントを読み終えた画面に要求を渡す。
     pub fn open_approval(&mut self, prompt: ApprovalPrompt) {
         self.flush_pending();
         self.confirmation = Some(Confirmation {
             prompt: Some(prompt),
             rewind: None,
+            secret: None,
             guard: ConfirmationGuard::default(),
             message: None,
             message_overflow: false,
@@ -527,6 +712,7 @@ impl Screen {
         self.confirmation = Some(Confirmation {
             prompt: None,
             rewind: None,
+            secret: None,
             guard: ConfirmationGuard::default(),
             message: None,
             message_overflow: false,
@@ -609,6 +795,7 @@ impl Screen {
         }
         self.confirmation = Some(Confirmation {
             prompt: None,
+            secret: None,
             rewind: Some(RewindConfirmation {
                 facts,
                 extra,
@@ -624,9 +811,12 @@ impl Screen {
 
     /// 成功した描画の直後に呼び、真なら入力元の待ち行列も捨てる。
     pub fn presented(&mut self, at: Instant) -> bool {
-        self.confirmation
+        let discard = std::mem::take(&mut self.discard_secret_input);
+        let presented = self
+            .confirmation
             .as_mut()
-            .is_some_and(|confirmation| confirmation.guard.presented(at))
+            .is_some_and(|confirmation| confirmation.guard.presented(at));
+        discard || presented
     }
 
     /// 確認中かどうか。
@@ -641,10 +831,30 @@ impl Screen {
 
     /// 呼び出す側が取り消しの印を立てた後で、待っている Agent へ答えを届ける。
     pub fn cancel_confirmation(&mut self) {
-        self.answer(ApprovalOutcome::Cancelled, None);
+        self.cancel_confirmation_at(Instant::now());
+    }
+
+    pub(super) fn cancel_confirmation_at(&mut self, at: Instant) {
+        if self
+            .confirmation
+            .as_ref()
+            .is_some_and(|confirmation| confirmation.secret.is_some())
+        {
+            self.answer_secret(crate::askpass::Answer::Cancelled, at);
+        } else {
+            self.answer(ApprovalOutcome::Cancelled, None);
+        }
     }
 
     fn answer(&mut self, outcome: ApprovalOutcome, message: Option<String>) {
+        if self
+            .confirmation
+            .as_ref()
+            .is_some_and(|confirmation| confirmation.secret.is_some())
+        {
+            self.answer_secret(crate::askpass::Answer::Cancelled, Instant::now());
+            return;
+        }
         if let Some(confirmation) = self.confirmation.take() {
             let start = self.history.len();
             self.history.extend(confirmation.body(self.size, 0));
@@ -664,11 +874,39 @@ impl Screen {
         now: Duration,
         running: bool,
     ) -> Action {
+        self.close_expired_secret_at(read_at);
         let Some(confirmation) = &mut self.confirmation else {
             return Action::None;
         };
+        if confirmation
+            .secret
+            .as_ref()
+            .is_some_and(|secret| secret.closed)
+        {
+            if is_interrupt(&event) {
+                self.answer_secret(crate::askpass::Answer::Cancelled, read_at);
+                return Action::Cancel;
+            }
+            if matches!(&event, Event::Key(key) if key.kind == KeyEventKind::Press && (key.code == KeyCode::Esc || (key.code == KeyCode::Char('d') && key.modifiers.contains(KeyModifiers::CONTROL))))
+            {
+                self.answer_secret(crate::askpass::Answer::Cancelled, read_at);
+            }
+            return Action::None;
+        }
         if !confirmation.guard.accepts(&event, read_at) {
             return Action::None;
+        }
+        if confirmation.secret.is_some()
+            && (is_interrupt(&event)
+                || matches!(&event, Event::Key(key) if key.kind == KeyEventKind::Press && key.code == KeyCode::Char('d') && key.modifiers.contains(KeyModifiers::CONTROL)))
+        {
+            let interrupt = is_interrupt(&event);
+            self.answer_secret(crate::askpass::Answer::Cancelled, read_at);
+            return if interrupt {
+                Action::Cancel
+            } else {
+                Action::None
+            };
         }
         if is_interrupt(&event) {
             return Action::Cancel;
@@ -680,6 +918,9 @@ impl Screen {
             } else {
                 Action::None
             };
+        }
+        if confirmation.secret.is_some() {
+            return self.secret_input(event, read_at);
         }
         if let Event::Key(key) = &event
             && key.kind == KeyEventKind::Press
@@ -775,5 +1016,165 @@ impl Screen {
             _ => {}
         }
         Action::None
+    }
+    fn secret_input(&mut self, event: Event, read_at: Instant) -> Action {
+        let Some(confirmation) = &mut self.confirmation else {
+            return Action::None;
+        };
+        let fits = confirmation.fits(self.size);
+        let Some(secret) = &mut confirmation.secret else {
+            return Action::None;
+        };
+        if !secret.prompt.is_open() {
+            self.close_expired_secret();
+            return Action::None;
+        }
+        match event {
+            Event::Paste(value) if !secret.prompt.touch() && !secret.prompt.confirm() => {
+                let value = zeroize::Zeroizing::new(value);
+                let value = value.trim_end_matches(['\n', '\r']);
+                if !value.contains(['\n', '\r', '\0'])
+                    && secret.value.len().saturating_add(value.len()) <= 4096
+                {
+                    secret.value.push_str(value);
+                }
+            }
+            Event::Key(key) if key.kind == KeyEventKind::Press => match key.code {
+                KeyCode::Esc => self.answer_secret(crate::askpass::Answer::Cancelled, read_at),
+                KeyCode::Char('n' | 'N') if secret.prompt.confirm() => {
+                    self.answer_secret(crate::askpass::Answer::Declined, read_at)
+                }
+                KeyCode::Char('y' | 'Y')
+                    if secret.prompt.confirm()
+                        && fits
+                        && (key.modifiers & !KeyModifiers::SHIFT).is_empty() =>
+                {
+                    self.answer_secret(crate::askpass::Answer::Yes, read_at)
+                }
+                KeyCode::Enter
+                    if !secret.prompt.confirm()
+                        && !secret.prompt.touch()
+                        && fits
+                        && key.modifiers.is_empty() =>
+                {
+                    let value = std::mem::replace(
+                        &mut secret.value,
+                        zeroize::Zeroizing::new(String::new()),
+                    );
+                    self.answer_secret(crate::askpass::Answer::Secret(value), read_at);
+                }
+                KeyCode::Tab if !secret.prompt.confirm() && !secret.prompt.touch() => {
+                    secret.reveal = !secret.reveal
+                }
+                KeyCode::Backspace => {
+                    secret.value.pop();
+                }
+                KeyCode::Char(ch)
+                    if !secret.prompt.confirm()
+                        && !secret.prompt.touch()
+                        && !matches!(ch, '\n' | '\r' | '\0')
+                        && (key.modifiers & !KeyModifiers::SHIFT).is_empty() =>
+                {
+                    if secret.value.len().saturating_add(ch.len_utf8()) <= 4096 {
+                        secret.value.push(ch);
+                    }
+                }
+                KeyCode::BackTab
+                | KeyCode::Enter
+                | KeyCode::Tab
+                | KeyCode::Null
+                | KeyCode::Char(_)
+                | KeyCode::Left
+                | KeyCode::Right
+                | KeyCode::Up
+                | KeyCode::Down
+                | KeyCode::Home
+                | KeyCode::End
+                | KeyCode::PageUp
+                | KeyCode::PageDown
+                | KeyCode::Delete
+                | KeyCode::Insert
+                | KeyCode::F(_)
+                | KeyCode::CapsLock
+                | KeyCode::ScrollLock
+                | KeyCode::NumLock
+                | KeyCode::PrintScreen
+                | KeyCode::Pause
+                | KeyCode::Menu
+                | KeyCode::KeypadBegin
+                | KeyCode::Media(_)
+                | KeyCode::Modifier(_) => {}
+            },
+            Event::FocusGained
+            | Event::FocusLost
+            | Event::Key(_)
+            | Event::Mouse(_)
+            | Event::Resize(_, _)
+            | Event::Paste(_) => {}
+        }
+        Action::None
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    // 関門: 入力の上限まで追加しても、平文を入れた領域の再確保を起こさない。
+    #[test]
+    fn secret_buffer_keeps_the_same_allocation_up_to_its_limit()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let f = crate::askpass::tests::Fixture::new()?;
+        let receiver = f.broker.take_requests().ok_or("missing receiver")?;
+        let _stream = f.request(None, "password")?;
+        let mut screen = Screen::new(
+            (120, 60),
+            super::super::Status {
+                mode: crate::config::Mode::Normal,
+                provider: String::new(),
+                model: String::new(),
+                host: String::new(),
+                sandbox: String::new(),
+                sandbox_disabled: false,
+                context_window: None,
+                estimate: 0,
+            },
+        );
+        screen.open_secret(receiver.recv()?);
+        let shown = Instant::now();
+        screen.presented(shown);
+        let allocation = screen
+            .confirmation
+            .as_ref()
+            .and_then(|c| c.secret.as_ref())
+            .ok_or("missing secret")?
+            .value
+            .as_ptr();
+        for _ in 0..8 {
+            screen.input_at(
+                Event::Paste("x".repeat(512)),
+                shown + Duration::from_secs(1),
+                Duration::ZERO,
+                true,
+            );
+            let secret = screen
+                .confirmation
+                .as_ref()
+                .and_then(|c| c.secret.as_ref())
+                .ok_or("missing secret")?;
+            assert_eq!(secret.value.as_ptr(), allocation);
+            assert!(secret.value.capacity() >= crate::askpass::MAX_SECRET);
+        }
+        assert_eq!(
+            screen
+                .confirmation
+                .as_ref()
+                .and_then(|c| c.secret.as_ref())
+                .ok_or("missing secret")?
+                .value
+                .len(),
+            crate::askpass::MAX_SECRET
+        );
+        screen.cancel_confirmation();
+        Ok(())
     }
 }

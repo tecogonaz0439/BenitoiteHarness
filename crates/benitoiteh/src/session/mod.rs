@@ -6,7 +6,7 @@ mod id;
 mod objects;
 mod quota;
 mod record;
-mod remove;
+pub(crate) mod remove;
 mod replay;
 mod resume;
 mod scan;
@@ -325,18 +325,78 @@ impl CleanupFailure {
 /// 動いていないセッションの一時領域と、保持期間を過ぎた記録を掃除する。
 ///
 /// 不正な名前・所有者・権限・リンク、およびロックがないセッションは保守的に残す。
-/// 根の一覧を開けなければ失敗し、項目ごとの失敗は報告して次へ進む。
+/// 記録の根を開けなければ失敗し、一時の根や項目ごとの失敗は報告して次へ進む。
 pub fn cleanup(
     paths: &DataPaths,
     retention_days: u64,
     now: SystemTime,
 ) -> Result<CleanupReport, SessionError> {
     let sessions = sessions_root(&paths.sessions_dir)?;
-    let temporary_entries = fs::read_dir(&paths.temporary_root)?;
     let session_entries = fs::read_dir(&paths.sessions_dir)?;
     let mut report = CleanupReport::default();
     let retention = Duration::from_secs(retention_days.saturating_mul(86400));
-    for (temporary, entries) in [(true, temporary_entries), (false, session_entries)] {
+    let mut roots = Vec::new();
+    match fs::read_dir(&paths.temporary_root) {
+        Ok(entries) => roots.push((true, false, entries)),
+        Err(error) => report.failures.push(CleanupFailure {
+            id: None,
+            temporary: true,
+            reason: text::cleanup_skipped(&paths.temporary_root, &error.to_string()),
+        }),
+    }
+    // 短い補助の名前は自分の記録から一意に対応する ID だけを解決する。
+    let mut helper_ids = std::collections::BTreeMap::new();
+    for entry in fs::read_dir(&paths.sessions_dir)? {
+        let Ok(entry) = entry else {
+            continue;
+        };
+        let Some(id) = entry
+            .file_name()
+            .to_str()
+            .and_then(|name| name.parse::<SessionId>().ok())
+        else {
+            continue;
+        };
+        helper_ids
+            .entry(crate::askpass::helper_name(id.as_str()).to_owned())
+            .and_modify(|value| *value = None)
+            .or_insert(Some(id));
+    }
+    let mut visited = std::collections::BTreeSet::new();
+    let mut helper_roots = vec![paths.temporary_root.clone(), PathBuf::from("/tmp")];
+    helper_roots.extend(crate::askpass::runtime_directory());
+    for root in &helper_roots {
+        let root = match fs::canonicalize(root) {
+            Ok(root) => root,
+            Err(_) => continue,
+        };
+        if !visited.insert(root.clone()) {
+            continue;
+        }
+        let parent = crate::askpass::parent_directory(&root);
+        match fs::symlink_metadata(&parent) {
+            Err(error) if error.kind() == io::ErrorKind::NotFound => continue,
+            _ if !crate::askpass::valid_parent(&parent) => {
+                report.failures.push(CleanupFailure {
+                    id: None,
+                    temporary: true,
+                    reason: text::cleanup_skipped(&parent, text::NOT_PRIVATE_DIRECTORY),
+                });
+                continue;
+            }
+            _ => {}
+        }
+        match fs::read_dir(&parent) {
+            Ok(entries) => roots.push((true, true, entries)),
+            Err(error) => report.failures.push(CleanupFailure {
+                id: None,
+                temporary: true,
+                reason: text::cleanup_skipped(&parent, &error.to_string()),
+            }),
+        }
+    }
+    roots.push((false, false, session_entries));
+    for (temporary, askpass, entries) in roots {
         for entry in entries {
             let entry = match entry {
                 Ok(entry) => entry,
@@ -351,17 +411,25 @@ pub fn cleanup(
             };
             let name = entry.file_name();
             let Some(id) = name.to_str().and_then(|name| {
-                let name = if temporary {
+                let name = if temporary && !askpass {
                     name.strip_prefix("benitoiteh-")?
                 } else {
                     name
                 };
-                name.parse::<SessionId>().ok()
+                name.parse::<SessionId>().ok().or_else(|| {
+                    askpass
+                        .then(|| helper_ids.get(name).cloned().flatten())
+                        .flatten()
+                })
             }) else {
                 continue;
             };
             let result = (|| -> Result<bool, SessionError> {
-                let metadata = fs::symlink_metadata(entry.path())?;
+                let metadata = match fs::symlink_metadata(entry.path()) {
+                    Ok(metadata) => metadata,
+                    Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(false),
+                    Err(error) => return Err(error.into()),
+                };
                 if !private_metadata(&metadata, true) {
                     return Ok(false);
                 }
@@ -372,10 +440,33 @@ pub fn cleanup(
                     }
                 }
                 let lock = inactive_lock(&sessions, &id)?;
-                if matches!(lock, Inactive::Busy) {
+                // 利用者専用の親は残し、自分の記録と錠で生死を確かめた子だけ消す。
+                if matches!(lock, Inactive::Busy)
+                    || (askpass && !matches!(lock, Inactive::Locked(_)))
+                {
                     return Ok(false);
                 }
                 if temporary {
+                    if askpass {
+                        if !entry
+                            .path()
+                            .parent()
+                            .is_some_and(crate::askpass::valid_parent)
+                        {
+                            return Err(io::Error::from(io::ErrorKind::PermissionDenied).into());
+                        }
+                        let record = paths.sessions_dir.join(id.as_str()).join("session.jsonl");
+                        if !fs::symlink_metadata(record)
+                            .is_ok_and(|metadata| private_metadata(&metadata, false))
+                        {
+                            return Ok(false);
+                        }
+                        match fs::remove_file(entry.path().join("sock")) {
+                            Ok(()) => {}
+                            Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+                            Err(error) => return Err(error.into()),
+                        }
+                    }
                     remove::directory(&entry.path())?;
                 } else if let Inactive::Locked(_guard) = &lock {
                     let directory = open_directory_at(&sessions, id.as_str())?;

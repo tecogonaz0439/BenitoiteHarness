@@ -97,6 +97,8 @@ pub struct Worker {
     pending_steering: std::collections::VecDeque<String>,
     thread: Option<JoinHandle<()>>,
     approvals: Option<mpsc::Receiver<crate::approval::ApprovalPrompt>>,
+    secrets: Option<mpsc::Receiver<crate::askpass::Prompt>>,
+    askpass: Option<Arc<crate::askpass::Broker>>,
     status: AgentStatus,
     rewinding: bool,
     ended: bool,
@@ -109,6 +111,8 @@ impl Worker {
         let (events, receiver) = mpsc::sync_channel(64);
         let (done, completions) = mpsc::sync_channel(1);
         let status = agent.status();
+        let secrets = agent.take_secret_requests();
+        let askpass = agent.askpass_broker();
         let thread = thread::Builder::new().name("agent".into()).spawn(move || {
             let mut tokens = TokenCounts::default();
             while let Ok(job) = requests.recv() {
@@ -215,6 +219,8 @@ impl Worker {
             pending_steering: std::collections::VecDeque::new(),
             thread: Some(thread),
             approvals: None,
+            secrets,
+            askpass,
             status,
             rewinding: false,
             ended: false,
@@ -491,6 +497,17 @@ impl Worker {
             }
             Err(mpsc::TryRecvError::Disconnected) => {}
         }
+        changed |= screen.close_expired_secret();
+        if !screen.confirming()
+            && let Some(requests) = &self.secrets
+            && let Some(prompt) = next_open_secret(requests)
+        {
+            while let Ok(event) = self.events.try_recv() {
+                self.event(screen, event);
+            }
+            screen.open_secret(prompt);
+            changed = true;
+        }
         if !screen.confirming()
             && let Some(requests) = &self.approvals
             && let Ok(prompt) = requests.try_recv()
@@ -518,6 +535,9 @@ impl Worker {
 impl Drop for Worker {
     fn drop(&mut self) {
         self.cancel();
+        if let Some(broker) = &self.askpass {
+            broker.shutdown();
+        }
         // receiver の破棄で send の待ちを解く。通常の終了では close で join 済み。
         self.jobs.take();
     }
@@ -534,4 +554,42 @@ fn add_tokens(total: &mut TokenCounts, value: &TokenCounts) {
     total.cache_read = total.cache_read.saturating_add(value.cache_read);
     total.cache_write = total.cache_write.saturating_add(value.cache_write);
     total.output = total.output.saturating_add(value.output);
+}
+
+// 終了した呼び出しの要求は、利用者の確認も履歴も作らず次へ進める。
+fn next_open_secret(
+    requests: &mpsc::Receiver<crate::askpass::Prompt>,
+) -> Option<crate::askpass::Prompt> {
+    requests.try_iter().find(crate::askpass::Prompt::is_open)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn queued_closed_prompts_are_discarded_before_the_next_live_prompt() -> io::Result<()> {
+        let closed = crate::askpass::tests::Fixture::new()?;
+        let requests = closed.broker.take_requests().ok_or(io::ErrorKind::Other)?;
+        let _stream = closed.request(None, "expired")?;
+        let prompt = requests.recv().map_err(io::Error::other)?;
+        let (sender, queued) = mpsc::channel();
+        sender.send(prompt).map_err(|_| io::ErrorKind::BrokenPipe)?;
+        closed.call.finish();
+        assert!(next_open_secret(&queued).is_none());
+
+        let live = crate::askpass::tests::Fixture::new()?;
+        let requests = live.broker.take_requests().ok_or(io::ErrorKind::Other)?;
+        let _stream = live.request(None, "live")?;
+        sender
+            .send(requests.recv().map_err(io::Error::other)?)
+            .map_err(|_| io::ErrorKind::BrokenPipe)?;
+        assert_eq!(
+            next_open_secret(&queued)
+                .ok_or(io::ErrorKind::Other)?
+                .prompt,
+            "live"
+        );
+        assert!(next_open_secret(&queued).is_none());
+        Ok(())
+    }
 }

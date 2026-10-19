@@ -58,3 +58,11 @@ pub fn fork_cleanup(
 ) -> String {
     format!("{error} Could not remove incomplete fork {id}: {cleanup}")
 }
+
+/// 後始末の省略は、進行中の秘密の仲介を止めた診断と区別する。
+pub const NOT_PRIVATE_DIRECTORY: &str = "not a private directory owned by you.";
+pub fn cleanup_skipped(path: &std::path::Path, reason: &str) -> String {
+    let path = crate::benitoite::display::one_line(&path.to_string_lossy());
+    let reason = crate::benitoite::display::one_line(reason);
+    format!("Skipped cleanup of {path}: {reason}")
+}

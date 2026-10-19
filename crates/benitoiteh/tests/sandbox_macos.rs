@@ -2,6 +2,9 @@
 
 #![cfg(target_os = "macos")]
 
+#[path = "support/temporary_cleanup.rs"]
+mod temporary_cleanup;
+
 #[path = "support/bash_sandbox.rs"]
 mod bash_sandbox;
 
@@ -793,7 +796,7 @@ fn doctor_stops_a_processor_that_exceeds_the_stdout_limit() -> TestResult {
     );
     assert_eq!(fs::read_dir(&fixture.project)?.count(), 0);
     assert_eq!(fs::read_dir(fixture.root.join("state"))?.count(), 0);
-    assert_eq!(fs::read_dir(fixture.root.join("tmp"))?.count(), 0);
+    temporary_cleanup::check_temporary_root(&fixture.root.join("tmp"))?;
     Ok(())
 }
 
@@ -862,7 +865,7 @@ fn doctor_verifies_restricted_and_normal_sandboxes() -> TestResult {
     }
     assert_eq!(fs::read_dir(&fixture.project)?.count(), 0);
     assert_eq!(fs::read_dir(fixture.root.join("state"))?.count(), 0);
-    assert_eq!(fs::read_dir(fixture.root.join("tmp"))?.count(), 0);
+    temporary_cleanup::check_temporary_root(&fixture.root.join("tmp"))?;
     Ok(())
 }
 

@@ -1,5 +1,8 @@
 //! doctor の CLI 契約と、秘密・利用者の設定・ファイルシステムの保護を確かめる（設計書 05-01「doctor」、07-01「安全の性質のテスト」）。
 
+#[path = "support/temporary_cleanup.rs"]
+mod temporary_cleanup;
+
 #[path = "support/processor.rs"]
 mod processor;
 #[path = "support/doctor.rs"]
@@ -212,7 +215,7 @@ fn invalid_user_config_and_missing_home_leave_dependent_checks_unchecked() -> Te
             }
         }
         assert_eq!(fs::read_dir(fixture.root.join("state"))?.count(), 0);
-        assert_eq!(fs::read_dir(fixture.root.join("tmp"))?.count(), 0);
+        temporary_cleanup::check_temporary_root(&fixture.root.join("tmp"))?;
         assert_eq!(fs::read_dir(&fixture.project)?.count(), 0);
     }
     Ok(())
@@ -475,7 +478,7 @@ fn json_contract_and_project_selection_leave_no_files_behind() -> TestResult {
             .is_some_and(|detail| detail.starts_with("0 / 10737418240 bytes"))
     );
     assert_eq!(fs::read_dir(fixture.root.join("state"))?.count(), 0);
-    assert_eq!(fs::read_dir(fixture.root.join("tmp"))?.count(), 0);
+    temporary_cleanup::check_temporary_root(&fixture.root.join("tmp"))?;
     assert_eq!(fs::read_dir(&fixture.project)?.count(), 0);
     assert_eq!(fs::read_dir(&project)?.count(), 1);
     assert_eq!(fs::read_dir(project.join(".benitoiteh"))?.count(), 1);
@@ -599,7 +602,7 @@ fn processor_discovery_and_executable_failures_exit_one() -> TestResult {
         if configured {
             assert!(detail.contains(&binary.display().to_string()));
         }
-        assert_eq!(fs::read_dir(fixture.root.join("tmp"))?.count(), 0);
+        temporary_cleanup::check_temporary_root(&fixture.root.join("tmp"))?;
     }
     Ok(())
 }
@@ -661,7 +664,7 @@ fn real_processor_reports_discovery_hash_and_sandbox_dependent_queries() -> Test
         assert_eq!(output.status.code(), Some(if available { 0 } else { 1 }));
         assert_eq!(fs::read_dir(&fixture.project)?.count(), 0);
         assert_eq!(fs::read_dir(fixture.root.join("state"))?.count(), 0);
-        assert_eq!(fs::read_dir(fixture.root.join("tmp"))?.count(), 0);
+        temporary_cleanup::check_temporary_root(&fixture.root.join("tmp"))?;
     }
     Ok(())
 }
@@ -696,7 +699,7 @@ fn existing_data_directories_are_checked_without_following_links_or_changing_mod
         assert_eq!(fs::metadata(&sessions)?.permissions().mode() & 0o7777, mode);
         assert!(fs::symlink_metadata(&history)?.is_symlink());
         assert_eq!(fs::read_dir(&sessions)?.count(), 0);
-        assert_eq!(fs::read_dir(fixture.root.join("tmp"))?.count(), 0);
+        temporary_cleanup::check_temporary_root(&fixture.root.join("tmp"))?;
     }
     Ok(())
 }

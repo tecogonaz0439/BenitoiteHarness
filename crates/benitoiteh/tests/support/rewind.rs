@@ -65,6 +65,7 @@ impl Fixture {
         )
         .with_session(self.session.clone())
         .with_shell(ShellContext {
+            askpass: None,
             policy: None,
             policy_name: None,
             helper: fs::canonicalize(env!("CARGO_BIN_EXE_benitoiteh"))?,

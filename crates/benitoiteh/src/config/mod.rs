@@ -318,6 +318,18 @@ impl Default for SessionsConfig {
     }
 }
 
+/// 利用者だけが選べる秘密の仲介の設定（設計書 03-04「段 2」）。
+#[derive(Clone, Debug, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct SecretsConfig {
+    pub askpass: bool,
+}
+impl Default for SecretsConfig {
+    fn default() -> Self {
+        Self { askpass: true }
+    }
+}
+
 /// 利用者の設定。信頼しないプロジェクトの設定とは別の型にする。
 #[derive(Clone, Debug, Default, Deserialize)]
 #[serde(default, deny_unknown_fields)]
@@ -333,6 +345,7 @@ pub struct UserConfig {
     pub read: UserReadConfig,
     pub skills: UserSkillsConfig,
     pub sessions: SessionsConfig,
+    pub secrets: SecretsConfig,
 }
 
 impl UserConfig {
