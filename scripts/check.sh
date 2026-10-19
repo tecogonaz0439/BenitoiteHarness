@@ -168,6 +168,9 @@ if len(rows) != 11 or any(row.get('success') is not True or row.get('end') != 'c
 EOF
 fi
 
+begin_stage perf-tools
+python3 -I -m unittest discover -s tools/perf -p 'test_*.py'
+
 begin_stage linux
 if ! "$inside_codex"; then
     processor_report=$(scripts/container-run.sh "$BENITOITEH_TEST_BENITOITE_AARCH64" --version=json)
