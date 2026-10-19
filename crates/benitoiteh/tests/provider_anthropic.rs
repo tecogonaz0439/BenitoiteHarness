@@ -638,6 +638,30 @@ fn http_and_stream_errors_keep_classification_and_retry_after_without_exposing_k
             "invalid_request_error",
             "wrong shape",
             ProviderError::NonRetryable {
+                reason: NonRetryableKind::RequestRejected,
+            },
+        ),
+        (
+            413,
+            "request_too_large",
+            "too large",
+            ProviderError::NonRetryable {
+                reason: NonRetryableKind::RequestRejected,
+            },
+        ),
+        (
+            400,
+            "authentication_error",
+            "denied",
+            ProviderError::NonRetryable {
+                reason: NonRetryableKind::Authentication,
+            },
+        ),
+        (
+            422,
+            "invalid_request_error",
+            "wrong shape",
+            ProviderError::NonRetryable {
                 reason: NonRetryableKind::InvalidRequest,
             },
         ),

@@ -25,6 +25,95 @@ fn invalid(status: u16) -> Result<ResponseScript, io::Error> {
     )
 }
 
+// 作成時の関門: 画像があるときだけ起きる課金済み要求の再送を、HTTP 200 の
+// 途中の誤りで捕まえる。画像のない既存の途中エラーのテストでは検出できない。
+#[test]
+fn stream_errors_with_images_do_not_resend_or_record_removal() -> TestResult {
+    for (kind, compacting) in [
+        (AdapterKind::OpenAiChat, true),
+        (AdapterKind::AnthropicMessages, true),
+        (AdapterKind::OpenAiChat, false),
+        (AdapterKind::AnthropicMessages, false),
+    ] {
+        let f = Fixture::new()?;
+        fs::write(f.project.join("image.gif"), b"GIF89a\x01\0\x01\0")?;
+        let body = match kind {
+            AdapterKind::OpenAiChat => concat!(
+                "data: {\"choices\":[{\"delta\":{\"content\":\"partial\"},\"finish_reason\":null}]}\n\n",
+                "data: {\"error\":{\"code\":\"invalid_request\"}}\n\n"
+            ),
+            AdapterKind::AnthropicMessages => concat!(
+                "event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"usage\":{\"input_tokens\":10,\"output_tokens\":0}}}\n\n",
+                "event: error\ndata: {\"type\":\"error\",\"error\":{\"type\":\"invalid_request_error\",\"message\":\"bad\"}}\n\n"
+            ),
+            AdapterKind::OpenAiResponses => return Err("unexpected adapter".into()),
+        };
+        let mut scripts = Vec::new();
+        if compacting {
+            scripts.push(compaction::response(kind, &"old".repeat(24_000), None, 10));
+        }
+        scripts.push(compaction::response(
+            kind,
+            "",
+            Some(("read", json!({"path":"image.gif"}))),
+            10,
+        ));
+        if compacting {
+            scripts.push(compaction::response(kind, "done", None, 10));
+        }
+        scripts.push(ResponseScript::sse(body));
+        scripts.push(compaction::response(kind, "unexpected retry", None, 10));
+        let mut server = MockProvider::start(scripts)?;
+        let mut config = f.config(&server, kind);
+        config.capabilities.image_input = true;
+        config.capabilities.tool_choice_none = compacting;
+        config.capabilities.context_window = Some(60_000);
+        let (mut agent, directory) = f.agent(config)?;
+        let events = if compacting {
+            assert_eq!(complete(&mut agent)?.0.outcome, Outcome::Completed);
+            assert_eq!(complete(&mut agent)?.0.outcome, Outcome::Completed);
+            let (sender, receiver) = mpsc::sync_channel(64);
+            let report = agent.compact(None, Arc::new(AtomicBool::new(false)), sender)?;
+            assert_eq!(report.outcome, benitoiteh::agent::CompactOutcome::Failed);
+            receiver.into_iter().collect::<Vec<_>>()
+        } else {
+            let (report, events) = complete(&mut agent)?;
+            assert_eq!(report.outcome, Outcome::Failed);
+            assert!(
+                events
+                    .iter()
+                    .any(|event| matches!(event, AgentEvent::Error { kind, message }
+                if kind == "provider" && message == "Invalid provider request"))
+            );
+            events
+        };
+        let requests = server.requests()?;
+        assert_eq!(requests.len(), if compacting { 4 } else { 2 });
+        assert!(
+            requests
+                .last()
+                .ok_or("missing image request")?
+                .body
+                .to_string()
+                .contains("base64")
+        );
+        assert!(
+            !events
+                .iter()
+                .any(|event| matches!(event, AgentEvent::ImagesRemoved { .. }))
+        );
+        assert!(
+            !read_records(&directory)?
+                .iter()
+                .any(|record| matches!(record, Record::ImagesRemoved { .. }))
+        );
+        assert_eq!(image_result(&agent)?.images.len(), 1);
+        assert!(!image_result(&agent)?.text.contains(REMOVED));
+        server.shutdown()?;
+    }
+    Ok(())
+}
+
 // 作成時の関門: 実際の要求の画像と HTTP の拒否を使い、成功だけを確定する契約を守る。
 // 既存の通信再試行のテストでは、画像の除去・記録順・次の番への反映は確かめられない。
 #[test]
@@ -119,6 +208,12 @@ fn image_rejection_retries_once_and_commits_removal_only_on_success() -> TestRes
             } else {
                 assert_eq!(result.images.len(), 1);
                 assert!(!result.text.contains(REMOVED));
+                assert!(
+                    events
+                        .iter()
+                        .any(|event| matches!(event, AgentEvent::Error { kind, message }
+                    if kind == "provider" && message == "Invalid provider request"))
+                );
             }
             assert_eq!(replay(&directory)?, *agent.conversation());
             let state = ResumeState::read(&directory)?;
