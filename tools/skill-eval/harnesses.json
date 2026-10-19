@@ -422,7 +422,7 @@
           "-w"
         ]
       },
-      "capabilities": {},
+      "capabilities": {"reasoning_effort": true},
       "base_url": "https://generativelanguage.googleapis.com/v1beta/openai"
     },
     "options": {

@@ -16,7 +16,7 @@ use super::{OpenAiChatAdapter, OpenAiChatError};
 /// 呼び出す側が文脈と設定から決める要求ごとの指定。Messages の入口と形を揃える。
 #[derive(Clone, Copy, Debug, Default)]
 pub struct RequestOptions<'a> {
-    /// Messages 用の effort。Chat Completions の要求には付けない。
+    /// 解決した推論の深さ。reasoning_effort の機能が真のときだけ要求に付ける。
     pub effort: Option<&'a str>,
     /// 前の要求の最後の項目の位置。Chat Completions はキャッシュの区切りを付けない。
     pub previous_last_item: Option<usize>,
@@ -82,6 +82,11 @@ impl OpenAiChatAdapter {
             "stream": true,
             "stream_options": {"include_usage": true}
         });
+        if self.capabilities.reasoning_effort
+            && let Some(effort) = options.effort
+        {
+            insert(&mut body, "reasoning_effort", json!(effort))?;
+        }
         if let Some(max_tokens) = self.capabilities.max_output_tokens {
             insert(&mut body, "max_tokens", json!(max_tokens))?;
         }

@@ -468,7 +468,9 @@ class RecordsAndCostTests(unittest.TestCase):
                 self.assertEqual(set(harness['provider']['api_key']), {'command'})
                 self.assertEqual(set(harness['price']), {'input', 'cache_read', 'cache_write', 'output'})
                 self.assertIn(harness['billing'], ('deepseek', 'google', 'anthropic'))
-                evaluation.benitoiteh_config(harness, harness['model'], '/processor')
+                config = evaluation.benitoiteh_config(harness, harness['model'], '/processor')
+                if name == 'gemini':
+                    self.assertIn('capabilities = { reasoning_effort = true }', config)
 
     def test_cost_counts_cached_input_once_and_clamps_uncached_input(self):
         harness = {'price': {'input': 4, 'cache_read': .2, 'cache_write': 5, 'output': 20}}

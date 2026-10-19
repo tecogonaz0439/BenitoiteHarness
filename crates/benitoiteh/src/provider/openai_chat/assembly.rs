@@ -391,7 +391,7 @@ fn optional_string<'a>(value: &'a Value, name: &str) -> Result<Option<&'a str>, 
 }
 
 fn normalize_usage(raw: &Value) -> Usage {
-    Usage {
+    let mut usage = Usage {
         input_tokens: raw.get("prompt_tokens").and_then(Value::as_u64),
         cache_read_tokens: raw
             .pointer("/prompt_tokens_details/cached_tokens")
@@ -402,5 +402,20 @@ fn normalize_usage(raw: &Value) -> Usage {
             .pointer("/completion_tokens_details/reasoning_tokens")
             .and_then(Value::as_u64),
         raw: raw.clone(),
+    };
+    // Gemini は推論を total にだけ含める。明示された内数を二重に足さず、
+    // 和が溢れる報告も補わない（設計書 02-01「OpenAI の Chat Completions API」）。
+    if usage.reasoning_tokens.is_none()
+        && let (Some(prompt), Some(completion), Some(total)) = (
+            usage.input_tokens,
+            usage.output_tokens,
+            raw.get("total_tokens").and_then(Value::as_u64),
+        )
+        && let Some(sum) = prompt.checked_add(completion)
+        && total > sum
+    {
+        usage.reasoning_tokens = total.checked_sub(sum);
+        usage.output_tokens = total.checked_sub(prompt);
     }
+    usage
 }

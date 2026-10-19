@@ -298,6 +298,8 @@ pub struct Capabilities {
     pub reasoning_replay: ReasoningReplay,
     /// 一つの応答で複数の道具を呼ぶ指定。
     pub parallel_tool_calls: bool,
+    /// Chat Completions の要求に推論の深さを付けるか。
+    pub reasoning_effort: bool,
     /// モデルの文脈の上限。不明なら None。
     pub context_window: Option<u64>,
     /// モデルの出力の上限。不明なら None。
@@ -306,7 +308,7 @@ pub struct Capabilities {
 
 impl AdapterKind {
     /// 設定とオプションで省略したときの推論の深さ（設計書 02-01、05-01「オプション」）。
-    /// Chat Completions は解決済みの値を持つが、要求には付けない。
+    /// Chat Completions は reasoning_effort の機能が真のときだけ要求に付ける。
     pub fn default_effort(self) -> &'static str {
         match self {
             Self::AnthropicMessages => "low",
