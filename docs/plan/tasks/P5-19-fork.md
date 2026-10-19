@@ -47,3 +47,33 @@
 
 - `scripts/check.sh --inside-codex` が通る（`BENITOITEH_TEST_BENITOITE` を設定して）。
 - 完了の報告に、写した記録のヘッダの例を書く。
+
+## 補足（2026-10-20、始める前の点検）
+
+本節は、上の各節に優先する。行の番号は `main`（`12650a6`）のもの。
+
+1. **流れ**: 写す処理は、`/new` と同じく UI のスレッドの側（`cli/tui.rs:171-199` の新しいセッションを作る closure）で、働き手を止めた後に、元の記録を読んで行う。写した後は、`exec::prepare` に `args.resume = Some(新しい ID)` と `SessionOverrides::from(今の状態)` を渡す口（例: `exec::prepare_fork`）で、再開の道（`exec.rs:198-214`、`Agent::resume`）に乗せる。モードの変更の確認は求めない（モードは今のセッションの値に固定するため）。`SessionOverrides` に写した元（ID と節点）を持たせ、`exec.rs:342` の「再開した」の文の代わりに、写したこと（元の ID、節点、新しい ID）を示す。`runtime::run` の `new_session` の引数は、今の状態と写す指定（`Option<ForkTarget>`）を持つ形に広げる。
+2. **ヘッダ**: `Header`（`record.rs:77-95`）に `forked_from: Option<ForkedFrom { session, node }>`（`serde(default, skip_serializing_if = "Option::is_none")`）を加える。形式の版は 2 のまま。写したセッションのヘッダは、元のヘッダを基にし、`session_id`、`started_at`、`benitoiteh_version`、`project_dir`（今の値）、`forked_from` だけを替える（上の作るもの 1 の「今の値で書き」を読み替える）。理由: ヘッダの提供者とハッシュは、写した節点の推論の区間の起点になる（`resume.rs:50-58`）。今の値は、写した先が最初の依頼で書く `SessionStart` に残る。提供者とモデルは、再開と同じく記録の値を使う。
+3. **写す記録**（元の記録の順のまま）:
+   - 道の上の節点の記録（`user`、`assistant`、`tool_result`、`compaction`、`images_removed`）を、**根から**すべて写す（上の作るもの 1 の「道の上の最後の圧縮の記録、その後の節点」を読み替える。設計書 01-05 の「道の記録」に合わせ、写した先でも圧縮より前へ移れるようにするため）。番号は道の順に 1 から振り直す。
+   - 最後に写す節点より前の `session_start`（`session_id` を新しい ID に書き換える）。推論の区間とモードを保つため。
+   - 写した `assistant` の呼び出しの ID に当たる `tool_call` と `tool_start`（`FileHistory` と、結果のない呼び出しの補いに要る）。
+   - 写さないもの: `branch`、`checkpoint`、`approval`、`write_target`、`turn_start`、`turn_end`、`retry`、`error`、`session_end`、`summary`、`project_dir_changed`。分けて置いた行（`spilled`）は、読み込みで元に戻した内容を書き、書くときの規則で分け直す（元の `spill/record-*` は写さない）。
+   - 呼び出しの ID と `turn` は振り直さない（以後の `turn` は `max_turn` より大きいので重ならない）。
+4. **参照するファイル**:
+   - `spill/`: 写す `tool_result` の `spill`・`stderr_spill`（`record.rs:286-294`）と、写す `compaction` の会話の中の道具の結果の分（元の全記録から、結果の ID と `SpillInfo` の表を作って引く）。名前は `spill_path`（`session/mod.rs:529`）で確かめる。
+   - `objects/`: 写す `tool_result` と `compaction` の会話の中の画像の `sha256`。64 桁の十六進であること、開き方と権限、`MAX_IMAGE_BYTES` 以下を確かめ、新しいセッションの `store_object` で保存し、返ったハッシュが違えば中止する。
+   - 結果の文の中の spill の絶対パス（`Full output: <dir>/spill/...`、`tools/text.rs:246-269`）は、写す `tool_result` と `compaction` の会話の中の道具の結果に限り、`<元のディレクトリ>/spill/` という完全な前置きを `<新しいディレクトリ>/spill/` に置き換える（`read` が許すのは自分のセッションの spill だけのため）。
+   - 参照先がない（NotFound）ときは写さずに続ける。リンク、権限の違い、ハッシュの違いなどの不正では中止する。
+5. **上限**: 作る前に写す量を合計し、`min(SESSION_LIMIT, TOTAL_LIMIT - 今の使用量)`（`quota.rs:11-13`、`storage_usage`）を超えるなら、何も作らずに誤りを示す。作った後は今と同じく予算を掛ける。写す処理は `session` の子のモジュール（例: `src/session/fork.rs`）に置く。
+6. **失敗の後始末**: 写す途中の失敗では、`Session::create` の失敗のとき（`session/mod.rs:239-243`）と同じく `remove::directory(session.directory())` で消してから drop する。元のセッションは変えない。写し終えた後に `prepare` が失敗したときは、写したセッションを残し、誤りの文に新しい ID を含める。
+7. **コマンド**: `/fork` は今の道を写す。`/fork before` は選択の画面を開き、選んだ依頼の直前までの道を写す。ほかの引数は、引数の形を示す文で断る（`commands.rs:90` の引数なしの一覧には入れない）。処理中は今と同じく断る。`HELP` に `/fork [before]` を加える。
+   - 選択の画面は P5-17 の `Agent::branch_tree()` の行を使い、新しい選択（例: `Selection::ForkRequests`）で示す。選べるのは依頼の行だけ（どの枝でもよい）で、根と先端だけの行の Enter は何もしない。始めは今の行を選ぶ。Enter で写す（ファイルを変えないので確認の画面は置かない）。ESC で取り消しを示す。
+   - 写す道が空のとき（会話がない、最初の依頼の直前）は、写さずに知らせる。
+   - 依頼の直前までを写したときは、その依頼の文を、移った先の入力の欄に戻す（`/` の扱いは P5-17 と共通にする）。
+   - 古いセッションの終わりの理由は、`/new` と同じ値を使う。移った後に会話の preview は示さない。
+8. **一覧**: `SessionEntry`（`scan.rs:18-45`）に `forked_from` を加え（`skip_serializing_if`）、ヘッダから読む（`scan.rs:130-134`。元の ID が ID として解けなければ形式の誤り）。端末の表示（`ui/mod.rs:35-52`、`ui/text.rs:56-66`）は、`[active]` の前に ` [forked from <ID>]` を加える。テストは `tests/exec/resume.rs` に加える。
+9. **P5-17 の再レビューの取り込み**（同じ画面を触るので、この作業で行う）:
+   - (a) 選択の一覧で、折り返した行の続きが 0 列目から始まるので、依頼の文で `> ... [current]` の行を作れる（`selection.rs:86-92`、`text.rs:472-520`）。本文を `幅 - 2` で折り返し、1 行目の頭に選択の印、続きの行の頭に薄い `┆ `（確認の画面と同じ印。`confirmation.rs:345`・`354`）を付ける。選択の印 `> ` は太字にする（`[tip]`・`[current]` は薄いまま）。`window`（`selection.rs:100`）の行数の上限を守る。
+   - (b) `/rewind` の行の詳細（`text.rs:367-421` の `checkpoint_row`。`tool_call` の `text.rs:85-111`、依頼の全文）に長さの上限がない。安全な文字列にする前に 200 文字で切って `...` を付ける（定数にする）。選択の画面と確認の画面の両方に効く。
+10. **テスト**: `tests/session.rs` の 1104 行のテストの作り方に倣い、二つの枝・圧縮・二つの `session_start` の区間・画像・spill を持つセッションから写す（ヘッダの `forked_from`、番号が 1 から連番、写さない種類がないこと、`ResumeState::read` の会話・推論・`max_turn` が元と一致すること（spill のパスの置き換えを除く）、依頼の直前までなら後を含まないこと、元を消しても画像と spill を読めること、上限を超えると何も作らず元も変わらないこと、spill をリンクに替えると中止して作りかけが残らないこと）。`src/cli/exec/tests.rs` の 560 行に倣い、写した先で今のモード・サンドボックス・承認の方針が引き継がれること（記録が制限モードでも、今が通常モードなら断らないこと）。`tests/tui/commands.rs` の文法のテスト（39-100 行）に `/fork`・`/fork before`・`/fork x` と処理中の拒否を加え、982 行の「`/new` が許したコマンドと読んだ版を引き継がない」を `/fork` でも確かめる。`src/ui/tui/tests.rs` の 982 行を広げ、折り返した依頼の中の `> ... [current]` が `┆ ` で始まる行にだけ現れ、`> ` で始まる行が一つで太字であることを確かめる。
