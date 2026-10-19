@@ -308,6 +308,8 @@ fn api_error(body: &Value, status: Option<u16>, retry_after: Option<String>) -> 
                 || kind == "permission_error"
             {
                 NonRetryableKind::Authentication
+            } else if matches!(status, Some(400 | 413)) {
+                NonRetryableKind::RequestRejected
             } else {
                 NonRetryableKind::InvalidRequest
             },

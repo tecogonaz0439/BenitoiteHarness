@@ -1,6 +1,6 @@
 //! 画像を送れる条件と base64 の符号化を共有する（設計書 02-01「画像の受け渡し」）。
 
-use std::collections::{BTreeSet, VecDeque};
+use std::collections::{BTreeSet, HashSet, VecDeque};
 
 use super::{Conversation, Item, ToolImage, ToolResult, text};
 
@@ -68,12 +68,17 @@ pub(crate) fn remove_images(
     conversation: &mut Conversation,
     results: Option<&[String]>,
 ) -> Vec<String> {
+    let results = results.map(|ids| ids.iter().map(String::as_str).collect::<HashSet<_>>());
     let mut removed = Vec::new();
     for item in &mut conversation.items {
         let Item::ToolResult(result) = item else {
             continue;
         };
-        if result.images.is_empty() || results.is_some_and(|ids| !ids.contains(&result.id)) {
+        if result.images.is_empty()
+            || results
+                .as_ref()
+                .is_some_and(|ids| !ids.contains(result.id.as_str()))
+        {
             continue;
         }
         result.images.clear();
@@ -213,6 +218,48 @@ mod tests {
         let disabled = plan(&conversation, false);
         assert!(!disabled.has_images());
         assert!(disabled.dropped.is_empty());
+    }
+
+    // 作成時の関門: 書き換えた記録の大きい一覧でも、指定した結果だけを外す契約を守る。
+    // 計算時間は測らず、空の一覧と未指定の結果、画像のない結果も同じ境界で確かめる。
+    #[test]
+    fn removal_selects_only_matching_nonempty_results_from_large_or_empty_lists() {
+        let mut conversation = Conversation {
+            items: ["id-0", "keep", "id-99999", "id-50000", "id-1"]
+                .into_iter()
+                .map(|id| {
+                    let mut item = result(usize::from(id != "id-1"), 10, true, false);
+                    if let Item::ToolResult(result) = &mut item {
+                        result.id = id.into();
+                    }
+                    item
+                })
+                .collect(),
+        };
+        let before = conversation.clone();
+        assert!(remove_images(&mut conversation, Some(&[])).is_empty());
+        assert_eq!(conversation, before);
+        let ids = (0..100_000)
+            .map(|id| format!("id-{id}"))
+            .collect::<Vec<_>>();
+        assert_eq!(
+            remove_images(&mut conversation, Some(&ids)),
+            ["id-0", "id-99999", "id-50000"]
+        );
+        for item in &conversation.items {
+            if let Item::ToolResult(result) = item {
+                if result.id == "keep" {
+                    assert_eq!(result.images.len(), 1);
+                    assert_eq!(result.text, "image");
+                } else {
+                    assert!(result.images.is_empty());
+                    assert_eq!(
+                        result.text.contains(text::IMAGE_REMOVED),
+                        result.id != "id-1"
+                    );
+                }
+            }
+        }
     }
 
     #[test]

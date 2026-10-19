@@ -434,7 +434,7 @@ impl Agent {
         if matches!(
             received,
             Err(AgentError::Provider(ProviderError::NonRetryable {
-                reason: crate::provider::NonRetryableKind::InvalidRequest
+                reason: crate::provider::NonRetryableKind::RequestRejected
             }))
         ) && let Some(conversation) = conversation
             && crate::provider::image_plan(conversation, self.config.capabilities.image_input)

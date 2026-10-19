@@ -767,6 +767,9 @@ fn http_and_stream_errors_classify_quota_context_authentication_and_retries() ->
     let invalid = ProviderError::NonRetryable {
         reason: NonRetryableKind::InvalidRequest,
     };
+    let rejected = ProviderError::NonRetryable {
+        reason: NonRetryableKind::RequestRejected,
+    };
     let auth = ProviderError::NonRetryable {
         reason: NonRetryableKind::Authentication,
     };
@@ -792,12 +795,14 @@ fn http_and_stream_errors_classify_quota_context_authentication_and_retries() ->
             "error_type",
             ProviderError::ContextOverflow,
         ),
-        (Some(400), "bad_request", "error_type", invalid.clone()),
+        (Some(400), "bad_request", "error_type", rejected.clone()),
+        (Some(413), "bad_request", "error_type", rejected.clone()),
+        (Some(422), "bad_request", "error_type", invalid.clone()),
         (
             Some(400),
             "not_context_length_exceeded",
             "error_type",
-            invalid.clone(),
+            rejected,
         ),
         (
             None,
@@ -831,7 +836,7 @@ fn http_and_stream_errors_classify_quota_context_authentication_and_retries() ->
         ),
         (None, "bad_request", "error_type", invalid),
     ];
-    for status in [Some(429), None] {
+    for status in [Some(400), Some(429), None] {
         for code in [
             "credit_balance_exhausted",
             "organization_spend_limit_exceeded",

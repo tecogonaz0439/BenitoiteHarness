@@ -272,6 +272,8 @@ pub enum NonRetryableKind {
     Quota,
     /// 要求の形の誤り。
     InvalidRequest,
+    /// ストリーム開始前の HTTP 400・413 による要求の拒否。
+    RequestRejected,
     /// 送り返した thinking の検査の拒否。
     ThinkingRejected,
 }
@@ -302,7 +304,9 @@ impl fmt::Display for ProviderError {
             Self::NonRetryable { reason } => match reason {
                 NonRetryableKind::Authentication => text::AUTHENTICATION,
                 NonRetryableKind::Quota => text::QUOTA,
-                NonRetryableKind::InvalidRequest => text::INVALID_REQUEST,
+                NonRetryableKind::InvalidRequest | NonRetryableKind::RequestRejected => {
+                    text::INVALID_REQUEST
+                }
                 NonRetryableKind::ThinkingRejected => text::THINKING_REJECTED,
             },
             Self::StreamDisconnected => text::STREAM_DISCONNECTED,

@@ -301,7 +301,11 @@ fn api_error(body: &Value, status: Option<u16>, retry_after: Option<String>) -> 
         ProviderError::ContextOverflow
     } else {
         ProviderError::NonRetryable {
-            reason: NonRetryableKind::InvalidRequest,
+            reason: if matches!(status, Some(400 | 413)) {
+                NonRetryableKind::RequestRejected
+            } else {
+                NonRetryableKind::InvalidRequest
+            },
         }
     };
     OpenAiChatError::Provider {

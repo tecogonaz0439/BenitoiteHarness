@@ -324,7 +324,11 @@ fn api_error(
         }
     } else {
         ProviderError::NonRetryable {
-            reason: NonRetryableKind::InvalidRequest,
+            reason: if matches!(status, Some(400 | 413)) {
+                NonRetryableKind::RequestRejected
+            } else {
+                NonRetryableKind::InvalidRequest
+            },
         }
     };
     OpenAiResponsesError::Provider {

@@ -1,8 +1,10 @@
 //! ハッシュ名の中身と一覧を、容量を予約して保存する（設計書 01-05「巻き戻し」）。
 
+use std::collections::HashMap;
 use std::fs::File;
 use std::io::{Read, Write};
 use std::os::unix::fs::MetadataExt;
+use std::sync::Arc;
 
 use rustix::fs::{AtFlags, OFlags};
 use sha2::{Digest, Sha256};
@@ -19,24 +21,30 @@ impl Session {
         if !image_input {
             return;
         }
+        // 同じハッシュの成功・失敗を共に貯め、記録の参照数に応じた読み直しと
+        // 中身の複製を避ける。記録の属性は参照ごとに照合する（設計書 01-05「記録を残す期間」）。
+        let mut objects = HashMap::new();
         for item in &mut conversation.items {
             let crate::provider::Item::ToolResult(result) = item else {
                 continue;
             };
             let mut omitted = false;
             result.images.retain_mut(|image| {
-                match self.read_object(&image.sha256, crate::tools::MAX_IMAGE_BYTES) {
-                    Ok(bytes)
+                let restored = objects.entry(image.sha256.clone()).or_insert_with(|| {
+                    let bytes = self
+                        .read_object(&image.sha256, crate::tools::MAX_IMAGE_BYTES)
+                        .ok()?;
+                    let (mime, width, height) = crate::tools::inspect_image(&bytes).ok()?;
+                    Some((Arc::<[u8]>::from(bytes), mime, width, height))
+                });
+                match restored.as_ref() {
+                    Some((bytes, mime, width, height))
                         if u64::try_from(bytes.len()).ok() == Some(image.bytes)
-                            && crate::tools::inspect_image(&bytes).is_ok_and(
-                                |(mime, width, height)| {
-                                    mime == image.media_type
-                                        && width == image.width
-                                        && height == image.height
-                                },
-                            ) =>
+                            && *mime == image.media_type
+                            && *width == image.width
+                            && *height == image.height =>
                     {
-                        image.data = Some(bytes.into());
+                        image.data = Some(Arc::clone(bytes));
                         true
                     }
                     _ => {

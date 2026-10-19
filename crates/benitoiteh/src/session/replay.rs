@@ -122,7 +122,9 @@ pub(super) fn replay_records(records: &[Record]) -> Conversation {
                 conversation.items.push(Item::ToolResult(result.clone()))
             }
             Record::ImagesRemoved { results } => {
-                crate::provider::remove_images(&mut conversation, Some(results));
+                if !results.is_empty() {
+                    crate::provider::remove_images(&mut conversation, Some(results));
+                }
             }
             Record::Compaction {
                 conversation: compacted,

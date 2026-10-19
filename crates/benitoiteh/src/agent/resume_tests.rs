@@ -317,7 +317,7 @@ fn image_results_are_restored_only_when_enabled_and_metadata_and_hash_match()
     let mut server = mock_provider::MockProvider::start(vec![
         mock_provider::ResponseScript::sse(format!(
             "data: {}\n\ndata: [DONE]\n\n",
-            serde_json::json!({"choices":[{"delta":{"tool_calls":[{"index":0,"id":"read_image","type":"function","function":{"name":"read","arguments":"{\"path\":\"image.txt\"}"}}]},"finish_reason":"tool_calls"}]})
+            serde_json::json!({"choices":[{"delta":{"tool_calls":(0..3).map(|index| serde_json::json!({"index":index,"id":format!("read_image_{index}"),"type":"function","function":{"name":"read","arguments":"{\"path\":\"image.txt\"}"}})).collect::<Vec<_>>()},"finish_reason":"tool_calls"}]})
         )),
         mock_provider::ResponseScript::sse(format!(
             "data: {}\n\ndata: [DONE]\n\n",
@@ -418,20 +418,60 @@ fn image_results_are_restored_only_when_enabled_and_metadata_and_hash_match()
             })
             .all(|image| image.data.is_none())
     );
-    for variant in ["unsupported", "mime", "width", "height", "invalid_header"] {
+    // 同じ内容を三度参照しても写しを三つ作らない契約を、再開の入口で守る。
+    // 従来の単独画像の照合では、ハッシュごとの共有の退行を検出できない。
+    let restored = Agent::resume(
+        config.clone(),
+        String::new(),
+        tool_context(&paths, &project, &session)?,
+        environment.clone(),
+        session.clone(),
+        state.clone(),
+    )?;
+    let data = restored
+        .conversation()
+        .items
+        .iter()
+        .filter_map(|item| match item {
+            Item::ToolResult(result) => result.images.first().and_then(|image| image.data.as_ref()),
+            Item::UserMessage(_) | Item::AssistantTurn(_) => None,
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(data.len(), 3);
+    let first = data.first().ok_or("missing restored image")?;
+    assert!(data.iter().all(|bytes| Arc::ptr_eq(first, bytes)));
+    drop(restored);
+    for variant in [
+        "unsupported",
+        "mime",
+        "width",
+        "height",
+        "bytes",
+        "invalid_header",
+    ] {
         let mut state = state.clone();
-        if let Some(Item::ToolResult(result)) = state
+        // 不正な参照が先でも後でも、同じハッシュを持つ正しい参照を損なわず、
+        // 共有した中身に対する属性の照合も省かないことを確かめる。
+        for (index, result) in state
             .conversation
             .items
             .iter_mut()
-            .find(|item| matches!(item, Item::ToolResult(_)))
-            && let Some(image) = result.images.first_mut()
+            .filter_map(|item| match item {
+                Item::ToolResult(result) => Some(result),
+                Item::UserMessage(_) | Item::AssistantTurn(_) => None,
+            })
+            .enumerate()
         {
+            if index == 1 {
+                continue;
+            }
+            let image = result.images.first_mut().ok_or("missing image metadata")?;
             match variant {
                 "unsupported" => image.sha256 = "unread-object".into(),
                 "mime" => image.media_type = "image/png".into(),
                 "width" => image.width = 2,
                 "height" => image.height = 2,
+                "bytes" => image.bytes = 11,
                 "invalid_header" => {
                     let invalid = b"not an image";
                     let (hash, _) = session.store_object(invalid)?.ok_or("storage limit")?;
@@ -472,6 +512,22 @@ fn image_results_are_restored_only_when_enabled_and_metadata_and_hash_match()
         } else {
             assert!(result.images.is_empty());
             assert!(result.text.ends_with("(An image from this result could not be restored from the session and was omitted.)"));
+            assert_eq!(
+                agent
+                    .conversation()
+                    .items
+                    .iter()
+                    .filter_map(|item| match item {
+                        Item::ToolResult(result) => result
+                            .images
+                            .first()
+                            .and_then(|image| image.data.as_deref()),
+                        Item::UserMessage(_) | Item::AssistantTurn(_) => None,
+                    })
+                    .filter(|data| *data == bytes.as_slice())
+                    .count(),
+                1
+            );
         }
     }
     let resumed_config = config;

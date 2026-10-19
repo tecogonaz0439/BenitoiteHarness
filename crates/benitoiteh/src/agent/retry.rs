@@ -26,13 +26,14 @@ impl Agent {
         if !matches!(
             received,
             Err(AgentError::Provider(ProviderError::NonRetryable {
-                reason: NonRetryableKind::InvalidRequest
+                reason: NonRetryableKind::RequestRejected
             }))
         ) || !image_plan(&self.conversation, self.config.capabilities.image_input).has_images()
         {
             return received;
         }
-        // 成功するまでは元の会話と記録を保つ（設計書 02-01「送る画像の上限」）。
+        // 途中の誤りでは課金済みの要求を再送しない。成功までは元の会話と記録を保つ
+        // （設計書 02-01「送る画像の上限」）。
         let mut conversation = self.conversation.clone();
         let results = remove_images(&mut conversation, None);
         let request = self.adapter.request(

@@ -216,13 +216,19 @@ fn queries_bound_output_timeout_and_propagate_cancellation() -> Result<(), Box<d
         let args = ["query-output", stdout, stderr, delay].map(Into::into);
         let query_limits = if expected == "diagnostics" {
             QueryLimits {
+                timeout: Duration::from_secs(60),
                 stderr: StderrLimit::FailOver(16 * 1024 * 1024),
                 ..QueryLimits::default()
             }
         } else if expected == "overflow" {
-            QueryLimits::default()
-        } else {
+            QueryLimits {
+                timeout: Duration::from_secs(60),
+                ..QueryLimits::default()
+            }
+        } else if expected == "timeout" {
             limits
+        } else {
+            QueryLimits::default()
         };
         let result = probe.query(&args, query_limits, &AtomicBool::new(false));
         match expected {

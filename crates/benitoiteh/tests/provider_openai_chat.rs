@@ -641,8 +641,8 @@ fn finish_reasons_and_usage_distinguish_refusal_limits_zero_and_missing_reports(
 
 #[test]
 fn http_errors_preserve_classification_retry_after_and_redact_keys() -> TestResult {
-    let invalid = ProviderError::NonRetryable {
-        reason: NonRetryableKind::InvalidRequest,
+    let rejected = ProviderError::NonRetryable {
+        reason: NonRetryableKind::RequestRejected,
     };
     let authentication = ProviderError::NonRetryable {
         reason: NonRetryableKind::Authentication,
@@ -656,13 +656,21 @@ fn http_errors_preserve_classification_retry_after_and_redact_keys() -> TestResu
         (599, "server_error", retry),
         (401, "invalid_api_key", authentication.clone()),
         (403, "forbidden", authentication),
-        (400, "invalid_request", invalid.clone()),
+        (400, "invalid_request", rejected.clone()),
+        (413, "request_too_large", rejected.clone()),
+        (
+            422,
+            "invalid_request",
+            ProviderError::NonRetryable {
+                reason: NonRetryableKind::InvalidRequest,
+            },
+        ),
         (
             400,
             "context_length_exceeded",
             ProviderError::ContextOverflow,
         ),
-        (400, "not_context_length_exceeded", invalid),
+        (400, "not_context_length_exceeded", rejected),
     ];
     let mut scripts = Vec::new();
     for (status, code, _) in &cases {
