@@ -15,6 +15,8 @@
 | Opus | `claude-opus-5-5`、`anthropic-messages`、effort `medium` |
 | 走らせ方 | 同じ機械（macOS、Apple M4）で一回ずつ順に。Gemini を 22:03〜23:53、Opus を 23:53〜23:59 に走らせた。`--stop-cost 10` |
 
+2026-10-19 の注記: Google の OpenAI 互換の口は、思考に使ったトークンを `completion_tokens` に含めず、`total_tokens` にだけ含めて返す（同日に 4 回の要求で確かめた。`total_tokens` が `prompt_tokens` と `completion_tokens` の和より、effort `low` で約 80、`high` で約 250 多かった）。`benitoiteh` の `openai-chat` は出力の量を `completion_tokens` から読むので、この記録の Gemini のトークンの量と費用の見積もりは、思考のトークンの分だけ少ない。どれだけ少ないかは分からない。
+
 ## 結果
 
 Gemini は 33 回のうち 29 回、Opus は 11 回のすべてが成功した。どの試行も完了して終わり、上限（トークンの量、番の数、時間）で止まった試行はなかった。Gemini の失敗の 4 回は、どれも検査と修正の回数が課題の上限（10 回）を超えたことによる（`regex_text` の 1 回目が 16 回、`write_tests` の 2 回目が 11 回、`process_shell` の 2・3 回目が 11 回と 12 回）。
