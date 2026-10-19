@@ -28,6 +28,7 @@ enum Job {
     Status,
     ListCheckpoints,
     ListBranches,
+    ListForkRequests,
     PreviewBranch {
         target: BranchTarget,
         scope: RewindScope,
@@ -47,6 +48,10 @@ enum Job {
         scope: RewindScope,
         allow_incomplete: bool,
     },
+    Pause {
+        ready: mpsc::SyncSender<Session>,
+        resume: mpsc::Receiver<()>,
+    },
     End,
 }
 enum Reply {
@@ -55,6 +60,7 @@ enum Reply {
     Status(AgentStatus, TokenCounts),
     ListCheckpoints(Vec<CheckpointInfo>),
     ListBranches(Vec<BranchTreeRow>),
+    ListForkRequests(Vec<BranchTreeRow>),
     PreviewBranch(BranchPreview),
     SwitchBranch(RewindReport, RewindScope),
     PreviewRewind(RewindPreview),
@@ -106,6 +112,13 @@ impl Worker {
         let thread = thread::Builder::new().name("agent".into()).spawn(move || {
             let mut tokens = TokenCounts::default();
             while let Ok(job) = requests.recv() {
+                if let Job::Pause { ready, resume } = job {
+                    if ready.send(session.clone()).is_err() {
+                        break;
+                    }
+                    let _resumed = resume.recv();
+                    continue;
+                }
                 let command = !matches!(job, Job::Run { .. });
                 if matches!(job, Job::End) {
                     let result = agent
@@ -153,6 +166,7 @@ impl Worker {
                     Job::Status => Ok(Reply::Status(agent.status(), tokens.clone())),
                     Job::ListCheckpoints => agent.checkpoints().map(Reply::ListCheckpoints),
                     Job::ListBranches => agent.branch_tree().map(Reply::ListBranches),
+                    Job::ListForkRequests => agent.branch_tree().map(Reply::ListForkRequests),
                     Job::PreviewBranch { target, scope } => agent
                         .branch_preview(target, scope)
                         .map(Reply::PreviewBranch),
@@ -180,7 +194,7 @@ impl Worker {
                     } => agent
                         .rewind(&checkpoint, scope, allow_incomplete, events.clone())
                         .map(Reply::Rewind),
-                    Job::End => return,
+                    Job::End | Job::Pause { .. } => return,
                 };
                 let completion = Completion {
                     result,
@@ -270,6 +284,30 @@ impl Worker {
     }
     pub(super) fn branches(&mut self) -> Result<(), AgentError> {
         self.command(Job::ListBranches, RunControl::default())
+    }
+    pub(super) fn fork_requests(&mut self) -> Result<(), AgentError> {
+        self.command(Job::ListForkRequests, RunControl::default())
+    }
+    /// 元の Agent を破棄せずに待たせ、UI 側へロックを保つハンドルを渡す。
+    pub(super) fn pause(&mut self) -> Result<PausedWorker, AgentError> {
+        if self.is_running() {
+            return Err(AgentError::Worker);
+        }
+        let (ready, receive) = mpsc::sync_channel(1);
+        let (resume, wait) = mpsc::sync_channel(1);
+        self.jobs
+            .as_ref()
+            .ok_or(AgentError::Worker)?
+            .send(Job::Pause {
+                ready,
+                resume: wait,
+            })
+            .map_err(|_| AgentError::Worker)?;
+        let session = receive.recv().map_err(|_| AgentError::Worker)?;
+        Ok(PausedWorker {
+            session,
+            _resume: resume,
+        })
     }
     pub(super) fn preview_branch(
         &mut self,
@@ -416,6 +454,7 @@ impl Worker {
                     }
                     Ok(Reply::ListCheckpoints(points)) => screen.select_checkpoints(points),
                     Ok(Reply::ListBranches(rows)) => screen.select_branches(rows),
+                    Ok(Reply::ListForkRequests(rows)) => screen.select_fork_requests(rows),
                     Ok(Reply::PreviewBranch(preview)) => {
                         screen.move_confirmation(PendingMove::Branch(preview), None)
                     }
@@ -482,6 +521,12 @@ impl Drop for Worker {
         // receiver の破棄で send の待ちを解く。通常の終了では close で join 済み。
         self.jobs.take();
     }
+}
+
+// 失敗や早期終了でも送り手の drop で働き手の待ちを解く。
+pub(super) struct PausedWorker {
+    pub session: Session,
+    _resume: mpsc::SyncSender<()>,
 }
 
 fn add_tokens(total: &mut TokenCounts, value: &TokenCounts) {

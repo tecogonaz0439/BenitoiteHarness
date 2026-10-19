@@ -22,6 +22,10 @@ pub(super) enum Selection {
         rows: Vec<BranchTreeRow>,
         index: usize,
     },
+    ForkRequests {
+        rows: Vec<BranchTreeRow>,
+        index: usize,
+    },
     BranchScope {
         row: BranchTreeRow,
         index: usize,
@@ -46,7 +50,7 @@ impl Selection {
         match self {
             Self::Checkpoints { points, .. } => points.len(),
             Self::Scope { point, .. } => scopes(point).len(),
-            Self::Branches { rows, .. } => rows.len(),
+            Self::Branches { rows, .. } | Self::ForkRequests { rows, .. } => rows.len(),
             Self::BranchScope { row, .. } => row
                 .branch
                 .as_ref()
@@ -59,7 +63,7 @@ impl Selection {
             Self::Scope { point, .. } => scopes(point)
                 .get(position)
                 .map(|scope| text::scope(*scope).to_owned()),
-            Self::Branches { rows, .. } => {
+            Self::Branches { rows, .. } | Self::ForkRequests { rows, .. } => {
                 return rows.get(position).map(|row| text::tree_row(&row.row));
             }
             Self::BranchScope { row, .. } => row
@@ -79,17 +83,43 @@ impl Selection {
             Self::Scope { index, .. } => (text::SELECT_SCOPE, *index),
             Self::Branches { index, .. } => (text::SELECT_BRANCH, *index),
             Self::BranchScope { index, .. } => (text::SELECT_BRANCH_SCOPE, *index),
+            Self::ForkRequests { index, .. } => (text::SELECT_FORK, *index),
         };
         let line = |value: &str| vec![(format::clipped(value, size.0), Decoration::Plain)];
         let mut rows = vec![line(title)];
         let capacity = maximum.saturating_sub(2);
         rows.extend(window(self.count(), index, capacity, |position, limit| {
-            let mut option = vec![(
-                SafeText::strict(&text::selection_row(position == index, ""), false),
-                Decoration::Dim,
-            )];
-            option.extend(self.option(position).unwrap_or_default());
-            format::wrapped_line(option, size.0, limit)
+            if size.0 <= 2 {
+                return vec![vec![(
+                    format::clipped(&text::selection_row(position == index, ""), size.0),
+                    if position == index {
+                        Decoration::Bold
+                    } else {
+                        Decoration::Dim
+                    },
+                )]];
+            }
+            let option = self.option(position).unwrap_or_default();
+            format::wrapped_line(option, size.0.saturating_sub(2), limit)
+                .into_iter()
+                .enumerate()
+                .map(|(line_index, mut line)| {
+                    let (prefix, style) = if line_index == 0 {
+                        (
+                            text::selection_row(position == index, ""),
+                            if position == index {
+                                Decoration::Bold
+                            } else {
+                                Decoration::Dim
+                            },
+                        )
+                    } else {
+                        (text::CONTINUATION.into(), Decoration::Dim)
+                    };
+                    line.insert(0, (format::clipped(&prefix, size.0), style));
+                    line
+                })
+                .collect()
         }));
         rows.push(line(text::SELECT_KEYS));
         rows.truncate(maximum);
@@ -166,6 +196,12 @@ impl Screen {
             .unwrap_or_default();
         self.selection = Some(Selection::Branches { rows, index });
     }
+    pub(super) fn select_fork_requests(&mut self, rows: Vec<BranchTreeRow>) {
+        self.select_branches(rows);
+        if let Some(Selection::Branches { rows, index }) = self.selection.take() {
+            self.selection = Some(Selection::ForkRequests { rows, index });
+        }
+    }
     pub(super) fn select_checkpoints(&mut self, mut points: Vec<CheckpointInfo>) {
         self.flush_pending();
         if points.is_empty() {
@@ -187,7 +223,9 @@ impl Screen {
             return Action::None;
         }
         if key.code == KeyCode::Esc {
-            let cancelled = if matches!(
+            let cancelled = if matches!(self.selection, Some(Selection::ForkRequests { .. })) {
+                text::FORK_CANCELLED
+            } else if matches!(
                 self.selection,
                 Some(Selection::Branches { .. } | Selection::BranchScope { .. })
             ) {
@@ -207,6 +245,7 @@ impl Screen {
             Selection::Checkpoints { index, .. }
             | Selection::Scope { index, .. }
             | Selection::Branches { index, .. }
+            | Selection::ForkRequests { index, .. }
             | Selection::BranchScope { index, .. } => index,
         };
         if key.code == KeyCode::Up {
@@ -241,6 +280,17 @@ impl Screen {
                         });
                     }
                 }
+                Selection::ForkRequests { rows, index } => {
+                    if let Some(row) = rows.get(index)
+                        && row.row.request.is_some()
+                        && let Some(node) = row.row.node
+                    {
+                        return Action::Command(Command::Fork(
+                            crate::session::ForkTarget::BeforeRequest(node),
+                        ));
+                    }
+                    self.selection = Some(Selection::ForkRequests { rows, index });
+                }
                 Selection::BranchScope { row, index } => {
                     if let Some(branch) = &row.branch
                         && let Some(scope) = branch_scopes(branch).get(index)
@@ -273,19 +323,21 @@ impl Screen {
         }
         self.pending_move = Some(preview);
     }
+    pub(super) fn restore_request(&mut self, request: &str) {
+        self.restore_input(if request.starts_with('/') {
+            format!("/{request}")
+        } else {
+            request.to_owned()
+        });
+        self.notice(text::REQUEST_RESTORED);
+    }
     pub(super) fn move_result(
         &mut self,
         report: &crate::rewind::RewindReport,
         branch_scope: Option<RewindScope>,
     ) {
         if let Some(request) = &report.request {
-            let input = if request.starts_with('/') {
-                format!("/{request}")
-            } else {
-                request.clone()
-            };
-            self.restore_input(input);
-            self.notice(text::REQUEST_RESTORED);
+            self.restore_request(request);
         }
         if let Some(scope) = branch_scope {
             self.notice(&text::branch_result(report, scope));

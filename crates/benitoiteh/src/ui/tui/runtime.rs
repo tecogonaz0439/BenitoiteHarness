@@ -73,6 +73,13 @@ impl Drop for PendingSession {
     }
 }
 
+type SessionFactory<'a> = dyn FnMut(
+        &crate::agent::AgentStatus,
+        &crate::session::Session,
+        Option<crate::session::ForkTarget>,
+    ) -> Result<NewSession, String>
+    + 'a;
+
 /// 入力とイベントをまとめて一回描く。終了中も、仕事が戻るまで受信を続ける。
 pub fn run(
     screen: &mut Screen,
@@ -81,7 +88,7 @@ pub fn run(
     output: &mut impl Write,
     terminated: &AtomicBool,
     mut cursor_position: impl FnMut(u16),
-    new_session: &mut dyn FnMut(&crate::agent::AgentStatus) -> Result<NewSession, String>,
+    new_session: &mut SessionFactory<'_>,
 ) -> Result<u8, TuiError> {
     let mut pending_new: Option<PendingSession> = None;
     let started = Instant::now();
@@ -151,6 +158,9 @@ pub fn run(
             screen.startup(prepared.diagnostics);
             screen.before_rewind = None;
             screen.followups.clear();
+            if let Some(request) = prepared.restored_request.take() {
+                screen.restore_request(&request);
+            }
             let (approver, approvals) = crate::approval::InteractiveApprover::channel();
             worker = Worker::start(
                 prepared.agent.with_approver(Box::new(approver)),
@@ -316,17 +326,31 @@ pub fn run(
                         }
                         Command::Rewind => worker.checkpoints(),
                         Command::Tree => worker.branches(),
+                        Command::ForkBefore => worker.fork_requests(),
                         Command::PreviewBranch(target, scope) => {
                             worker.preview_branch(target, scope)
                         }
                         Command::PreviewRewind(checkpoint, scope) => {
                             worker.preview(checkpoint, scope)
                         }
-                        Command::New => {
-                            screen.notice(super::text::STARTING_NEW);
+                        Command::New | Command::Fork(_) => {
+                            let target = if let Command::Fork(target) = command {
+                                Some(target)
+                            } else {
+                                None
+                            };
+                            screen.notice(if target.is_some() {
+                                super::text::STARTING_FORK
+                            } else {
+                                super::text::STARTING_NEW
+                            });
                             screen.draw(output, None).map_err(TuiError::Io)?;
                             cursor_position(screen.rows_below_cursor());
-                            match new_session(worker.current_status()) {
+                            let paused = worker.pause().map_err(TuiError::Agent)?;
+                            let prepared =
+                                new_session(worker.current_status(), &paused.session, target);
+                            drop(paused);
+                            match prepared {
                                 Ok(prepared) => {
                                     pending_new = Some(PendingSession(Some(prepared)));
                                     worker.end()

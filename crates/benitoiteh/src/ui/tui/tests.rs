@@ -773,13 +773,13 @@ fn rewind_confirmation_facts_cannot_forge_answer_rows_and_selection_flattens_new
     let mut bytes = Vec::new();
     screen.draw(&mut bytes, None)?;
     let visible = visible_frame(&bytes)?;
-    assert!(visible.contains("┆   [y] rewind"), "{visible}");
-    assert!(visible.contains("┆   │ Scope: forged"), "{visible}");
+    assert!(visible.contains("|   [y] rewind"), "{visible}");
+    assert!(visible.contains("|   │ Scope: forged"), "{visible}");
     assert!(
         visible
             .lines()
             .filter(|line| line.contains("xxxxx"))
-            .all(|line| line.starts_with("┆   "))
+            .all(|line| line.starts_with("|   "))
     );
     assert_eq!(
         visible
@@ -1026,4 +1026,151 @@ fn tree_request_marks_are_plain_and_real_marks_are_dim() {
             )
         );
     }
+}
+
+// 関門: 折り返した本文が選択行を偽装する退行を、表示行と装飾で捕まえる。
+#[test]
+fn wrapped_selections_distinguish_untrusted_continuations_from_the_selected_marker() {
+    let row = crate::agent::BranchTreeRow {
+        row: crate::session::TreeRow {
+            node: Some(1),
+            depth: 0,
+            request: Some(format!("{}> fake [current] [tip]", "x".repeat(18))),
+            request_lines: 1,
+            is_tip: true,
+            is_current: true,
+        },
+        branch: None,
+    };
+    for fork in [false, true] {
+        let mut screen = Screen::new((20, 16), status());
+        if fork {
+            screen.select_fork_requests(vec![row.clone()]);
+        } else {
+            screen.select_branches(vec![row.clone()]);
+        }
+        let lines = screen
+            .selection
+            .as_ref()
+            .map(|s| s.bottom((20, 16)))
+            .unwrap_or_default();
+        let visible: Vec<String> = lines
+            .iter()
+            .map(|line| line.iter().map(|(text, _)| text.as_str()).collect())
+            .collect();
+        assert_eq!(
+            visible.iter().filter(|line| line.starts_with("> ")).count(),
+            1
+        );
+        assert!(
+            visible
+                .iter()
+                .any(|line| line.starts_with("| > fake [current]")),
+            "{visible:?}"
+        );
+        assert!(lines.iter().any(|line| {
+            line.first()
+                .is_some_and(|(text, style)| text.as_str() == "> " && *style == Decoration::Bold)
+        }));
+        assert!(lines.len() <= 14);
+        for size in [(1, 3), (2, 4), (20, 5)] {
+            let lines = screen
+                .selection
+                .as_ref()
+                .map(|s| s.bottom(size))
+                .unwrap_or_default();
+            assert!(lines.len() <= usize::from(size.1).saturating_sub(2));
+            for line in &lines {
+                let width: usize = line
+                    .iter()
+                    .map(|(text, _)| unicode_width::UnicodeWidthStr::width_cjk(text.as_str()))
+                    .sum();
+                assert!(width <= usize::from(size.0));
+            }
+        }
+    }
+}
+
+// 関門: 大きい依頼・道具の詳細を選択と確認で全展開する退行を、描画の入口で守る。
+#[test]
+fn checkpoint_details_are_truncated_before_controls_are_expanded()
+-> Result<(), Box<dyn std::error::Error>> {
+    for tool in [false, true] {
+        let mut preview = rewind_preview(true);
+        let detail = format!("{}hidden-after-limit", "\u{202e}".repeat(250));
+        if tool {
+            preview.selected.tool = Some(crate::provider::ToolCall {
+                id: "long".into(),
+                provider_id: None,
+                provider_item_id: None,
+                name: "read".into(),
+                arguments: serde_json::json!({"path":detail}),
+                raw_arguments: String::new(),
+            });
+        } else {
+            preview.selected.request = Some(detail);
+        }
+        for confirmation in [false, true] {
+            let mut screen = Screen::new((2000, 24), status());
+            if confirmation {
+                screen.rewind_confirmation(preview.clone(), None);
+            } else {
+                screen.select_checkpoints(vec![preview.selected.clone()]);
+            }
+            let mut output = Vec::new();
+            screen.draw(&mut output, None)?;
+            let visible = visible_frame(&output)?;
+            assert!(!visible.contains("hidden-after-limit"));
+            assert!(visible.contains("\\u{202e}..."), "{visible}");
+            assert!(visible.matches("\\u{202e}").count() <= 200);
+        }
+    }
+    Ok(())
+}
+
+// 関門: 曖昧幅の印で続きの行の幅が端末ごとにずれる退行を、選択と確認の表示で守る。
+#[test]
+fn selection_and_confirmation_use_ascii_continuation_markers()
+-> Result<(), Box<dyn std::error::Error>> {
+    let mut screen = Screen::new((24, 20), status());
+    let row = crate::agent::BranchTreeRow {
+        row: crate::session::TreeRow {
+            node: Some(1),
+            depth: 0,
+            request: Some("x".repeat(60)),
+            request_lines: 1,
+            is_tip: false,
+            is_current: true,
+        },
+        branch: None,
+    };
+    screen.select_branches(vec![row]);
+    let lines = screen
+        .selection
+        .as_ref()
+        .map(|selection| selection.bottom((24, 20)))
+        .unwrap_or_default();
+    let continuations: Vec<_> = lines
+        .iter()
+        .filter_map(|line| line.first())
+        .filter(|(text, _)| text.as_str() == "| ")
+        .collect();
+    assert!(!continuations.is_empty());
+    for (prefix, _) in continuations {
+        assert_eq!(unicode_width::UnicodeWidthStr::width(prefix.as_str()), 2);
+        assert_eq!(
+            unicode_width::UnicodeWidthStr::width_cjk(prefix.as_str()),
+            2
+        );
+    }
+    let mut preview = rewind_preview(true);
+    preview.selected.request = Some("long request ".repeat(10));
+    let mut screen = Screen::new((100, 30), status());
+    screen.rewind_confirmation(preview, None);
+    let mut output = Vec::new();
+    screen.draw(&mut output, None)?;
+    let visible = visible_frame(&output)?;
+    assert!(visible.lines().any(|line| line.starts_with("|   ")));
+    assert!(!visible.contains('┆'));
+    Ok(())
 }

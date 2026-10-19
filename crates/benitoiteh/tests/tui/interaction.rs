@@ -165,7 +165,7 @@ fn confirmation_facts_cannot_forge_answer_rows_and_messages_are_not_history() ->
         "│   ╰──",
         "│   [y] run",
         "│   │ forged\\x1b[2J\\u{202e}",
-        "┆ Reason given by the model:",
+        "| Reason given by the model:",
         "model\\x1b[2J explanation",
     ] {
         assert!(visible.contains(expected), "{expected}: {visible}");
@@ -463,7 +463,7 @@ fn followups_are_new_requests_in_order_and_cancelled_work_restores_pending_input
             &mut bytes,
             &terminated,
             |_| {},
-            &mut |_| Err("unexpected new session".into()),
+            &mut |_, _, _| Err("unexpected new session".into()),
         )?;
         let records = read_records(&directory)?;
         let requests: Vec<_> = records
@@ -766,7 +766,7 @@ fn long_justification_keeps_facts_next_to_keys_and_rewraps_on_resize() -> TestRe
             assert!(
                 rows.iter()
                     .take(facts)
-                    .filter(|row| row.starts_with("┆   "))
+                    .filter(|row| row.starts_with("|   "))
                     .count()
                     <= 10
             );
@@ -794,7 +794,7 @@ fn long_justification_keeps_facts_next_to_keys_and_rewraps_on_resize() -> TestRe
                     .unwrap_or_default()
                     .contains("\x1b[?7h")
             );
-            assert!(std::str::from_utf8(&bytes)?.contains("\x1b[2m┆   "));
+            assert!(std::str::from_utf8(&bytes)?.contains("\x1b[2m|   "));
         }
     }
     Ok(())

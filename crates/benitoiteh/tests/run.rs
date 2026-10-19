@@ -39,6 +39,11 @@ fn bytes(sink: &Mutex<Vec<u8>>) -> Vec<u8> {
 #[test]
 fn input_and_both_output_streams_are_drained_and_may_share_a_sink() -> TestResult {
     let f = ProcessFixture::new()?;
+    // 時間の上限を測る検査ではないので、負荷によるパイプの回収の遅れを待つ。
+    let settings = RunLimits {
+        pipe_close_wait: Duration::from_secs(5),
+        ..limits()
+    };
     let input = vec![b'x'; 1024 * 1024];
     for shared in [false, true] {
         let stdout = sink();
@@ -48,7 +53,7 @@ fn input_and_both_output_streams_are_drained_and_may_share_a_sink() -> TestResul
             input.clone(),
             Arc::clone(&stdout),
             Arc::clone(&stderr),
-            limits(),
+            settings,
             &AtomicBool::new(false),
         )?;
         assert!(outcome.status.success());
@@ -74,7 +79,7 @@ fn input_and_both_output_streams_are_drained_and_may_share_a_sink() -> TestResul
         vec![],
         sink(),
         sink(),
-        limits(),
+        settings,
         &AtomicBool::new(false),
     )?;
     assert!(outcome.status.success());
@@ -84,7 +89,7 @@ fn input_and_both_output_streams_are_drained_and_may_share_a_sink() -> TestResul
         vec![0; 1024 * 1024],
         sink(),
         sink(),
-        limits(),
+        settings,
         &AtomicBool::new(false),
     )?;
     assert!(outcome.status.success());

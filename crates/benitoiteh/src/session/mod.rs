@@ -1,6 +1,7 @@
 //! セッションの記録、ロック、一時領域、保持期間の掃除（設計書 01-05、05-01「データの置き場所」）。
 
 mod files;
+mod fork;
 mod id;
 mod objects;
 mod quota;
@@ -14,6 +15,7 @@ pub(crate) mod text;
 mod tree;
 
 pub use files::FileHistory;
+pub use fork::{ForkTarget, ForkedSession};
 pub use id::SessionId;
 pub use quota::{StorageUsage, TOTAL_LIMIT, storage_usage};
 pub use record::*;
@@ -60,6 +62,12 @@ pub enum SessionError {
     Invalid(&'static str),
     /// ほかのセッションがロックを保持している。
     Locked,
+    /// 写す処理の元の誤りと、作りかけを削除できなかった誤り。
+    ForkCleanup {
+        error: Box<SessionError>,
+        cleanup: io::Error,
+        session: SessionId,
+    },
 }
 
 impl fmt::Display for SessionError {
@@ -71,6 +79,11 @@ impl fmt::Display for SessionError {
             Self::Random(error) => write!(f, "{} {error}", text::RANDOM_ERROR),
             Self::Invalid(message) => f.write_str(message),
             Self::Locked => f.write_str(text::LOCKED),
+            Self::ForkCleanup {
+                error,
+                cleanup,
+                session,
+            } => f.write_str(&text::fork_cleanup(error, cleanup, session)),
         }
     }
 }
@@ -81,6 +94,7 @@ impl std::error::Error for SessionError {
             Self::Io(error) => Some(error),
             Self::SafeFs(error) => Some(error),
             Self::Json(error) => Some(error),
+            Self::ForkCleanup { error, .. } => Some(error.as_ref()),
             Self::Random(_) | Self::Invalid(_) | Self::Locked => None,
         }
     }
@@ -392,7 +406,8 @@ pub fn cleanup(
                         | SessionError::Json(_)
                         | SessionError::Random(_)
                         | SessionError::Invalid(_)
-                        | SessionError::Locked) => other.to_string(),
+                        | SessionError::Locked
+                        | SessionError::ForkCleanup { .. }) => other.to_string(),
                     },
                 }),
             }

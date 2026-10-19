@@ -342,7 +342,7 @@ impl Confirmation {
             'source: for source in safe.as_str().split('\n') {
                 for line in format::wrapped(
                     &SafeText::strict(source, false),
-                    content_width(width, "┆   "),
+                    content_width(width, "|   "),
                     usize::MAX,
                 )
                 .0
@@ -351,7 +351,7 @@ impl Confirmation {
                         truncated = true;
                         break 'source;
                     }
-                    explanation.push(plain(&format!("┆   {line}"), Decoration::Dim));
+                    explanation.push(plain(&format!("|   {line}"), Decoration::Dim));
                 }
             }
             // 短い端末では説明の見出しも省き、事実を押し出さない。
@@ -431,12 +431,12 @@ fn prefixed_details(value: &str, width: u16) -> Vec<Line> {
         .flat_map(|source| {
             format::wrapped(
                 &SafeText::strict(source, false),
-                content_width(width, "┆   "),
+                content_width(width, "|   "),
                 usize::MAX,
             )
             .0
             .into_iter()
-            .map(|line| plain(&format!("┆   {line}"), Decoration::Dim))
+            .map(|line| plain(&format!("|   {line}"), Decoration::Dim))
         })
         .collect()
 }

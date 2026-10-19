@@ -154,3 +154,16 @@ pub const ALLOW_RESTRICTED: &str = "benitoiteh: --allow is available only in res
 pub const PROJECT_PARENT_RESTRICTED: &str =
     "--project-parent is available only in restricted exec mode.";
 pub const PROJECT_PARENT_DIRECTORY: &str = "--project-parent must name an existing directory.";
+
+pub fn forked(source: &crate::session::ForkedFrom, id: &crate::session::SessionId) -> String {
+    format!(
+        "Forked session {} at node {} into session {id}.",
+        source.session, source.node
+    )
+}
+pub fn fork_retained(id: &crate::session::SessionId) -> String {
+    format!("The forked session {id} was retained; preparation failed.")
+}
+
+/// fork で引き継ぐ提供者の設定が削除された場合は、別の提供者へ切り替えない。
+pub const FORK_PROVIDER_MISSING: &str = "The current provider is no longer configured.";

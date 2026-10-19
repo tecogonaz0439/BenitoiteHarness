@@ -118,8 +118,8 @@ pub const PATH: &str = "Path";
 pub const SANDBOX: &str = "Sandbox";
 pub const URL: &str = "URL";
 pub const DOMAIN: &str = "Domain";
-pub const MODEL_REASON_HEADING: &str = "┆ Reason given by the model:";
-pub const JUSTIFICATION_OMITTED: &str = "┆ ... remaining justification omitted.";
+pub const MODEL_REASON_HEADING: &str = "| Reason given by the model:";
+pub const JUSTIFICATION_OMITTED: &str = "| ... remaining justification omitted.";
 pub const MESSAGE_TOO_LONG: &str = "Message input is limited to 64 KiB; excess input was rejected.";
 pub const WARNING: &str = "Warning";
 pub const APPROVAL_BORDER: &str = "╰────────────────────────────";
@@ -254,6 +254,7 @@ pub const HELP: &str = "/help                  Show commands and input controls.
 /compact [instructions] Compact the conversation.
 /rewind                Select a checkpoint and restore files or conversation.
 /tree                  Show the session tree and move to a branch or request.
+/fork [before]         Copy a path into a new session.
 /new                   Start a new session.
 /quit                  Quit.
 Enter: send a request, or steer while processing.
@@ -364,6 +365,17 @@ pub fn compact_result(report: &crate::agent::CompactReport) -> String {
     )
 }
 
+pub const CHECKPOINT_DETAIL_CHARS: usize = 200;
+
+fn checkpoint_detail(value: &str) -> String {
+    let mut chars = value.chars();
+    let mut detail: String = chars.by_ref().take(CHECKPOINT_DETAIL_CHARS).collect();
+    if chars.next().is_some() {
+        detail.push_str("...");
+    }
+    detail
+}
+
 pub fn checkpoint_row(point: &crate::rewind::CheckpointInfo) -> String {
     let checkpoint = &point.checkpoint;
     let reason = match checkpoint.reason {
@@ -382,6 +394,7 @@ pub fn checkpoint_row(point: &crate::rewind::CheckpointInfo) -> String {
         .map(|call| tool_call(&call.name, &call.arguments))
         .or_else(|| point.request.clone())
         .unwrap_or_else(|| NOT_AVAILABLE.into());
+    let detail = checkpoint_detail(&detail);
     let seconds = checkpoint.created_at.seconds;
     // UTC は外部のタイムゾーンの設定に依存しない形で日付と時刻にする。
     let days = seconds.div_euclid(86400);
@@ -630,3 +643,9 @@ pub fn skill_skipped(path: &std::path::Path, reason: &str) -> String {
 }
 
 pub const IMAGES_REMOVED: &str = "Images were removed and the request was sent again successfully.";
+
+pub const FORK_USAGE: &str = "Usage: /fork [before]";
+pub const SELECT_FORK: &str = "Fork before request";
+pub const FORK_CANCELLED: &str = "Fork cancelled.";
+pub const STARTING_FORK: &str = "Forking session...";
+pub const CONTINUATION: &str = "| ";

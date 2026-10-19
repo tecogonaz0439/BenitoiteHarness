@@ -26,6 +26,8 @@ pub struct SessionEntry {
     pub project_dir: Option<PathBuf>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub first_request: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub forked_from: Option<super::ForkedFrom>,
     pub active: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
@@ -40,6 +42,7 @@ impl SessionEntry {
             project_dir: None,
             first_request: None,
             active: false,
+            forked_from: None,
             error: None,
         }
     }
@@ -78,6 +81,7 @@ pub fn list_sessions(paths: &DataPaths) -> Result<Vec<SessionEntry>, SessionErro
                 };
                 Ok(())
             }) {
+                entry.forked_from = None;
                 entry.started_at = None;
                 entry.mode = None;
                 entry.project_dir = None;
@@ -128,6 +132,12 @@ fn scan(root: &File, entry: &mut SessionEntry) -> Result<(), SessionError> {
         }
         match string(&value, "type")? {
             "header" if first => {
+                entry.forked_from = value
+                    .get("forked_from")
+                    .filter(|v| !v.is_null())
+                    .cloned()
+                    .map(serde_json::from_value::<super::ForkedFrom>)
+                    .transpose()?;
                 entry.started_at = Some(string(&value, "started_at")?.into());
                 entry.mode = Some(mode(&value)?);
                 entry.project_dir = Some(PathBuf::from(string(&value, "project_dir")?));

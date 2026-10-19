@@ -168,20 +168,26 @@ fn run_interactive(args: ExecArgs, signals: &mut Signals) -> Result<u8, CliError
             &mut output,
             &terminated,
             |rows| restore.set_rows_below(rows),
-            &mut |current| {
-                let exec::Prepared {
-                    agent,
-                    session,
-                    status,
-                    diagnostics,
-                    panic_record,
-                } = exec::prepare_new(
-                    &args,
-                    current,
-                    &paths,
-                    crate::sandbox::check_availability,
-                    crate::benitoite::QueryLauncher::Sandboxed,
-                )
+            &mut |current, source, target| {
+                let (prepared, request) = match target {
+                    Some(target) => exec::prepare_fork(
+                        &args,
+                        current,
+                        source,
+                        &paths,
+                        target,
+                        crate::sandbox::check_availability,
+                        crate::benitoite::QueryLauncher::Sandboxed,
+                    ),
+                    None => exec::prepare_new(
+                        &args,
+                        current,
+                        &paths,
+                        crate::sandbox::check_availability,
+                        crate::benitoite::QueryLauncher::Sandboxed,
+                    )
+                    .map(|prepared| (prepared, None)),
+                }
                 .map_err(|error| {
                     error
                         .diagnostics
@@ -191,9 +197,17 @@ fn run_interactive(args: ExecArgs, signals: &mut Signals) -> Result<u8, CliError
                         .collect::<Vec<_>>()
                         .join("\n")
                 })?;
+                let exec::Prepared {
+                    agent,
+                    session,
+                    status,
+                    diagnostics,
+                    panic_record,
+                } = prepared;
                 let restore = Arc::clone(&restore);
                 Ok(
                     crate::ui::tui::NewSession::new(agent, session, status, diagnostics)
+                        .with_request(request)
                         .on_start(move || panic::install(Some(panic_record), Some(restore))),
                 )
             },

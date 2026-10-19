@@ -627,3 +627,84 @@ fn resume_nothing_to_compact_only_stops_for_remaining_foreign_reasoning() -> Tes
     }
     Ok(())
 }
+
+// 関門: 写した元の情報が CLI の JSON と端末表示へ届かない退行を、一覧の入口で守る。
+#[test]
+fn sessions_lists_fork_origin_and_rejects_an_invalid_origin_id() -> TestResult {
+    let protocol = Protocol::Chat;
+    let mut server = MockProvider::start(vec![ResponseScript::sse(
+        protocol.response(None, "saved", false),
+    )])?;
+    let f = Fixture::new(protocol, &server)?;
+    assert!(
+        Running::start(&mut f.command("Initial"))?
+            .finish()?
+            .status
+            .success()
+    );
+    let (directory, _) = f.records()?;
+    let paths = paths(&f)?;
+    let source = session_support::open_created_session(&paths, &id(&directory)?.parse()?)?;
+    let copied = source
+        .fork(
+            &paths,
+            &f.root.join("project"),
+            benitoiteh::session::ForkTarget::Current,
+        )?
+        .session;
+    let copy_id = copied.id().to_string();
+    let output = Running::start(sessions_command(&f).arg("--json"))?.finish()?;
+    assert!(output.status.success());
+    let rows = lines(&output.stdout)?;
+    let row = rows
+        .iter()
+        .find(|row| row.get("id") == Some(&json!(copy_id)))
+        .ok_or("fork entry")?;
+    assert_eq!(
+        row.pointer("/forked_from/session"),
+        Some(&json!(source.id().to_string()))
+    );
+    assert_eq!(
+        row.pointer("/forked_from/node"),
+        Some(&json!(
+            ResumeState::read(source.directory())?
+                .tree
+                .tip
+                .ok_or("tip")?
+        ))
+    );
+    assert!(
+        rows.iter()
+            .find(|row| row.get("id") == Some(&json!(source.id().to_string())))
+            .ok_or("source entry")?
+            .get("forked_from")
+            .is_none()
+    );
+    let output = Running::start(&mut sessions_command(&f))?.finish()?;
+    assert!(output.status.success());
+    let text = String::from_utf8(output.stdout)?;
+    let line = text
+        .lines()
+        .find(|line| line.starts_with(&copy_id))
+        .ok_or("fork line")?;
+    assert!(line.contains(&format!(" [forked from {}] [active]", source.id())));
+    let mut records: Vec<Value> = benitoiteh::session::read_records(copied.directory())?
+        .iter()
+        .map(serde_json::to_value)
+        .collect::<Result<_, _>>()?;
+    *records
+        .first_mut()
+        .and_then(|record| record.pointer_mut("/forked_from/session"))
+        .ok_or("origin")? = json!("invalid-id");
+    rewrite(copied.directory(), &records)?;
+    let output = Running::start(sessions_command(&f).arg("--json"))?.finish()?;
+    let rows = lines(&output.stdout)?;
+    let row = rows
+        .iter()
+        .find(|row| row.get("id") == Some(&json!(copy_id)))
+        .ok_or("bad entry")?;
+    assert!(row.get("error").is_some());
+    assert!(row.get("forked_from").is_none());
+    server.shutdown()?;
+    Ok(())
+}

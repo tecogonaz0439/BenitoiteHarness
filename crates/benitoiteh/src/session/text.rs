@@ -47,3 +47,14 @@ pub const IMAGE_RESTORE_OMITTED: &str =
     "(An image from this result could not be restored from the session and was omitted.)";
 
 pub const REQUEST_ELLIPSIS: &str = "...";
+
+pub const EMPTY_FORK: &str = "The selected path is empty; no session was forked.";
+
+pub const FORK_ASSET_CHANGED: &str = "A referenced file changed while forking the session.";
+pub fn fork_cleanup(
+    error: &super::SessionError,
+    cleanup: &std::io::Error,
+    id: &super::SessionId,
+) -> String {
+    format!("{error} Could not remove incomplete fork {id}: {cleanup}")
+}

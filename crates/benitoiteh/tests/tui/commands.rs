@@ -44,6 +44,12 @@ fn command_grammar_busy_rules_and_literal_slashes_apply_only_at_submission() -> 
         ("/rewind", Action::Command(Command::Rewind)),
         ("/tree", Action::Command(Command::Tree)),
         ("/new", Action::Command(Command::New)),
+        (
+            "/fork",
+            Action::Command(Command::Fork(benitoiteh::session::ForkTarget::Current)),
+        ),
+        ("/fork before", Action::Command(Command::ForkBefore)),
+        ("/fork x", Action::None),
         ("/quit", Action::Quit),
         (
             "/compact keep names\nand paths",
@@ -75,6 +81,8 @@ fn command_grammar_busy_rules_and_literal_slashes_apply_only_at_submission() -> 
         "/compact",
         "/rewind",
         "/tree",
+        "/fork",
+        "/fork before",
         "/new",
         "/quit",
         "/usr/bin/env",
@@ -83,7 +91,15 @@ fn command_grammar_busy_rules_and_literal_slashes_apply_only_at_submission() -> 
         assert_eq!(submit(&mut screen, raw, true, true), Action::None, "{raw}");
     }
     for raw in [
-        "/help", "/compact", "/new", "/rewind", "/tree", "/unknown", "/",
+        "/help",
+        "/compact",
+        "/new",
+        "/rewind",
+        "/tree",
+        "/fork",
+        "/fork before",
+        "/unknown",
+        "/",
     ] {
         let mut screen = Screen::new((120, 24), status());
         assert_eq!(submit(&mut screen, raw, true, false), Action::None);
@@ -229,7 +245,7 @@ fn llm_slash_text_never_executes_commands_and_empty_rewind_is_reported() -> Test
             &mut output,
             &AtomicBool::new(false),
             |_| {},
-            &mut |_| {
+            &mut |_, _, _| {
                 called = true;
                 Err("should not prepare".into())
             }
@@ -284,7 +300,7 @@ fn manual_compaction_records_each_attempt_and_status_adds_run_and_compaction_usa
         &mut output,
         &AtomicBool::new(false),
         |_| {},
-        &mut |_| Err("unexpected new".into()),
+        &mut |_, _, _| Err("unexpected new".into()),
     )?;
     let records = read_records(&directory)?;
     let summaries: Vec<_> = records
@@ -348,7 +364,10 @@ fn new_session_prepares_first_ends_and_drops_old_agent_and_preserves_session_on_
     );
     let mut attempts = 0;
     let mut new_id = String::new();
-    let mut factory = |current: &benitoiteh::agent::AgentStatus| -> Result<NewSession, String> {
+    let mut factory = |current: &benitoiteh::agent::AgentStatus,
+                       _: &Session,
+                       _: Option<benitoiteh::session::ForkTarget>|
+     -> Result<NewSession, String> {
         attempts += 1;
         assert_eq!(current.session_id, old_id);
         assert!(old_temp.exists());
@@ -454,7 +473,7 @@ fn manual_compaction_cancels_with_escape_or_interrupt_and_failed_attempts_are_re
             &mut output,
             &AtomicBool::new(false),
             |_| {},
-            &mut |_| Err("unexpected new".into()),
+            &mut |_, _, _| Err("unexpected new".into()),
         )?;
         let records = read_records(&directory)?;
         let summaries: Vec<_> = records
@@ -501,7 +520,7 @@ fn manual_compaction_cancels_with_escape_or_interrupt_and_failed_attempts_are_re
         &mut output,
         &AtomicBool::new(false),
         |_| {},
-        &mut |_| Err("unexpected new".into()),
+        &mut |_, _, _| Err("unexpected new".into()),
     )?;
     let records = read_records(&directory)?;
     assert_eq!(
@@ -603,7 +622,7 @@ fn rewind_restores_files_and_conversation_after_explicit_selection_and_confirmat
         &mut output,
         &AtomicBool::new(false),
         |_| {},
-        &mut |_| Err("unexpected new".into()),
+        &mut |_, _, _| Err("unexpected new".into()),
     )?;
     assert_eq!(fs::read_to_string(f.project.join("a.txt"))?, "before");
     let visible = safe_output(&output.0.borrow())?;
@@ -746,7 +765,7 @@ fn tree_moves_before_requests_and_to_tips_with_confirmation_and_restored_input()
         &mut output,
         &AtomicBool::new(false),
         |_| {},
-        &mut |_| Err("unexpected new".into()),
+        &mut |_, _, _| Err("unexpected new".into()),
     )?;
     assert!(input.steps.is_empty());
     assert_eq!(
@@ -836,7 +855,7 @@ fn empty_tree_reports_empty_and_help_lists_tree() -> TestResult {
         &mut output,
         &AtomicBool::new(false),
         |_| {},
-        &mut |_| Err("unexpected new".into()),
+        &mut |_, _, _| Err("unexpected new".into()),
     )?;
     assert!(input.steps.is_empty());
     assert!(server.requests()?.is_empty());
@@ -934,7 +953,7 @@ fn incomplete_before_rewind_requires_f_and_reports_the_error_reasons() -> TestRe
             &mut output,
             &AtomicBool::new(false),
             |_| {},
-            &mut |_| Err("unexpected new".into()),
+            &mut |_, _, _| Err("unexpected new".into()),
         )?;
         assert_eq!(fs::read_to_string(f.project.join("a.txt"))?, "saved");
         let records = read_records(f.session.directory())?;
@@ -977,132 +996,147 @@ fn untrusted(mut new: NewSession) -> NewSession {
     new
 }
 
-// 関門: /new が許可の集合か読んだ版を移す退行を、確認の要求と実際の編集拒否で検出する。
+// 関門: /new と /fork が許可の集合か読んだ版を移す退行を、確認の要求と実際の編集拒否で検出する。
 #[test]
-fn new_does_not_carry_allowed_commands_domains_or_read_versions() -> TestResult {
+fn new_and_fork_do_not_carry_allowed_commands_domains_or_read_versions() -> TestResult {
     use rewind_fixture::response as tools;
-    let command = json!({"command":"printf approved"});
-    let domain = json!({"url":"https://mock.invalid/path"});
-    let mut server = MockProvider::start(vec![
-        tools(&[("web_fetch", domain.clone())]),
-        tools(&[
-            ("read", json!({"path":"a.bnt"})),
-            ("bash", command.clone()),
-            ("bash", command.clone()),
-        ]),
-        tools(&[]),
-        tools(&[
-            (
-                "edit",
-                json!({"path":"a.bnt","old_string":"before","new_string":"must not happen"}),
-            ),
-            ("bash", command),
-            ("web_fetch", domain),
-        ]),
-        tools(&[]),
-    ])?;
-    let f = Fixture::new()?;
-    let mut old = untrusted(f.new_session(&server)?);
-    let directory = old.session.directory().to_owned();
-    let (approver, approvals) = benitoiteh::approval::InteractiveApprover::channel();
-    old.agent = old.agent.with_approver(Box::new(approver));
-    let cancelled = std::sync::Arc::new(AtomicBool::new(false));
-    // 許可の返事を届ける前に取り消す。順序を固定し、道具の名前解決へ進ませない。
-    let report = thread::scope(|scope| -> Result<_, Box<dyn Error>> {
-        let (events, _received) = std::sync::mpsc::sync_channel(1024);
-        let running = scope.spawn(|| {
-            old.agent.run(
-                "Remember domain".into(),
-                std::sync::Arc::clone(&cancelled),
-                events,
-            )
-        });
-        let prompt = approvals.recv_timeout(Duration::from_secs(5))?;
-        assert_eq!(prompt.request.kind, ApprovalKind::WebFetch);
-        cancelled.store(true, Ordering::Release);
-        prompt.reply.send(benitoiteh::approval::ApprovalAnswer {
-            outcome: benitoiteh::approval::ApprovalOutcome::ApprovedForSession,
-            message: None,
+    for fork in [false, true] {
+        let command = json!({"command":"printf approved"});
+        let domain = json!({"url":"https://mock.invalid/path"});
+        let mut server = MockProvider::start(vec![
+            tools(&[("web_fetch", domain.clone())]),
+            tools(&[
+                ("read", json!({"path":"a.bnt"})),
+                ("bash", command.clone()),
+                ("bash", command.clone()),
+            ]),
+            tools(&[]),
+            tools(&[
+                (
+                    "edit",
+                    json!({"path":"a.bnt","old_string":"before","new_string":"must not happen"}),
+                ),
+                ("bash", command),
+                ("web_fetch", domain),
+            ]),
+            tools(&[]),
+        ])?;
+        let f = Fixture::new()?;
+        let mut old = untrusted(f.new_session(&server)?);
+        let directory = old.session.directory().to_owned();
+        let (approver, approvals) = benitoiteh::approval::InteractiveApprover::channel();
+        old.agent = old.agent.with_approver(Box::new(approver));
+        let cancelled = std::sync::Arc::new(AtomicBool::new(false));
+        // 許可の返事を届ける前に取り消す。順序を固定し、道具の名前解決へ進ませない。
+        let report = thread::scope(|scope| -> Result<_, Box<dyn Error>> {
+            let (events, _received) = std::sync::mpsc::sync_channel(1024);
+            let running = scope.spawn(|| {
+                old.agent.run(
+                    "Remember domain".into(),
+                    std::sync::Arc::clone(&cancelled),
+                    events,
+                )
+            });
+            let prompt = approvals.recv_timeout(Duration::from_secs(5))?;
+            assert_eq!(prompt.request.kind, ApprovalKind::WebFetch);
+            cancelled.store(true, Ordering::Release);
+            prompt.reply.send(benitoiteh::approval::ApprovalAnswer {
+                outcome: benitoiteh::approval::ApprovalOutcome::ApprovedForSession,
+                message: None,
+            })?;
+            Ok(running.join().map_err(|_| "agent thread")??)
         })?;
-        Ok(running.join().map_err(|_| "agent thread")??)
-    })?;
-    assert_eq!(report.outcome, benitoiteh::agent::Outcome::Cancelled);
-    assert!(read_records(&directory)?.iter().any(|record| matches!(record,
+        assert_eq!(report.outcome, benitoiteh::agent::Outcome::Cancelled);
+        assert!(read_records(&directory)?.iter().any(|record| matches!(record,
         Record::ToolResult { name, result, .. } if name == "web_fetch" && result.is_error && result.text.contains("cancelled")
     )));
-    let worker = Worker::start(old.agent, old.session)?.with_approval_requests(approvals);
-    let mut screen = Screen::new((240, 60), status());
-    let mut output = Output::default();
-    let mut input = Driver::new(
-        output.clone(),
-        vec![
-            ("", send("first")),
-            (
-                "[a] allow",
-                vec![key(KeyCode::Char('a'), KeyModifiers::NONE)],
-            ),
-            ("The run completed.", send("/new")),
-            ("new ready", send("second")),
-            (
-                "[a] allow",
-                vec![key(KeyCode::Char('n'), KeyModifiers::NONE)],
-            ),
-            (
-                "[s] allow",
-                vec![key(KeyCode::Char('n'), KeyModifiers::NONE)],
-            ),
-            ("The run completed.", send("/quit")),
-        ],
-    );
-    let mut new_directory = PathBuf::new();
-    run(
-        &mut screen,
-        worker,
-        &mut input,
-        &mut output,
-        &AtomicBool::new(false),
-        |_| {},
-        &mut |_| {
-            let mut new = untrusted(f.new_session(&server).map_err(|error| error.to_string())?);
-            new_directory = new.session.directory().to_owned();
-            new.diagnostics.push("new ready".into());
-            Ok(new)
-        },
-    )?;
-    assert_eq!(fs::read_to_string(f.project.join("a.bnt"))?, "before\n");
-    for path in [&directory, &new_directory] {
-        let records = read_records(path)?;
-        assert_eq!(
-            records
-                .iter()
-                .filter(|record| matches!(
-                    record,
-                    Record::Approval {
-                        phase: benitoiteh::session::ApprovalPhase::Request,
-                        kind: Some(ApprovalKind::Command),
-                        ..
-                    }
-                ))
-                .count(),
-            1
+        let worker = Worker::start(old.agent, old.session)?.with_approval_requests(approvals);
+        let mut screen = Screen::new((240, 60), status());
+        let mut output = Output::default();
+        let mut input = Driver::new(
+            output.clone(),
+            vec![
+                ("", send("first")),
+                (
+                    "[a] allow",
+                    vec![key(KeyCode::Char('a'), KeyModifiers::NONE)],
+                ),
+                (
+                    "The run completed.",
+                    send(if fork { "/fork" } else { "/new" }),
+                ),
+                ("new ready", send("second")),
+                (
+                    "[a] allow",
+                    vec![key(KeyCode::Char('n'), KeyModifiers::NONE)],
+                ),
+                (
+                    "[s] allow",
+                    vec![key(KeyCode::Char('n'), KeyModifiers::NONE)],
+                ),
+                ("The run completed.", send("/quit")),
+            ],
         );
-        assert_eq!(
-            records
-                .iter()
-                .filter(|record| matches!(
-                    record,
-                    Record::Approval {
-                        phase: benitoiteh::session::ApprovalPhase::Request,
-                        kind: Some(ApprovalKind::WebFetch),
-                        ..
-                    }
-                ))
-                .count(),
-            1
-        );
+        let mut new_directory = PathBuf::new();
+        run(
+            &mut screen,
+            worker,
+            &mut input,
+            &mut output,
+            &AtomicBool::new(false),
+            |_| {},
+            &mut |current, source, target| {
+                assert_eq!(target.is_some(), fork);
+                let prepared = if let Some(target) = target {
+                    let copied = source
+                        .fork(&f.paths, &current.project, target)
+                        .map_err(|e| e.to_string())?
+                        .session;
+                    f.session_in_mode(&server, current.mode, Some(copied))
+                } else {
+                    f.new_session(&server)
+                };
+                let mut new = untrusted(prepared.map_err(|error| error.to_string())?);
+                new_directory = new.session.directory().to_owned();
+                new.diagnostics.push("new ready".into());
+                Ok(new)
+            },
+        )?;
+        assert_eq!(fs::read_to_string(f.project.join("a.bnt"))?, "before\n");
+        for path in [&directory, &new_directory] {
+            let records = read_records(path)?;
+            assert_eq!(
+                records
+                    .iter()
+                    .filter(|record| matches!(
+                        record,
+                        Record::Approval {
+                            phase: benitoiteh::session::ApprovalPhase::Request,
+                            kind: Some(ApprovalKind::Command),
+                            ..
+                        }
+                    ))
+                    .count(),
+                1
+            );
+            assert_eq!(
+                records
+                    .iter()
+                    .filter(|record| matches!(
+                        record,
+                        Record::Approval {
+                            phase: benitoiteh::session::ApprovalPhase::Request,
+                            kind: Some(ApprovalKind::WebFetch),
+                            ..
+                        }
+                    ))
+                    .count(),
+                1
+            );
+        }
+        assert!(read_records(&new_directory)?.iter().any(|record|matches!(record,Record::ToolResult{name,result,..} if name=="edit" && result.is_error && result.text.contains("read"))));
+        server.shutdown()?;
     }
-    assert!(read_records(&new_directory)?.iter().any(|record|matches!(record,Record::ToolResult{name,result,..} if name=="edit" && result.is_error && result.text.contains("read"))));
-    server.shutdown()?;
     Ok(())
 }
 
@@ -1177,7 +1211,7 @@ fn accepted_rewind_finishes_before_quit_and_repeated_keyboard_interrupts() -> Te
                 &mut output,
                 &AtomicBool::new(false),
                 |_| {},
-                &mut |_| Err("unexpected new".into())
+                &mut |_, _, _| Err("unexpected new".into())
             )?,
             0
         );
@@ -1302,7 +1336,7 @@ fn cancellation_restores_literal_slashes_for_compaction_followups_and_run_inputs
                 &mut output,
                 &stopped,
                 |_| {},
-                &mut |_| Err("unexpected new".into())
+                &mut |_, _, _| Err("unexpected new".into())
             )?,
             130
         );
@@ -1370,7 +1404,7 @@ fn new_session_is_ended_without_activation_when_quit_or_signals_arrive_before_ol
             &mut output,
             &stopped,
             |_| {},
-            &mut |_| {
+            &mut |_, _, _| {
                 let new = f.new_session(&server).map_err(|e| e.to_string())?;
                 directory = new.session.directory().to_owned();
                 temporary = new.session.temporary_dir().to_owned();
@@ -1445,7 +1479,7 @@ fn new_after_project_creation_uses_the_project_from_the_event() -> TestResult {
         &mut output,
         &AtomicBool::new(false),
         |_| {},
-        &mut |current| {
+        &mut |current, _, _| {
             assert_eq!(current.project, destination);
             called = true;
             let next = std::mem::ManuallyDrop::new(Fixture {
@@ -1542,7 +1576,7 @@ fn long_tree_requests_can_be_confirmed_at_80_by_24_and_restore_the_full_input() 
             &mut output,
             &stopped,
             |_| {},
-            &mut |_| Err("unexpected new".into()),
+            &mut |_, _, _| Err("unexpected new".into()),
         )?;
         assert!(input.driver.steps.is_empty());
         assert_eq!(
@@ -1568,5 +1602,118 @@ fn long_tree_requests_can_be_confirmed_at_80_by_24_and_restore_the_full_input() 
         }
         server.shutdown()?;
     }
+    Ok(())
+}
+
+// 関門: /fork before の選択、取り消し、依頼の入力欄への復元を、実際の働き手と画面で守る。
+#[test]
+fn fork_before_ignores_non_requests_and_restores_a_literal_slash_request() -> TestResult {
+    let mut server = MockProvider::start(vec![
+        rewind_fixture::response(&[]),
+        rewind_fixture::response(&[]),
+        rewind_fixture::response(&[]),
+    ])?;
+    let f = Fixture::new()?;
+    let mut source = f.new_session(&server)?;
+    for request in ["first", "/literal second"] {
+        let (events, _received) = std::sync::mpsc::sync_channel(64);
+        source.agent.run(
+            request.into(),
+            std::sync::Arc::new(AtomicBool::new(false)),
+            events,
+        )?;
+    }
+    let old_id = source.session.id().to_string();
+    let old_dir = source.session.directory().to_owned();
+    let worker = Worker::start(source.agent, source.session)?;
+    let mut screen = Screen::new((160, 32), status());
+    let mut output = Output::default();
+    let mut input = Driver::new(
+        output.clone(),
+        vec![
+            ("", send("/fork before")),
+            (
+                "Fork before request",
+                vec![
+                    key(KeyCode::Enter, KeyModifiers::NONE),
+                    key(KeyCode::Up, KeyModifiers::NONE),
+                    key(KeyCode::Up, KeyModifiers::NONE),
+                    key(KeyCode::Up, KeyModifiers::NONE),
+                    key(KeyCode::Enter, KeyModifiers::NONE),
+                    key(KeyCode::Esc, KeyModifiers::NONE),
+                ],
+            ),
+            ("Fork cancelled.", send("/fork before")),
+            (
+                "Fork before request",
+                vec![
+                    key(KeyCode::Up, KeyModifiers::NONE),
+                    key(KeyCode::Enter, KeyModifiers::NONE),
+                ],
+            ),
+            ("fork ready", {
+                let mut events = vec![key(KeyCode::Char('c'), KeyModifiers::CONTROL)];
+                events.extend(send("/rewind"));
+                events
+            }),
+            ("No checkpoints", send("//literal second")),
+            ("The run completed.", send("/quit")),
+        ],
+    );
+    let mut copied_directory = PathBuf::new();
+    let mut attempts = 0;
+    run(
+        &mut screen,
+        worker,
+        &mut input,
+        &mut output,
+        &AtomicBool::new(false),
+        |_| {},
+        &mut |current, source, target| {
+            attempts += 1;
+            let target = target.ok_or("fork target")?;
+            let benitoiteh::session::ForkTarget::BeforeRequest(node) = target else {
+                return Err("before request expected".into());
+            };
+            let records = read_records(source.directory()).map_err(|e| e.to_string())?;
+            let request = records
+                .iter()
+                .find(|record| record.node() == Some(node))
+                .and_then(benitoiteh::session::request_text)
+                .ok_or("request")?;
+            assert_eq!(request, "/literal second");
+            let copied = source
+                .fork(&f.paths, &current.project, target)
+                .map_err(|e| e.to_string())?
+                .session;
+            copied_directory = copied.directory().to_owned();
+            let mut new = f
+                .session_in_mode(&server, current.mode, Some(copied))
+                .map_err(|e| e.to_string())?
+                .with_request(Some(request));
+            new.diagnostics.push("fork ready".into());
+            Ok(new)
+        },
+    )?;
+    assert_eq!(attempts, 1);
+    let visible = safe_output(&output.0.borrow())?;
+    assert!(visible.contains("//literal second"));
+    assert!(visible.contains("Request restored"));
+    let copied = read_records(&copied_directory)?;
+    assert!(
+        matches!(copied.first(), Some(Record::Header(header)) if header.forked_from.as_ref().is_some_and(|source| source.session == old_id))
+    );
+    assert_eq!(
+        copied
+            .iter()
+            .filter_map(benitoiteh::session::request_text)
+            .collect::<Vec<_>>(),
+        ["first", "/literal second"]
+    );
+    assert!(
+        matches!(read_records(&old_dir)?.last(), Some(Record::SessionEnd { reason, .. }) if reason == "New session started.")
+    );
+    assert_eq!(server.requests()?.len(), 3);
+    server.shutdown()?;
     Ok(())
 }

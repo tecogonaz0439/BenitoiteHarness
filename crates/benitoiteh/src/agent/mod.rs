@@ -343,6 +343,7 @@ impl Agent {
         let mut writer = session.writer()?;
         if state.is_none() {
             writer.append(&Record::Header(Header {
+                forked_from: None,
                 format: session::FORMAT_VERSION,
                 session_id: session.id().to_string(),
                 started_at: session.id().started_at_utc(),

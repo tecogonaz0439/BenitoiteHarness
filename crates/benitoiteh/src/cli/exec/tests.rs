@@ -1305,3 +1305,378 @@ fn project_parent_is_resolved_only_for_restricted_exec_and_used_by_the_agent()
     server.shutdown()?;
     Ok(())
 }
+
+// 関門: 写した記録のモードで今の安全の値を上書きする退行と、通常への変更確認を
+// 誤って求める退行を、再開の準備の入口で捕まえる。LLM は呼ばない。
+#[test]
+fn fork_resumes_with_current_safety_and_retains_copy_if_preparation_fails()
+-> Result<(), Box<dyn Error>> {
+    for mode in [Mode::Restricted, Mode::Normal] {
+        let f = Fixture::new()?;
+        let paths = f.paths("sandbox = 'read-only'\napproval = 'untrusted'")?;
+        let mut args = f.args(&["--mode", "restricted"])?;
+        args.interactive = true;
+        let mut source = prepare(&args, None, &paths, |_, _| Ok(()), &mut |_| false)
+            .map_err(|e| e.to_string())?;
+        let (tx, _rx) = mpsc::sync_channel(64);
+        source
+            .agent
+            .run("saved request".into(), Arc::new(AtomicBool::new(true)), tx)?;
+        let (tx, _rx_second) = mpsc::sync_channel(64);
+        source.agent.run(
+            "/restore this request".into(),
+            Arc::new(AtomicBool::new(true)),
+            tx,
+        )?;
+        let last_request = session::read_records(source.session.directory())?
+            .iter()
+            .find(|record| {
+                session::request_text(record).as_deref() == Some("/restore this request")
+            })
+            .and_then(Record::node)
+            .ok_or("request node")?;
+        let original = fs::read(source.session.directory().join("session.jsonl"))?;
+        let mut current = source.agent.status();
+        current.mode = mode;
+        current.sandbox = Sandbox::ReadOnly;
+        current.approval = if mode == Mode::Normal {
+            Approval::Untrusted
+        } else {
+            Approval::OnRequest
+        };
+        current.safety.network = mode == Mode::Normal;
+        let (copied, request) = super::prepare_fork(
+            &args,
+            &current,
+            &source.session,
+            &paths,
+            session::ForkTarget::Current,
+            |_, _| Ok(()),
+            QueryLauncher::TestDirect,
+        )
+        .map_err(|e| e.to_string())?;
+        let status = copied.agent.status();
+        assert_eq!(status.mode, current.mode);
+        if mode == Mode::Normal {
+            assert_eq!(status.sandbox, current.sandbox);
+        }
+        assert_eq!(status.approval, current.approval);
+        assert_eq!(status.safety, current.safety);
+        assert_eq!(status.project, current.project);
+        assert_ne!(status.session_id, current.session_id);
+        assert_eq!(status.provider, current.provider);
+        assert_eq!(status.model, current.model);
+        assert!(!copied.agent.conversation().items.is_empty());
+        assert!(request.is_none());
+        assert!(
+            copied
+                .diagnostics
+                .iter()
+                .any(|line| line.contains("Forked session")
+                    && line.contains(&current.session_id)
+                    && line.contains(&status.session_id))
+        );
+        assert!(
+            !copied
+                .diagnostics
+                .iter()
+                .any(|line| line.contains("Resuming"))
+        );
+        assert_eq!(
+            fs::read(source.session.directory().join("session.jsonl"))?,
+            original
+        );
+        let (before_request, restored) = super::prepare_fork(
+            &args,
+            &current,
+            &source.session,
+            &paths,
+            session::ForkTarget::BeforeRequest(last_request),
+            |_, _| Ok(()),
+            QueryLauncher::TestDirect,
+        )
+        .map_err(|e| e.to_string())?;
+        assert_eq!(restored.as_deref(), Some("/restore this request"));
+        assert_eq!(
+            session::read_records(before_request.session.directory())?
+                .iter()
+                .filter_map(session::request_text)
+                .collect::<Vec<_>>(),
+            ["saved request"]
+        );
+        fs::write(&paths.config_file, "invalid = [")?;
+        let before = session::list_sessions(&paths)?.len();
+        let error = super::prepare_fork(
+            &args,
+            &current,
+            &source.session,
+            &paths,
+            session::ForkTarget::Current,
+            |_, _| Ok(()),
+            QueryLauncher::TestDirect,
+        )
+        .err()
+        .ok_or("preparation should fail")?;
+        let entries = session::list_sessions(&paths)?;
+        assert_eq!(entries.len(), before + 1);
+        assert!(
+            entries
+                .iter()
+                .filter(|entry| entry.id != status.session_id)
+                .any(|entry| error
+                    .diagnostics
+                    .iter()
+                    .any(|line| line.contains(&entry.id) && line.contains("retained")))
+        );
+        assert_eq!(
+            fs::read(source.session.directory().join("session.jsonl"))?,
+            original
+        );
+    }
+    Ok(())
+}
+
+// 関門: 過去の枝の提供者への逆戻りと、新しいキーを古い URL へ送る退行を実際の要求で守る。
+#[test]
+fn fork_after_returning_to_an_old_branch_keeps_the_current_destination()
+-> Result<(), Box<dyn Error>> {
+    use mock_provider::{MockProvider, ResponseScript};
+    let response = "data: {\"choices\":[{\"delta\":{\"content\":\"Done\"},\"finish_reason\":\"stop\"}]}\n\ndata: [DONE]\n\n";
+    // 古い送り先にも二回目の応答を用意し、誤送信を待ち時間ではなく受信内容で検出する。
+    let mut old = MockProvider::start(vec![
+        ResponseScript::sse(response),
+        ResponseScript::sse(response),
+    ])?;
+    let mut new = MockProvider::start(vec![ResponseScript::sse(response)])?;
+    let f = Fixture::new()?;
+    let paths = f.paths("sandbox = 'read-only'\napproval = 'untrusted'")?;
+    let config = fs::read_to_string(&paths.config_file)?;
+    fs::write(
+        &paths.config_file,
+        format!(
+            "{config}\n[providers.other]\nkind = 'openai-chat'\nmodel = 'configured-b'\nbase_url = '{}'\napi_key = {{ command = ['/bin/echo', 'old-secret'] }}\n",
+            old.base_url()
+        ),
+    )?;
+    let mut original = f.args(&[])?;
+    original.interactive = true;
+    let mut first = prepare(&original, None, &paths, |_, _| Ok(()), &mut |_| false)
+        .map_err(|e| e.to_string())?;
+    let (events, _received) = mpsc::sync_channel(64);
+    first
+        .agent
+        .run("A request".into(), Arc::new(AtomicBool::new(true)), events)?;
+    let first_tip = session::ResumeState::read(first.session.directory())?
+        .tree
+        .tip;
+    let mut args = original.clone();
+    args.resume = Some(first.session.id().to_string());
+    args.provider = Some("other".into());
+    args.model = Some("model-b".into());
+    drop(first);
+    let mut current =
+        prepare(&args, None, &paths, |_, _| Ok(()), &mut |_| false).map_err(|e| e.to_string())?;
+    let (events, _received_second) = mpsc::sync_channel(64);
+    let report = current
+        .agent
+        .run("B request".into(), Arc::new(AtomicBool::new(false)), events)?;
+    assert_eq!(report.outcome, Outcome::Completed);
+    let requests = old.requests()?;
+    assert_eq!(requests.len(), 1);
+    let request = requests.first().ok_or("missing original B request")?;
+    assert_eq!(
+        request.body.get("model").and_then(|v| v.as_str()),
+        Some("model-b")
+    );
+    assert_eq!(
+        request.headers.get("authorization").map(String::as_str),
+        Some("Bearer old-secret")
+    );
+    let tip = session::ResumeState::read(current.session.directory())?
+        .tree
+        .tip;
+    current.session.writer()?.append(&Record::Branch {
+        to: first_tip,
+        from: tip,
+        checkpoint: None,
+    })?;
+    // 名前とモデルは今のセッションを引き継ぎ、URL とキーは今の設定から一緒に解く。
+    fs::write(
+        &paths.config_file,
+        fs::read_to_string(&paths.config_file)?
+            .replace(&old.base_url(), &new.base_url())
+            .replace("old-secret", "new-secret")
+            .replace("configured-b", "changed-default"),
+    )?;
+    let (mut copied, _) = super::prepare_fork(
+        &original,
+        &current.agent.status(),
+        &current.session,
+        &paths,
+        session::ForkTarget::Current,
+        |_, _| Ok(()),
+        QueryLauncher::TestDirect,
+    )
+    .map_err(|e| e.to_string())?;
+    assert_eq!(copied.agent.status().provider, "other");
+    assert_eq!(copied.agent.status().model, "model-b");
+    let (events, _received_copy) = mpsc::sync_channel(64);
+    let report = copied.agent.run(
+        "new B request".into(),
+        Arc::new(AtomicBool::new(false)),
+        events,
+    )?;
+    assert_eq!(report.outcome, Outcome::Completed);
+    assert_eq!(old.requests()?.len(), 1);
+    let requests = new.requests()?;
+    assert_eq!(requests.len(), 1);
+    let request = requests.first().ok_or("missing forked B request")?;
+    assert_eq!(
+        request.body.get("model").and_then(|v| v.as_str()),
+        Some("model-b")
+    );
+    assert_eq!(
+        request.headers.get("authorization").map(String::as_str),
+        Some("Bearer new-secret")
+    );
+    let state = session::ResumeState::read(copied.session.directory())?;
+    assert_eq!(state.destination.provider, "other");
+    assert_eq!(state.destination.model, "model-b");
+    assert_eq!(state.destination.base_url, new.base_url());
+    old.shutdown()?;
+    new.shutdown()?;
+    Ok(())
+}
+
+// 関門: 設定から提供者が消えたとき、既定の別の提供者へ送らず元のセッションを保つ。
+#[test]
+fn fork_retains_copy_when_current_provider_was_removed() -> Result<(), Box<dyn Error>> {
+    let f = Fixture::new()?;
+    let paths = f.paths("sandbox = 'read-only'")?;
+    let mut args = f.args(&[])?;
+    args.interactive = true;
+    let mut source = prepare(&args, None, &paths, |_, _| Ok(()), &mut |_| false)
+        .map_err(|error| error.to_string())?;
+    let (events, _received) = mpsc::sync_channel(64);
+    source.agent.run(
+        "source request".into(),
+        Arc::new(AtomicBool::new(true)),
+        events,
+    )?;
+    let original = fs::read(source.session.directory().join("session.jsonl"))?;
+    fs::write(
+        &paths.config_file,
+        fs::read_to_string(&paths.config_file)?
+            .replace("[providers.mock]", "[providers.replacement]")
+            .replace(
+                "default_provider = 'mock'",
+                "default_provider = 'replacement'",
+            ),
+    )?;
+    let error = super::prepare_fork(
+        &args,
+        &source.agent.status(),
+        &source.session,
+        &paths,
+        session::ForkTarget::Current,
+        |_, _| Ok(()),
+        QueryLauncher::TestDirect,
+    )
+    .err()
+    .ok_or("removed provider was accepted")?;
+    assert!(matches!(
+        error.error,
+        StartupError::Invalid(text::FORK_PROVIDER_MISSING)
+    ));
+    let entries = session::list_sessions(&paths)?;
+    assert_eq!(entries.len(), 2);
+    let copied = entries
+        .iter()
+        .find(|entry| entry.id != source.session.id().as_str())
+        .ok_or("missing retained fork")?;
+    assert!(copied.error.is_none());
+    let id = copied.id.parse::<SessionId>()?;
+    assert!(error.diagnostics.contains(&text::fork_retained(&id)));
+    let retained = Session::open(&paths, &id)?;
+    assert_eq!(retained.take_resume_state()?.destination.provider, "mock");
+    assert_eq!(
+        copied
+            .forked_from
+            .as_ref()
+            .map(|from| from.session.as_str()),
+        Some(source.session.id().as_str())
+    );
+    assert_eq!(
+        fs::read(source.session.directory().join("session.jsonl"))?,
+        original
+    );
+    let (events, _received_continue) = mpsc::sync_channel(64);
+    let report = source.agent.run(
+        "continue source".into(),
+        Arc::new(AtomicBool::new(true)),
+        events,
+    )?;
+    assert_eq!(report.outcome, Outcome::Cancelled);
+    assert_eq!(
+        source.agent.status().session_id,
+        source.session.id().as_str()
+    );
+    assert!(
+        session::read_records(source.session.directory())?
+            .iter()
+            .any(|record| session::request_text(record).as_deref() == Some("continue source"))
+    );
+    Ok(())
+}
+
+// 関門: 写した Session を開き直して錠や一時領域を失う退行を、準備の入口で守る。
+#[test]
+fn fork_preparation_reuses_the_locked_session_and_cached_resume_state() -> Result<(), Box<dyn Error>>
+{
+    let f = Fixture::new()?;
+    let paths = f.paths("sandbox = 'read-only'")?;
+    let mut args = f.args(&[])?;
+    args.interactive = true;
+    let mut source = prepare(&args, None, &paths, |_, _| Ok(()), &mut |_| false)
+        .map_err(|error| error.to_string())?;
+    let (events, _received) = mpsc::sync_channel(64);
+    source.agent.run(
+        "source request".into(),
+        Arc::new(AtomicBool::new(true)),
+        events,
+    )?;
+    let forked = source.session.fork(
+        &paths,
+        &source.agent.status().project,
+        session::ForkTarget::Current,
+    )?;
+    let id = forked.session.id().clone();
+    let marker = forked.session.temporary_dir().join("kept-while-preparing");
+    fs::write(&marker, b"kept")?;
+    let mut fixed = SessionOverrides::from(&source.agent.status());
+    assert_eq!(forked.from.session, source.session.id().to_string());
+    assert!(forked.request.is_none());
+    fixed.forked_from = Some(forked.from);
+    fixed.fork_session = Some(forked.session);
+    args.resume = Some(id.to_string());
+    let prepared = super::prepare(
+        &args,
+        Some(&fixed),
+        &paths,
+        |_, _| {
+            assert!(matches!(
+                Session::open(&paths, &id),
+                Err(SessionError::Locked)
+            ));
+            Ok(())
+        },
+        QueryLauncher::TestDirect,
+        &mut |_| false,
+    )
+    .map_err(|error| error.to_string())?;
+    assert_eq!(prepared.session.id(), &id);
+    assert_eq!(fs::read(&marker)?, b"kept");
+    assert!(prepared.agent.conversation().items.iter().any(|item| matches!(item, Item::UserMessage(message) if message.parts.iter().any(|part| part.text == "source request"))));
+    assert!(prepared.session.take_resume_state().is_err());
+    Ok(())
+}

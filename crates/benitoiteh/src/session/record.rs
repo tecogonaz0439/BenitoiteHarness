@@ -92,6 +92,24 @@ pub struct Header {
     pub read_line_numbers: Option<bool>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub skills: Vec<RecordedSkill>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub forked_from: Option<ForkedFrom>,
+}
+
+/// 新しいセッションへ写した道の元の ID と先端。
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct ForkedFrom {
+    #[serde(deserialize_with = "fork_session_id")]
+    pub session: String,
+    pub node: u64,
+}
+
+fn fork_session_id<'de, D: serde::Deserializer<'de>>(deserializer: D) -> Result<String, D::Error> {
+    let value = String::deserialize(deserializer)?;
+    value
+        .parse::<super::SessionId>()
+        .map_err(|_| serde::de::Error::custom(super::text::INVALID_FORMAT))?;
+    Ok(value)
 }
 
 /// 利用者の入力を記録するときの用途（操縦の綴りは記録では steer）。

@@ -39,7 +39,7 @@ pub struct AgentStatus {
 }
 
 impl Agent {
-    /// URL の認証情報とパスを画面へ渡さず、ホストだけを返す。
+    /// 端末の表示用にホストだけを残し、接続の URL やキーを渡さない。
     pub fn status(&self) -> AgentStatus {
         AgentStatus {
             session_id: self.session.id().to_string(),
