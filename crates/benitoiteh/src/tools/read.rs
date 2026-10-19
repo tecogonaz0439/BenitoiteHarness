@@ -8,6 +8,7 @@ use super::{FileVersion, ToolContext, ToolError, ToolOutput, text, truncate};
 use serde_json::Value;
 use std::io::Read;
 use std::path::Path;
+use std::sync::atomic::AtomicBool;
 
 pub(super) const MAX_BYTES: usize = 50 * 1024;
 pub(super) const MAX_FILE_BYTES: u64 = 64 * 1024 * 1024;
@@ -47,7 +48,11 @@ pub(super) fn content_hash(
         .collect())
 }
 
-pub(super) fn execute(context: &ToolContext, arguments: &Value) -> Result<ToolOutput, ToolError> {
+pub(super) fn execute(
+    context: &ToolContext,
+    arguments: &Value,
+    cancelled: &AtomicBool,
+) -> Result<ToolOutput, ToolError> {
     let path = string(arguments, "path")?;
     let mut opened = context.open_file(Path::new(path), false)?;
     let metadata = opened.file.metadata()?;
@@ -58,13 +63,7 @@ pub(super) fn execute(context: &ToolContext, arguments: &Value) -> Result<ToolOu
     opened.file.by_ref().take(12).read_to_end(&mut prefix)?;
     if let Some(format) = image::detect(&prefix) {
         return image::execute(
-            context,
-            arguments,
-            opened,
-            version,
-            metadata.len(),
-            prefix,
-            format,
+            context, arguments, opened, version, prefix, format, cancelled,
         );
     }
     check_text_file(&opened.real_path, &metadata)?;
