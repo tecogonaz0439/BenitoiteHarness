@@ -225,3 +225,7 @@ python3 -I tools/skill-eval/skill_eval.py \
 - 補足 2 に従い、検査済みのコマンドに `permissionOverrides` を加えた。利用者の設定と各試行の前後の版を比較し、変化を検知したら記録を保存して後続を止める。最初の試しの走行で確かめたフック、権限、引数、自動更新と設定の状態を記録し、未検証の項目を改めた。
 
 - 補足 3 に従い、`--mode accept-edits` を `--dangerously-skip-permissions` に替え、`PERMISSION_OVERRIDES` を `False` に戻し、門の時間の上限を30秒にした。門の失敗時も道具が通るため、試行後に会話の記録と門の決定を道具ごとの件数で照合し、不足や照合不能を理由の先頭に記録する。包みのコマンドと `run_command` の `allow` の照合も残した。
+
+### P5-09 利用者の Agent Skill
+
+- `benitoiteh` の評価の設定に `[skills] user = false` を加え、利用者の Skill を読まないようにした。

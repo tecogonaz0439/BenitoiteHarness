@@ -51,8 +51,9 @@ impl<'a> Search<'a> {
     ) -> Result<Self, ToolError> {
         let started = Instant::now();
         let requested = arguments.get("path").and_then(Value::as_str).unwrap_or(".");
-        let path = context.search_path(Path::new(requested))?;
-        let is_directory = std::fs::metadata(&path)?.is_dir();
+        let start = context.search_path(Path::new(requested))?;
+        let path = &start.real_path;
+        let is_directory = std::fs::metadata(path)?.is_dir();
         let directory = if is_directory {
             path.as_path()
         } else {
@@ -60,13 +61,19 @@ impl<'a> Search<'a> {
         };
         // 起点だけはプロジェクト内のリンクを解決できる口で開く。その後は
         // 根の記述子から一要素ずつ、途中のリンクも拒む（設計書 01-03「glob」）。
-        let root = if directory == context.project.real_path() {
-            context.project.no_follow()?
-        } else if let Ok(relative) = directory.strip_prefix(context.project.real_path()) {
-            context
-                .project
-                .open_dir(&ScopeRelPath::new(relative)?)?
-                .no_follow()?
+        let root = if let Some(scope) = start.scope {
+            let relative = if is_directory {
+                start.relative.as_ref().map(ScopeRelPath::as_path)
+            } else {
+                start
+                    .relative
+                    .as_ref()
+                    .and_then(|relative| relative.as_path().parent())
+            };
+            match relative.filter(|path| !path.as_os_str().is_empty()) {
+                Some(relative) => scope.open_dir(&ScopeRelPath::new(relative)?)?.no_follow()?,
+                None => scope.no_follow()?,
+            }
         } else {
             ScopeRoot::open(directory)?.no_follow()?
         };
@@ -127,7 +134,7 @@ impl<'a> Search<'a> {
             });
             if context.search_limits.max_entries == 0 {
                 search.pending.clear();
-                search.entry_limit(&path);
+                search.entry_limit(path);
             }
         }
         Ok(search)

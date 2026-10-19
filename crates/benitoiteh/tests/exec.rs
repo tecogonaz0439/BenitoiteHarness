@@ -2,6 +2,8 @@
 
 #[path = "exec/resume.rs"]
 mod resume;
+#[path = "exec/skills.rs"]
+mod skills;
 mod support;
 
 #[allow(dead_code, unused_imports)]

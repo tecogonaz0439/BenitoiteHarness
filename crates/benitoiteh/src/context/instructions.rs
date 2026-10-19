@@ -145,7 +145,7 @@ pub fn collect(
     collector.result
 }
 
-fn search_root<'a>(project: &'a Path, home: &Path) -> &'a Path {
+pub(super) fn search_root<'a>(project: &'a Path, home: &Path) -> &'a Path {
     for directory in project.ancestors() {
         if fs::symlink_metadata(directory.join(".git"))
             .is_ok_and(|metadata| metadata.is_file() || metadata.is_dir())

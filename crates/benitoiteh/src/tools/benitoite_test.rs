@@ -51,7 +51,7 @@ pub(super) fn execute(
         let path = Path::new(value);
         let directory = std::fs::metadata(context.requested_path(path)).is_ok_and(|m| m.is_dir());
         let real = if directory {
-            context.search_path(path)?
+            context.search_path(path)?.real_path
         } else {
             context.open_file(path, false)?.real_path
         };

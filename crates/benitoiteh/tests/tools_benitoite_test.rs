@@ -12,6 +12,22 @@ use fixture::*;
 use serde_json::{Value, json};
 use std::{collections::BTreeSet, fs, sync::atomic::AtomicBool};
 const TEST: &str = "import Benitoite.Assert\n@test(\"example\")\nfunction example() -> Unit uses Assert.Check\n Assert.equal(actual: 1, expected: 1)\nend function\n";
+
+// 関門: Skill のディレクトリを test の対象にしたときも、絶対パスと確認の事実を保つ。
+#[test]
+fn loaded_skill_test_directory_is_checked_before_requesting_confirmation() -> TestResult {
+    let f = Fixture::with_user_skill(TEST)?;
+    let directory = f.paths.home.join(".agents/skills/sample");
+    let output = call(&f, json!({"paths":[directory]}), false);
+    let request = output.approval.as_ref().ok_or(format!("{output:?}"))?;
+    assert_eq!(request.facts.targets, std::slice::from_ref(&directory));
+    assert_eq!(request.facts.unread_imports, 0);
+    assert_eq!(
+        request.summary,
+        format!("Run tests in {} with effects: none", directory.display())
+    );
+    Ok(())
+}
 fn call(f: &Fixture, args: Value, approved: bool) -> ToolOutput {
     let stop = AtomicBool::new(false);
     let call = match f.tools.validate("benitoite_test", args) {

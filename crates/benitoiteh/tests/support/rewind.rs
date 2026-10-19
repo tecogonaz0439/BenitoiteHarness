@@ -137,6 +137,7 @@ impl Fixture {
             tools_sha256: "test".into(),
             after_write_check: None,
             read_line_numbers: None,
+            skills: Vec::new(),
         }))?;
         let context = self.context()?;
         Ok(CheckpointRecorder::new(

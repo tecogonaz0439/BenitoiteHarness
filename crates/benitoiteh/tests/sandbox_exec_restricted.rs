@@ -834,6 +834,110 @@ fn exec_allows_assert_check_without_permissions_and_stops_three_effect_denials()
     Ok(())
 }
 
+// 関門: 再開で消えた Skill の古い索引を、読める根として復元しないことを入口で守る。
+#[test]
+fn loaded_user_skill_runs_in_restricted_exec_and_disappears_from_scope_on_resume() -> TestResult {
+    let mut server = MockProvider::start(vec![
+        ResponseScript::sse(Protocol::Chat.response(
+            Some(("read", "read", json!({"path":"skill-link/reference.txt"}))),
+            "",
+            false,
+        )),
+        ResponseScript::sse(Protocol::Chat.response(
+            Some((
+                "run",
+                "benitoite_run",
+                json!({"path":"skill-link/main.bnt"}),
+            )),
+            "",
+            false,
+        )),
+        ResponseScript::sse(Protocol::Chat.response(None, "Done", false)),
+        ResponseScript::sse(Protocol::Chat.response(
+            Some((
+                "old-read",
+                "read",
+                json!({"path":"skill-link/reference.txt"}),
+            )),
+            "",
+            false,
+        )),
+        ResponseScript::sse(Protocol::Chat.response(None, "Resumed", false)),
+    ])?;
+    let f = Fixture::restricted(Protocol::Chat, &server)?;
+    let skill = f.root.join("home/.agents/skills/sample");
+    fs::create_dir_all(&skill)?;
+    fs::write(
+        skill.join("SKILL.md"),
+        "---\nname: sample\ndescription: Test skill\n---\n",
+    )?;
+    fs::write(skill.join("reference.txt"), "skill reference")?;
+    fs::write(
+        skill.join("main.bnt"),
+        "function main() -> Unit\n return ()\nend function\n",
+    )?;
+    std::os::unix::fs::symlink(
+        "../home/.agents/skills/sample",
+        f.root.join("project/skill-link"),
+    )?;
+    let output = Running::start(f.command("Use the skill").arg("--json"))?.finish()?;
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let (directory, records) = f.records()?;
+    let results = records
+        .iter()
+        .filter(|record| record.get("type") == Some(&json!("tool_result")))
+        .collect::<Vec<_>>();
+    assert_eq!(results.len(), 2);
+    assert!(
+        results
+            .iter()
+            .all(|record| record.pointer("/result/is_error") == Some(&json!(false))),
+        "{results:?}"
+    );
+    let header = records.first().ok_or("header")?.clone();
+    assert_eq!(
+        header.get("skills").and_then(Value::as_array).map(Vec::len),
+        Some(1)
+    );
+    fs::remove_file(skill.join("SKILL.md"))?;
+    let output = Running::start(
+        f.command("Continue").args([
+            "--json",
+            "--resume",
+            directory
+                .file_name()
+                .and_then(|name| name.to_str())
+                .ok_or("id")?,
+        ]),
+    )?
+    .finish()?;
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let (_, records) = f.records()?;
+    assert_eq!(records.first(), Some(&header));
+    let resumed = records
+        .iter()
+        .find(|record| record.get("resumed") == Some(&json!(true)))
+        .ok_or("resumed")?;
+    assert!(resumed.get("skills").is_none());
+    let result = records
+        .iter()
+        .rev()
+        .find(|record| record.get("type") == Some(&json!("tool_result")))
+        .ok_or("result")?;
+    assert_eq!(result.pointer("/result/is_error"), Some(&json!(true)));
+    assert!(!result.to_string().contains("skill reference"));
+    server.shutdown()?;
+    Ok(())
+}
+
 // 関門: 記述子での切り替えだけでは、問い合わせと実行の古い OS の根・continue の誤照合を捕まえない。
 #[test]
 fn created_project_replaces_query_run_and_continue_roots() -> TestResult {

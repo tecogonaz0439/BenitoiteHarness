@@ -81,6 +81,7 @@ fn header(session: &Session) -> Record {
         tools_sha256: "b".repeat(64),
         after_write_check: None,
         read_line_numbers: None,
+        skills: Vec::new(),
     })
 }
 
@@ -143,11 +144,13 @@ fn records_replay_conversation_losslessly_and_finish_with_summary() -> TestResul
     let legacy = serde_json::to_value(header(&session))?;
     assert!(legacy.get("after_write_check").is_none());
     assert!(legacy.get("read_line_numbers").is_none());
+    assert!(legacy.get("skills").is_none());
     let Record::Header(loaded) = serde_json::from_value(legacy)? else {
         return Err("header required".into());
     };
     assert_eq!(loaded.after_write_check, None);
     assert_eq!(loaded.read_line_numbers, None);
+    assert!(loaded.skills.is_empty());
     let mut writer = session.writer()?;
     let mut summary_writer = session.writer()?;
     writer.append(&header(&session))?;

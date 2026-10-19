@@ -16,6 +16,28 @@ use std::sync::{
 };
 use std::time::{Duration, Instant};
 
+// 関門: Skill の実行を認めても、作業ディレクトリと書ける範囲はプロジェクトのままとする。
+#[test]
+fn loaded_skill_runs_after_confirmation_with_the_project_as_working_directory() -> TestResult {
+    let source = "import Benitoite.Unofficial.IO.File\nfunction main() -> Unit uses File.Write\n bind _ <- File.writeText(path: \"skill-output.txt\", text: \"ran\")\nend function\n";
+    let mut f = Fixture::with_user_skill(source)?;
+    f.sandbox()?;
+    let directory = f.paths.home.join(".agents/skills/sample");
+    let stop = AtomicBool::new(false);
+    let args = json!({"path":directory.join("main.bnt")});
+    let first = f.call(args.clone(), false, "skill", &stop);
+    assert!(!f.project.join("skill-output.txt").exists());
+    f.confirm(&first)?;
+    let output = f.call(args, true, "skill", &stop);
+    assert!(!output.is_error, "{output:?}");
+    assert_eq!(
+        fs::read_to_string(f.project.join("skill-output.txt"))?,
+        "ran"
+    );
+    assert!(!directory.join("skill-output.txt").exists());
+    Ok(())
+}
+
 fn run(
     f: &mut Fixture,
     source: &str,

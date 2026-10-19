@@ -26,6 +26,12 @@ pub struct Fixture {
 }
 impl Fixture {
     pub fn new() -> Result<Self, Box<dyn std::error::Error>> {
+        Self::prepare(None)
+    }
+    pub fn with_user_skill(source: &str) -> Result<Self, Box<dyn std::error::Error>> {
+        Self::prepare(Some(source))
+    }
+    fn prepare(source: Option<&str>) -> Result<Self, Box<dyn std::error::Error>> {
         let root = std::env::temp_dir().join(format!(
             "bh-run-{}",
             SessionId::generate(SystemTime::now())?
@@ -43,19 +49,37 @@ impl Fixture {
         std::fs::create_dir_all(&paths.temporary_root)?;
         let session = Session::create(&paths, SessionId::generate(SystemTime::now())?)?;
         let spill = session.directory().join("spill");
+        std::fs::create_dir_all(&paths.home)?;
+        if let Some(source) = source {
+            let skill = paths.home.join(".agents/skills/sample");
+            std::fs::create_dir_all(&skill)?;
+            std::fs::write(
+                skill.join("SKILL.md"),
+                "---\nname: sample\ndescription: Test skill\n---\n",
+            )?;
+            std::fs::write(skill.join("main.bnt"), source)?;
+        }
+        let exclude = ExcludeRules::new(
+            &project,
+            &paths,
+            &spill,
+            &ReadConfig::default(),
+            &ReadConfig::default(),
+        )?;
+        let (_, skill_roots) = benitoiteh::context::skills::collect(
+            &project,
+            &paths.home,
+            &benitoiteh::config::UserSkillsConfig::default(),
+            &exclude,
+        );
         let context = ToolContext::new(
             Mode::Restricted,
             ScopeRoot::open(&project)?,
             ScopeRoot::open(session.temporary_dir())?,
             ScopeRoot::open(&spill)?,
-            ExcludeRules::new(
-                &project,
-                &paths,
-                &spill,
-                &ReadConfig::default(),
-                &ReadConfig::default(),
-            )?,
+            exclude,
         )
+        .with_skill_roots(skill_roots)
         .with_session(session.clone())
         .with_check_query(crate::support::checks(project.clone())?);
         Ok(Self {

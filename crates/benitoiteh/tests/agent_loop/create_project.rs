@@ -11,6 +11,106 @@ fn policy() -> ApprovalPolicy {
     }
 }
 
+// 関門: 切り替え時に旧プロジェクトを外しても、起動時に読んだ Skill の根と索引は保つ。
+#[test]
+fn creation_keeps_loaded_project_skills_readable_and_the_index_fixed() -> TestResult {
+    let f = Fixture::new()?;
+    let skill = f.project.join(".agents/skills/sample");
+    fs::create_dir_all(&skill)?;
+    fs::write(
+        skill.join("SKILL.md"),
+        "---\nname: sample\ndescription: project skill\n---\n",
+    )?;
+    fs::write(skill.join("reference.txt"), "skill reference")?;
+    let destination = f.root.join("created-with-skill");
+    let mut server = MockProvider::start(vec![
+        ResponseScript::sse(calls(
+            &[
+                ("create_project", json!({"path":destination})),
+                ("read", json!({"path":skill.join("reference.txt")})),
+                ("read", json!({"path":f.project.join("a.bnt")})),
+            ],
+            "tool_calls",
+        )),
+        final_text(),
+    ])?;
+    let mut config = f.config(&server, AdapterKind::OpenAiChat);
+    config.mode = Mode::Restricted;
+    config.project_parent = Some(f.root.clone());
+    config.allow_effects = Some(Default::default());
+    let session = Session::create(&f.paths, SessionId::generate(SystemTime::now())?)?;
+    let spill = session.directory().join("spill");
+    let exclude = ExcludeRules::new(
+        &f.project,
+        &f.paths,
+        &spill,
+        &ReadConfig::default(),
+        &ReadConfig::default(),
+    )?;
+    let (skills, roots) = benitoiteh::context::skills::collect(
+        &f.project,
+        &f.paths.home,
+        &benitoiteh::config::UserSkillsConfig::default(),
+        &exclude,
+    );
+    let context = ToolContext::new(
+        Mode::Restricted,
+        ScopeRoot::open(&f.project)?,
+        ScopeRoot::open(session.temporary_dir())?,
+        ScopeRoot::open(&spill)?,
+        exclude,
+    )
+    .with_skill(support::skills()?)
+    .with_skill_roots(roots)
+    .with_project_creation(
+        f.paths.clone(),
+        fs::canonicalize(env!("CARGO_BIN_EXE_benitoiteh"))?,
+    );
+    let environment = Environment::capture(
+        &f.project,
+        Mode::Restricted,
+        &[f.project.clone(), session.temporary_dir().into()],
+        false,
+        SystemTime::now(),
+    )?
+    .with_skills(skills);
+    let mut agent = Agent::new(config, String::new(), context, environment, session)?;
+    let (report, _) = complete(&mut agent)?;
+    assert_eq!(report.outcome, Outcome::Completed);
+    let outputs = results(&agent);
+    assert!(
+        outputs
+            .get(1)
+            .is_some_and(|result| !result.is_error && result.text.contains("skill reference"))
+    );
+    assert!(outputs.get(2).is_some_and(|result| result.is_error));
+    assert_eq!(agent.status().skills.len(), 1);
+    let environments = agent
+        .conversation()
+        .items
+        .iter()
+        .filter_map(|item| match item {
+            Item::UserMessage(message) => Some(message.parts.iter()),
+            Item::AssistantTurn(_) | Item::ToolResult(_) => None,
+        })
+        .flatten()
+        .filter(|part| part.kind == benitoiteh::provider::UserPartKind::Environment)
+        .collect::<Vec<_>>();
+    assert!(
+        environments
+            .first()
+            .is_some_and(|part| part.text.contains("<skills>"))
+    );
+    assert!(
+        environments
+            .last()
+            .is_some_and(|part| !part.text.contains("<skills>")
+                && part.text.contains(destination.to_str().unwrap_or_default()))
+    );
+    server.shutdown()?;
+    Ok(())
+}
+
 // 関門: 作成だけのテストでは、結果の前の切り替え、残る古い根、環境の通知忘れを捕まえない。
 #[test]
 fn creation_switches_scope_before_later_calls_and_records_before_result() -> TestResult {

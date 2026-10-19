@@ -281,6 +281,23 @@ impl Default for UserReadConfig {
     }
 }
 
+/// 利用者だけが Skill の探索元を切り替えられる設定（設計書 01-04）。
+#[derive(Clone, Debug, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct UserSkillsConfig {
+    pub user: bool,
+    pub project: bool,
+}
+
+impl Default for UserSkillsConfig {
+    fn default() -> Self {
+        Self {
+            user: true,
+            project: true,
+        }
+    }
+}
+
 /// セッションを残す期間。
 #[derive(Clone, Debug, Deserialize)]
 #[serde(default, deny_unknown_fields)]
@@ -306,6 +323,7 @@ pub struct UserConfig {
     pub limits: Limits,
     pub web_fetch: WebFetchConfig,
     pub read: UserReadConfig,
+    pub skills: UserSkillsConfig,
     pub sessions: SessionsConfig,
 }
 
@@ -454,6 +472,7 @@ impl UserConfig {
             },
             read: ReadConfig { exclude },
             read_line_numbers: self.read.line_numbers,
+            skills: self.skills.clone(),
         })
     }
 
@@ -506,6 +525,7 @@ pub struct ResolvedExec {
     pub limits: Limits,
     pub read: ReadConfig,
     pub read_line_numbers: bool,
+    pub skills: UserSkillsConfig,
 }
 
 /// プロジェクトにはモデルの変更と除外の追加だけを許す。
