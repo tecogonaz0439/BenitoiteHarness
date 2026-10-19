@@ -105,9 +105,21 @@ Gemini の API の専用のアダプタ（ADR 0340 の E）は、三つのアダ
 | `reasoning_replay` | 推論の内容を送り返す規則。`none`（送らない）、`same-destination`（同じ送り先でそのまま送る。圧縮の後は残した番から除く）、`all-turns`（すべての番の推論の文を送る。圧縮の後も残した番の分を送る）のどれか |
 | `parallel_tool_calls` | 一つの応答で複数の道具を呼ばせるか |
 | `reasoning_effort` | `openai-chat` で、要求に `reasoning_effort` を付けるか（既定は偽） |
+| `image_input` | 道具の結果の画像を送るか（既定は偽。本家の Anthropic と Responses の既定は真。モデルが画像を受け付けないときは利用者が偽にする） |
 | `context_window`・`max_output_tokens` | モデルの文脈の上限と出力の上限（圧縮の判定に使う） |
 
 既知の提供者とモデルの表を実行ファイルに持つか、設定ファイルだけで与えるかは BH-032 で決める。どちらでも、表にない「互換」の口は、本家の提供者と同じ機能を持つと推し量らず、表の既定（使わない側）で扱う。モデルの文脈の上限は、Anthropic では Models API（`GET /v1/models/{id}` の `max_input_tokens`）で得られる。
+
+### 画像の受け渡し
+
+【方針】共通の形の道具の結果は、文の部分に加えて、画像の部分（MIME の型と、画像のバイト列）を持てるようにする。画像の部分は、機能の表の `image_input` が真のときだけ作る（[道具](../01-agent/01-03-tools.md)の「画像のファイルの読み取り」）。アダプタは次のとおり送る。
+
+- `anthropic-messages`: `tool_result` の `content` を、文の塊と画像の塊（`{"type":"image","source":{"type":"base64","media_type":...,"data":...}}`）の並びにする。`tool_result` の `content` に画像を入れられること、形式が JPEG・PNG・GIF・WebP であることは、2026-10-19 に Anthropic の文書（tool use の結果の扱いと Vision）で確かめた。誤りの結果（`is_error`）には画像を入れない（画像を含む結果は誤りでない結果だけである）。
+- `openai-responses`: `function_call_output` の `output` を、`input_text` と `input_image`（`image_url` に data URL、`detail` は `auto`）の並びにする。`output` がこの並びを受け付けることは、2026-10-19 に OpenAI の Python の SDK（API の仕様から生成した型。openai/openai-python のコミット `6eaa90ee`）と関数の呼び出しの文書で確かめた。
+- `openai-chat`: `role: "tool"` のメッセージの `content` は文字だけとし、画像を含む結果には、文に `(The image is attached in the next user message.)` を添える。その番のすべての道具の結果の後に、`role: "user"` のメッセージを一つ加え、`Attached image(s) from tool results:` の文と、画像ごとの `image_url`（data URL）の部分を入れる。理由: OpenAI の Chat Completions の `role: "tool"` の `content` は、文字列か文字の部分だけを受け付ける（同じ SDK の型で確かめた）。Pi も同じ形をとる（[先行事例](../08-appendix/08-01-prior-art.md)）。
+
+DeepSeek の Chat Completions の文書の間で、`role: "tool"` に画像を入れられるかが食い違っていることと、Google の Gemini の OpenAI 互換の口が `role: "user"` の画像を受け付けることは、要求を送って確かめる（BH-109）。
+画像は、文脈の大きさの見積もり（[文脈の管理](../01-agent/01-04-context.md)の「文脈の大きさの見積もり」）では、Anthropic の数え方（`⌈幅/28⌉ × ⌈高さ/28⌉`、上限 1,568）で数える。セッションの記録には、画像のバイト列を記録の本体に書かず、セッションのディレクトリの `objects/` に SHA-256 の名前で置いて参照する（[セッション](../01-agent/01-05-sessions.md)）。再開のときは、そこから読み直して送る。圧縮で要約した側の画像は送らない。
 
 ### 道具の定義の変換
 
