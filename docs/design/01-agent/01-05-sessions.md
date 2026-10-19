@@ -27,7 +27,7 @@
 - 各行は書いたらすぐにファイルに書き出す（`flush`）。一つの行の大きさの上限は 16 MiB とし、超える内容（大きな道具の結果など）は `spill/` に置いて、行にはその場所を書く。
 - API キーとトークンは書かない。HTTP の要求のヘッダも書かない。
 
-記録の形式は試作の途中で変わりうるので、ヘッダの行の版で区別し、試作の間は前の版の読み込みを保証しない。利用者に約束する JSON の形（BH-012）とは別に、再開に要る記録の形は、P1 で形式の版 1 として定めた（[実装プラン](../../plan/tasks/P1-05-session.md)）。各行は `type` の欄で種類を分け、`header`・`session_start`・`turn_start`・`user`・`assistant`（提供者の元の項目を含む）・`tool_call`・`tool_start`・`tool_result`・`approval`・`retry`・`error`・`turn_end`・`session_end`・`summary` と、後の段階で使う `project_dir_changed`・`rewind`・`compaction`・`images_removed`・`branch`（枝を移る記録。後述の「セッションの木」）を持つ。会話を作る記録には、節点の番号を付ける（同節）。16 MiB を超える行は、元の JSON を `spill/` の下のファイルに分けて置き、行には `spilled` の種類でその場所を書く。
+記録の形式は試作の途中で変わりうるので、ヘッダの行の版で区別し、試作の間は前の版の読み込みを保証しない。利用者に約束する JSON の形（BH-012）とは別に、再開に要る記録の形は、P1 で形式の版 1 として定めた（[実装プラン](../../plan/tasks/P1-05-session.md)）。各行は `type` の欄で種類を分け、`header`・`session_start`・`turn_start`・`user`・`assistant`（提供者の元の項目を含む）・`tool_call`・`tool_start`・`tool_result`・`approval`・`retry`・`error`・`turn_end`・`session_end`・`summary` と、後の段階で使う `project_dir_changed`・`compaction`・`images_removed`・`branch`（枝を移る記録。会話を戻す操作もこの記録で表す。後述の「セッションの木」）を持つ。会話を作る記録には、節点の番号を付ける（同節）。16 MiB を超える行は、元の JSON を `spill/` の下のファイルに分けて置き、行には `spilled` の種類でその場所を書く。
 
 ### LLM を使ったテストのための記録
 
