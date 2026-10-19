@@ -53,7 +53,7 @@
 - **時間**: 組ごとに走らせた時刻が違い、提供者の混み具合の違いを除けていない。Claude Code の 33 回は、Antigravity の走行の後半と並べて走らせた（設計者の了承による）。どちらも待ちの大半は提供者の応答であり、同じ機械の負荷の影響は小さいと見込むが、測ってはいない。
 - **費用**: Antigravity と Claude Code は、プランの利用枠と購読で走らせ、API の費用はかからない（評価の道具の費用は 0 と記録した）。Claude Code が出力に書いた費用の合計（API の単価で換算した値）は $13.43 だった。
 - **Claude Code の設定**: 利用者が加えたスキル 3 個と利用者の下位のエージェントの定義を、評価の間だけ外した（設計書 07-02 の決定）。アカウントから同期されるスキル（14 個）は残した。
-- **Gemini での比較**: `benitoiteh` × Gemini は前日の 22〜24 時に、Antigravity は翌朝 8〜11 時に走らせた。
+- **Gemini での比較**: `benitoiteh` × Gemini は前日の 22〜24 時に、Antigravity は翌朝 8〜11 時に走らせた。推論の深さも揃っていない。Antigravity は `gemini-3.8-flash-high`（effort `high`）で走ったが、`benitoiteh` の `openai-chat` は effort を要求に付けないので、`benitoiteh` × Gemini は提供者の既定の深さで走った（記録の見出しの effort `high` は送られていない）。
 
 ## 安全の性質の課題
 

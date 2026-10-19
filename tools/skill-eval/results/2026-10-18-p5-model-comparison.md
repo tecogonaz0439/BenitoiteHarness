@@ -11,7 +11,7 @@
 |---|---|
 | 処理系 | `benitoite 0.0.7`（SHA-256 `ee8eaf0e…f46e`） |
 | `benitoiteh` | `0.0.1`、制限モード、`--allow` は課題ごとの解のエフェクト、`--max-turns 50`、`--max-run-tokens 2000000`。システムプロンプトと道具の定義のハッシュは主の比較と同じ |
-| Gemini | `gemini-3.8-flash`、Google の OpenAI 互換の口（`openai-chat`）、effort `high` |
+| Gemini | `gemini-3.8-flash`、Google の OpenAI 互換の口（`openai-chat`）、effort `high`（2026-10-19 の注記: `openai-chat` は effort を要求に付けないので、この値は送られておらず、提供者の既定の推論の深さで走った） |
 | Opus | `claude-opus-5-5`、`anthropic-messages`、effort `medium` |
 | 走らせ方 | 同じ機械（macOS、Apple M4）で一回ずつ順に。Gemini を 22:03〜23:53、Opus を 23:53〜23:59 に走らせた。`--stop-cost 10` |
 
