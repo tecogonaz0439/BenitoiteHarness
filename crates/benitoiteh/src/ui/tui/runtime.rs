@@ -6,6 +6,7 @@ use std::time::{Duration, Instant};
 
 use crossterm::event::Event;
 
+use super::selection::PendingMove;
 use super::{Action, Command, NewSession, RunControl, Screen, Worker};
 use crate::agent::AgentError;
 
@@ -314,6 +315,10 @@ pub fn run(
                             worker.compact(instructions)
                         }
                         Command::Rewind => worker.checkpoints(),
+                        Command::Tree => worker.branches(),
+                        Command::PreviewBranch(target, scope) => {
+                            worker.preview_branch(target, scope)
+                        }
                         Command::PreviewRewind(checkpoint, scope) => {
                             worker.preview(checkpoint, scope)
                         }
@@ -371,20 +376,34 @@ pub fn run(
                 && !exiting
                 && let Some(accepted) = screen.take_confirmation_result()
             {
-                if accepted && let Some(preview) = &screen.rewind_preview {
+                if accepted && let Some(preview) = &screen.pending_move {
                     screen.before_rewind = None;
-                    worker
-                        .rewind(
-                            preview.selected.checkpoint.id.clone(),
-                            preview.scope,
-                            screen.rewind_retry,
-                        )
-                        .map_err(TuiError::Agent)?;
-                    screen.operation = Some(super::text::REWINDING);
+                    match preview {
+                        PendingMove::Rewind(preview) => {
+                            worker
+                                .rewind(
+                                    preview.selected.checkpoint.id.clone(),
+                                    preview.scope,
+                                    screen.rewind_retry,
+                                )
+                                .map_err(TuiError::Agent)?;
+                            screen.operation = Some(super::text::REWINDING);
+                        }
+                        PendingMove::Branch(preview) => {
+                            worker
+                                .switch_branch(
+                                    preview.selected.target,
+                                    preview.selected.checkpoint.clone(),
+                                    preview.scope,
+                                    screen.rewind_retry,
+                                )
+                                .map_err(TuiError::Agent)?;
+                            screen.operation = Some(super::text::MOVING);
+                        }
+                    }
                     processing_since = Some(Instant::now());
-                } else {
-                    screen.rewind_preview = None;
-                    screen.notice(super::text::REWIND_CANCELLED);
+                } else if let Some(preview) = screen.pending_move.take() {
+                    screen.notice(preview.cancelled());
                 }
             }
             redraw = true;

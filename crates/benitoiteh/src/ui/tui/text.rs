@@ -212,6 +212,20 @@ pub const WAIT_REWIND: &str = "Waiting for rewind to finish; rewind cannot be ca
 pub const NO_CHECKPOINTS: &str = "No checkpoints available.";
 pub const REQUEST_RESTORED: &str = "Request restored to the input. Press Ctrl+C to clear it.";
 pub const REWIND_CANCELLED: &str = "Rewind cancelled.";
+pub const BRANCH_CANCELLED: &str = "Branch move cancelled.";
+pub const MOVING: &str = "Moving...";
+pub const BRANCH_MOVED: &str = "Moved to the selected branch.";
+pub const NO_BRANCHES: &str = "The session tree is empty.";
+pub const SELECT_BRANCH: &str = "Select a branch or request";
+pub const SELECT_BRANCH_SCOPE: &str = "Select branch move scope";
+pub const BRANCH_TITLE: &str = "╭─ Move to branch?";
+pub const BRANCH_KEYS: &str = "[y] move  [n] cancel";
+pub const INCOMPLETE_BRANCH_TITLE: &str = "╭─ Move with an incomplete backup?";
+pub const INCOMPLETE_BRANCH_KEYS: &str = "[f] move anyway  [n] cancel";
+pub const BRANCH_TARGET: &str = "Branch target";
+pub const CONVERSATION_START: &str = "(conversation start)";
+pub const TIP_MARK: &str = " [tip]";
+pub const CURRENT_MARK: &str = " [current]";
 pub const SELECT_CHECKPOINT: &str = "Select a checkpoint (UTC)";
 pub const SELECT_SCOPE: &str = "Select rewind scope";
 pub const SELECT_KEYS: &str = "[up/down] select  [Enter] continue  [ESC] cancel";
@@ -239,6 +253,7 @@ pub const HELP: &str = "/help                  Show commands and input controls.
 /status                Show session status and token usage.
 /compact [instructions] Compact the conversation.
 /rewind                Select a checkpoint and restore files or conversation.
+/tree                  Show the session tree and move to a branch or request.
 /new                   Start a new session.
 /quit                  Quit.
 Enter: send a request, or steer while processing.
@@ -412,6 +427,99 @@ pub fn rewind_result(report: &crate::rewind::RewindReport) -> String {
         "Rewind completed: {} restored, {} removed, {} created.",
         report.restored, report.removed, report.created
     )
+}
+pub fn branch_result(
+    report: &crate::rewind::RewindReport,
+    scope: crate::rewind::RewindScope,
+) -> String {
+    if scope == crate::rewind::RewindScope::FilesAndConversation {
+        format!(
+            "{BRANCH_MOVED} {} restored, {} removed, {} created.",
+            report.restored, report.removed, report.created
+        )
+    } else {
+        BRANCH_MOVED.into()
+    }
+}
+
+pub fn branch_target(branch: &crate::agent::BranchInfo) -> String {
+    match branch.target {
+        crate::agent::BranchTarget::BeforeRequest(node) => {
+            let request = branch.request.as_deref().unwrap_or_default();
+            let heading = request_summary(
+                &crate::session::request_heading(request),
+                request.lines().count().max(1),
+            );
+            format!("Before request {node}: {heading}")
+        }
+        crate::agent::BranchTarget::Tip(node) => format!("Branch tip {node}"),
+    }
+}
+
+pub const TREE_MAX_INDENT: usize = 8;
+pub const TREE_DEPTH_PREFIX: &str = "[d";
+pub const TREE_DEPTH_SUFFIX: &str = "] ";
+
+pub fn request_summary(heading: &str, lines: usize) -> String {
+    let heading = super::control::SafeText::strict(heading, false);
+    if lines > 1 {
+        format!("{} ({lines} lines)", heading.as_str())
+    } else {
+        heading.as_str().to_owned()
+    }
+}
+
+pub fn tree_row(row: &crate::session::TreeRow) -> super::control::Line {
+    use super::control::{Decoration, SafeText};
+    let mut line = vec![(
+        SafeText::strict(&"  ".repeat(row.depth.min(TREE_MAX_INDENT)), false),
+        Decoration::Dim,
+    )];
+    if row.depth > TREE_MAX_INDENT {
+        line.push((
+            SafeText::strict(
+                &format!("{TREE_DEPTH_PREFIX}{}{TREE_DEPTH_SUFFIX}", row.depth),
+                false,
+            ),
+            Decoration::Dim,
+        ));
+    }
+    let has_body = row.node.is_none() || row.request.is_some();
+    if row.node.is_none() {
+        line.push((SafeText::strict(CONVERSATION_START, false), Decoration::Dim));
+    } else if let Some(request) = &row.request {
+        line.push((
+            SafeText::strict(&request_summary(request, row.request_lines), false),
+            Decoration::Plain,
+        ));
+    }
+    if row.is_tip {
+        line.push((
+            SafeText::strict(
+                if has_body {
+                    TIP_MARK
+                } else {
+                    TIP_MARK.trim_start()
+                },
+                false,
+            ),
+            Decoration::Dim,
+        ));
+    }
+    if row.is_current {
+        line.push((
+            SafeText::strict(
+                if has_body || row.is_tip {
+                    CURRENT_MARK
+                } else {
+                    CURRENT_MARK.trim_start()
+                },
+                false,
+            ),
+            Decoration::Dim,
+        ));
+    }
+    line
 }
 pub fn rewind_failure(failure: &crate::rewind::RewindFailure) -> String {
     format!("{}: {}", failure.path.display(), failure.reason)

@@ -219,6 +219,13 @@ impl SessionTree {
         self.nodes.get(&node).copied()
     }
 
+    /// 節点の番号、親、記録の位置を番号順に列挙する。
+    pub(crate) fn nodes(&self) -> impl Iterator<Item = (u64, Option<u64>, usize)> + '_ {
+        self.nodes
+            .iter()
+            .map(|(node, (parent, index))| (*node, *parent, *index))
+    }
+
     /// 子のない節点。枝の移動の先端の候補となる。
     pub fn leaves(&self) -> Vec<u64> {
         let parents = self
@@ -258,6 +265,11 @@ impl SessionTree {
 
 /// 環境の変化と操縦を除いた、依頼の全文。
 pub fn request_text(record: &Record) -> Option<String> {
+    request_text_ref(record).map(str::to_owned)
+}
+
+/// 表示の見出しを作るときに、依頼の全文を複製しない。
+pub(crate) fn request_text_ref(record: &Record) -> Option<&str> {
     if let Record::User {
         kind: super::UserKind::Request,
         message,
@@ -268,7 +280,7 @@ pub fn request_text(record: &Record) -> Option<String> {
             .parts
             .iter()
             .find(|part| part.kind == crate::provider::UserPartKind::Request)
-            .map(|part| part.text.clone());
+            .map(|part| part.text.as_str());
     }
     None
 }

@@ -69,6 +69,51 @@ pub(super) fn wrapped(value: &SafeText, width: u16, cursor: usize) -> (Vec<Strin
     (rows, position)
 }
 
+// 装飾の境界を保って折り返す。窓の高さで打ち切り、見えない続きは作らない
+// （設計書 05-02「出力の示し方」）。
+pub(super) fn wrapped_line(line: Line, width: u16, limit: usize) -> Vec<Line> {
+    if limit == 0 {
+        return Vec::new();
+    }
+    let width = usize::from(width.max(1));
+    let mut rows = vec![Vec::new()];
+    let mut column = 0usize;
+    for (value, decoration) in line {
+        let value = SafeText::strict(value.as_str(), false);
+        let mut piece = String::new();
+        for ch in value.as_str().chars() {
+            let cells = super::unicode::cells(ch).min(width);
+            if column.saturating_add(cells) > width {
+                if let Some(row) = rows.last_mut() {
+                    push_piece(row, &mut piece, decoration);
+                }
+                if rows.len() >= limit {
+                    return rows;
+                }
+                rows.push(Vec::new());
+                column = 0;
+            }
+            piece.push(if super::unicode::cells(ch) > width {
+                ' '
+            } else {
+                ch
+            });
+            column = column.saturating_add(cells);
+        }
+        if let Some(row) = rows.last_mut() {
+            push_piece(row, &mut piece, decoration);
+        }
+    }
+    rows
+}
+
+fn push_piece(line: &mut Line, piece: &mut String, decoration: Decoration) {
+    if !piece.is_empty() {
+        line.push((SafeText::strict(piece, false), decoration));
+        piece.clear();
+    }
+}
+
 #[derive(Default)]
 pub(super) struct Markdown {
     fence: Option<(char, usize)>,

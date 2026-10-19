@@ -93,3 +93,5 @@ pub const LEFTOVER_PROCESSES: &str =
     "The run stopped because processes started by the script may still be running.";
 
 pub const EFFECTS_NOT_ALLOWED: &str = "The run stopped because benitoite_run, benitoite_test or benitoite_scratch was refused 3 times in a row: the effects were outside --allow.";
+
+pub const BRANCH_CHANGED: &str = "The branch changed; open /tree again.";

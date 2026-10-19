@@ -42,6 +42,7 @@ fn command_grammar_busy_rules_and_literal_slashes_apply_only_at_submission() -> 
         ("/help", Action::Command(Command::Help)),
         ("/status \n\t", Action::Command(Command::Status)),
         ("/rewind", Action::Command(Command::Rewind)),
+        ("/tree", Action::Command(Command::Tree)),
         ("/new", Action::Command(Command::New)),
         ("/quit", Action::Quit),
         (
@@ -58,7 +59,7 @@ fn command_grammar_busy_rules_and_literal_slashes_apply_only_at_submission() -> 
         let mut screen = Screen::new((120, 24), status());
         assert_eq!(submit(&mut screen, raw, false, false), expected, "{raw:?}");
     }
-    for command in ["/help", "/status", "/rewind", "/new", "/quit"] {
+    for command in ["/help", "/status", "/rewind", "/tree", "/new", "/quit"] {
         let mut screen = Screen::new((120, 24), status());
         assert_eq!(
             submit(&mut screen, &format!("{command} unwanted"), false, false),
@@ -73,6 +74,7 @@ fn command_grammar_busy_rules_and_literal_slashes_apply_only_at_submission() -> 
         "/status",
         "/compact",
         "/rewind",
+        "/tree",
         "/new",
         "/quit",
         "/usr/bin/env",
@@ -80,7 +82,9 @@ fn command_grammar_busy_rules_and_literal_slashes_apply_only_at_submission() -> 
         let mut screen = Screen::new((120, 24), status());
         assert_eq!(submit(&mut screen, raw, true, true), Action::None, "{raw}");
     }
-    for raw in ["/help", "/compact", "/new", "/rewind", "/unknown", "/"] {
+    for raw in [
+        "/help", "/compact", "/new", "/rewind", "/tree", "/unknown", "/",
+    ] {
         let mut screen = Screen::new((120, 24), status());
         assert_eq!(submit(&mut screen, raw, true, false), Action::None);
     }
@@ -626,57 +630,202 @@ fn rewind_restores_files_and_conversation_after_explicit_selection_and_confirmat
     Ok(())
 }
 
-// 関門: 不完全の理由を通知イベントに依存して失う退行と、y だけで不完全な backup を許す退行を守る。
+// 関門: 木の画面が選んだ枝・範囲を働き手へ渡し、確認後の会話・ファイル・入力を
+// 変える契約を守る。/rewind のテストでは先端への移動と木の初期カーソルを守れない。
 #[test]
-fn incomplete_before_rewind_requires_f_and_reports_the_error_reasons() -> TestResult {
-    use rewind_fixture as fixture;
+fn tree_moves_before_requests_and_to_tips_with_confirmation_and_restored_input() -> TestResult {
+    use benitoiteh::agent::BranchTarget;
+    use benitoiteh::rewind::RewindScope;
+    use std::sync::{Arc, mpsc};
+    let f = rewind_fixture::Fixture::new()?;
+    fs::write(f.project.join("a.txt"), "initial")?;
     let mut server = MockProvider::start(vec![
-        fixture::response(&[("read", json!({"path":"a.txt"}))]),
-        fixture::response(&[]),
+        usage_response("shared answer", 1, 1),
+        rewind_fixture::response(&[("read", json!({"path":"a.txt"}))]),
+        rewind_fixture::response(&[("write", json!({"path":"a.txt","content":"left file"}))]),
+        usage_response("left answer", 1, 1),
+        rewind_fixture::response(&[("bash", json!({"command":"printf branch-effect"}))]),
+        usage_response("right answer", 1, 1),
+        usage_response("continued left", 1, 1),
+        usage_response("tip continuation", 1, 1),
     ])?;
-    let f = fixture::Fixture::new()?;
-    fs::write(f.project.join("a.txt"), "saved")?;
     let mut agent = f.agent(&server)?;
-    fixture::run(&mut agent)?;
-    fs::write(f.project.join("a.txt"), "changed")?;
-    f.session
-        .configure_budget(&benitoiteh::session::StorageUsage {
-            current_outputs: 1024 * 1024 * 1024,
-            ..Default::default()
-        });
+    let request = "/left request\nsecond \u{3164} line";
+    for request in ["shared request", request] {
+        let (tx, _rx) = mpsc::sync_channel(1024);
+        agent.run(request.into(), Arc::new(AtomicBool::new(false)), tx)?;
+    }
+    let left = agent
+        .branch_targets()?
+        .into_iter()
+        .find(|info| info.request.as_deref() == Some(request))
+        .ok_or("left request")?;
+    let (tx, _rx) = mpsc::sync_channel(1024);
+    agent.switch_branch(
+        left.target,
+        agent
+            .branch_preview(left.target, RewindScope::Conversation)?
+            .selected
+            .checkpoint
+            .as_deref(),
+        RewindScope::Conversation,
+        false,
+        tx,
+    )?;
+    let (tx, _rx) = mpsc::sync_channel(1024);
+    agent.run("right request".into(), Arc::new(AtomicBool::new(false)), tx)?;
+    fs::write(f.project.join("a.txt"), "right file")?;
+    let initial_branches = read_records(f.session.directory())?
+        .iter()
+        .filter(|record| matches!(record, Record::Branch { .. }))
+        .count();
     let worker = Worker::start(agent, f.session.clone())?;
-    let mut screen = Screen::new((200, 50), status());
+    let mut screen = Screen::new((220, 60), status());
+    let mut output = Output::default();
+    let enter = || key(KeyCode::Enter, KeyModifiers::NONE);
+    let up = || key(KeyCode::Up, KeyModifiers::NONE);
+    let mut input = Driver::new(
+        output.clone(),
+        vec![
+            ("", send("/tree")),
+            // 初期位置は right の先端。ESC と現在地の Enter は移動を記録しない。
+            (
+                "Select a branch or request",
+                vec![key(KeyCode::Esc, KeyModifiers::NONE)],
+            ),
+            ("Branch move cancelled.", send("/tree")),
+            (
+                "Select a branch or request",
+                [vec![enter()], send("/tree")].concat(),
+            ),
+            // right の先端 → right の依頼 → left の先端 → left の依頼。
+            (
+                "Select a branch or request",
+                vec![up(), up(), up(), enter()],
+            ),
+            ("Select branch move scope", vec![enter()]),
+            (
+                "[y] move",
+                vec![key(KeyCode::Char('n'), KeyModifiers::NONE)],
+            ),
+            ("Branch move cancelled.", send("/tree")),
+            (
+                "Select a branch or request",
+                vec![up(), up(), up(), enter()],
+            ),
+            ("Select branch move scope", vec![enter()]),
+            (
+                "[y] move",
+                vec![key(KeyCode::Char('y'), KeyModifiers::NONE)],
+            ),
+            // 復元された入力の原文を送って、新しい枝を作る。
+            ("Moved to the selected branch.", vec![enter()]),
+            ("continued left", send("/tree")),
+            // 再送した枝の先端 → 再送依頼 → right の先端 → right の依頼 → left の先端。
+            (
+                "Select a branch or request",
+                vec![up(), up(), up(), up(), enter()],
+            ),
+            // 先端を離れた時点のファイルも戻す。
+            ("Select branch move scope", vec![enter()]),
+            (
+                "[y] move",
+                vec![key(KeyCode::Char('y'), KeyModifiers::NONE)],
+            ),
+            (
+                "Moved to the selected branch.",
+                send("continue selected tip"),
+            ),
+            ("tip continuation", send("/quit")),
+        ],
+    );
+    run(
+        &mut screen,
+        worker,
+        &mut input,
+        &mut output,
+        &AtomicBool::new(false),
+        |_| {},
+        &mut |_| Err("unexpected new".into()),
+    )?;
+    assert!(input.steps.is_empty());
+    assert_eq!(
+        fs::read_to_string(f.project.join("a.txt"))?,
+        "left file",
+        "{}",
+        safe_output(&output.0.borrow())?
+    );
+    let visible = safe_output(&output.0.borrow())?;
+    assert!(visible.contains("second \\u{3164} line"));
+    assert!(visible.contains("[tip] [current]"));
+    assert!(visible.contains("Operations that cannot be undone (including external effects):"));
+    assert!(visible.contains("bash: printf branch-effect"));
+    assert!(visible.contains("1 restored, 0 removed, 0 created"));
+    assert!(visible.contains("Request restored to the input. Press Ctrl+C to clear it."));
+    let requests = server.requests()?;
+    let last = requests
+        .iter()
+        .rev()
+        .nth(1)
+        .ok_or("resent request")?
+        .body
+        .to_string();
+    assert!(last.contains("shared request"));
+    assert!(last.contains("/left request"));
+    assert!(!last.contains("right request"));
+    assert!(!last.contains("left answer"));
+    let continuation = requests.last().ok_or("tip continuation")?.body.to_string();
+    assert!(continuation.contains("left answer"));
+    assert!(continuation.contains("continue selected tip"));
+    assert!(!continuation.contains("right request"));
+    assert!(!continuation.contains("continued left"));
+    // // の戻し方を含め、改行・不可視文字のある原文をそのまま会話へ戻す。
+    let state = benitoiteh::session::ResumeState::read(f.session.directory())?;
+    assert!(state.conversation.items.iter().any(|item| matches!(item,
+        benitoiteh::provider::Item::AssistantTurn(turn) if turn.parts.iter().any(|part| matches!(part,
+            benitoiteh::provider::AssistantPart::Text(text) if text == "left answer")))));
+    assert!(!state.conversation.items.iter().any(|item| matches!(item,
+        benitoiteh::provider::Item::UserMessage(message) if message.parts.iter().any(|part| part.text == "right request"))));
+    let records = read_records(f.session.directory())?;
+    assert_eq!(
+        records
+            .iter()
+            .filter(|record| matches!(record, Record::Branch { .. }))
+            .count(),
+        initial_branches + 2
+    );
+    let left_node = match left.target {
+        BranchTarget::BeforeRequest(node) => node,
+        _ => return Err("request target".into()),
+    };
+    assert!(
+        records
+            .iter()
+            .filter(|record| benitoiteh::session::request_text(record).as_deref() == Some(request))
+            .count()
+            == 2
+    );
+    assert_ne!(state.tree.tip, Some(left_node));
+    server.shutdown()?;
+    Ok(())
+}
+
+// 関門: 節点のないセッションで選択を開いて入力を塞ぐ退行を、画面の入口で捕まえる。
+#[test]
+fn empty_tree_reports_empty_and_help_lists_tree() -> TestResult {
+    let mut server = MockProvider::start(vec![])?;
+    let f = Fixture::new()?;
+    let (worker, directory) = f.worker(&server)?;
+    let mut screen = Screen::new((160, 30), status());
     let mut output = Output::default();
     let mut input = Driver::new(
         output.clone(),
         vec![
-            ("", send("/rewind")),
+            ("", send("/tree")),
+            ("The session tree is empty.", send("/help")),
             (
-                "Select a checkpoint",
-                vec![key(KeyCode::Enter, KeyModifiers::NONE)],
-            ),
-            (
-                "Select rewind scope",
-                vec![key(KeyCode::Enter, KeyModifiers::NONE)],
-            ),
-            (
-                "[y] rewind",
-                vec![key(KeyCode::Char('y'), KeyModifiers::NONE)],
-            ),
-            (
-                "[f] rewind anyway",
-                vec![
-                    key(KeyCode::Char('y'), KeyModifiers::NONE),
-                    key(KeyCode::Char('f'), KeyModifiers::NONE),
-                ],
-            ),
-            (
-                "Rewind completed:",
-                [
-                    vec![key(KeyCode::Char('c'), KeyModifiers::CONTROL)],
-                    send("/quit"),
-                ]
-                .concat(),
+                "/tree                  Show the session tree",
+                send("/quit"),
             ),
         ],
     );
@@ -689,31 +838,130 @@ fn incomplete_before_rewind_requires_f_and_reports_the_error_reasons() -> TestRe
         |_| {},
         &mut |_| Err("unexpected new".into()),
     )?;
-    assert_eq!(fs::read_to_string(f.project.join("a.txt"))?, "saved");
-    let records = read_records(f.session.directory())?;
-    let backups: Vec<_> = records
-        .iter()
-        .filter_map(|record| {
-            if let Record::Checkpoint(point) = record {
-                (point.reason == benitoiteh::rewind::CheckpointReason::BeforeRewind)
-                    .then_some(point)
-            } else {
-                None
-            }
-        })
-        .collect();
-    assert_eq!(backups.len(), 2);
-    let visible = safe_output(&output.0.borrow())?;
-    assert!(visible.contains("Reasons the backup is incomplete:"));
+    assert!(input.steps.is_empty());
+    assert!(server.requests()?.is_empty());
     assert!(
-        backups
-            .first()
-            .ok_or("backup")?
-            .incomplete
+        !read_records(&directory)?
             .iter()
-            .all(|reason| visible.contains(reason))
+            .any(|record| matches!(record, Record::Branch { .. }))
     );
     server.shutdown()?;
+    Ok(())
+}
+
+// 関門: 不完全の理由を通知イベントに依存して失う退行と、y だけで不完全な backup を許す退行を守る。
+#[test]
+fn incomplete_before_rewind_requires_f_and_reports_the_error_reasons() -> TestResult {
+    use rewind_fixture as fixture;
+    for branch in [false, true] {
+        let mut server = MockProvider::start(vec![
+            fixture::response(&[("read", json!({"path":"a.txt"}))]),
+            fixture::response(&[]),
+        ])?;
+        let f = fixture::Fixture::new()?;
+        fs::write(f.project.join("a.txt"), "saved")?;
+        let mut agent = f.agent(&server)?;
+        fixture::run(&mut agent)?;
+        fs::write(f.project.join("a.txt"), "changed")?;
+        f.session
+            .configure_budget(&benitoiteh::session::StorageUsage {
+                current_outputs: 1024 * 1024 * 1024,
+                ..Default::default()
+            });
+        let worker = Worker::start(agent, f.session.clone())?;
+        let mut screen = Screen::new((200, 50), status());
+        let mut output = Output::default();
+        let mut input = Driver::new(
+            output.clone(),
+            vec![
+                ("", send(if branch { "/tree" } else { "/rewind" })),
+                (
+                    if branch {
+                        "Select a branch or request"
+                    } else {
+                        "Select a checkpoint"
+                    },
+                    if branch {
+                        vec![
+                            key(KeyCode::Up, KeyModifiers::NONE),
+                            key(KeyCode::Enter, KeyModifiers::NONE),
+                        ]
+                    } else {
+                        vec![key(KeyCode::Enter, KeyModifiers::NONE)]
+                    },
+                ),
+                (
+                    if branch {
+                        "Select branch move scope"
+                    } else {
+                        "Select rewind scope"
+                    },
+                    vec![key(KeyCode::Enter, KeyModifiers::NONE)],
+                ),
+                (
+                    if branch { "[y] move" } else { "[y] rewind" },
+                    vec![key(KeyCode::Char('y'), KeyModifiers::NONE)],
+                ),
+                (
+                    if branch {
+                        "[f] move anyway"
+                    } else {
+                        "[f] rewind anyway"
+                    },
+                    vec![
+                        key(KeyCode::Char('y'), KeyModifiers::NONE),
+                        key(KeyCode::Char('f'), KeyModifiers::NONE),
+                    ],
+                ),
+                (
+                    if branch {
+                        "Moved to the selected branch."
+                    } else {
+                        "Rewind completed:"
+                    },
+                    [
+                        vec![key(KeyCode::Char('c'), KeyModifiers::CONTROL)],
+                        send("/quit"),
+                    ]
+                    .concat(),
+                ),
+            ],
+        );
+        run(
+            &mut screen,
+            worker,
+            &mut input,
+            &mut output,
+            &AtomicBool::new(false),
+            |_| {},
+            &mut |_| Err("unexpected new".into()),
+        )?;
+        assert_eq!(fs::read_to_string(f.project.join("a.txt"))?, "saved");
+        let records = read_records(f.session.directory())?;
+        let backups: Vec<_> = records
+            .iter()
+            .filter_map(|record| {
+                if let Record::Checkpoint(point) = record {
+                    (point.reason == benitoiteh::rewind::CheckpointReason::BeforeRewind)
+                        .then_some(point)
+                } else {
+                    None
+                }
+            })
+            .collect();
+        assert_eq!(backups.len(), 2);
+        let visible = safe_output(&output.0.borrow())?;
+        assert!(visible.contains("Reasons the backup is incomplete:"));
+        assert!(
+            backups
+                .first()
+                .ok_or("backup")?
+                .incomplete
+                .iter()
+                .all(|reason| visible.contains(reason))
+        );
+        server.shutdown()?;
+    }
     Ok(())
 }
 
@@ -861,61 +1109,95 @@ fn new_does_not_carry_allowed_commands_domains_or_read_versions() -> TestResult 
 // 関門: y の直後のキーで許した巻き戻しを捨てる退行と、キーの二度目の Ctrl+C で途中終了する退行を守る。
 #[test]
 fn accepted_rewind_finishes_before_quit_and_repeated_keyboard_interrupts() -> TestResult {
-    let mut server = MockProvider::start(vec![
-        rewind_fixture::response(&[("read", json!({"path":"a.txt"}))]),
-        rewind_fixture::response(&[]),
-    ])?;
-    let f = rewind_fixture::Fixture::new()?;
-    fs::write(f.project.join("a.txt"), "saved")?;
-    let mut agent = f.agent(&server)?;
-    rewind_fixture::run(&mut agent)?;
-    fs::write(f.project.join("a.txt"), "changed")?;
-    let worker = Worker::start(agent, f.session.clone())?;
-    let mut screen = Screen::new((200, 40), status());
-    let mut output = Output::default();
-    let mut finish = vec![
-        key(KeyCode::Char('y'), KeyModifiers::NONE),
-        key(KeyCode::Char('c'), KeyModifiers::CONTROL),
-        key(KeyCode::Char('c'), KeyModifiers::CONTROL),
-    ];
-    finish.extend(send("/quit"));
-    finish.push(key(KeyCode::Char('c'), KeyModifiers::CONTROL));
-    let mut input = Driver::new(
-        output.clone(),
-        vec![
-            ("", send("/rewind")),
-            (
-                "Select a checkpoint",
-                vec![key(KeyCode::Enter, KeyModifiers::NONE)],
-            ),
-            (
-                "Select rewind scope",
-                vec![key(KeyCode::Enter, KeyModifiers::NONE)],
-            ),
-            ("[y] rewind", finish),
-        ],
-    );
-    assert_eq!(
-        run(
-            &mut screen,
-            worker,
-            &mut input,
-            &mut output,
-            &AtomicBool::new(false),
-            |_| {},
-            &mut |_| Err("unexpected new".into())
-        )?,
-        0
-    );
-    assert_eq!(fs::read_to_string(f.project.join("a.txt"))?, "saved");
-    assert!(safe_output(&output.0.borrow())?.contains("Waiting for rewind to finish"));
-    assert!(screen.checkpoint_before_rewind().is_none());
-    assert!(
-        read_records(f.session.directory())?
-            .iter()
-            .any(|record| matches!(record, Record::Branch { .. }))
-    );
-    server.shutdown()?;
+    // 会話だけの移動も branch とバックアップの追記があり、取り消さない。
+    for branch_scope in [None, Some(false), Some(true)] {
+        let branch = branch_scope.is_some();
+        let conversation_only = branch_scope == Some(true);
+        let mut server = MockProvider::start(vec![
+            rewind_fixture::response(&[("read", json!({"path":"a.txt"}))]),
+            rewind_fixture::response(&[]),
+        ])?;
+        let f = rewind_fixture::Fixture::new()?;
+        fs::write(f.project.join("a.txt"), "saved")?;
+        let mut agent = f.agent(&server)?;
+        rewind_fixture::run(&mut agent)?;
+        fs::write(f.project.join("a.txt"), "changed")?;
+        let worker = Worker::start(agent, f.session.clone())?;
+        let mut screen = Screen::new((200, 40), status());
+        let mut output = Output::default();
+        let mut finish = vec![
+            key(KeyCode::Char('y'), KeyModifiers::NONE),
+            key(KeyCode::Char('c'), KeyModifiers::CONTROL),
+            key(KeyCode::Char('c'), KeyModifiers::CONTROL),
+        ];
+        finish.extend(send("/quit"));
+        finish.push(key(KeyCode::Char('c'), KeyModifiers::CONTROL));
+        let mut input = Driver::new(
+            output.clone(),
+            vec![
+                ("", send(if branch { "/tree" } else { "/rewind" })),
+                (
+                    if branch {
+                        "Select a branch or request"
+                    } else {
+                        "Select a checkpoint"
+                    },
+                    if branch {
+                        vec![
+                            key(KeyCode::Up, KeyModifiers::NONE),
+                            key(KeyCode::Enter, KeyModifiers::NONE),
+                        ]
+                    } else {
+                        vec![key(KeyCode::Enter, KeyModifiers::NONE)]
+                    },
+                ),
+                (
+                    if branch {
+                        "Select branch move scope"
+                    } else {
+                        "Select rewind scope"
+                    },
+                    if conversation_only {
+                        vec![
+                            key(KeyCode::Down, KeyModifiers::NONE),
+                            key(KeyCode::Enter, KeyModifiers::NONE),
+                        ]
+                    } else {
+                        vec![key(KeyCode::Enter, KeyModifiers::NONE)]
+                    },
+                ),
+                (if branch { "[y] move" } else { "[y] rewind" }, finish),
+            ],
+        );
+        assert_eq!(
+            run(
+                &mut screen,
+                worker,
+                &mut input,
+                &mut output,
+                &AtomicBool::new(false),
+                |_| {},
+                &mut |_| Err("unexpected new".into())
+            )?,
+            0
+        );
+        assert_eq!(
+            fs::read_to_string(f.project.join("a.txt"))?,
+            if conversation_only {
+                "changed"
+            } else {
+                "saved"
+            }
+        );
+        assert!(safe_output(&output.0.borrow())?.contains("Waiting for rewind to finish"));
+        assert!(screen.checkpoint_before_rewind().is_none());
+        assert!(
+            read_records(f.session.directory())?
+                .iter()
+                .any(|record| matches!(record, Record::Branch { .. }))
+        );
+        server.shutdown()?;
+    }
     Ok(())
 }
 
@@ -1184,5 +1466,107 @@ fn new_after_project_creation_uses_the_project_from_the_event() -> TestResult {
             .contains(&format!("Project changed to {}.", destination.display()))
     );
     server.shutdown()?;
+    Ok(())
+}
+
+// 関門: 長い依頼の事実で承認が永久に無効になる退行を、80x24 の画面から実際の
+// 移動・入力の復元までで守る。時刻の閾値は測らず、確認の通常のキーを渡す。
+#[test]
+fn long_tree_requests_can_be_confirmed_at_80_by_24_and_restore_the_full_input() -> TestResult {
+    use std::sync::{Arc, mpsc};
+    struct UntilMoved<'a> {
+        driver: Driver,
+        stopped: &'a AtomicBool,
+    }
+    impl InputSource for UntilMoved<'_> {
+        fn poll(&mut self, wait: Duration) -> io::Result<Vec<Event>> {
+            self.driver.poll(wait)
+        }
+        fn poll_timed(&mut self, wait: Duration) -> io::Result<Vec<(Event, Instant)>> {
+            let events = self.driver.poll_timed(wait)?;
+            if self.driver.steps.is_empty() {
+                self.stopped.store(true, Ordering::Release);
+            }
+            Ok(events)
+        }
+        fn discard_pending(&mut self) -> io::Result<Vec<(Event, Instant)>> {
+            Ok(Vec::new())
+        }
+    }
+    for request in [
+        (0..40)
+            .map(|i| format!("line {i}: fix the parser"))
+            .collect::<Vec<_>>()
+            .join("\n"),
+        "x".repeat(5000),
+    ] {
+        let mut server = MockProvider::start(vec![usage_response("original answer", 1, 1)])?;
+        let f = rewind_fixture::Fixture::new()?;
+        let mut agent = f.agent(&server)?;
+        let (tx, _rx) = mpsc::sync_channel(1024);
+        agent.run(request.clone(), Arc::new(AtomicBool::new(false)), tx)?;
+        let worker = Worker::start(agent, f.session.clone())?;
+        let mut screen = Screen::new((80, 24), status());
+        let mut output = Output::default();
+        let input = Driver::new(
+            output.clone(),
+            vec![
+                ("", send("/tree")),
+                (
+                    "Select a branch or request",
+                    vec![
+                        key(KeyCode::Up, KeyModifiers::NONE),
+                        key(KeyCode::Enter, KeyModifiers::NONE),
+                    ],
+                ),
+                (
+                    "Select branch move scope",
+                    vec![key(KeyCode::Enter, KeyModifiers::NONE)],
+                ),
+                (
+                    "[y] move",
+                    vec![key(KeyCode::Char('y'), KeyModifiers::NONE)],
+                ),
+                ("Moved to the selected branch.", Vec::new()),
+            ],
+        );
+        let stopped = AtomicBool::new(false);
+        let mut input = UntilMoved {
+            driver: input,
+            stopped: &stopped,
+        };
+        run(
+            &mut screen,
+            worker,
+            &mut input,
+            &mut output,
+            &stopped,
+            |_| {},
+            &mut |_| Err("unexpected new".into()),
+        )?;
+        assert!(input.driver.steps.is_empty());
+        assert_eq!(
+            screen.input(
+                key(KeyCode::Enter, KeyModifiers::NONE),
+                Duration::ZERO,
+                false
+            ),
+            Action::Submit(request.clone())
+        );
+        let records = read_records(f.session.directory())?;
+        assert_eq!(
+            records
+                .iter()
+                .filter(|record| matches!(record, Record::Branch { .. }))
+                .count(),
+            1
+        );
+        let visible = safe_output(&output.0.borrow())?;
+        assert!(!visible.contains("approval is disabled"));
+        if request.contains('\n') {
+            assert!(visible.contains("(40 lines)"));
+        }
+        server.shutdown()?;
+    }
     Ok(())
 }

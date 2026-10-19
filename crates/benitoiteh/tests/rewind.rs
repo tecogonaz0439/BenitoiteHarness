@@ -1074,6 +1074,14 @@ fn rewinding_immediately_after_resume_does_not_reappend_discarded_results() -> T
     let (sender, _receiver) = mpsc::sync_channel(1024);
     resumed.switch_branch(
         benitoiteh::agent::BranchTarget::Tip(100),
+        resumed
+            .branch_preview(
+                benitoiteh::agent::BranchTarget::Tip(100),
+                RewindScope::Conversation,
+            )?
+            .selected
+            .checkpoint
+            .as_deref(),
         RewindScope::Conversation,
         false,
         sender,
@@ -1374,6 +1382,14 @@ fn switching_branches_restores_requests_files_and_resumes_the_selected_path() ->
     let (sender, _receiver) = mpsc::sync_channel(1024);
     let report = agent.switch_branch(
         BranchTarget::BeforeRequest(left_request),
+        agent
+            .branch_preview(
+                BranchTarget::BeforeRequest(left_request),
+                RewindScope::Conversation,
+            )?
+            .selected
+            .checkpoint
+            .as_deref(),
         RewindScope::FilesAndConversation,
         false,
         sender,
@@ -1421,6 +1437,11 @@ fn switching_branches_restores_requests_files_and_resumes_the_selected_path() ->
     let (sender, _receiver) = mpsc::sync_channel(1024);
     agent.switch_branch(
         BranchTarget::Tip(left_tip),
+        agent
+            .branch_preview(BranchTarget::Tip(left_tip), RewindScope::Conversation)?
+            .selected
+            .checkpoint
+            .as_deref(),
         RewindScope::FilesAndConversation,
         false,
         sender,
@@ -1430,6 +1451,11 @@ fn switching_branches_restores_requests_files_and_resumes_the_selected_path() ->
     let (sender, _receiver) = mpsc::sync_channel(1024);
     agent.switch_branch(
         BranchTarget::Tip(right_tip),
+        agent
+            .branch_preview(BranchTarget::Tip(right_tip), RewindScope::Conversation)?
+            .selected
+            .checkpoint
+            .as_deref(),
         RewindScope::FilesAndConversation,
         false,
         sender,
@@ -1544,7 +1570,30 @@ fn switching_to_current_tip_keeps_pending_results_until_run() -> TestResult {
     let before = fs::read(&log)?;
     for scope in [RewindScope::Conversation, RewindScope::FilesAndConversation] {
         let (sender, _receiver) = mpsc::sync_channel(1024);
-        let report = agent.switch_branch(BranchTarget::Tip(tip), scope, false, sender)?;
+        assert!(
+            agent
+                .switch_branch(
+                    BranchTarget::Tip(tip),
+                    Some("changed"),
+                    scope,
+                    false,
+                    sender
+                )
+                .is_err()
+        );
+        assert_eq!(fs::read(&log)?, before);
+        let (sender, _receiver) = mpsc::sync_channel(1024);
+        let report = agent.switch_branch(
+            BranchTarget::Tip(tip),
+            agent
+                .branch_preview(BranchTarget::Tip(tip), RewindScope::Conversation)?
+                .selected
+                .checkpoint
+                .as_deref(),
+            scope,
+            false,
+            sender,
+        )?;
         assert!(!report.conversation_rewound);
         assert!(report.before_rewind.is_none());
         assert_eq!(fs::read(&log)?, before);
@@ -1611,14 +1660,69 @@ fn branch_indexes_preserve_request_checkpoints_and_latest_tip_backups() -> TestR
     };
     let switch = |agent: &mut Agent, target| -> TestResult {
         let (sender, _receiver) = mpsc::sync_channel(1024);
-        agent.switch_branch(target, RewindScope::Conversation, false, sender)?;
+        agent.switch_branch(
+            target,
+            agent
+                .branch_preview(target, RewindScope::Conversation)?
+                .selected
+                .checkpoint
+                .as_deref(),
+            RewindScope::Conversation,
+            false,
+            sender,
+        )?;
         Ok(())
     };
     request(&mut agent)?;
     request(&mut agent)?;
     switch(&mut agent, BeforeRequest(2))?;
+    let rows = agent.branch_tree()?;
+    let current = rows
+        .iter()
+        .find(|row| row.row.is_current)
+        .ok_or("current request")?;
+    assert_eq!(current.row.node, Some(1));
+    assert_eq!(
+        current.branch.as_ref().map(|info| info.target),
+        Some(BeforeRequest(1))
+    );
     request(&mut agent)?;
     switch(&mut agent, Tip(2))?;
+    let rows = agent.branch_tree()?;
+    assert_eq!(
+        rows.iter()
+            .map(|row| (
+                row.row.node,
+                row.row.depth,
+                row.row.is_tip,
+                row.row.is_current,
+                row.branch.as_ref().map(|info| info.target),
+            ))
+            .collect::<Vec<_>>(),
+        vec![
+            (None, 0, false, false, None),
+            (Some(1), 0, false, false, Some(BeforeRequest(1))),
+            (Some(2), 1, true, true, None),
+            (Some(3), 1, true, false, Some(BeforeRequest(3))),
+        ]
+    );
+    // 今の道の巻き戻しには使えない時点も、枝の移動には使える。
+    let records_before = session::read_records(f.session.directory())?;
+    for target in [BeforeRequest(3), Tip(3)] {
+        let preview = agent.branch_preview(target, RewindScope::FilesAndConversation)?;
+        assert_eq!(preview.selected.target, target);
+        assert!(
+            preview
+                .checkpoint
+                .as_ref()
+                .is_some_and(|point| !point.conversation_available)
+        );
+        assert!(agent.branch_preview(target, RewindScope::Files).is_err());
+    }
+    assert_eq!(
+        session::read_records(f.session.directory())?,
+        records_before
+    );
     let targets = agent.branch_targets()?;
     assert_eq!(
         targets
@@ -1657,6 +1761,174 @@ fn branch_indexes_preserve_request_checkpoints_and_latest_tip_backups() -> TestR
         Some("cp-6")
     );
     assert!(server.requests()?.is_empty());
+    server.shutdown()?;
+    Ok(())
+}
+
+// 関門: 時点を持たない古い枝も、会話だけなら確認・移動できる。
+// /rewind は時点を必須にするので、この契約を代わりには守らない。
+#[test]
+fn branches_without_checkpoints_can_preview_and_move_conversation_only() -> TestResult {
+    use benitoiteh::agent::BranchTarget::{BeforeRequest, Tip};
+    use benitoiteh::provider::{UserMessage, UserPart, UserPartKind};
+    let f = Fixture::new()?;
+    let mut server = MockProvider::start(vec![])?;
+    drop(f.recorder()?);
+    let user = |node, text: &str| Record::User {
+        node,
+        kind: session::UserKind::Request,
+        message: UserMessage {
+            parts: vec![UserPart {
+                kind: UserPartKind::Request,
+                text: text.into(),
+            }],
+        },
+    };
+    let mut writer = f.session.writer()?;
+    writer.append(&user(1, "old request"))?;
+    writer.append(&Record::Branch {
+        to: None,
+        from: Some(1),
+        checkpoint: None,
+    })?;
+    writer.append(&user(2, "current request"))?;
+    let state = session::ResumeState::read(f.session.directory())?;
+    let mut agent = Agent::resume(
+        f.config(&server),
+        String::new(),
+        f.context()?,
+        f.environment()?,
+        f.session.clone(),
+        state,
+    )?;
+    let rows = agent.branch_tree()?;
+    assert!(
+        rows.first()
+            .is_some_and(|row| row.row.node.is_none() && row.branch.is_none())
+    );
+    let old = rows
+        .iter()
+        .find(|row| row.row.node == Some(1))
+        .and_then(|row| row.branch.as_ref())
+        .ok_or("old branch")?;
+    assert_eq!(old.target, BeforeRequest(1));
+    assert!(old.checkpoint.is_none());
+    assert!(
+        rows.iter()
+            .find(|row| row.row.node == Some(2))
+            .is_some_and(|row| row.row.is_current && row.branch.is_none())
+    );
+    for target in [BeforeRequest(1), Tip(1)] {
+        let preview = agent.branch_preview(target, RewindScope::Conversation)?;
+        assert!(preview.checkpoint.is_none());
+        assert!(preview.irreversible.is_empty());
+        assert!(
+            agent
+                .branch_preview(target, RewindScope::FilesAndConversation)
+                .is_err()
+        );
+    }
+    let (events, _received) = mpsc::sync_channel(1024);
+    let report = agent.switch_branch(
+        BeforeRequest(1),
+        agent
+            .branch_preview(BeforeRequest(1), RewindScope::Conversation)?
+            .selected
+            .checkpoint
+            .as_deref(),
+        RewindScope::Conversation,
+        false,
+        events,
+    )?;
+    assert_eq!(report.request.as_deref(), Some("old request"));
+    assert!(report.conversation_rewound);
+    assert_eq!(
+        session::ResumeState::read(f.session.directory())?.tree.tip,
+        None
+    );
+    assert!(server.requests()?.is_empty());
+    server.shutdown()?;
+    Ok(())
+}
+
+// 関門: 一覧の表示行が全文を二つ持つ退行を、公開の行のデータで検出する。
+// 移動先と全文の復元は保持し、時間や割り当て回数には依存しない。
+#[test]
+fn branch_tree_rows_keep_only_short_request_headings_and_the_target() -> TestResult {
+    let f = Fixture::new()?;
+    let mut server = MockProvider::start(vec![])?;
+    let mut agent = f.agent(&server)?;
+    let request = "日".repeat(5000);
+    for text in [&request, &"current".to_owned()] {
+        let (tx, _rx) = mpsc::sync_channel(1024);
+        agent.run(text.clone(), Arc::new(AtomicBool::new(true)), tx)?;
+    }
+    let rows = agent.branch_tree()?;
+    let row = rows
+        .iter()
+        .find(|row| row.row.node == Some(1))
+        .ok_or("old request")?;
+    assert_eq!(
+        row.row.request.as_deref(),
+        Some(format!("{}...", "日".repeat(60)).as_str())
+    );
+    let branch = row.branch.as_ref().ok_or("branch target")?;
+    assert_eq!(
+        branch.target,
+        benitoiteh::agent::BranchTarget::BeforeRequest(1)
+    );
+    assert_eq!(branch.request.as_deref(), Some(request.as_str()));
+    assert!(server.requests()?.is_empty());
+    server.shutdown()?;
+    Ok(())
+}
+
+// 関門: 確認した時点と実行時の時点が違う場合に、会話・記録・ファイルを変えない。
+// None と異なる ID の両方を公開の移動の口で確かめる。
+#[test]
+fn branch_checkpoint_mismatch_changes_neither_records_nor_files() -> TestResult {
+    use benitoiteh::agent::BranchTarget;
+    let f = Fixture::new()?;
+    fs::write(f.project.join("file"), "saved")?;
+    let mut server = MockProvider::start(vec![])?;
+    let mut agent = f.agent(&server)?;
+    for text in ["old request", "current request"] {
+        let (tx, _rx) = mpsc::sync_channel(1024);
+        agent.run(text.into(), Arc::new(AtomicBool::new(true)), tx)?;
+    }
+    fs::write(f.project.join("file"), "current")?;
+    let log = f.session.directory().join("session.jsonl");
+    let records = fs::read(&log)?;
+    let conversation = agent.conversation().clone();
+    for target in [BranchTarget::BeforeRequest(2), BranchTarget::Tip(2)] {
+        for scope in [RewindScope::Conversation, RewindScope::FilesAndConversation] {
+            for checkpoint in [Some("cp-stale"), Some("cp-1")] {
+                let (tx, _rx) = mpsc::sync_channel(1024);
+                let error = agent
+                    .switch_branch(target, checkpoint, scope, false, tx)
+                    .err()
+                    .ok_or("stale checkpoint was accepted")?;
+                assert_eq!(error.to_string(), "The branch changed; open /tree again.");
+                assert_eq!(fs::read(&log)?, records);
+                assert_eq!(fs::read(f.project.join("file"))?, b"current");
+                assert_eq!(agent.conversation(), &conversation);
+            }
+        }
+    }
+    let (tx, _rx) = mpsc::sync_channel(1024);
+    assert!(
+        agent
+            .switch_branch(
+                BranchTarget::BeforeRequest(2),
+                None,
+                RewindScope::Conversation,
+                false,
+                tx
+            )
+            .is_err()
+    );
+    assert_eq!(fs::read(&log)?, records);
+    assert_eq!(fs::read(f.project.join("file"))?, b"current");
     server.shutdown()?;
     Ok(())
 }

@@ -6,14 +6,14 @@ use std::sync::{Arc, mpsc};
 use std::thread::{self, JoinHandle};
 
 use crate::agent::{
-    Agent, AgentError, AgentEvent, AgentStatus, CompactOutcome, CompactReport, Outcome,
-    RewindPreview, RunReport,
+    Agent, AgentError, AgentEvent, AgentStatus, BranchPreview, BranchTarget, BranchTreeRow,
+    CompactOutcome, CompactReport, Outcome, RewindPreview, RunReport,
 };
 use crate::rewind::{CheckpointInfo, RewindError, RewindReport, RewindScope};
 use crate::session::{Record, Session};
 use crate::session::{Summary, TokenCounts};
 
-use super::Screen;
+use super::{Screen, selection::PendingMove};
 
 // Agent の変更はすべて同じ働き手で直列に行う（設計書 06-01「スレッドと非同期」）。
 enum Job {
@@ -27,6 +27,17 @@ enum Job {
     },
     Status,
     ListCheckpoints,
+    ListBranches,
+    PreviewBranch {
+        target: BranchTarget,
+        scope: RewindScope,
+    },
+    SwitchBranch {
+        target: BranchTarget,
+        checkpoint: Option<String>,
+        scope: RewindScope,
+        allow_incomplete: bool,
+    },
     PreviewRewind {
         checkpoint: String,
         scope: RewindScope,
@@ -43,6 +54,9 @@ enum Reply {
     Compact(CompactReport),
     Status(AgentStatus, TokenCounts),
     ListCheckpoints(Vec<CheckpointInfo>),
+    ListBranches(Vec<BranchTreeRow>),
+    PreviewBranch(BranchPreview),
+    SwitchBranch(RewindReport, RewindScope),
     PreviewRewind(RewindPreview),
     Rewind(RewindReport),
     End,
@@ -138,6 +152,24 @@ impl Worker {
                     }
                     Job::Status => Ok(Reply::Status(agent.status(), tokens.clone())),
                     Job::ListCheckpoints => agent.checkpoints().map(Reply::ListCheckpoints),
+                    Job::ListBranches => agent.branch_tree().map(Reply::ListBranches),
+                    Job::PreviewBranch { target, scope } => agent
+                        .branch_preview(target, scope)
+                        .map(Reply::PreviewBranch),
+                    Job::SwitchBranch {
+                        target,
+                        checkpoint,
+                        scope,
+                        allow_incomplete,
+                    } => agent
+                        .switch_branch(
+                            target,
+                            checkpoint.as_deref(),
+                            scope,
+                            allow_incomplete,
+                            events.clone(),
+                        )
+                        .map(|report| Reply::SwitchBranch(report, scope)),
                     Job::PreviewRewind { checkpoint, scope } => agent
                         .rewind_preview(&checkpoint, scope)
                         .map(Reply::PreviewRewind),
@@ -211,7 +243,7 @@ impl Worker {
         if self.is_running() {
             return Err(AgentError::Worker);
         }
-        self.rewinding = matches!(job, Job::Rewind { .. });
+        self.rewinding = matches!(job, Job::Rewind { .. } | Job::SwitchBranch { .. });
         self.jobs
             .as_ref()
             .ok_or(AgentError::Worker)?
@@ -235,6 +267,33 @@ impl Worker {
     }
     pub(super) fn checkpoints(&mut self) -> Result<(), AgentError> {
         self.command(Job::ListCheckpoints, RunControl::default())
+    }
+    pub(super) fn branches(&mut self) -> Result<(), AgentError> {
+        self.command(Job::ListBranches, RunControl::default())
+    }
+    pub(super) fn preview_branch(
+        &mut self,
+        target: BranchTarget,
+        scope: RewindScope,
+    ) -> Result<(), AgentError> {
+        self.command(Job::PreviewBranch { target, scope }, RunControl::default())
+    }
+    pub(super) fn switch_branch(
+        &mut self,
+        target: BranchTarget,
+        checkpoint: Option<String>,
+        scope: RewindScope,
+        allow_incomplete: bool,
+    ) -> Result<(), AgentError> {
+        self.command(
+            Job::SwitchBranch {
+                target,
+                checkpoint,
+                scope,
+                allow_incomplete,
+            },
+            RunControl::default(),
+        )
     }
     pub(super) fn preview(
         &mut self,
@@ -270,7 +329,7 @@ impl Worker {
     pub(super) fn ended(&self) -> bool {
         self.ended
     }
-    /// ファイルを書き戻す処理だけは途中で取り消さない。
+    /// 時点や枝を記録する移動は、範囲によらず途中で取り消さない。
     pub fn is_rewinding(&self) -> bool {
         self.rewinding
     }
@@ -356,23 +415,31 @@ impl Worker {
                         self.status = status;
                     }
                     Ok(Reply::ListCheckpoints(points)) => screen.select_checkpoints(points),
+                    Ok(Reply::ListBranches(rows)) => screen.select_branches(rows),
+                    Ok(Reply::PreviewBranch(preview)) => {
+                        screen.move_confirmation(PendingMove::Branch(preview), None)
+                    }
                     Ok(Reply::PreviewRewind(preview)) => screen.rewind_confirmation(preview, None),
                     Ok(Reply::Rewind(report)) => {
-                        screen.rewind_result(&report);
-                        screen.rewind_preview = None;
+                        screen.move_result(&report, None);
+                        screen.pending_move = None;
+                    }
+                    Ok(Reply::SwitchBranch(report, scope)) => {
+                        screen.move_result(&report, Some(scope));
+                        screen.pending_move = None;
                     }
                     Ok(Reply::End) => self.ended = true,
                     Err(AgentError::Rewind(RewindError::IncompleteBefore {
                         checkpoint,
                         incomplete,
                     })) => {
-                        if let Some(preview) = screen.rewind_preview.take() {
-                            screen.rewind_confirmation(preview, Some((checkpoint, incomplete)));
+                        if let Some(preview) = screen.pending_move.take() {
+                            screen.move_confirmation(preview, Some((checkpoint, incomplete)));
                         }
                     }
                     Err(error) if completion.command => {
                         screen.notice(&error.to_string());
-                        screen.rewind_preview = None;
+                        screen.pending_move = None;
                     }
                     Err(error) => return Err(error),
                 }

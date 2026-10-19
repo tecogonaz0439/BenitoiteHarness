@@ -127,6 +127,74 @@ impl Agent {
         self.branch_targets_from_records(&records, &tree)
     }
 
+    /// 一度読んだ記録から表示行と移動先を組み立てる。今の先端へは仕事を送らない。
+    pub fn branch_tree(&self) -> Result<Vec<BranchTreeRow>, AgentError> {
+        let records = crate::session::read_records(self.session.directory())?;
+        let tree = crate::session::SessionTree::from_records(&records)?;
+        let mut targets = self
+            .branch_targets_from_records(&records, &tree)?
+            .into_iter()
+            .map(|info| (info.target, info))
+            .collect::<BTreeMap<_, _>>();
+        Ok(crate::session::tree_rows(&records, &tree)
+            .into_iter()
+            .map(|row| {
+                let target = row.node.and_then(|node| {
+                    if row.is_current && row.is_tip {
+                        None
+                    } else if row.request.is_some() {
+                        Some(BranchTarget::BeforeRequest(node))
+                    } else if row.is_tip {
+                        Some(BranchTarget::Tip(node))
+                    } else {
+                        None
+                    }
+                });
+                let branch = target.and_then(|target| targets.remove(&target));
+                BranchTreeRow { row, branch }
+            })
+            .collect())
+    }
+
+    /// 枝を移る前に、移る先の時点と戻せない操作を確かめる。
+    pub fn branch_preview(
+        &self,
+        target: BranchTarget,
+        scope: RewindScope,
+    ) -> Result<BranchPreview, AgentError> {
+        let records = crate::session::read_records(self.session.directory())?;
+        let tree = crate::session::SessionTree::from_records(&records)?;
+        let selected = self
+            .branch_targets_from_records(&records, &tree)?
+            .into_iter()
+            .find(|info| info.target == target)
+            .ok_or(RewindError::Invalid(
+                super::text::CONVERSATION_REWIND_UNAVAILABLE,
+            ))?;
+        if scope == RewindScope::Files
+            || (scope == RewindScope::FilesAndConversation && selected.checkpoint.is_none())
+        {
+            return Err(RewindError::Invalid(super::text::CONVERSATION_REWIND_UNAVAILABLE).into());
+        }
+        let checkpoint = self
+            .recorder()?
+            .checkpoints_from_tree(&tree)?
+            .into_iter()
+            .find(|point| Some(&point.checkpoint.id) == selected.checkpoint.as_ref());
+        let irreversible = selected
+            .checkpoint
+            .as_deref()
+            .map(|id| self.irreversible(id, &records))
+            .transpose()?
+            .unwrap_or_default();
+        Ok(BranchPreview {
+            selected,
+            checkpoint,
+            scope,
+            irreversible,
+        })
+    }
+
     fn branch_targets_from_records(
         &self,
         records: &[Record],
@@ -173,6 +241,7 @@ impl Agent {
     pub fn switch_branch(
         &mut self,
         target: BranchTarget,
+        expected_checkpoint: Option<&str>,
         scope: RewindScope,
         allow_incomplete: bool,
         events: SyncSender<AgentEvent>,
@@ -180,11 +249,8 @@ impl Agent {
         if scope == RewindScope::Files {
             return Err(RewindError::Invalid(super::text::CONVERSATION_REWIND_UNAVAILABLE).into());
         }
-        // 補う結果の追記は先端を進めるため、同じ先端への移動は追記の前に止める。
-        if matches!(target, BranchTarget::Tip(node) if Some(node) == self.current_node) {
-            return Ok(RewindReport::default());
-        }
-        let (records, tree) = self.records_for_move(true)?;
+        let mut records = crate::session::read_records(self.session.directory())?;
+        let mut tree = crate::session::SessionTree::from_records(&records)?;
         let selected = self
             .branch_targets_from_records(&records, &tree)?
             .into_iter()
@@ -192,8 +258,22 @@ impl Agent {
             .ok_or(RewindError::Invalid(
                 super::text::CONVERSATION_REWIND_UNAVAILABLE,
             ))?;
+        // 確認した時点との照合を、補う結果やバックアップを追記する前に済ませる。
+        // 記録は信頼せず、読み直しで選ばれた時点が変わっていたら移らない
+        // （設計書 01-05「セッションの木」、03-03「確認の共通の規則」）。
+        if selected.checkpoint.as_deref() != expected_checkpoint {
+            return Err(RewindError::Invalid(super::text::BRANCH_CHANGED).into());
+        }
+        // 補う結果の追記は先端を進めるため、同じ先端への移動は追記の前に止める。
+        if matches!(target, BranchTarget::Tip(node) if Some(node) == self.current_node) {
+            return Ok(RewindReport::default());
+        }
         if scope == RewindScope::FilesAndConversation && selected.checkpoint.is_none() {
             return Err(RewindError::Invalid(super::text::CONVERSATION_REWIND_UNAVAILABLE).into());
+        }
+        for record in self.flush_resume_results()? {
+            tree.push_record(&record, records.len())?;
+            records.push(record);
         }
         let to = match target {
             BranchTarget::BeforeRequest(node) => {
@@ -430,7 +510,7 @@ pub struct RewindPreview {
 }
 
 /// 木の中の移動先。依頼そのものの番号と先端の番号を区別する。
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum BranchTarget {
     BeforeRequest(u64),
     Tip(u64),
@@ -442,4 +522,20 @@ pub struct BranchInfo {
     pub target: BranchTarget,
     pub request: Option<String>,
     pub checkpoint: Option<String>,
+}
+
+/// セッションの木の表示行と、選択したときの移動先。
+#[derive(Clone, Debug)]
+pub struct BranchTreeRow {
+    pub row: crate::session::TreeRow,
+    pub branch: Option<BranchInfo>,
+}
+
+/// 枝の移動の確認。時点のない移動先も会話だけなら選べる。
+#[derive(Clone, Debug)]
+pub struct BranchPreview {
+    pub selected: BranchInfo,
+    pub checkpoint: Option<CheckpointInfo>,
+    pub scope: RewindScope,
+    pub irreversible: Vec<IrreversibleOperation>,
 }
