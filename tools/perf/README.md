@@ -14,7 +14,7 @@ python3 -I tools/perf/measure.py \
 
 `--runs N` の既定は 10、最小は 1 である。`--out` を省くと Markdown を標準出力へ書く。ビルドと測定のログは標準エラー出力へ書く。短い通しの確認には `--runs 1` を使う。本番の数値は、オーケストレータが Codex のサンドボックスの外で測り、`docs/plan/results/P5-perf.md` に記録する。
 
-BH-060 の判断のために `opt-level = "s"` と比べるときは `--opt-s` を付ける。
+BH-060 の判断のために `opt-level = "s"` と比べるときは `--opt-s` を付ける。BH-060 は 2026-10-19 に `"s"` に決めたため、現在は既定も `"s"` であり、`--opt-s` は同じ設定どうしの比較になる。
 
 ```sh
 python3 -I tools/perf/measure.py \

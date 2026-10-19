@@ -16,7 +16,7 @@ use super::{AnthropicAdapter, AnthropicError};
 /// 呼び出す側が文脈と設定から決める要求ごとの指定。
 #[derive(Clone, Copy, Debug, Default)]
 pub struct RequestOptions<'a> {
-    /// 設定された effort。省略したときは high。
+    /// 設定された effort。省略したときは low。
     pub effort: Option<&'a str>,
     /// 前の要求の最後の項目の Conversation.items 内の位置（0 から始まる）。
     pub previous_last_item: Option<usize>,
@@ -86,7 +86,7 @@ impl AnthropicAdapter {
             "messages": self.messages(conversation, options)?,
             "stream": true,
             "thinking": {"type": "adaptive"},
-            "output_config": {"effort": options.effort.unwrap_or("high")}
+            "output_config": {"effort": options.effort.unwrap_or("low")}
         });
         if !tools.is_empty() && options.disable_tools {
             insert(&mut body, "tool_choice", json!({"type": "none"}))?;

@@ -335,6 +335,18 @@ fn exec_completes_tools_and_preserves_output_records_and_original_items() -> Tes
                 .first()
                 .ok_or_else(|| io::Error::from(io::ErrorKind::NotFound))?;
             assert_eq!(first.method, "POST");
+            // 設定から要求までの接続漏れは、アダプタ単体のテストでは捕まらない（設計書 02-01）。
+            match protocol {
+                Protocol::Anthropic => assert_eq!(
+                    first.body.pointer("/output_config/effort"),
+                    Some(&json!("low"))
+                ),
+                Protocol::Responses => assert_eq!(
+                    first.body.pointer("/reasoning/effort"),
+                    Some(&json!("high"))
+                ),
+                Protocol::Chat => {}
+            }
             assert_eq!(
                 first.path,
                 match protocol {
