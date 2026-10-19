@@ -80,6 +80,7 @@ fn steering_is_grouped_recorded_and_sent_after_results_in_all_three_adapters() -
                 if let Record::User {
                     kind: benitoiteh::session::UserKind::Steer,
                     message,
+                    ..
                 } = record
                 {
                     Some(message)
@@ -128,6 +129,17 @@ fn steering_is_grouped_recorded_and_sent_after_results_in_all_three_adapters() -
             }
         }
         assert_eq!(replay(&directory)?, *agent.conversation());
+        assert_eq!(
+            agent
+                .branch_targets()?
+                .iter()
+                .filter(|info| matches!(
+                    info.target,
+                    benitoiteh::agent::BranchTarget::BeforeRequest(_)
+                ))
+                .count(),
+            1
+        );
         server.shutdown()?;
     }
     Ok(())

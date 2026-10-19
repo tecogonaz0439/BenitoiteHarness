@@ -16,7 +16,7 @@ pub use files::FileHistory;
 pub use id::SessionId;
 pub use quota::{StorageUsage, TOTAL_LIMIT, storage_usage};
 pub use record::*;
-pub use replay::{read_records, replay};
+pub use replay::{SessionTree, read_records, replay, request_text};
 pub use resume::{ReasoningContext, ResumeState};
 pub use scan::{
     SessionEntry, continue_session, list_sessions, previous_benitoite, recorded_benitoite,

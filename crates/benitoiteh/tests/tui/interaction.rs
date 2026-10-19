@@ -472,6 +472,7 @@ fn followups_are_new_requests_in_order_and_cancelled_work_restores_pending_input
                 if let Record::User {
                     kind: benitoiteh::session::UserKind::Request,
                     message,
+                    ..
                 } = record
                 {
                     message

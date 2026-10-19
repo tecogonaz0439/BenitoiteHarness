@@ -45,6 +45,10 @@ impl Agent {
         )?;
         let received = self.receive_with_retry(&request, cancelled, events)?;
         if received.is_some() {
+            self.append_node(crate::session::Record::ImagesRemoved {
+                node: 0,
+                results: results.clone(),
+            })?;
             self.emit(events, AgentEvent::ImagesRemoved { results })?;
             self.conversation = conversation;
         }

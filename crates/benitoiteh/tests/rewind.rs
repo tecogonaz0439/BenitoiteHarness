@@ -524,7 +524,6 @@ fn agent_rewind_replay_resume_and_read_versions_agree() -> TestResult {
     let mut agent = f.agent(&server)?;
     run(&mut agent)?;
     let first_conversation = agent.conversation().clone();
-    let first_count = first_conversation.items.len();
     run(&mut agent)?;
     let points = agent.checkpoints()?;
     let requests = points
@@ -536,7 +535,7 @@ fn agent_rewind_replay_resume_and_read_versions_agree() -> TestResult {
         .ok_or("second checkpoint")?
         .checkpoint
         .clone();
-    assert_eq!(second.items, Some(first_count));
+    assert!(second.node.is_some());
     let tool_point = points
         .iter()
         .find(|p| p.checkpoint.reason == CheckpointReason::Write)
@@ -616,14 +615,14 @@ fn agent_rewind_replay_resume_and_read_versions_agree() -> TestResult {
         session::replay(f.session.directory())?,
         *resumed.conversation()
     );
-    // 最初の時点は会話を戻した世代より前なので、ファイルだけが戻せる。
+    // 最初の依頼は今の道の上に残っているので会話も戻せる。
     assert!(
-        !resumed
+        resumed
             .checkpoints()?
             .first()
             .is_some_and(|info| info.conversation_available)
     );
-    // 現世代の request を 0 項目で作る別のセッションも確かめる。
+    // 会話の始めへも移れる。
     let zero = Fixture::new()?;
     let mut agent = zero.agent(&server)?;
     run(&mut agent)?;
@@ -647,8 +646,8 @@ fn agent_rewind_replay_resume_and_read_versions_agree() -> TestResult {
 }
 
 #[test]
-fn hardlink_events_only_report_new_paths_and_compaction_invalidates_conversation_rewind()
--> TestResult {
+fn hardlink_events_only_report_new_paths_and_compaction_preserves_conversation_rewind() -> TestResult
+{
     let f = Fixture::new()?;
     fs::write(f.project.join("a"), "a")?;
     fs::hard_link(f.project.join("a"), f.root.join("outside"))?;
@@ -686,9 +685,10 @@ fn hardlink_events_only_report_new_paths_and_compaction_invalidates_conversation
         agent
             .checkpoints()?
             .iter()
-            .all(|p| !p.conversation_available)
+            .all(|p| p.conversation_available)
     );
-    assert!(rewind(&mut agent, "cp-1", RewindScope::Conversation, false).is_err());
+    rewind(&mut agent, "cp-1", RewindScope::Conversation, false)?;
+    assert!(agent.conversation().items.is_empty());
     server.shutdown()?;
     Ok(())
 }
@@ -1050,13 +1050,19 @@ fn rewinding_immediately_after_resume_does_not_reappend_discarded_results() -> T
     };
     unfinished.parts = vec![AssistantPart::ToolCall(call.clone())];
     f.session.writer()?.append(&Record::Assistant {
+        node: 100,
         turn: 10,
         response: unfinished,
     })?;
     f.session.writer()?.append(&Record::ToolStart { call })?;
+    f.session.writer()?.append(&Record::Branch {
+        to: Some(2),
+        from: Some(100),
+        checkpoint: None,
+    })?;
     drop(agent);
     let state = session::ResumeState::read(f.session.directory())?;
-    assert_eq!(state.missing_results.len(), 1);
+    assert!(state.missing_results.is_empty());
     let mut resumed = Agent::resume(
         f.config(&server),
         String::new(),
@@ -1065,6 +1071,19 @@ fn rewinding_immediately_after_resume_does_not_reappend_discarded_results() -> T
         f.session.clone(),
         state,
     )?;
+    let (sender, _receiver) = mpsc::sync_channel(1024);
+    resumed.switch_branch(
+        benitoiteh::agent::BranchTarget::Tip(100),
+        RewindScope::Conversation,
+        false,
+        sender,
+    )?;
+    assert_eq!(
+        session::ResumeState::read(f.session.directory())?
+            .missing_results
+            .len(),
+        1
+    );
     let rewound = rewind(
         &mut resumed,
         "cp-1",
@@ -1085,6 +1104,23 @@ fn rewinding_immediately_after_resume_does_not_reappend_discarded_results() -> T
         session::replay(f.session.directory())?,
         *resumed.conversation()
     );
+    let records = session::read_records(f.session.directory())?;
+    assert_eq!(
+        records
+            .iter()
+            .filter(|record| matches!(record,
+        Record::ToolResult { node: 101, result, .. } if result.id == "turn-10-call-0"))
+            .count(),
+        1
+    );
+    assert!(records.iter().any(|record| matches!(
+        record,
+        Record::Branch {
+            from: Some(101),
+            to: None,
+            ..
+        }
+    )));
     server.shutdown()?;
     Ok(())
 }
@@ -1273,6 +1309,354 @@ fn web_fetch_calls_are_reported_as_irreversible_after_the_selected_checkpoint() 
             .is_some_and(|operation| operation.summary.contains("web_fetch")
                 && operation.summary.contains("https://mock.invalid/path"))
     );
+    server.shutdown()?;
+    Ok(())
+}
+
+// 作成時の関門: 圧縮をまたぐ枝の移動で、捨てた依頼を送る退行、同じ親の時点を
+// 取り違える退行、ファイルと読んだ版を取り違える退行をエージェントの境界で捕まえる。
+#[test]
+fn switching_branches_restores_requests_files_and_resumes_the_selected_path() -> TestResult {
+    use benitoiteh::agent::BranchTarget;
+    let f = Fixture::new()?;
+    fs::write(f.project.join("file"), "old")?;
+    let mut server = MockProvider::start(vec![
+        response(&[("read", json!({"path":"file"}))]),
+        response(&[]),
+        response(&[("write", json!({"path":"file", "content":"left"}))]),
+        response(&[]),
+        response(&[]), // 圧縮の要約。
+        response(&[(
+            "edit",
+            json!({"path":"file", "old_string":"old", "new_string":"unexpected"}),
+        )]),
+        response(&[]),
+        response(&[]),
+    ])?;
+    let mut agent = f.agent(&server)?;
+    let run_request = |agent: &mut Agent, request: &str| -> TestResult {
+        let (sender, _receiver) = mpsc::sync_channel(1024);
+        let report = agent.run(request.into(), Arc::new(AtomicBool::new(false)), sender)?;
+        assert_eq!(report.outcome, benitoiteh::agent::Outcome::Completed);
+        Ok(())
+    };
+    run_request(&mut agent, "root request")?;
+    let root_conversation = agent.conversation().clone();
+    run_request(&mut agent, "left request\nsecond line")?;
+    let records = session::read_records(f.session.directory())?;
+    let left_request = records
+        .iter()
+        .find_map(|record| {
+            (session::request_text(record).as_deref() == Some("left request\nsecond line"))
+                .then(|| record.node())
+                .flatten()
+        })
+        .ok_or("left request node")?;
+    let left_checkpoint = agent
+        .branch_targets()?
+        .into_iter()
+        .find(|info| info.target == BranchTarget::BeforeRequest(left_request))
+        .and_then(|info| info.checkpoint)
+        .ok_or("left checkpoint")?;
+    let (sender, _receiver) = mpsc::sync_channel(1024);
+    assert_eq!(
+        agent
+            .compact(None, Arc::new(AtomicBool::new(false)), sender)?
+            .outcome,
+        benitoiteh::agent::CompactOutcome::Compacted
+    );
+    let compacted = agent.conversation().clone();
+    let left_tip = session::ResumeState::read(f.session.directory())?
+        .tree
+        .tip
+        .ok_or("left tip")?;
+    let before = agent.checkpoints()?.len();
+    let (sender, _receiver) = mpsc::sync_channel(1024);
+    let report = agent.switch_branch(
+        BranchTarget::BeforeRequest(left_request),
+        RewindScope::FilesAndConversation,
+        false,
+        sender,
+    )?;
+    assert_eq!(agent.checkpoints()?.len(), before.saturating_add(1));
+    assert_eq!(report.request.as_deref(), Some("left request\nsecond line"));
+    assert!(report.before_rewind.is_some());
+    assert_eq!(agent.conversation(), &root_conversation);
+    assert_eq!(fs::read(f.project.join("file"))?, b"old");
+    run_request(&mut agent, "right request")?;
+    let right_conversation = agent.conversation().clone();
+    assert!(right_conversation.items.iter().any(|item| matches!(item,
+        benitoiteh::provider::Item::ToolResult(result) if result.is_error && result.text.contains("read"))));
+    let requests = server.requests()?;
+    let right_body = requests
+        .get(5)
+        .ok_or("right HTTP request")?
+        .body
+        .to_string();
+    assert!(right_body.contains("root request"));
+    assert!(right_body.contains("right request"));
+    assert!(!right_body.contains("left request"));
+    assert!(!right_body.contains("compacted_summary"));
+    let points = agent.checkpoints()?;
+    assert!(
+        !points
+            .iter()
+            .find(|point| point.checkpoint.id == left_checkpoint)
+            .ok_or("left checkpoint")?
+            .conversation_available
+    );
+    assert!(
+        points
+            .iter()
+            .rev()
+            .find(|point| point.checkpoint.reason == CheckpointReason::Request)
+            .ok_or("right checkpoint")?
+            .conversation_available
+    );
+    fs::write(f.project.join("file"), "right")?;
+    let right_tip = session::ResumeState::read(f.session.directory())?
+        .tree
+        .tip
+        .ok_or("right tip")?;
+    let (sender, _receiver) = mpsc::sync_channel(1024);
+    agent.switch_branch(
+        BranchTarget::Tip(left_tip),
+        RewindScope::FilesAndConversation,
+        false,
+        sender,
+    )?;
+    assert_eq!(agent.conversation(), &compacted);
+    assert_eq!(fs::read(f.project.join("file"))?, b"left");
+    let (sender, _receiver) = mpsc::sync_channel(1024);
+    agent.switch_branch(
+        BranchTarget::Tip(right_tip),
+        RewindScope::FilesAndConversation,
+        false,
+        sender,
+    )?;
+    assert_eq!(agent.conversation(), &right_conversation);
+    assert_eq!(fs::read(f.project.join("file"))?, b"right");
+    let state = session::ResumeState::read(f.session.directory())?;
+    let next = state.tree.next_node;
+    drop(agent);
+    let mut agent = Agent::resume(
+        f.config(&server),
+        String::new(),
+        f.context()?,
+        f.environment()?,
+        f.session.clone(),
+        state,
+    )?;
+    run_request(&mut agent, "after resume")?;
+    let body = server
+        .requests()?
+        .last()
+        .ok_or("resumed request")?
+        .body
+        .to_string();
+    assert!(body.contains("right request"));
+    assert!(!body.contains("left request"));
+    let records = session::read_records(f.session.directory())?;
+    let nodes = records.iter().filter_map(Record::node).collect::<Vec<_>>();
+    assert!(
+        nodes
+            .windows(2)
+            .all(|pair| matches!(pair, [first, second] if first < second))
+    );
+    assert!(records.iter().any(|record| record.node() == Some(next)
+        && session::request_text(record).as_deref() == Some("after resume")));
+    assert_eq!(
+        session::replay(f.session.directory())?,
+        *agent.conversation()
+    );
+    server.shutdown()?;
+    Ok(())
+}
+
+// 作成時の関門: 会話の始めへ移るときだけ起きる、環境の二重送信を HTTP 本文で捕まえる。
+#[test]
+fn rewinding_to_start_sends_environment_once() -> TestResult {
+    let f = Fixture::new()?;
+    let mut server = MockProvider::start(vec![response(&[]), response(&[])])?;
+    let mut agent = f.agent(&server)?;
+    run(&mut agent)?;
+    rewind(&mut agent, "cp-1", RewindScope::Conversation, false)?;
+    run(&mut agent)?;
+    let requests = server.requests()?;
+    let body = requests.last().ok_or("request")?.body.to_string();
+    assert_eq!(body.matches("<environment>").count(), 1, "{body}");
+    server.shutdown()?;
+    Ok(())
+}
+
+// 作成時の関門: 補う結果を持つ今の先端への移動が、兄弟の結果を増やす退行を捕まえる。
+#[test]
+fn switching_to_current_tip_keeps_pending_results_until_run() -> TestResult {
+    use benitoiteh::agent::BranchTarget;
+    let f = Fixture::new()?;
+    fs::write(f.project.join("file"), "old")?;
+    let mut server = MockProvider::start(vec![
+        response(&[("read", json!({"path":"file"}))]),
+        response(&[]),
+        response(&[]),
+    ])?;
+    let mut agent = f.agent(&server)?;
+    run(&mut agent)?;
+    let mut records = session::read_records(f.session.directory())?;
+    let cut = records
+        .iter()
+        .position(|record| matches!(record, Record::ToolResult { .. }))
+        .ok_or("result")?;
+    records.truncate(cut);
+    let log = f.session.directory().join("session.jsonl");
+    fs::write(
+        &log,
+        records
+            .iter()
+            .map(serde_json::to_string)
+            .collect::<Result<Vec<_>, _>>()?
+            .join("\n")
+            + "\n",
+    )?;
+    drop(agent);
+    let state = session::ResumeState::read(f.session.directory())?;
+    assert_eq!(state.missing_results.len(), 1);
+    let tip = state.tree.tip.ok_or("tip")?;
+    let call_id = state
+        .missing_results
+        .first()
+        .and_then(|record| {
+            if let Record::ToolResult { result, .. } = record {
+                Some(result.id.clone())
+            } else {
+                None
+            }
+        })
+        .ok_or("pending result")?;
+    let mut agent = Agent::resume(
+        f.config(&server),
+        String::new(),
+        f.context()?,
+        f.environment()?,
+        f.session.clone(),
+        state,
+    )?;
+    let before = fs::read(&log)?;
+    for scope in [RewindScope::Conversation, RewindScope::FilesAndConversation] {
+        let (sender, _receiver) = mpsc::sync_channel(1024);
+        let report = agent.switch_branch(BranchTarget::Tip(tip), scope, false, sender)?;
+        assert!(!report.conversation_rewound);
+        assert!(report.before_rewind.is_none());
+        assert_eq!(fs::read(&log)?, before);
+    }
+    run(&mut agent)?;
+    let records = session::read_records(f.session.directory())?;
+    assert_eq!(
+        records
+            .iter()
+            .filter(
+                |record| matches!(record, Record::ToolResult { result, .. } if result.id == call_id)
+            )
+            .count(),
+        1
+    );
+    assert_eq!(
+        session::replay(f.session.directory())?,
+        *agent.conversation()
+    );
+    server.shutdown()?;
+    Ok(())
+}
+
+// 作成時の関門: 中断した依頼の時点を、次の依頼に取り違えて結ぶ退行を捕まえる。
+#[test]
+fn only_latest_request_checkpoint_is_associated_with_the_next_request() -> TestResult {
+    let f = Fixture::new()?;
+    let recorder = f.recorder()?;
+    let first = capture(&recorder)?;
+    let second = capture(&recorder)?;
+    f.session.writer()?.append(&Record::User {
+        node: 1,
+        kind: session::UserKind::Request,
+        message: benitoiteh::provider::UserMessage {
+            parts: vec![benitoiteh::provider::UserPart {
+                kind: benitoiteh::provider::UserPartKind::Request,
+                text: "accepted request".into(),
+            }],
+        },
+    })?;
+    let points = recorder.checkpoints()?;
+    assert_eq!(
+        points
+            .iter()
+            .map(|point| (point.checkpoint.id.as_str(), point.conversation_available))
+            .collect::<Vec<_>>(),
+        vec![(first.id.as_str(), false), (second.id.as_str(), true)]
+    );
+    Ok(())
+}
+
+// 作成時の関門: 索引を共有する一覧が、道の判定と最後に離れた時点を取り違えない。
+// 依頼と移動を同期して並べ、件数や所要時間には依存しない。
+#[test]
+fn branch_indexes_preserve_request_checkpoints_and_latest_tip_backups() -> TestResult {
+    use benitoiteh::agent::BranchTarget::{BeforeRequest, Tip};
+    let f = Fixture::new()?;
+    let mut server = MockProvider::start(vec![])?;
+    let mut agent = f.agent(&server)?;
+    let request = |agent: &mut Agent| -> TestResult {
+        let (sender, _receiver) = mpsc::sync_channel(1024);
+        agent.run("request".into(), Arc::new(AtomicBool::new(true)), sender)?;
+        Ok(())
+    };
+    let switch = |agent: &mut Agent, target| -> TestResult {
+        let (sender, _receiver) = mpsc::sync_channel(1024);
+        agent.switch_branch(target, RewindScope::Conversation, false, sender)?;
+        Ok(())
+    };
+    request(&mut agent)?;
+    request(&mut agent)?;
+    switch(&mut agent, BeforeRequest(2))?;
+    request(&mut agent)?;
+    switch(&mut agent, Tip(2))?;
+    let targets = agent.branch_targets()?;
+    assert_eq!(
+        targets
+            .iter()
+            .map(|info| (info.target, info.checkpoint.as_deref()))
+            .collect::<Vec<_>>(),
+        vec![
+            (BeforeRequest(1), Some("cp-1")),
+            (BeforeRequest(2), Some("cp-2")),
+            (BeforeRequest(3), Some("cp-4")),
+            (Tip(2), Some("cp-3")),
+            (Tip(3), Some("cp-5"))
+        ]
+    );
+    assert_eq!(
+        agent
+            .checkpoints()?
+            .iter()
+            .map(|point| (point.checkpoint.id.clone(), point.conversation_available))
+            .collect::<Vec<_>>(),
+        vec![
+            ("cp-1".into(), true),
+            ("cp-2".into(), true),
+            ("cp-3".into(), false),
+            ("cp-4".into(), false),
+            ("cp-5".into(), false)
+        ]
+    );
+    switch(&mut agent, Tip(3))?;
+    assert_eq!(
+        agent
+            .branch_targets()?
+            .iter()
+            .find(|info| info.target == Tip(2))
+            .and_then(|info| info.checkpoint.as_deref()),
+        Some("cp-6")
+    );
+    assert!(server.requests()?.is_empty());
     server.shutdown()?;
     Ok(())
 }

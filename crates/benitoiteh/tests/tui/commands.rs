@@ -535,7 +535,7 @@ fn rewind_restores_files_and_conversation_after_explicit_selection_and_confirmat
     ])?;
     let f = fixture::Fixture::new()?;
     let mut agent = f.agent(&server)?;
-    for request in ["first request", "second \u{3164} request"] {
+    for request in ["first request", "/second \u{3164} request"] {
         let (tx, _rx) = mpsc::sync_channel(1024);
         agent.run(request.into(), Arc::new(AtomicBool::new(false)), tx)?;
     }
@@ -548,7 +548,7 @@ fn rewind_restores_files_and_conversation_after_explicit_selection_and_confirmat
         .ok_or("request checkpoint")?;
     assert_eq!(
         request_point.request.as_deref(),
-        Some("second \u{3164} request")
+        Some("/second \u{3164} request")
     );
     let worker = Worker::start(agent, f.session.clone())?;
     let mut screen = Screen::new((200, 40), status());
@@ -605,6 +605,7 @@ fn rewind_restores_files_and_conversation_after_explicit_selection_and_confirmat
     let visible = safe_output(&output.0.borrow())?;
     assert!(visible.contains("second \\u{3164} request"));
     assert!(visible.contains("1 restored, 0 removed, 0 created"));
+    assert!(visible.contains("Request restored to the input. Press Ctrl+C to clear it."));
     let requests = server.requests()?;
     let last = requests
         .last()
@@ -613,11 +614,11 @@ fn rewind_restores_files_and_conversation_after_explicit_selection_and_confirmat
         .to_string();
     assert!(last.contains("first request"));
     assert!(last.contains("third request"));
-    assert!(!last.contains("second \u{3164} request"));
+    assert!(last.contains("/second \u{3164} requestthird request"));
     assert_eq!(
         read_records(f.session.directory())?
             .iter()
-            .filter(|record| matches!(record, Record::Rewind { .. }))
+            .filter(|record| matches!(record, Record::Branch { .. }))
             .count(),
         1
     );
@@ -669,7 +670,14 @@ fn incomplete_before_rewind_requires_f_and_reports_the_error_reasons() -> TestRe
                     key(KeyCode::Char('f'), KeyModifiers::NONE),
                 ],
             ),
-            ("Rewind completed:", send("/quit")),
+            (
+                "Rewind completed:",
+                [
+                    vec![key(KeyCode::Char('c'), KeyModifiers::CONTROL)],
+                    send("/quit"),
+                ]
+                .concat(),
+            ),
         ],
     );
     run(
@@ -905,7 +913,7 @@ fn accepted_rewind_finishes_before_quit_and_repeated_keyboard_interrupts() -> Te
     assert!(
         read_records(f.session.directory())?
             .iter()
-            .any(|record| matches!(record, Record::Rewind { .. }))
+            .any(|record| matches!(record, Record::Branch { .. }))
     );
     server.shutdown()?;
     Ok(())

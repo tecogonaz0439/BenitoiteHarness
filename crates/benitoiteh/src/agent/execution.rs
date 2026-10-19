@@ -524,7 +524,8 @@ impl Agent {
                 output.images
             },
         };
-        self.writer.append(&Record::ToolResult {
+        self.append_node(Record::ToolResult {
+            node: 0,
             turn: self.turn,
             name: call.name.clone(),
             result: result.clone(),
@@ -672,7 +673,6 @@ mod tests {
             .capture(
                 crate::rewind::CheckpointReason::Request,
                 None,
-                Some(0),
                 &AtomicBool::new(false),
             )?;
         let call = ToolCall {

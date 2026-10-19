@@ -184,15 +184,18 @@ fn records_replay_conversation_losslessly_and_finish_with_summary() -> TestResul
         "first result",
     );
     writer.append(&Record::User {
+        node: 1,
         kind: UserKind::Request,
         message: message.clone(),
     })?;
     writer.append(&Record::Assistant {
+        node: 2,
         turn: 1,
         response: response.clone(),
     })?;
-    for result in [&second, &first] {
+    for (index, result) in [&second, &first].into_iter().enumerate() {
         writer.append(&Record::ToolResult {
+            node: 3 + u64::try_from(index)?,
             turn: 1,
             name: "write".to_owned(),
             result: result.clone(),
@@ -254,6 +257,7 @@ fn replay_ignores_only_torn_tail_and_fills_missing_tool_results_before_next_mess
     let cancelled = call("cancelled");
     let done = call("done");
     writer.append(&Record::Assistant {
+        node: 1,
         turn: 1,
         response: response(&[started.clone(), cancelled.clone(), done.clone()]),
     })?;
@@ -261,6 +265,7 @@ fn replay_ignores_only_torn_tail_and_fills_missing_tool_results_before_next_mess
         call: started.clone(),
     })?;
     writer.append(&Record::ToolResult {
+        node: 2,
         turn: 1,
         name: "write".to_owned(),
         result: result(&done, "already done"),
@@ -274,6 +279,7 @@ fn replay_ignores_only_torn_tail_and_fills_missing_tool_results_before_next_mess
         }],
     };
     writer.append(&Record::User {
+        node: 3,
         kind: UserKind::Steer,
         message: message.clone(),
     })?;
@@ -330,6 +336,7 @@ fn replay_uses_last_compaction_as_its_conversation_base() -> TestResult {
     let mut writer = session.writer()?;
     writer.append(&header(&session))?;
     writer.append(&Record::Assistant {
+        node: 1,
         turn: 1,
         response: response(&[call("discarded")]),
     })?;
@@ -337,6 +344,7 @@ fn replay_uses_last_compaction_as_its_conversation_base() -> TestResult {
         call: call("retained"),
     })?;
     writer.append(&Record::Compaction {
+        node: 2,
         conversation: Conversation::default(),
         reason: Default::default(),
         summarized_items: 0,
@@ -345,16 +353,16 @@ fn replay_uses_last_compaction_as_its_conversation_base() -> TestResult {
     let base = Conversation {
         items: vec![Item::AssistantTurn(response(&[call("turn-7-call-0")]))],
     };
-    // 欄を加える前の形式の行を、JSON Lines の読み手で確かめる。
+    // 節点は必須とし、圧縮の補助情報は省略しても読める。
     writeln!(
         OpenOptions::new()
             .append(true)
             .open(session.directory().join("session.jsonl"))?,
         "{}",
-        json!({"type":"compaction", "conversation":base})
+        json!({"type":"compaction", "node":3, "conversation":base})
     )?;
     assert!(read_records(session.directory())?.iter().any(|record| matches!(record,
-        Record::Compaction { reason: benitoiteh::session::CompactionReason::Threshold, summarized_items: 0, kept_items: 0, conversation }
+        Record::Compaction { reason: benitoiteh::session::CompactionReason::Threshold, summarized_items: 0, kept_items: 0, conversation, .. }
             if *conversation == base)));
 
     let conversation = replay(session.directory())?;
@@ -386,16 +394,23 @@ fn reader_rejects_unsupported_formats_and_spill_references_outside_the_spill_dir
     let fixture = Fixture::new()?;
     let session = fixture.session()?;
     let path = session.directory().join("session.jsonl");
-    let mut unsupported = header(&session);
-    if let Record::Header(header) = &mut unsupported {
-        header.format = 2;
+    for version in [1, 3] {
+        let mut unsupported = header(&session);
+        if let Record::Header(header) = &mut unsupported {
+            header.format = version;
+        }
+        fs::write(&path, format!("{}\n", serde_json::to_string(&unsupported)?))?;
+        assert!(matches!(
+            read_records(session.directory()),
+            Err(SessionError::Invalid(_))
+        ));
+        assert_eq!(
+            benitoiteh::session::list_sessions(&fixture.paths)?
+                .first()
+                .and_then(|entry| entry.error.as_deref()),
+            Some("Unsupported session format version.")
+        );
     }
-    fs::write(&path, format!("{}\n", serde_json::to_string(&unsupported)?))?;
-    assert!(matches!(
-        read_records(session.directory()),
-        Err(SessionError::Invalid(_))
-    ));
-
     let unsupported_message = read_records(session.directory())
         .err()
         .ok_or("unsupported format")?
@@ -453,6 +468,7 @@ fn oversized_records_are_spilled_losslessly_and_tool_output_counts_discarded_byt
         .items
         .push(json!({"encrypted_content": "x".repeat(MAX_BYTES.saturating_add(1))}));
     writer.append(&Record::Assistant {
+        node: 1,
         turn: 1,
         response: response.clone(),
     })?;
@@ -998,6 +1014,247 @@ fn legacy_skill_version_is_ignored_and_not_written() -> TestResult {
         serde_json::to_value(decoded)?
             .get("skill_version")
             .is_none()
+    );
+    Ok(())
+}
+
+// 作成時の関門: 別の枝の圧縮・画像除去・未完了の呼び出しを混ぜる退行を、
+// 記録の公開の復元の口で捕まえる。直線の再開のテストでは枝の混入を検出できない。
+#[test]
+fn replay_selects_only_the_path_and_its_reasoning_segments() -> TestResult {
+    use benitoiteh::session::ResumeState;
+    let fixture = Fixture::new()?;
+    let session = fixture.session()?;
+    let mut writer = session.writer()?;
+    writer.append(&header(&session))?;
+    let request = |node, text: &str| Record::User {
+        node,
+        kind: UserKind::Request,
+        message: UserMessage {
+            parts: vec![UserPart {
+                kind: UserPartKind::Request,
+                text: text.into(),
+            }],
+        },
+    };
+    writer.append(&request(1, "shared"))?;
+    let image_call = call("image");
+    writer.append(&Record::Assistant {
+        node: 2,
+        turn: 1,
+        response: response(std::slice::from_ref(&image_call)),
+    })?;
+    let mut image = result(&image_call, "saved image");
+    image.images.push(benitoiteh::provider::ToolImage {
+        media_type: "image/gif".into(),
+        sha256: "c".repeat(64),
+        width: 1,
+        height: 1,
+        bytes: 10,
+        data: None,
+    });
+    writer.append(&Record::ToolResult {
+        node: 3,
+        turn: 1,
+        name: "read".into(),
+        result: image.clone(),
+        spill: None,
+        stderr_spill: None,
+    })?;
+    writer.append(&Record::Assistant {
+        node: 4,
+        turn: 2,
+        response: response(&[call("abandoned")]),
+    })?;
+    writer.append(&Record::ImagesRemoved {
+        node: 5,
+        results: vec!["image".into()],
+    })?;
+    let compacted = Conversation {
+        items: vec![Item::AssistantTurn(response(&[]))],
+    };
+    writer.append(&Record::Compaction {
+        node: 6,
+        conversation: compacted.clone(),
+        reason: Default::default(),
+        summarized_items: 5,
+        kept_items: 0,
+    })?;
+    writer.append(&Record::SessionStart {
+        session_id: session.id().to_string(),
+        resumed: true,
+        base_url: None,
+        system_prompt_sha256: Some("d".repeat(64)),
+        tools_sha256: None,
+        mode: Mode::Restricted.into(),
+        provider: "test".into(),
+        model: "new-model".into(),
+        host: "example.test".into(),
+        benitoiteh_version: "test".into(),
+        notice: None,
+        instruction_files: vec![],
+        skipped_instructions: vec![],
+        skills: vec![],
+        skipped_skills: vec![],
+    })?;
+    writer.append(&Record::Branch {
+        to: Some(3),
+        from: Some(6),
+        checkpoint: None,
+    })?;
+    writer.append(&request(7, "active"))?;
+    writer.append(&Record::Assistant {
+        node: 8,
+        turn: 3,
+        response: response(&[call("pending")]),
+    })?;
+    let state = ResumeState::read(session.directory())?;
+    assert_eq!(state.tree.tip, Some(8));
+    assert_eq!(state.tree.next_node, 9);
+    assert_eq!(state.tree.leaves(), vec![6, 8]);
+    assert_eq!(state.conversation.items.len(), 6);
+    assert_eq!(
+        state.conversation.items.get(2),
+        Some(&Item::ToolResult(image))
+    );
+    assert_eq!(state.missing_results.len(), 1);
+    assert!(
+        matches!(state.missing_results.first(), Some(Record::ToolResult { result, .. }) if result.id == "pending")
+    );
+    assert_eq!(state.reasoning.len(), 2);
+    assert_eq!(
+        state
+            .reasoning
+            .first()
+            .ok_or("first reasoning")?
+            .system_prompt_sha256,
+        "a".repeat(64)
+    );
+    assert_eq!(
+        state
+            .reasoning
+            .last()
+            .ok_or("last reasoning")?
+            .system_prompt_sha256,
+        "d".repeat(64)
+    );
+    assert_eq!(replay(session.directory())?, state.conversation);
+    writer.append(&Record::Branch {
+        to: Some(6),
+        from: Some(8),
+        checkpoint: None,
+    })?;
+    let state = ResumeState::read(session.directory())?;
+    assert_eq!(state.conversation, compacted);
+    assert_eq!(state.reasoning.len(), 1);
+    assert_eq!(
+        state
+            .reasoning
+            .first()
+            .ok_or("compaction reasoning")?
+            .system_prompt_sha256,
+        "a".repeat(64)
+    );
+    writer.append(&Record::Branch {
+        to: Some(5),
+        from: Some(6),
+        checkpoint: None,
+    })?;
+    let state = ResumeState::read(session.directory())?;
+    assert!(
+        matches!(state.conversation.items.get(2), Some(Item::ToolResult(result)) if result.images.is_empty() && result.text.contains("image was removed"))
+    );
+    assert!(
+        matches!(state.missing_results.first(), Some(Record::ToolResult { result, .. }) if result.id == "abandoned")
+    );
+    // 別の枝に結果があっても、移った道にない結果は未記録として補う。
+    writer.append(&Record::Branch {
+        to: Some(2),
+        from: Some(5),
+        checkpoint: None,
+    })?;
+    let state = ResumeState::read(session.directory())?;
+    assert!(
+        matches!(state.missing_results.first(), Some(Record::ToolResult { result, .. }) if result.id == "image")
+    );
+    Ok(())
+}
+
+// 作成時の関門: 木の誤りを受け入れる退行と、検査の前に再開の一時領域を
+// 消してしまう退行を、Session::open の境界で同時に捕まえる。
+#[test]
+fn invalid_trees_are_rejected_before_resume_touches_temporary_files() -> TestResult {
+    let user = |node| Record::User {
+        node,
+        kind: UserKind::Request,
+        message: UserMessage { parts: vec![] },
+    };
+    let cases = vec![
+        vec![
+            user(1),
+            Record::Branch {
+                to: Some(99),
+                from: Some(1),
+                checkpoint: None,
+            },
+        ],
+        vec![
+            user(1),
+            Record::Branch {
+                to: Some(2),
+                from: Some(1),
+                checkpoint: None,
+            },
+            user(2),
+        ],
+        vec![
+            user(1),
+            Record::Branch {
+                to: Some(1),
+                from: Some(99),
+                checkpoint: None,
+            },
+        ],
+        vec![
+            user(1),
+            Record::Branch {
+                to: Some(1),
+                from: Some(2),
+                checkpoint: None,
+            },
+            user(2),
+        ],
+        vec![user(2), user(1)],
+        vec![user(1), user(1)],
+        vec![user(0)],
+        vec![user(u64::MAX)],
+    ];
+    for records in cases {
+        let fixture = Fixture::new()?;
+        let session = fixture.session()?;
+        let mut writer = session.writer()?;
+        writer.append(&header(&session))?;
+        for record in records {
+            writer.append(&record)?;
+        }
+        let id = session.id().clone();
+        let temporary = session.temporary_dir().to_owned();
+        drop(writer);
+        drop(session);
+        fs::create_dir(&temporary)?;
+        fs::set_permissions(&temporary, fs::Permissions::from_mode(0o700))?;
+        let sentinel = temporary.join("keep");
+        fs::write(&sentinel, b"untouched")?;
+        assert!(matches!(
+            session_support::open_created_session(&fixture.paths, &id),
+            Err(benitoiteh::session::SessionError::Invalid(_))
+        ));
+        assert_eq!(fs::read(sentinel)?, b"untouched");
+    }
+    // 版 2 では会話の行の節点を省略できない。
+    assert!(
+        serde_json::from_value::<Record>(json!({"type":"compaction", "conversation":{"items":[]}}))
+            .is_err()
     );
     Ok(())
 }

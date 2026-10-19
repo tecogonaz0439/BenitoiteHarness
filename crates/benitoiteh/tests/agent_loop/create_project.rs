@@ -273,7 +273,6 @@ fn creation_switches_scope_before_later_calls_and_records_before_result() -> Tes
     let checkpoint = recorder.capture(
         benitoiteh::rewind::CheckpointReason::Request,
         None,
-        Some(0),
         &AtomicBool::new(false),
     )?;
     assert_ne!(checkpoint.id, old_checkpoint);
@@ -304,6 +303,49 @@ fn creation_switches_scope_before_later_calls_and_records_before_result() -> Tes
     assert_eq!(resumed.status().project, destination);
     let (sender, _receiver) = mpsc::sync_channel(64);
     resumed.run("resume".into(), Arc::new(AtomicBool::new(true)), sender)?;
+    // 切り替え前の依頼へは会話だけを戻せる。環境だけの user は候補にしない。
+    let requests = resumed
+        .branch_targets()?
+        .into_iter()
+        .filter(|info| {
+            matches!(
+                info.target,
+                benitoiteh::agent::BranchTarget::BeforeRequest(_)
+            )
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(requests.len(), 2);
+    let old_request = requests.first().ok_or("old request")?;
+    assert!(old_request.checkpoint.is_none());
+    let (sender, _receiver) = mpsc::sync_channel(64);
+    assert!(
+        resumed
+            .switch_branch(
+                old_request.target,
+                RewindScope::FilesAndConversation,
+                false,
+                sender
+            )
+            .is_err()
+    );
+    let (sender, _receiver) = mpsc::sync_channel(64);
+    resumed.switch_branch(old_request.target, RewindScope::Conversation, false, sender)?;
+    assert_eq!(resumed.status().project, destination);
+    let (sender, _receiver) = mpsc::sync_channel(64);
+    resumed.run(
+        "after branch".into(),
+        Arc::new(AtomicBool::new(true)),
+        sender,
+    )?;
+    let first = resumed
+        .conversation()
+        .items
+        .first()
+        .ok_or("restored environment")?;
+    assert!(
+        matches!(first, Item::UserMessage(message) if message.parts.iter().any(|part|
+        part.kind == benitoiteh::provider::UserPartKind::Environment && part.text.contains(destination.to_str().unwrap_or_default())))
+    );
     server.shutdown()?;
     Ok(())
 }

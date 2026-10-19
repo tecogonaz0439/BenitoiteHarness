@@ -119,8 +119,7 @@ pub struct Checkpoint {
     pub turn: u64,
     pub call_id: Option<String>,
     pub created_at: Timestamp,
-    pub items: Option<usize>,
-    pub generation: u64,
+    pub node: Option<u64>,
     pub manifest: Option<String>,
     pub incomplete: Vec<String>,
 }
@@ -171,6 +170,8 @@ pub struct RewindReport {
     pub irreversible: Vec<IrreversibleOperation>,
     pub before_rewind: Option<String>,
     pub conversation_rewound: bool,
+    /// 移る先の依頼の全文。入力欄へ戻すために使う。
+    pub request: Option<String>,
     /// 読んだ版を無効にするための、変更できた相対パス。
     pub changed_paths: Vec<PathBuf>,
 }

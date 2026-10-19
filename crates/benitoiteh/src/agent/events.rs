@@ -235,9 +235,7 @@ impl AgentEvent {
                 justification: justification.clone(),
                 user_message: user_message.clone(),
             },
-            Self::ImagesRemoved { results } => Record::ImagesRemoved {
-                results: results.clone(),
-            },
+            Self::ImagesRemoved { .. } => return None,
             Self::Retry {
                 attempt,
                 delay_ms,

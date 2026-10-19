@@ -173,7 +173,7 @@ fn image_rejection_retries_once_and_commits_removal_only_on_success() -> TestRes
             let removals = records
                 .iter()
                 .filter_map(|record| {
-                    if let Record::ImagesRemoved { results } = record {
+                    if let Record::ImagesRemoved { results, .. } = record {
                         Some(results)
                     } else {
                         None
@@ -203,7 +203,7 @@ fn image_rejection_retries_once_and_commits_removal_only_on_success() -> TestRes
                 let value = serde_json::to_value(records.get(position).ok_or("missing record")?)?;
                 assert_eq!(
                     value,
-                    json!({"type":"images_removed","results":[result.id]})
+                    json!({"type":"images_removed","node": 4,"results":[result.id]})
                 );
             } else {
                 assert_eq!(result.images.len(), 1);
