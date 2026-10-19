@@ -1,5 +1,7 @@
 //! 行番号と続きの位置を付けてテキストを読む（設計書 01-03「read」）。
 
+mod image;
+
 use super::{FileVersion, ToolContext, ToolError, ToolOutput, text, truncate};
 use serde_json::Value;
 use std::io::Read;
@@ -45,12 +47,28 @@ pub(super) fn content_hash(
 
 pub(super) fn execute(context: &ToolContext, arguments: &Value) -> Result<ToolOutput, ToolError> {
     let path = string(arguments, "path")?;
-    let offset = number(arguments, "offset", 1, false)?;
-    let limit = number(arguments, "limit", 2000, false)?.min(2000);
     let mut opened = context.open_file(Path::new(path), false)?;
     let metadata = opened.file.metadata()?;
-    check_text_file(&opened.real_path, &metadata)?;
     let version = FileVersion::from_metadata(&metadata);
+    // read は短く返しうるため、形式を判定する 12 バイトか EOF まで読む。
+    // 非画像の先頭も後のデコードへ渡す（設計書 01-03「画像のファイルの読み取り」）。
+    let mut prefix = Vec::new();
+    opened.file.by_ref().take(12).read_to_end(&mut prefix)?;
+    if let Some(format) = image::detect(&prefix) {
+        return image::execute(
+            context,
+            arguments,
+            opened,
+            version,
+            metadata.len(),
+            prefix,
+            format,
+        );
+    }
+    check_text_file(&opened.real_path, &metadata)?;
+    let offset = number(arguments, "offset", 1, false)?;
+    let limit = number(arguments, "limit", 2000, false)?.min(2000);
+
     let style = if context.read_line_numbers {
         LineStyle::Numbered
     } else {
@@ -58,8 +76,9 @@ pub(super) fn execute(context: &ToolContext, arguments: &Value) -> Result<ToolOu
     };
     let mut lines = ReadLines::new(offset, limit, style);
     let mut buffer = [0; 8192];
-    let mut pending = Vec::new();
-    let mut bytes_read = 0u64;
+    let mut bytes_read = check_text_chunk(&prefix, 0)?;
+    let mut pending = prefix;
+    decode_prefix(&mut pending, |ch| lines.character(ch));
     loop {
         let count = opened.file.read(&mut buffer)?;
         if count == 0 {

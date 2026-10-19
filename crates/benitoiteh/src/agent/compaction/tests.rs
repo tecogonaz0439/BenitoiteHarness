@@ -124,6 +124,7 @@ fn unbuildable_continuation_falls_back_and_summarizes_first_request_and_steering
                 provider_id: None,
                 text: "orphan result".into(),
                 is_error: false,
+                images: Vec::new(),
             }),
         ],
     };
@@ -181,4 +182,69 @@ fn user_with_parts(parts: Vec<(UserPartKind, String)>) -> Item {
             .map(|(kind, text)| UserPart { kind, text })
             .collect(),
     })
+}
+
+// 作成時の関門: 文の量だけの既存の見積もりは、画像を無視して圧縮が遅れる退行を
+// 捕まえられない。寸法による契約と、文字化した圧縮入力から画像を除く契約を守る。
+#[test]
+fn image_estimates_include_tiles_but_transcript_contains_only_result_text()
+-> Result<(), Box<dyn Error>> {
+    use crate::provider::{ReasoningReplay, ToolImage};
+    let destination = Destination {
+        provider: "mock".into(),
+        base_url: "https://mock.invalid".into(),
+        model: "m".into(),
+    };
+    for (size, expected) in [(1000, 3888), (2000, 4704)] {
+        let item = Item::ToolResult(ToolResult {
+            id: "image".into(),
+            provider_id: None,
+            text: "Read image file image/png".into(),
+            is_error: false,
+            images: vec![ToolImage {
+                media_type: "image/png".into(),
+                sha256: "0".repeat(64),
+                width: size,
+                height: size,
+                bytes: 6,
+                data: Some(std::sync::Arc::from(b"foobar".as_slice())),
+            }],
+        });
+        assert_eq!(
+            conversation::item_bytes(&item, ReasoningReplay::None, &destination),
+            25_u64.saturating_add(expected)
+        );
+        let conversation = Conversation {
+            items: vec![
+                user_with_parts(vec![(UserPartKind::Request, "read".into())]),
+                item,
+            ],
+        };
+        let transcript =
+            conversation::Transcript::new(&conversation, conversation.items.len(), None, false);
+        let mut body = String::new();
+        transcript.append_to(&mut body);
+        assert_eq!(
+            body,
+            "[User]\nread\n\n[Tool result image]\nRead image file image/png\n\n"
+        );
+        let retained = conversation::rebuild(
+            &conversation,
+            1,
+            "summary",
+            &Default::default(),
+            ReasoningReplay::None,
+        );
+        let Some(Item::ToolResult(result)) = retained.items.last() else {
+            return Err("missing retained result".into());
+        };
+        assert_eq!(
+            result
+                .images
+                .first()
+                .and_then(|image| image.data.as_deref()),
+            Some(b"foobar".as_slice())
+        );
+    }
+    Ok(())
 }

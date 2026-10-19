@@ -14,7 +14,8 @@ web_fetch: Fetch an HTTPS URL and return its text content.
 </tools>
 
 <rules>
-read: Use offset and limit to read a range; follow the continuation marker for more lines. Use grep to inspect truncated long lines.
+read: PNG, JPEG, GIF and WebP images are returned as images when the current model accepts them (offset and limit do not apply).
+Use offset and limit to read a range; follow the continuation marker for more lines. Use grep to inspect truncated long lines.
 glob: Search under path, or the project directory if omitted; narrow the pattern if results are truncated.
 grep: Use glob to filter files, context for surrounding lines, and files_only to return matching paths.
 write: Read an existing file before replacing it; if it has changed since that read, read it again before retrying.

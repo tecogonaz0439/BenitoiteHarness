@@ -181,10 +181,24 @@ impl AnthropicAdapter {
                 Item::ToolResult(result) => {
                     // 呼び出しと結果は内部 ID で結び、別の送り先でも同じ変換を使う。
                     let id = ids.get(&result.id).ok_or(AnthropicError::InvalidRequest)?;
+                    let (body, images) =
+                        crate::provider::images::prepare(result, self.capabilities.image_input);
+                    let content = if images.is_empty() {
+                        json!(body)
+                    } else {
+                        let mut parts = vec![json!({"type": "text", "text": body})];
+                        for image in images {
+                            parts.push(json!({"type": "image", "source": {
+                                "type": "base64", "media_type": image.media_type,
+                                "data": crate::provider::images::encode(image.data.as_deref().unwrap_or_default())
+                            }}));
+                        }
+                        json!(parts)
+                    };
                     (
                         "user",
                         vec![
-                            json!({"type": "tool_result", "tool_use_id": id, "content": result.text, "is_error": result.is_error}),
+                            json!({"type": "tool_result", "tool_use_id": id, "content": content, "is_error": result.is_error}),
                         ],
                     )
                 }

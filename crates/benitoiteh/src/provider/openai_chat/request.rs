@@ -137,7 +137,11 @@ impl OpenAiChatAdapter {
     ) -> Result<Vec<Value>, OpenAiChatError> {
         let mut messages = vec![json!({"role": "system", "content": system})];
         let mut ids = HashMap::new();
+        let mut attachments = Vec::new();
         for item in &conversation.items {
+            if !matches!(item, Item::ToolResult(_)) {
+                flush_images(&mut messages, &mut attachments);
+            }
             let message = match item {
                 Item::UserMessage(user) => json!({
                     "role": "user",
@@ -194,11 +198,21 @@ impl OpenAiChatAdapter {
                 }
                 Item::ToolResult(result) => {
                     let id = ids.get(&result.id).ok_or(OpenAiChatError::InvalidRequest)?;
-                    json!({"role": "tool", "tool_call_id": id, "content": result.text})
+                    let (mut body, images) =
+                        crate::provider::images::prepare(result, self.capabilities.image_input);
+                    if !images.is_empty() {
+                        body.push('\n');
+                        body.push_str(crate::provider::text::IMAGE_ATTACHED);
+                        attachments.extend(images.into_iter().map(|image| json!({
+                            "type": "image_url", "image_url": {"url": crate::provider::images::data_url(image)}
+                        })));
+                    }
+                    json!({"role": "tool", "tool_call_id": id, "content": body})
                 }
             };
             messages.push(message);
         }
+        flush_images(&mut messages, &mut attachments);
         Ok(messages)
     }
 }
@@ -209,4 +223,13 @@ fn insert(value: &mut Value, name: &str, content: Value) -> Result<(), OpenAiCha
         .ok_or(OpenAiChatError::InvalidRequest)?
         .insert(name.into(), content);
     Ok(())
+}
+
+fn flush_images(messages: &mut Vec<Value>, images: &mut Vec<Value>) {
+    if !images.is_empty() {
+        let mut content =
+            vec![json!({"type": "text", "text": crate::provider::text::IMAGE_ATTACHMENTS})];
+        content.append(images);
+        messages.push(json!({"role": "user", "content": content}));
+    }
 }

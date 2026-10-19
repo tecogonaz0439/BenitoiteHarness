@@ -214,6 +214,7 @@ fn finish_calls(
             id: call.id,
             provider_id: call.provider_id,
             is_error: true,
+            images: Vec::new(),
         };
         conversation.items.push(Item::ToolResult(result));
     }

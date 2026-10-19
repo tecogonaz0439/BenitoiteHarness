@@ -223,6 +223,37 @@ fn capabilities_use_official_defaults_only_at_the_exact_official_destination() -
             .resolved_capabilities()
             .reasoning_effort
     );
+    assert!(official.resolved_capabilities().image_input);
+    assert!(responses.resolved_capabilities().image_input);
+    assert!(!compatible.image_input);
+    assert!(
+        !provider(&config, "chat")?
+            .resolved_capabilities()
+            .image_input
+    );
+    for (kind, base_url, value) in [
+        ("anthropic-messages", "https://api.anthropic.com", false),
+        ("openai-responses", "https://api.openai.com/v1", false),
+        ("openai-chat", "https://compatible.example/v1", true),
+        ("anthropic-messages", "https://compatible.example", true),
+        ("openai-responses", "https://compatible.example/v1", false),
+    ] {
+        let parsed = UserConfig::parse(&format!(
+            r#"
+            [providers.images]
+            kind = "{kind}"
+            base_url = "{base_url}"
+            model = "m"
+            capabilities = {{ image_input = {value} }}
+        "#
+        ))?;
+        assert_eq!(
+            provider(&parsed, "images")?
+                .resolved_capabilities()
+                .image_input,
+            value
+        );
+    }
     Ok(())
 }
 

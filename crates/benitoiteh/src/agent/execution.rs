@@ -518,6 +518,11 @@ impl Agent {
             provider_id: call.provider_id.clone(),
             text: output.text,
             is_error: output.is_error,
+            images: if output.is_error {
+                Vec::new()
+            } else {
+                output.images
+            },
         };
         self.writer.append(&Record::ToolResult {
             turn: self.turn,

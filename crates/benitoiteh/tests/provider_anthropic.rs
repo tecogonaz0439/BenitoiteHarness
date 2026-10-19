@@ -272,6 +272,7 @@ fn interleaved_blocks_survive_http_assembly_and_same_destination_replay() -> Tes
                 provider_id: call.provider_id.clone(),
                 text: "result".into(),
                 is_error: call.arguments.is_null(),
+                images: Vec::new(),
             }));
         }
     }
@@ -460,6 +461,7 @@ fn changed_destinations_remap_call_and_result_ids_and_never_replay_reasoning() -
             provider_id: Some(provider.into()),
             text: "ok".into(),
             is_error: false,
+            images: Vec::new(),
         }));
     }
     for index in 0..5 {
@@ -801,5 +803,68 @@ fn header_only_responses_can_be_cancelled_and_time_out() -> TestResult {
         assert!(stream.finish().is_err());
         server.shutdown()?;
     }
+    Ok(())
+}
+
+#[path = "support/images.rs"]
+mod image_support;
+
+// 作成時の関門: 既存のテキストの要求では、画像の API ごとの包みと、誤り・未対応・
+// 欠落時の抑止を検出できない。公開の要求作成と HTTP 送信を通し、本文を確かめる。
+#[test]
+fn tool_images_use_api_blocks_and_omit_unavailable_or_unsupported_data() -> TestResult {
+    let cases = [
+        (true, true, false),
+        (false, true, false),
+        (true, false, false),
+        (true, true, true),
+    ];
+    let mut server = MockProvider::start(
+        cases
+            .iter()
+            .map(|_| Ok(ResponseScript::sse(simple("end_turn", None)?)))
+            .collect::<Result<Vec<_>, Box<dyn Error>>>()?,
+    )?;
+    for (enabled, available, is_error) in cases {
+        let adapter = AnthropicAdapter::new(
+            destination(&server),
+            Capabilities {
+                image_input: enabled,
+                ..Capabilities::default()
+            },
+            KEY.into(),
+        );
+        let history = image_support::history(available, is_error);
+        request(&adapter, &history, RequestOptions::default())?;
+    }
+    let requests = server.requests()?;
+    for (index, (enabled, available, is_error)) in cases.into_iter().enumerate() {
+        let body = &requests.get(index).ok_or("missing request")?.body;
+        let content = body
+            .pointer("/messages/1/content/0/content")
+            .ok_or("missing tool content")?;
+        if enabled && available && !is_error {
+            assert_eq!(
+                content,
+                &json!([
+                    {"type":"text", "text":"Read image file image/png (1x1, 6 bytes)"},
+                    {"type":"image", "source":{"type":"base64", "media_type":"image/png", "data":"Zm9vYmFy"}}
+                ])
+            );
+            assert_eq!(body.pointer("/messages/1/content/1/content"), Some(content));
+        } else {
+            assert!(content.is_string());
+            let expected = if !enabled {
+                "Read image file image/png (1x1, 6 bytes)\n(Image omitted: the current provider does not accept images.)"
+            } else if !available {
+                "Read image file image/png (1x1, 6 bytes)\n(Image omitted: the image data is not available.)"
+            } else {
+                "Read image file image/png (1x1, 6 bytes)"
+            };
+            assert_eq!(content, &json!(expected));
+            assert!(!body.to_string().contains("Zm9vYmFy"));
+        }
+    }
+    server.shutdown()?;
     Ok(())
 }

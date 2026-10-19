@@ -9,7 +9,7 @@ mod replay;
 mod resume;
 mod scan;
 mod storage;
-mod text;
+pub(crate) mod text;
 
 pub use files::FileHistory;
 pub use id::SessionId;

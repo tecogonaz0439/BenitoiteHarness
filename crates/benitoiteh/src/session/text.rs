@@ -29,3 +29,6 @@ pub const TOTAL_LIMIT: &str =
     "Session storage exceeds 10 GiB; reduce [sessions] retention_days to remove older sessions.";
 
 pub const INVALID_OBJECT: &str = "Invalid checkpoint object or content hash.";
+
+pub const IMAGE_RESTORE_OMITTED: &str =
+    "(An image from this result could not be restored from the session and was omitted.)";

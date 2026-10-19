@@ -36,7 +36,12 @@ use serde_json::Value;
 
 use crate::approval::{ApprovalFacts, ApprovalKind};
 use crate::config::{Approval, Mode, Sandbox};
-use crate::provider::ToolSpec;
+use crate::provider::{ToolImage, ToolSpec};
+
+/// 一枚の画像を読む上限（設計書 01-03「画像のファイルの読み取り」）。
+pub const MAX_IMAGE_BYTES: u64 = 3_932_160;
+/// 画像の各辺の上限。
+pub const MAX_IMAGE_DIMENSION: u32 = 2_000;
 use crate::safe_fs::{SafeFsError, ScopeRoot};
 use crate::sandbox::SandboxPolicy;
 use crate::session::{Session, SpillInfo};
@@ -368,6 +373,7 @@ pub struct WebFetchContext {
 
 /// 最大八つの道具が共有する文脈。変わる版の記録だけを Mutex で守る。
 pub struct ToolContext {
+    pub(crate) image_input: bool,
     pub(crate) after_write_check: bool,
     pub(crate) read_line_numbers: bool,
     pub(crate) noninteractive: bool,
@@ -438,6 +444,7 @@ impl ToolContext {
         exclude: ExcludeRules,
     ) -> Self {
         Self {
+            image_input: false,
             noninteractive: false,
             after_write_check: true,
             read_line_numbers: true,
@@ -463,6 +470,12 @@ impl ToolContext {
             search_limits: SearchLimits::default(),
             scratch_state: Mutex::new(benitoite_scratch::ScratchState::default()),
         }
+    }
+
+    /// 提供者が画像を受け付けるかを設定する。
+    pub fn with_image_input(mut self, enabled: bool) -> Self {
+        self.image_input = enabled;
+        self
     }
 
     /// 利用者の設定だけから、評価で比べる振る舞いを固定する（設計書 01-03）。
@@ -675,6 +688,8 @@ pub struct CheckOutcome {
 /// LLM の結果、画面用の文、実行前の確認の要求。
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ToolOutput {
+    /// 結果と一緒に送る画像。
+    pub images: Vec<ToolImage>,
     /// 信頼する道具側で、存在の検査より先に方針によって拒否した。
     pub policy_denied: bool,
     pub text: String,
@@ -695,6 +710,7 @@ impl ToolOutput {
     /// 成功の結果にも共通の 64 KiB の上限を掛ける。
     pub fn success(text: impl Into<String>) -> Self {
         Self {
+            images: Vec::new(),
             policy_denied: false,
             text: truncate::cap_middle(&text.into()),
             is_error: false,
@@ -722,6 +738,7 @@ impl ToolOutput {
     pub fn needs_approval(request: ApprovalRequest) -> Self {
         Self {
             text: truncate::cap_middle(&request.summary),
+            images: Vec::new(),
             policy_denied: false,
             approval: Some(request),
             is_error: false,

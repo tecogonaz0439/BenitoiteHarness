@@ -310,6 +310,7 @@ fn assistant_turn_json_preserves_order_ids_opaque_data_and_unreported_usage()
                 provider_id: Some("call_1".into()),
                 text: "result".into(),
                 is_error: false,
+                images: Vec::new(),
             }),
         ],
     };

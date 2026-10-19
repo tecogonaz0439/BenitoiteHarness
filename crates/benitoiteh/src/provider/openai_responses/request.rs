@@ -131,7 +131,17 @@ impl OpenAiResponsesAdapter {
                     "content": user.parts.iter().map(|p| json!({"type": "input_text", "text": p.text})).collect::<Vec<_>>()})),
                 Item::ToolResult(result) => {
                     let id = ids.get(&result.id).ok_or(OpenAiResponsesError::InvalidRequest)?;
-                    input.push(json!({"type": "function_call_output", "call_id": id, "output": result.text}));
+                    let (body, images) = crate::provider::images::prepare(result, self.capabilities.image_input);
+                    let output = if images.is_empty() {
+                        json!(body)
+                    } else {
+                        let mut parts = vec![json!({"type": "input_text", "text": body})];
+                        for image in images {
+                            parts.push(json!({"type": "input_image", "image_url": crate::provider::images::data_url(image), "detail": "auto"}));
+                        }
+                        json!(parts)
+                    };
+                    input.push(json!({"type": "function_call_output", "call_id": id, "output": output}));
                 }
                 Item::AssistantTurn(turn) => {
                     let same = turn.raw_items.destination == self.destination

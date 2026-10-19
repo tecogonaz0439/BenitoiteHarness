@@ -116,6 +116,7 @@ pub enum Approval {
 #[derive(Clone, Debug, Default, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct CapabilityOverrides {
+    pub image_input: Option<bool>,
     pub cache_control: Option<bool>,
     pub strict_tools: Option<bool>,
     pub eager_input_streaming: Option<bool>,
@@ -165,6 +166,9 @@ impl ProviderConfig {
             self.kind.default_capabilities()
         };
         let overrides = &self.capabilities;
+        if let Some(value) = overrides.image_input {
+            result.image_input = value;
+        }
         if let Some(value) = overrides.cache_control {
             result.cache_control = value;
         }

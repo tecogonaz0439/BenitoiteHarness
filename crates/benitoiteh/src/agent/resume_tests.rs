@@ -291,3 +291,175 @@ fn web_session_answers_are_remembered_by_the_loop_before_cancelled_execution()
     }
     Ok(())
 }
+
+// 作成時の関門: 道具単独の保存とアダプタ単独の要求では、ループの受け渡し、記録からの
+// 中身の除外、construct の復元、破損後の省略を捕まえられない。実際に read した記録で守る。
+#[test]
+fn image_results_are_recorded_without_data_and_restored_only_when_hash_matches()
+-> Result<(), Box<dyn std::error::Error>> {
+    let id = session::SessionId::generate(std::time::SystemTime::now())?;
+    let directory = std::env::temp_dir().join(format!("benitoiteh-resume-images-{id}"));
+    std::fs::create_dir(&directory)?;
+    let fixture = Fixture(std::fs::canonicalize(directory)?);
+    for name in ["home", "project", "tmp"] {
+        std::fs::create_dir(fixture.0.join(name))?;
+    }
+    let paths = DataPaths::from_values(
+        Some(&fixture.0.join("home")),
+        Some(&fixture.0.join("config")),
+        Some(&fixture.0.join("state")),
+        Some(&fixture.0.join("tmp")),
+    )?;
+    let project = fixture.0.join("project");
+    let bytes = b"GIF89a\x01\0\x01\0";
+    std::fs::write(project.join("image.txt"), bytes)?;
+    let session = Session::create(&paths, id)?;
+    let mut server = mock_provider::MockProvider::start(vec![
+        mock_provider::ResponseScript::sse(format!(
+            "data: {}\n\ndata: [DONE]\n\n",
+            serde_json::json!({"choices":[{"delta":{"tool_calls":[{"index":0,"id":"read_image","type":"function","function":{"name":"read","arguments":"{\"path\":\"image.txt\"}"}}]},"finish_reason":"tool_calls"}]})
+        )),
+        mock_provider::ResponseScript::sse(format!(
+            "data: {}\n\ndata: [DONE]\n\n",
+            serde_json::json!({"choices":[{"delta":{"content":"done"},"finish_reason":"stop"}]})
+        )),
+    ])?;
+    let config = AgentConfig {
+        project_parent: None,
+        allow_effects: None,
+        mode: Mode::Normal,
+        destination: Destination {
+            provider: "test".into(),
+            base_url: server.base_url(),
+            model: "model".into(),
+        },
+        kind: AdapterKind::OpenAiChat,
+        capabilities: Capabilities {
+            image_input: true,
+            ..Capabilities::default()
+        },
+        effort: "high".into(),
+        limits: Limits::default(),
+        http_timeouts: HttpTimeouts::default(),
+        retry_initial: Duration::from_millis(1),
+    };
+    let environment = Environment::capture(
+        &project,
+        Mode::Normal,
+        &[],
+        false,
+        std::time::SystemTime::now(),
+    )?;
+    let mut agent = Agent::new(
+        config.clone(),
+        String::new(),
+        tool_context(&paths, &project, &session)?,
+        environment.clone(),
+        session.clone(),
+    )?;
+    let (sender, receiver) = std::sync::mpsc::sync_channel(64);
+    agent.run(
+        "Read the image".into(),
+        Arc::new(AtomicBool::new(false)),
+        sender,
+    )?;
+    let _events = receiver.into_iter().collect::<Vec<_>>();
+    let image = agent
+        .conversation()
+        .items
+        .iter()
+        .find_map(|item| match item {
+            Item::ToolResult(result) => result.images.first(),
+            Item::UserMessage(_) | Item::AssistantTurn(_) => None,
+        })
+        .ok_or("missing image result")?;
+    assert_eq!(image.data.as_deref(), Some(bytes.as_slice()));
+    let hash = image.sha256.clone();
+    let log = std::fs::read_to_string(session.directory().join("session.jsonl"))?;
+    assert!(!log.contains("R0lGODlhAQABAA=="));
+    assert!(!log.contains("GIF89a"));
+    for line in log.lines() {
+        let value: serde_json::Value = serde_json::from_str(line)?;
+        if value.get("type").and_then(serde_json::Value::as_str) == Some("tool_result") {
+            let images = value
+                .pointer("/result/images")
+                .and_then(serde_json::Value::as_array)
+                .ok_or("missing image metadata")?;
+            assert_eq!(images.len(), 1);
+            assert_eq!(
+                images.first(),
+                Some(
+                    &serde_json::json!({"media_type":"image/gif", "sha256":hash, "width":1, "height":1, "bytes":10})
+                )
+            );
+        }
+    }
+    assert_eq!(session::replay(session.directory())?, *agent.conversation());
+    let requests = server.requests()?;
+    assert_eq!(requests.len(), 2);
+    assert!(
+        requests
+            .get(1)
+            .ok_or("missing image request")?
+            .body
+            .to_string()
+            .contains("data:image/gif;base64,R0lGODlhAQABAA==")
+    );
+    drop(agent);
+    let state = session::ResumeState::read(session.directory())?;
+    assert!(
+        state
+            .conversation
+            .items
+            .iter()
+            .filter_map(|item| match item {
+                Item::ToolResult(result) => result.images.first(),
+                Item::UserMessage(_) | Item::AssistantTurn(_) => None,
+            })
+            .all(|image| image.data.is_none())
+    );
+    let mut resumed_config = config;
+    resumed_config.capabilities.image_input = false;
+    for (corrupted, missing) in [(false, false), (true, false), (true, true)] {
+        if missing {
+            std::fs::remove_file(session.directory().join("objects").join(&hash))?;
+        } else if corrupted {
+            std::fs::write(
+                session.directory().join("objects").join(&hash),
+                b"corrupted!",
+            )?;
+        }
+        let agent = Agent::resume(
+            resumed_config.clone(),
+            String::new(),
+            tool_context(&paths, &project, &session)?.with_image_input(true),
+            environment.clone(),
+            session.clone(),
+            state.clone(),
+        )?;
+        assert!(!agent.tool_context.image_input);
+        let result = agent
+            .conversation()
+            .items
+            .iter()
+            .find_map(|item| match item {
+                Item::ToolResult(result) => Some(result),
+                Item::UserMessage(_) | Item::AssistantTurn(_) => None,
+            })
+            .ok_or("missing resumed result")?;
+        if corrupted {
+            assert!(result.images.is_empty());
+            assert!(result.text.ends_with("(An image from this result could not be restored from the session and was omitted.)"));
+        } else {
+            assert_eq!(
+                result
+                    .images
+                    .first()
+                    .and_then(|image| image.data.as_deref()),
+                Some(bytes.as_slice())
+            );
+        }
+    }
+    server.shutdown()?;
+    Ok(())
+}

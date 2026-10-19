@@ -1222,3 +1222,266 @@ fn plain_read_preserves_ranges_truncation_and_screen_lines_in_both_modes() -> Te
     }
     Ok(())
 }
+
+// 作成時の関門: テキストだけの既存の検査では、形式の判定・寸法・画像の拒否順序・
+// 保存の失敗を捕まえられない。公開の道具の結果と objects/、読んだ版で確かめる。
+fn png_header(width: u32, height: u32) -> Vec<u8> {
+    let mut bytes = b"\x89PNG\r\n\x1a\n\0\0\0\rIHDR".to_vec();
+    bytes.extend(width.to_be_bytes());
+    bytes.extend(height.to_be_bytes());
+    bytes.extend([8, 2, 0, 0, 0, 0, 0, 0, 0]);
+    bytes.extend(b"\0\0\0\0IDAT\0\0\0\0");
+    bytes
+}
+
+fn webp_header(kind: &[u8; 4], chunk: &[u8]) -> Result<Vec<u8>, Box<dyn Error>> {
+    let mut bytes = b"RIFF".to_vec();
+    let padding = chunk.len() % 2;
+    bytes.extend(
+        u32::try_from(chunk.len().saturating_add(padding).saturating_add(12))?.to_le_bytes(),
+    );
+    bytes.extend(b"WEBP");
+    bytes.extend(kind);
+    bytes.extend(u32::try_from(chunk.len())?.to_le_bytes());
+    bytes.extend(chunk);
+    bytes.extend(std::iter::repeat_n(0, padding));
+    Ok(bytes)
+}
+
+type ImageHeader = (&'static str, Vec<u8>);
+
+fn image_headers() -> Result<Vec<ImageHeader>, Box<dyn Error>> {
+    Ok(vec![
+        ("image/png", png_header(321, 123)),
+        (
+            "image/jpeg",
+            b"\xff\xd8\xff\xff\xe0\0\x04ab\xff\xd0\xff\x01\xff\xc0\0\x08\x08\0\x7b\x01\x41\0"
+                .to_vec(),
+        ),
+        (
+            "image/jpeg",
+            b"\xff\xd8\xff\xc2\0\x08\x08\0\x7b\x01\x41\0".to_vec(),
+        ),
+        ("image/gif", b"GIF87a\x41\x01\x7b\0".to_vec()),
+        ("image/gif", b"GIF89a\x41\x01\x7b\0".to_vec()),
+        (
+            "image/webp",
+            webp_header(b"VP8 ", b"\0\0\0\x9d\x01\x2a\x41\x41\x7b\x40")?,
+        ),
+        (
+            "image/webp",
+            webp_header(b"VP8L", &[0x2f, 0x40, 0x81, 0x1e, 0])?,
+        ),
+        // VP8X の動きの印は受け付け、画面の寸法を使う。
+        (
+            "image/webp",
+            webp_header(b"VP8X", &[2, 0, 0, 0, 0x40, 1, 0, 0x7a, 0, 0])?,
+        ),
+    ])
+}
+
+#[test]
+fn read_image_formats_by_signature_and_record_versions_in_both_modes() -> TestResult {
+    let fixture = Fixture::new()?;
+    for mode in [Mode::Normal, Mode::Restricted] {
+        let tools = ToolSet::new(mode);
+        let context = fixture.context(mode)?.with_image_input(true);
+        for (index, (mime, bytes)) in image_headers()?.into_iter().enumerate() {
+            let name = if index % 2 == 0 { "image" } else { "image.txt" };
+            let path = fixture.project.join(name);
+            fs::write(&path, &bytes)?;
+            let result = tools.execute(&context, "read", json!({"path":name}));
+            assert!(!result.is_error, "{mime}/{index}: {}", result.text);
+            assert_eq!(result.images.len(), 1);
+            let image = result.images.first().ok_or("missing image")?;
+            assert_eq!(image.media_type, mime);
+            assert_eq!((image.width, image.height), (321, 123));
+            assert_eq!(image.data.as_deref(), Some(bytes.as_slice()));
+            assert_eq!(image.bytes, u64::try_from(bytes.len())?);
+            assert_eq!(image.sha256.len(), 64);
+            assert_eq!(
+                result.text,
+                format!("Read image file {mime} (321x123, {} bytes)", bytes.len())
+            );
+            assert_eq!(result.screen.as_ref(), Some(&result.text));
+            assert_eq!(
+                context.read_version(&path)?,
+                Some(FileVersion::from_metadata(&fs::metadata(path)?))
+            );
+        }
+    }
+    Ok(())
+}
+
+#[test]
+fn read_image_limits_reject_invalid_headers_and_preserve_text_fallback() -> TestResult {
+    let fixture = Fixture::new()?;
+    let tools = ToolSet::new(Mode::Restricted);
+    let context = fixture.context(Mode::Restricted)?.with_image_input(true);
+    let path = fixture.project.join("image");
+    fs::write(&path, png_header(2000, 2000))?;
+    let disabled = fixture.context(Mode::Restricted)?;
+    for args in [
+        json!({"path":"image","offset":1}),
+        json!({"path":"image","limit":1}),
+    ] {
+        let output = tools.execute(&disabled, "read", args);
+        assert!(output.is_error);
+        assert!(output.text.contains("offset and limit"), "{}", output.text);
+    }
+    let output = tools.execute(&disabled, "read", json!({"path":"image"}));
+    assert!(output.is_error);
+    assert!(
+        output
+            .text
+            .contains("current provider does not accept images")
+    );
+    fs::OpenOptions::new()
+        .write(true)
+        .open(&path)?
+        .set_len(3_932_160)?;
+    assert!(
+        !tools
+            .execute(&context, "read", json!({"path":"image"}))
+            .is_error
+    );
+    fs::OpenOptions::new()
+        .write(true)
+        .open(&path)?
+        .set_len(3_932_161)?;
+    let output = tools.execute(&context, "read", json!({"path":"image"}));
+    assert!(output.is_error);
+    assert!(output.text.contains("3932161") && output.text.contains("3932160"));
+    for (width, height) in [(2001, 123), (123, 2001), (0, 123), (123, 0)] {
+        fs::write(&path, png_header(width, height))?;
+        let output = tools.execute(&context, "read", json!({"path":"image"}));
+        assert!(output.is_error);
+        assert!(output.text.contains(&format!("{width}x{height}")) && output.text.contains("2000"));
+        assert!(output.images.is_empty());
+    }
+    let mut animated = png_header(321, 123);
+    animated.splice(
+        33..33,
+        b"\0\0\0\x08acTL\0\0\0\x01\0\0\0\0\0\0\0\0".iter().copied(),
+    );
+    fs::write(&path, animated)?;
+    let output = tools.execute(&context, "read", json!({"path":"image"}));
+    assert!(output.is_error && output.text.contains("Animated PNG"));
+    for (mime, bytes) in image_headers()? {
+        let signature_length = match mime {
+            "image/png" => 8,
+            "image/jpeg" => 3,
+            "image/gif" => 6,
+            _ => 12,
+        };
+        // 完全な見出しに至る前のどの長さでも panic せず拒む。
+        for end in signature_length..bytes.len() {
+            // JPEG は SOF の前に詰め物がある。GIF は 10 バイトで見出しが完結する。
+            let part = bytes.get(..end).ok_or("bad test prefix")?;
+            fs::write(&path, part)?;
+            let output = tools.execute(&context, "read", json!({"path":"image"}));
+            // PNG は IHDR のみでも寸法が読める。
+            if mime == "image/png" && end == 33 {
+                continue;
+            }
+            assert!(output.is_error, "{mime}/{end}: {}", output.text);
+            assert!(output.images.is_empty());
+        }
+    }
+    for (name, contents) in [
+        ("picture.PNG", "ordinary text"),
+        ("picture.svg", "<svg/>"),
+        ("picture.bmp", "BM"),
+    ] {
+        fs::write(fixture.project.join(name), contents)?;
+        let output = tools.execute(&context, "read", json!({"path":name}));
+        assert!(output.is_error && output.text.contains("binary or image"));
+    }
+    for contents in [
+        "PNG is plain text\n",
+        "abcdefghijk界後半\n",
+        "GIF89 is plain text\n",
+    ] {
+        fs::write(&path, contents)?;
+        let output = tools.execute(&context, "read", json!({"path":"image"}));
+        assert_eq!(output.text, format!("     1\t{contents}"));
+        assert!(output.images.is_empty());
+    }
+    Ok(())
+}
+
+#[test]
+fn read_image_stores_object_once_and_fails_when_object_cannot_be_saved() -> TestResult {
+    use benitoiteh::session::{Session, SessionId};
+    let fixture = Fixture::new()?;
+    let session_paths = DataPaths::from_values(
+        Some(&fixture.directory),
+        Some(&fixture.directory.join("session-config")),
+        Some(&fixture.directory.join("session-state")),
+        Some(&fixture.temporary),
+    )?;
+    let session = Session::create(
+        &session_paths,
+        SessionId::generate(std::time::SystemTime::now())?,
+    )?;
+    let context = fixture
+        .context(Mode::Restricted)?
+        .with_image_input(true)
+        .with_session(session.clone());
+    let tools = ToolSet::new(Mode::Restricted);
+    let bytes = png_header(321, 123);
+    fs::write(fixture.project.join("image"), &bytes)?;
+    let result = tools.execute(&context, "read", json!({"path":"image"}));
+    assert!(!result.is_error, "{}", result.text);
+    let image = result.images.first().ok_or("missing image")?;
+    assert_eq!(
+        fs::read(session.directory().join("objects").join(&image.sha256))?,
+        bytes
+    );
+    assert_eq!(
+        session.store_object(&bytes)?,
+        Some((image.sha256.clone(), false))
+    );
+    assert_eq!(
+        tools
+            .execute(&context, "read", json!({"path":"image"}))
+            .images,
+        result.images
+    );
+    assert!(
+        context
+            .read_version(&fixture.project.join("image"))?
+            .is_some()
+    );
+    // 容量がなくても、既に保存した同じ画像は再利用できる。別の画像は返さない。
+    session.configure_budget(&benitoiteh::session::StorageUsage {
+        total: benitoiteh::session::TOTAL_LIMIT,
+        current: 0,
+        current_outputs: 0,
+    });
+    assert!(
+        !tools
+            .execute(&context, "read", json!({"path":"image"}))
+            .is_error
+    );
+    fs::write(fixture.project.join("another"), png_header(322, 123))?;
+    let output = tools.execute(&context, "read", json!({"path":"another"}));
+    assert!(output.is_error && output.images.is_empty());
+    assert!(output.text.contains("storage limit"), "{}", output.text);
+    assert_eq!(
+        context.read_version(&fixture.project.join("another"))?,
+        None
+    );
+    assert_eq!(
+        fs::read_dir(session.directory().join("objects"))?.count(),
+        1
+    );
+    // 名前が正しくても同名のディレクトリでは保存に失敗する。
+
+    fs::remove_file(session.directory().join("objects").join(&image.sha256))?;
+    fs::create_dir(session.directory().join("objects").join(&image.sha256))?;
+    let output = tools.execute(&context, "read", json!({"path":"image"}));
+    assert!(output.is_error);
+    assert!(output.images.is_empty());
+    Ok(())
+}

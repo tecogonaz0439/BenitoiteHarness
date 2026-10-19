@@ -302,6 +302,7 @@ impl Agent {
         {
             return Err(AgentError::InvalidConfiguration);
         }
+        tool_context.image_input = config.capabilities.image_input;
         tool_context.noninteractive = config.allow_effects.is_some();
         tool_context
             .project_parent
@@ -418,6 +419,7 @@ impl Agent {
             environment_changes: None,
         };
         if let Some(mut state) = state {
+            agent.session.restore_images(&mut state.conversation);
             let prompt_hash = context::system_prompt_hash(&agent.system.system_prompt);
             let tools_hash = context::tool_definitions_hash(&agent.system.tools)?;
             let mut contexts = state.reasoning.iter();
