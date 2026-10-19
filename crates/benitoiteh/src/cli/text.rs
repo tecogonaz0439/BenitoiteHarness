@@ -6,6 +6,8 @@ pub const HELP: &str = "Usage:
     benitoiteh exec [options] <request>
     benitoiteh doctor [--project <dir>] [--json]
     benitoiteh sessions [--project <dir>] [--json]
+    benitoiteh login chatgpt
+    benitoiteh logout chatgpt
     benitoiteh --help | --version | --licenses
 
 Options (interactive and exec):

@@ -36,6 +36,7 @@ dependencies = [
  "crossterm",
  "getrandom 0.4.3",
  "globset",
+ "graviola",
  "ignore",
  "image",
  "landlock",

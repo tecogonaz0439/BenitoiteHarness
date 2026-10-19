@@ -3,6 +3,7 @@
 pub mod args;
 mod doctor;
 mod exec;
+mod login;
 mod panic;
 mod sessions;
 mod signals;
@@ -14,6 +15,7 @@ use std::process::ExitCode;
 
 enum CliError {
     Usage,
+    Auth(crate::auth::AuthError),
     Arguments(args::ArgsError),
     Output(io::Error),
     Startup(exec::StartupError),
@@ -56,6 +58,7 @@ pub fn main() -> ExitCode {
                 error
             };
             let (message, status) = match error {
+                CliError::Auth(error) => (error.to_string(), ExitCode::FAILURE),
                 CliError::Usage => (text::INVALID_ARGUMENTS.to_owned(), ExitCode::from(2)),
                 CliError::Arguments(error) => (error.to_string(), ExitCode::from(2)),
                 CliError::Output(error) => (text::output_error(&error), ExitCode::FAILURE),
@@ -84,6 +87,9 @@ fn run(
     }
     if argument == "sessions" {
         return sessions::run(args);
+    }
+    if argument == "login" || argument == "logout" {
+        return login::run(args, argument == "logout");
     }
     if argument == "exec" {
         let arguments = args.collect::<Vec<_>>();

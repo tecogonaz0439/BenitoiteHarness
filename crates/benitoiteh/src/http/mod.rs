@@ -234,7 +234,7 @@ impl HttpClient {
         limit: u64,
         bound_status: bool,
     ) -> Result<HttpResponse, HttpError> {
-        let request = request(uri, headers, false, Vec::new())?;
+        let request = request(uri, headers, None, Vec::new())?;
         let response = agent.run(request).map_err(classify)?;
         let (parts, body) = response.into_parts();
         let head = ResponseHead {
@@ -265,6 +265,46 @@ impl HttpClient {
         Ok(HttpResponse { head, body })
     }
 
+    /// フォームを新しい接続で一度だけ POST し、上限付きで応答を読む。
+    pub fn post_form(
+        &self,
+        uri: &Uri,
+        headers: &HeaderMap,
+        body: &[u8],
+        limit: u64,
+    ) -> Result<HttpResponse, HttpError> {
+        let agent = make_agent(self.timeouts, self.tls.clone(), None, None);
+        let request = request(
+            uri,
+            headers,
+            Some("application/x-www-form-urlencoded"),
+            body.to_vec(),
+        )?;
+        let response = agent.run(request).map_err(classify)?;
+        let (parts, body) = response.into_parts();
+        let head = ResponseHead {
+            status: parts.status.as_u16(),
+            headers: parts.headers,
+        };
+        let mut bytes = Vec::new();
+        body.into_reader()
+            .take(limit.saturating_add(1))
+            .read_to_end(&mut bytes)
+            .map_err(|e| classify(e.into()))?;
+        if u64::try_from(bytes.len()).unwrap_or(u64::MAX) > limit {
+            return Err(HttpError::BodyLimit { limit });
+        }
+        if !(200..300).contains(&head.status) {
+            bytes.truncate(usize::try_from(ERROR_BODY_LIMIT).unwrap_or(65536));
+            return Err(HttpError::Status(Box::new(HttpStatusError {
+                retry_after: head.headers.get(header::RETRY_AFTER).cloned(),
+                head,
+                body: bytes,
+            })));
+        }
+        Ok(HttpResponse { head, body: bytes })
+    }
+
     /// JSON のバイト列を POST し、ヘッダと本文を別のスレッドから順に受け取る。
     ///
     /// JSON の構築と検査は提供者の層で行う。戻り値はヘッダの到着を待たないので、
@@ -275,7 +315,7 @@ impl HttpClient {
         headers: &HeaderMap,
         json: &[u8],
     ) -> Result<HttpStream, HttpError> {
-        let request = request(uri, headers, true, json.to_vec())?;
+        let request = request(uri, headers, Some("application/json"), json.to_vec())?;
         stream::start(self, request)
     }
 }
@@ -289,7 +329,7 @@ impl Default for HttpClient {
 fn request(
     uri: &Uri,
     headers: &HeaderMap,
-    post: bool,
+    content_type: Option<&'static str>,
     body: Vec<u8>,
 ) -> Result<Request<Vec<u8>>, HttpError> {
     if !matches!(uri.scheme_str(), Some("http" | "https"))
@@ -299,16 +339,19 @@ fn request(
         return Err(HttpError::InvalidRequest);
     }
     let mut request = Request::builder()
-        .method(if post { "POST" } else { "GET" })
+        .method(if content_type.is_some() {
+            "POST"
+        } else {
+            "GET"
+        })
         .uri(uri.clone())
         .body(body)
         .map_err(|_| HttpError::InvalidRequest)?;
     *request.headers_mut() = headers.clone();
-    if post {
-        request.headers_mut().insert(
-            header::CONTENT_TYPE,
-            HeaderValue::from_static("application/json"),
-        );
+    if let Some(content_type) = content_type {
+        request
+            .headers_mut()
+            .insert(header::CONTENT_TYPE, HeaderValue::from_static(content_type));
     } else {
         request.headers_mut().remove(header::ACCEPT_ENCODING);
     }

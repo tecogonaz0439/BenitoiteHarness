@@ -4,7 +4,7 @@ use std::collections::HashMap;
 use std::io::{self, Read, Write};
 use std::net::{SocketAddr, TcpListener, TcpStream};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, mpsc};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
@@ -76,6 +76,9 @@ pub struct RecordedRequest {
     pub headers: HashMap<String, String>,
     /// 受信した JSON。
     pub body: Value,
+    /// フォームも含めた生の本文。
+    #[allow(dead_code)]
+    pub raw_body: Vec<u8>,
 }
 
 impl std::fmt::Debug for RecordedRequest {
@@ -97,6 +100,22 @@ pub struct MockProvider {
 impl MockProvider {
     /// 手元の空いたポートで台本を順に返す。キーや受け取った本文を出力しない。
     pub fn start(scripts: Vec<ResponseScript>) -> io::Result<Self> {
+        let (sender, receiver) = mpsc::channel();
+        for script in scripts {
+            sender.send(script).map_err(|_| io::ErrorKind::Other)?;
+        }
+        drop(sender);
+        Self::start_receiving(receiver)
+    }
+
+    /// 認可の nonce を受け取った後などに、次の応答を渡せる模擬の口。
+    #[allow(dead_code)]
+    pub fn start_channel() -> io::Result<(Self, mpsc::Sender<ResponseScript>)> {
+        let (sender, receiver) = mpsc::channel();
+        Ok((Self::start_receiving(receiver)?, sender))
+    }
+
+    fn start_receiving(receiver: mpsc::Receiver<ResponseScript>) -> io::Result<Self> {
         let listener = TcpListener::bind("127.0.0.1:0")?;
         let address = listener.local_addr()?;
         listener.set_nonblocking(true)?;
@@ -107,7 +126,15 @@ impl MockProvider {
         let thread_stop = Arc::clone(&stop);
         let thread_requests = Arc::clone(&requests);
         let worker = thread::Builder::new().spawn(move || {
-            for script in scripts {
+            loop {
+                if thread_stop.load(Ordering::Acquire) {
+                    return Ok(());
+                }
+                let script = match receiver.recv_timeout(TICK) {
+                    Ok(script) => script,
+                    Err(mpsc::RecvTimeoutError::Timeout) => continue,
+                    Err(mpsc::RecvTimeoutError::Disconnected) => break,
+                };
                 let mut stream = loop {
                     if thread_stop.load(Ordering::Acquire) {
                         return Ok(());
@@ -234,7 +261,7 @@ fn read_request(
                 .filter_map(|l| l.split_once(':'))
                 .find(|(name, _)| name.eq_ignore_ascii_case("content-length"))
                 .and_then(|(_, value)| value.trim().parse::<usize>().ok())
-                .ok_or(io::ErrorKind::InvalidData)?;
+                .unwrap_or(0);
             head_end = Some(end);
         }
         if let Some(end) = head_end
@@ -254,11 +281,11 @@ fn read_request(
                 .filter_map(|l| l.split_once(':'))
                 .map(|(k, v)| (k.to_ascii_lowercase(), v.trim().to_owned()))
                 .collect();
-            let body = serde_json::from_slice(
-                bytes
-                    .get(end..end.saturating_add(length))
-                    .ok_or(io::ErrorKind::InvalidData)?,
-            )?;
+            let raw_body = bytes
+                .get(end..end.saturating_add(length))
+                .ok_or(io::ErrorKind::InvalidData)?
+                .to_vec();
+            let body = serde_json::from_slice(&raw_body).unwrap_or(Value::Null);
             return Ok(Some(RecordedRequest {
                 accepted_at,
                 received_at,
@@ -266,6 +293,7 @@ fn read_request(
                 path,
                 headers,
                 body,
+                raw_body,
             }));
         }
     }
