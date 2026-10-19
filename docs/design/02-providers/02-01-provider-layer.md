@@ -1,7 +1,7 @@
 # 提供者の層
 
 - 状態: 草稿
-- 未決事項: BH-030, BH-031, BH-032, BH-033, BH-036
+- 未決事項: BH-030, BH-031, BH-032, BH-033, BH-036, BH-114, BH-115
 
 ## 目的と範囲
 
@@ -27,7 +27,7 @@
 | アダプタ | 通信の形 | 主な使い道 |
 |---|---|---|
 | `anthropic-messages` | Anthropic の Messages API | Claude。DeepSeek の Anthropic 互換の口 |
-| `openai-responses` | OpenAI の Responses API | OpenAI のモデル。Sign in with ChatGPT（後で加える） |
+| `openai-responses` | OpenAI の Responses API | OpenAI のモデル。ChatGPT のプランでの利用（後述の「Sign in with ChatGPT」） |
 | `openai-chat` | OpenAI の Chat Completions API | 手元の推論サーバ（Ollama、llama.cpp の server、LM Studio、vLLM）、中継のサービス（OpenRouter など）、そのほかの互換の口 |
 
 アダプタは、LLM の API のクライアントのクレートを使わずに、HTTP の層（後述の「HTTP の通信」）の上に自前で作る。Benitoite の事前検討は LLM の API のクライアントに既存の OSS を使うとした（ADR 0194 の決定 4）が、これを改める。理由: [目的と設計原則](../00-overview/00-01-goals.md)の「事前検討との関係」に書いた。
@@ -149,6 +149,26 @@ Gemini の API の専用のアダプタ（ADR 0340 の E）は、三つのアダ
 
 - キーは、診断・ログ・セッションの記録・LLM に送る文脈に含めない。
 - 子プロセスの環境からキーの変数を除く（[Benitoite の処理系との連携](../04-benitoite/04-01-benitoite-integration.md)の「処理系の起動」）。設定で参照した環境変数の名前も除く対象に含める。
+
+### Sign in with ChatGPT
+
+【決定】ChatGPT の購読のプランで OpenAI のモデルを使えるように、OpenAI が公開しているオープンソースのツール向けの方法（ChatGPT plan usage。<https://developers.openai.com/siwc/token-sharing-open-source>）で、利用者の ChatGPT のアカウントに許可を求め、得たトークンで公開の Responses API を呼ぶ（2026-10-19 に設計者が決めた）。ログインで受け取る ID トークンは、署名を確かめる。理由: API キーでは ChatGPT の購読を使えない（[ロードマップ](../00-overview/00-03-roadmap.md)）。この方法は、OpenAI の文書が「ChatGPT plan usage is available to open-source projects, personal projects that run locally」とする公式の形である（<https://developers.openai.com/cookbook/articles/sign-in-with-chatgpt>、2026-10-19 に読んだ）。Codex CLI のクライアントの ID を流用して ChatGPT の内部の口（`chatgpt.com/backend-api/codex`）を呼ぶ形は、Cline と Roo Code などが使い、Pi と OpenCode は「legacy」と呼んで公式の形に移った。流用を許す公式の記述は見つからず、公式の文書はこの用途に内部の口を使わないよう求める（「do not point it at ChatGPT's `backend-api` endpoints」。<https://developers.openai.com/siwc/token-sharing-open-source/models-and-inference>）。
+
+以下の値と手順は、2026-10-19 に OpenAI の文書（<https://developers.openai.com/siwc/llms-full.txt>）で確かめた。同じ形を実装した例として、OpenCode（sst/opencode のコミット `ba06ff9e` の `packages/core/src/plugin/provider/chatgpt.ts`。ID トークンを確かめる）と Pi（badlogic/pi-mono の `1402973a` の `packages/ai/src/auth/oauth/openai-chatgpt.ts`）を読んだ。OpenAI の DevKit（openai/sign-in-with-chatgpt-devkit）は非商用の許諾なので、作りの参考にだけ使い、コードを写さない。
+
+- **ログイン**: `benitoiteh login chatgpt` で始める（[CLI と設定ファイル](../05-interface/05-01-cli.md)の「login と logout」）。LLM が呼べる道具からは始められない。
+  - 認可の口 `https://auth.openai.com/api/accounts/authorize` に、PKCE（S256）、`state`、`nonce`、`response_type=code`、`scope=openid profile email offline_access resource.invoke chatgpt.tokens.use.direct`、`resource=https://api.openai.com/v1`、`ext_agent_host_id`、`client_id` を付けて、利用者のブラウザで開く（開けなければ URL を示す）。`client_id` は、初めては `dynamic_agent_client`（と `agent_name_hint=benitoiteh`）とし、発行された ID（`oaiapp_` で始まる）を保存して、以後はそれを使う。`ext_agent_host_id` は `urn:uuid:` の形の乱数とし、機械ごとに一度作って保存する。
+  - 戻り先は `http://127.0.0.1:<番号>/auth/callback` とし、`127.0.0.1` に、OS が選ぶ番号で待ち受ける（`localhost` と書かない。文書が求める）。待ち受けるのは `GET /auth/callback` だけとし、`Host` の値も確かめる。待つ時間の上限は 10 分とする。
+  - 戻りの `state` を、時間の一定な比べ方で確かめる。違えばその戻りを捨てて待ち続ける。戻りに含まれる `client_id` が保存した ID と違えば断る。`error=access_denied` なら、`state` を確かめたうえで、交換せずに終える。
+  - トークンの口 `https://auth.openai.com/api/accounts/oauth/token` に、フォームの形で、`grant_type=authorization_code`、`client_id`、`code`、`code_verifier`、同じ `redirect_uri`、同じ `resource` を送る。クライアントの秘密は使わない。
+  - ID トークンは、`https://auth.openai.com/.well-known/openid-configuration` から得た JWKS の公開鍵で、RS256 の署名を確かめ、発行者、宛先（発行された `client_id`）、期限、`nonce` を確かめる。署名を確かめる処理は、TLS のために既に持つ `graviola` の RSA の検証（RSASSA-PKCS1-v1_5、SHA-256）を使う（【要検証】JWKS の `n`・`e` から鍵を作る形が `graviola` 0.4.1 の公開の口で書けるか。BH-114）。加えて、得た許可に `chatgpt.tokens.use.direct` があることを確かめる（文書: 「A valid ID token alone does not authorize ChatGPT plan usage.」）。
+- **保存**: 発行された `client_id`、`ext_agent_host_id`、アクセストークン、リフレッシュトークン、期限、`earliest_refresh_at`、アカウントの表示用の情報（メールの宛先など）を、`$XDG_STATE_HOME/benitoiteh/auth/chatgpt.json` に置く。ディレクトリは 0700、ファイルは 0600 とし、一時ファイルに書いてから名前を替える（途中で止まっても壊れたファイルを残さない）。トークンは、診断・ログ・セッションの記録・LLM に送る文脈・URL に含めない。子プロセスの環境にも渡さない。OS のキーストアに置く形は、API キーと同じく後に回す（BH-033）。
+- **更新**: アクセストークンは 1 時間、リフレッシュトークンは 30 日で切れ、更新のたびにリフレッシュトークンが替わる（文書）。要求の前に、アクセストークンの期限まで 60 秒を切っていれば（`earliest_refresh_at` より後なら）更新する。更新は、`auth/` の錠のファイルに排他の錠を掛けて、プロセスをまたいで一つずつ行い、錠を取った後に保存の内容を読み直して、ほかのプロセスが既に更新していれば使う。更新の要求はフォームの形で `grant_type=refresh_token`、`client_id`、`refresh_token`、`resource` を送る。受け取ったトークンは、すぐに保存する（使い終えたリフレッシュトークンを失わないため）。更新が `invalid_grant`・`refresh_token_reused` などで断られたら、保存したトークンを消し、`benitoiteh login chatgpt` をやり直すよう示す。
+- **要求**: 提供者の設定で `kind = "openai-responses"` と `auth = "chatgpt"` を指定すると、API キーの代わりに保存したトークンを使い、送り先を `https://api.openai.com/v1/responses` に固定する。要求は今の `openai-responses` のアダプタで作り、次の点を変える。文書が受け付けないとする欄（`background`、`conversation`、`max_output_tokens`、`max_tool_calls`、`metadata`、`moderation`、`prompt`、`prompt_cache_retention`、`safety_identifier`、`temperature`、`top_logprobs`、`top_p`、`truncation`、`user`、`previous_response_id` など）を送らない。システムプロンプトは `instructions` で送り、`role: "system"` の項目を送らない。`store: false`、`stream: true` とする。【要検証】道具の定義を今の形（最上位の `function`）のまま受け付けるか、名前空間にまとめる必要があるかは、文書が後者を勧めるので、本物の要求で確かめる（BH-115。設計者の了承を得てから行う）。
+- **誤り**: `subscription_sharing_usage_limit_exceeded`（429）は、やり直さずに止め、利用の上限に達したことと <https://chatgpt.com/settings/usage> を示す。`subscription_sharing_user_not_eligible`（403）と `subscription_sharing_unsupported_capability`（400）も、やり直さずに止める。401 は一度だけ更新してやり直す。
+- **ログアウト**: `benitoiteh logout chatgpt` は、`openid-configuration` の `revocation_endpoint` にリフレッシュトークンの取り消しを 10 秒の上限で求め、保存したトークンを消す（`client_id` と `ext_agent_host_id` は残す）。取り消しを確かめられなければ、そのことを示す。
+- **端末だけの環境**: 文書はデバイスコードの形を示さず、別の機械でログインした資格のファイルを写す形を示す。`benitoiteh` も、ログインの URL を示し、戻りを同じ機械の `127.0.0.1` で受ける形だけを作る。写すときは `ext_agent_host_id` を写さない（文書: 移した先の機械の値を保つ）。
+- **画面の文言**: ログインの操作は「Continue with ChatGPT」と示す（文書の UI の指針）。
 
 ### HTTP の通信
 
