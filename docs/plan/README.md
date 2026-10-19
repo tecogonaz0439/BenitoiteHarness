@@ -69,7 +69,7 @@
 | [P5-07](tasks/P5-07-antigravity.md) | 評価の道具に Antigravity の項目を整える（`accept-edits` とフックで `benitoite` だけを許す、出力と会話の記録の読み取り、利用者の設定の確かめ） | P5-04 | 完了 |
 | [P5-08](tasks/P5-08-s-tier-decisions.md) | S の段の決定の反映（`opt-level = "s"`、`anthropic-messages` の effort の既定を `low`） | P5-05 | 完了 |
 | [P5-09](tasks/P5-09-user-skills.md) | 利用者の Agent Skill を読む（`~/.agents/skills` とプロジェクトの `.agents/skills`、Skill のディレクトリの読み取りと制限モードの `.bnt`、記録と表示） | P5-08 | 完了 |
-| [P5-10](tasks/P5-10-chat-reasoning-effort.md) | `openai-chat` の `reasoning_effort`（機能の表）と、`total_tokens` だけに含まれる推論のトークンの数え方 | P5-09 | 未着手 |
+| [P5-10](tasks/P5-10-chat-reasoning-effort.md) | `openai-chat` の `reasoning_effort`（機能の表）と、`total_tokens` だけに含まれる推論のトークンの数え方 | P5-09 | 完了 |
 
 P1 の作業は P0-04・P0-05（OS のサンドボックス）の結果に依らないので、P0-04・P0-05 が設計者の判断を待つ間に先に進めてよい。
 
