@@ -387,7 +387,7 @@ fn request_flags_follow_capabilities_and_effort_is_always_explicit() -> TestResu
         assert_eq!(body.get("thinking"), Some(&json!({"type":"adaptive"})));
         assert_eq!(
             body.pointer("/output_config/effort"),
-            Some(&json!(if index == 0 { "medium" } else { "high" }))
+            Some(&json!(if index == 0 { "medium" } else { "low" }))
         );
         assert_eq!(
             body.get("max_tokens"),

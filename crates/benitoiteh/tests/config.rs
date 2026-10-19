@@ -120,6 +120,10 @@ fn user_configuration_reads_the_design_example_and_rejects_invalid_fields() -> T
         ),
         ("[providers.p]\nkind='not-an-adapter'\nmodel='m'", None),
         (
+            "[providers.p]\nkind='anthropic-messages'\nmodel='m'\neffort=''",
+            None,
+        ),
+        (
             "[providers.p]\nkind='openai-chat'\nmodel='m'\napi_key='secret-literal'",
             None,
         ),
@@ -180,7 +184,7 @@ fn capabilities_use_official_defaults_only_at_the_exact_official_destination() -
     )?;
     let official = provider(&config, "official")?;
     assert_eq!(official.base_url(), "https://api.anthropic.com");
-    assert_eq!(official.effort, "high");
+    assert_eq!(official.effort, None);
     assert!(!official.resolved_capabilities().cache_control);
     assert!(official.resolved_capabilities().tool_choice_none);
     let compatible = provider(&config, "compatible")?.resolved_capabilities();
@@ -268,6 +272,25 @@ fn exec_resolution_applies_options_project_user_and_defaults_in_order() -> TestR
     assert_eq!(resolved.limits.max_turns, 8);
     assert_eq!(resolved.limits.max_check_fix, 2);
     assert_eq!(resolved.limits.max_run_tokens, Some(100));
+    // 省略を high で埋める退行と、明示の設定を種類の既定で上書きする退行を捕まえる。
+    // 既存の --effort high の検査と合わせて、設定の公開 API で優先順を確かめる（設計書 05-01「オプション」）。
+    for (kind, configured, expected) in [
+        ("anthropic-messages", "", "low"),
+        ("openai-responses", "", "high"),
+        ("openai-chat", "", "high"),
+        ("anthropic-messages", "effort='medium'", "medium"),
+        ("openai-responses", "effort='low'", "low"),
+    ] {
+        let config = UserConfig::parse(&format!(
+            "default_provider='p'\n[providers.p]\nkind='{kind}'\nmodel='m'\n{configured}"
+        ))?;
+        let resolved = config.resolve_exec(
+            &ExecArgs::parse(["request"])?,
+            &ProjectConfig::default(),
+            &fixture.0,
+        )?;
+        assert_eq!(resolved.effort, expected, "{kind}: {configured}");
+    }
     // 対話は確認できるので、三つの承認の設定とオプションを受ける。
     for (approval, options, accepted) in [
         ("on-request", vec![], true),

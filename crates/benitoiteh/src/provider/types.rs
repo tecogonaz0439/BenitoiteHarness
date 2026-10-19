@@ -305,6 +305,15 @@ pub struct Capabilities {
 }
 
 impl AdapterKind {
+    /// 設定とオプションで省略したときの推論の深さ（設計書 02-01、05-01「オプション」）。
+    /// Chat Completions は解決済みの値を持つが、要求には付けない。
+    pub fn default_effort(self) -> &'static str {
+        match self {
+            Self::AnthropicMessages => "low",
+            Self::OpenAiChat | Self::OpenAiResponses => "high",
+        }
+    }
+
     /// 表にない互換の口に用いる、機能を使わない側の値。
     pub fn default_capabilities(self) -> Capabilities {
         Capabilities::default()

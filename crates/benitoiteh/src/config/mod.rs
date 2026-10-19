@@ -133,8 +133,7 @@ pub struct ProviderConfig {
     pub kind: AdapterKind,
     pub base_url: Option<String>,
     pub model: String,
-    #[serde(default = "default_effort")]
-    pub effort: String,
+    pub effort: Option<String>,
     pub api_key: Option<ApiKeyRef>,
     #[serde(default)]
     pub capabilities: CapabilityOverrides,
@@ -193,10 +192,6 @@ impl ProviderConfig {
             .or(result.max_output_tokens);
         result
     }
-}
-
-fn default_effort() -> String {
-    "high".to_owned()
 }
 
 /// 処理系の場所。
@@ -369,7 +364,7 @@ impl UserConfig {
         }
         for provider in config.providers.values() {
             if provider.model.is_empty()
-                || provider.effort.is_empty()
+                || provider.effort.as_deref() == Some("")
                 || provider.base_url().is_empty()
             {
                 return Err(ConfigError::Invalid(text::INVALID_VALUE));
@@ -445,7 +440,12 @@ impl UserConfig {
             },
             kind: provider.kind,
             capabilities: provider.resolved_capabilities(),
-            effort: args.effort.as_ref().unwrap_or(&provider.effort).clone(),
+            effort: args
+                .effort
+                .as_deref()
+                .or(provider.effort.as_deref())
+                .unwrap_or_else(|| provider.kind.default_effort())
+                .to_owned(),
             api_key: provider.api_key.clone(),
             limits: Limits {
                 max_turns: args.max_turns.unwrap_or(self.limits.max_turns),
