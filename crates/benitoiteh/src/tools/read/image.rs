@@ -39,7 +39,7 @@ pub(super) fn execute(
     version: FileVersion,
     size: u64,
     prefix: Vec<u8>,
-    format: Format,
+    _format: Format,
 ) -> Result<ToolOutput, ToolError> {
     if arguments.get("offset").is_some() || arguments.get("limit").is_some() {
         return Err(invalid(text::IMAGE_LINES));
@@ -66,20 +66,7 @@ pub(super) fn execute(
     if size > MAX_IMAGE_BYTES {
         return Err(invalid(text::image_too_large(size, MAX_IMAGE_BYTES)));
     }
-    let (media_type, dimensions) = match format {
-        Format::Png => ("image/png", png(&bytes)?),
-        Format::Jpeg => ("image/jpeg", jpeg(&bytes)),
-        Format::Gif => ("image/gif", le16(&bytes, 6).zip(le16(&bytes, 8))),
-        Format::Webp => ("image/webp", webp(&bytes)),
-    };
-    let (width, height) = dimensions.ok_or_else(|| invalid(text::IMAGE_INVALID))?;
-    if width == 0 || height == 0 || width > MAX_IMAGE_DIMENSION || height > MAX_IMAGE_DIMENSION {
-        return Err(invalid(text::image_dimensions(
-            width,
-            height,
-            MAX_IMAGE_DIMENSION,
-        )));
-    }
+    let (media_type, width, height) = inspect(&bytes)?;
     let sha256 = if let Some(session) = &context.session {
         let stored = session
             .store_object(&bytes)
@@ -107,6 +94,26 @@ pub(super) fn execute(
         }],
         ..ToolOutput::success(body)
     })
+}
+
+/// 読み取りと再開で同じ形式・寸法の制限を確かめる。
+pub(crate) fn inspect(bytes: &[u8]) -> Result<(&'static str, u32, u32), ToolError> {
+    let (media_type, dimensions) =
+        match detect(bytes).ok_or_else(|| invalid(text::IMAGE_INVALID))? {
+            Format::Png => ("image/png", png(bytes)?),
+            Format::Jpeg => ("image/jpeg", jpeg(bytes)),
+            Format::Gif => ("image/gif", le16(bytes, 6).zip(le16(bytes, 8))),
+            Format::Webp => ("image/webp", webp(bytes)),
+        };
+    let (width, height) = dimensions.ok_or_else(|| invalid(text::IMAGE_INVALID))?;
+    if width == 0 || height == 0 || width > MAX_IMAGE_DIMENSION || height > MAX_IMAGE_DIMENSION {
+        return Err(invalid(text::image_dimensions(
+            width,
+            height,
+            MAX_IMAGE_DIMENSION,
+        )));
+    }
+    Ok((media_type, width, height))
 }
 
 fn invalid(message: impl Into<String>) -> ToolError {

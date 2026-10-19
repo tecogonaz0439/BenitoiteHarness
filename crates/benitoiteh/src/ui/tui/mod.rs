@@ -293,6 +293,7 @@ impl Screen {
                 self.history
                     .extend(message.lines().map(|line| plain(line, Decoration::Error)));
             }
+            AgentEvent::ImagesRemoved { .. } => self.notice(text::IMAGES_REMOVED),
             AgentEvent::Retry { reason, .. } => {
                 self.flush_pending();
                 self.notice(&text::event_detail(text::RETRY, reason));

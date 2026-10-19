@@ -125,13 +125,14 @@ impl OpenAiResponsesAdapter {
     fn input(&self, conversation: &Conversation) -> Result<Vec<Value>, OpenAiResponsesError> {
         let mut input = Vec::new();
         let mut ids = HashMap::new();
-        for item in &conversation.items {
+        let plan = crate::provider::image_plan(conversation, self.capabilities.image_input);
+        for (index, item) in conversation.items.iter().enumerate() {
             match item {
                 Item::UserMessage(user) => input.push(json!({"type": "message", "role": "user",
                     "content": user.parts.iter().map(|p| json!({"type": "input_text", "text": p.text})).collect::<Vec<_>>()})),
                 Item::ToolResult(result) => {
                     let id = ids.get(&result.id).ok_or(OpenAiResponsesError::InvalidRequest)?;
-                    let (body, images) = crate::provider::images::prepare(result, self.capabilities.image_input);
+                    let (body, images) = crate::provider::images::prepare(result, self.capabilities.image_input, &plan, index);
                     let output = if images.is_empty() {
                         json!(body)
                     } else {

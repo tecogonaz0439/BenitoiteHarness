@@ -295,7 +295,7 @@ fn web_session_answers_are_remembered_by_the_loop_before_cancelled_execution()
 // 作成時の関門: 道具単独の保存とアダプタ単独の要求では、ループの受け渡し、記録からの
 // 中身の除外、construct の復元、破損後の省略を捕まえられない。実際に read した記録で守る。
 #[test]
-fn image_results_are_recorded_without_data_and_restored_only_when_hash_matches()
+fn image_results_are_restored_only_when_enabled_and_metadata_and_hash_match()
 -> Result<(), Box<dyn std::error::Error>> {
     let id = session::SessionId::generate(std::time::SystemTime::now())?;
     let directory = std::env::temp_dir().join(format!("benitoiteh-resume-images-{id}"));
@@ -418,8 +418,63 @@ fn image_results_are_recorded_without_data_and_restored_only_when_hash_matches()
             })
             .all(|image| image.data.is_none())
     );
-    let mut resumed_config = config;
-    resumed_config.capabilities.image_input = false;
+    for variant in ["unsupported", "mime", "width", "height", "invalid_header"] {
+        let mut state = state.clone();
+        if let Some(Item::ToolResult(result)) = state
+            .conversation
+            .items
+            .iter_mut()
+            .find(|item| matches!(item, Item::ToolResult(_)))
+            && let Some(image) = result.images.first_mut()
+        {
+            match variant {
+                "unsupported" => image.sha256 = "unread-object".into(),
+                "mime" => image.media_type = "image/png".into(),
+                "width" => image.width = 2,
+                "height" => image.height = 2,
+                "invalid_header" => {
+                    let invalid = b"not an image";
+                    let (hash, _) = session.store_object(invalid)?.ok_or("storage limit")?;
+                    image.sha256 = hash;
+                    image.bytes = u64::try_from(invalid.len())?;
+                }
+                _ => {}
+            }
+        }
+        let mut config = config.clone();
+        config.capabilities.image_input = variant != "unsupported";
+        let agent = Agent::resume(
+            config,
+            String::new(),
+            tool_context(&paths, &project, &session)?,
+            environment.clone(),
+            session.clone(),
+            state,
+        )?;
+        let result = agent
+            .conversation()
+            .items
+            .iter()
+            .find_map(|item| match item {
+                Item::ToolResult(result) => Some(result),
+                Item::UserMessage(_) | Item::AssistantTurn(_) => None,
+            })
+            .ok_or("missing result")?;
+        if variant == "unsupported" {
+            assert_eq!(result.images.len(), 1);
+            assert!(
+                result
+                    .images
+                    .first()
+                    .is_some_and(|image| image.data.is_none())
+            );
+            assert!(!result.text.contains("omitted"));
+        } else {
+            assert!(result.images.is_empty());
+            assert!(result.text.ends_with("(An image from this result could not be restored from the session and was omitted.)"));
+        }
+    }
+    let resumed_config = config;
     for (corrupted, missing) in [(false, false), (true, false), (true, true)] {
         if missing {
             std::fs::remove_file(session.directory().join("objects").join(&hash))?;
@@ -437,7 +492,7 @@ fn image_results_are_recorded_without_data_and_restored_only_when_hash_matches()
             session.clone(),
             state.clone(),
         )?;
-        assert!(!agent.tool_context.image_input);
+        assert!(agent.tool_context.image_input);
         let result = agent
             .conversation()
             .items

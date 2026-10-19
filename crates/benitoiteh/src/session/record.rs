@@ -302,6 +302,8 @@ pub enum Record {
         #[serde(default)]
         user_message: Option<String>,
     },
+    /// 画像を外した送り直しの成功。結果の内部 ID で、以後の再生でも画像を除く。
+    ImagesRemoved { results: Vec<String> },
     /// やり直しの分類と待ち時間。
     Retry {
         attempt: u64,

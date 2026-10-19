@@ -131,6 +131,7 @@ impl AnthropicAdapter {
         let mut messages = Vec::new();
         let mut ids = HashMap::new();
         let mut collecting_results = false;
+        let plan = crate::provider::image_plan(conversation, self.capabilities.image_input);
         for (index, item) in conversation.items.iter().enumerate() {
             let (role, mut content) = match item {
                 Item::UserMessage(user) => (
@@ -181,8 +182,12 @@ impl AnthropicAdapter {
                 Item::ToolResult(result) => {
                     // 呼び出しと結果は内部 ID で結び、別の送り先でも同じ変換を使う。
                     let id = ids.get(&result.id).ok_or(AnthropicError::InvalidRequest)?;
-                    let (body, images) =
-                        crate::provider::images::prepare(result, self.capabilities.image_input);
+                    let (body, images) = crate::provider::images::prepare(
+                        result,
+                        self.capabilities.image_input,
+                        &plan,
+                        index,
+                    );
                     let content = if images.is_empty() {
                         json!(body)
                     } else {

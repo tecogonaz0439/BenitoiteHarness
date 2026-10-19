@@ -138,7 +138,8 @@ impl OpenAiChatAdapter {
         let mut messages = vec![json!({"role": "system", "content": system})];
         let mut ids = HashMap::new();
         let mut attachments = Vec::new();
-        for item in &conversation.items {
+        let plan = crate::provider::image_plan(conversation, self.capabilities.image_input);
+        for (index, item) in conversation.items.iter().enumerate() {
             if !matches!(item, Item::ToolResult(_)) {
                 flush_images(&mut messages, &mut attachments);
             }
@@ -198,8 +199,12 @@ impl OpenAiChatAdapter {
                 }
                 Item::ToolResult(result) => {
                     let id = ids.get(&result.id).ok_or(OpenAiChatError::InvalidRequest)?;
-                    let (mut body, images) =
-                        crate::provider::images::prepare(result, self.capabilities.image_input);
+                    let (mut body, images) = crate::provider::images::prepare(
+                        result,
+                        self.capabilities.image_input,
+                        &plan,
+                        index,
+                    );
                     if !images.is_empty() {
                         body.push('\n');
                         body.push_str(crate::provider::text::IMAGE_ATTACHED);

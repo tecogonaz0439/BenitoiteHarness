@@ -5,11 +5,51 @@ use std::sync::mpsc::SyncSender;
 use std::thread;
 use std::time::{Duration, Instant};
 
-use crate::provider::{AssistantTurn, ProviderError};
+use crate::provider::{AssistantTurn, NonRetryableKind, ProviderError, image_plan, remove_images};
 
 use super::{Agent, AgentError, AgentEvent, TICK, transport::Request};
 
 impl Agent {
+    pub(super) fn request_and_receive(
+        &mut self,
+        cancelled: &AtomicBool,
+        events: &SyncSender<AgentEvent>,
+    ) -> Result<Option<AssistantTurn>, AgentError> {
+        let request = self.adapter.request(
+            &self.conversation,
+            &self.system,
+            &self.config.effort,
+            self.previous_last_item,
+            &self.session.id().to_string(),
+        )?;
+        let received = self.receive_with_retry(&request, cancelled, events);
+        if !matches!(
+            received,
+            Err(AgentError::Provider(ProviderError::NonRetryable {
+                reason: NonRetryableKind::InvalidRequest
+            }))
+        ) || !image_plan(&self.conversation, self.config.capabilities.image_input).has_images()
+        {
+            return received;
+        }
+        // 成功するまでは元の会話と記録を保つ（設計書 02-01「送る画像の上限」）。
+        let mut conversation = self.conversation.clone();
+        let results = remove_images(&mut conversation, None);
+        let request = self.adapter.request(
+            &conversation,
+            &self.system,
+            &self.config.effort,
+            self.previous_last_item,
+            &self.session.id().to_string(),
+        )?;
+        let received = self.receive_with_retry(&request, cancelled, events)?;
+        if received.is_some() {
+            self.emit(events, AgentEvent::ImagesRemoved { results })?;
+            self.conversation = conversation;
+        }
+        Ok(received)
+    }
+
     pub(super) fn receive_with_retry(
         &mut self,
         request: &Request,
