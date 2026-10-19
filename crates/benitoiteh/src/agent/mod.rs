@@ -11,7 +11,7 @@ mod retry;
 mod rewind;
 mod status;
 pub(crate) mod text;
-pub use rewind::RewindPreview;
+pub use rewind::{BranchInfo, BranchTarget, RewindPreview};
 pub use status::{AgentStatus, SessionSafety};
 mod transport;
 
@@ -230,6 +230,8 @@ pub struct Agent {
     session: Session,
     writer: SessionWriter,
     conversation: Conversation,
+    current_node: Option<u64>,
+    next_node: u64,
     previous_last_item: Option<usize>,
     last_usage: Option<Usage>,
     added_bytes: u64,
@@ -254,6 +256,17 @@ pub struct Agent {
     resume_compaction: bool,
     resume_has_reasoning: bool,
     resume_results: Vec<Record>,
+    environment_changes: Option<String>,
+}
+
+// 準備を終えるまで Agent に触れず、記録の追記後は代入だけで反映できる値。
+struct PreparedPath {
+    conversation: Conversation,
+    current_node: Option<u64>,
+    next_node: u64,
+    resume_results: Vec<Record>,
+    resume_compaction: bool,
+    resume_has_reasoning: bool,
     environment_changes: Option<String>,
 }
 
@@ -392,6 +405,8 @@ impl Agent {
             session,
             writer,
             conversation: Conversation::default(),
+            current_node: None,
+            next_node: 1,
             previous_last_item: None,
             last_usage: None,
             added_bytes: 0,
@@ -419,58 +434,133 @@ impl Agent {
             environment_changes: None,
         };
         if let Some(mut state) = state {
-            agent.session.restore_images(
-                &mut state.conversation,
-                agent.config.capabilities.image_input,
-            );
-            let prompt_hash = context::system_prompt_hash(&agent.system.system_prompt);
-            let tools_hash = context::tool_definitions_hash(&agent.system.tools)?;
-            let mut contexts = state.reasoning.iter();
-            for item in &mut state.conversation.items {
-                if let Item::AssistantTurn(turn) = item {
-                    let segment = contexts.next().ok_or(AgentError::InvalidConfiguration)?;
-                    let hashes_changed = segment.system_prompt_sha256 != prompt_hash
-                        || segment.tools_sha256 != tools_hash;
-                    let changed = hashes_changed || segment.destination != agent.config.destination;
-                    if changed
-                        && agent.config.capabilities.reasoning_replay
-                            == crate::provider::ReasoningReplay::AllTurns
-                    {
-                        agent.resume_compaction = true;
-                    }
-                    if hashes_changed {
-                        reasoning::strip_reasoning(turn);
-                    }
-                    if changed {
-                        agent.resume_has_reasoning |= reasoning::has_reasoning(turn);
-                    }
-                }
-            }
-            let rendered = state
-                .conversation
-                .items
-                .iter()
-                .filter_map(|item| match item {
-                    Item::UserMessage(message) => Some(
-                        message
-                            .parts
-                            .iter()
-                            .filter(|part| part.kind == UserPartKind::Environment)
-                            .map(|part| part.text.as_str()),
-                    ),
-                    Item::AssistantTurn(_) | Item::ToolResult(_) => None,
-                })
-                .flatten()
-                .collect::<Vec<_>>();
-            agent.environment_changes = agent.environment.changes_since_rendered(&rendered);
-            agent.conversation = state.conversation;
-            agent.files = state.files;
+            agent.files = std::mem::take(&mut state.files);
             agent.turn = state.max_turn;
-            agent.resume_results = state.missing_results;
-            agent.started = !agent.conversation.items.is_empty();
+            let prepared = agent.prepare_path_state(state)?;
+            agent.recorder()?.set_node(prepared.current_node)?;
+            agent.apply_path_state(prepared);
             agent.resuming = true;
         }
         Ok(agent)
+    }
+
+    // 再開と枝の移動で、推論の照合と環境の差分を同じ規則で復元する
+    // （設計書 01-05「再開」「セッションの木」）。
+    fn prepare_path_state(
+        &self,
+        mut state: session::ResumeState,
+    ) -> Result<PreparedPath, AgentError> {
+        let mut resume_compaction = false;
+        let mut resume_has_reasoning = false;
+        self.session.restore_images(
+            &mut state.conversation,
+            self.config.capabilities.image_input,
+        );
+        let prompt_hash = context::system_prompt_hash(&self.system.system_prompt);
+        let tools_hash = context::tool_definitions_hash(&self.system.tools)?;
+        let mut contexts = state.reasoning.iter();
+        for item in &mut state.conversation.items {
+            if let Item::AssistantTurn(turn) = item {
+                let segment = contexts.next().ok_or(AgentError::InvalidConfiguration)?;
+                let hashes_changed = segment.system_prompt_sha256 != prompt_hash
+                    || segment.tools_sha256 != tools_hash;
+                let changed = hashes_changed || segment.destination != self.config.destination;
+                if changed
+                    && self.config.capabilities.reasoning_replay
+                        == crate::provider::ReasoningReplay::AllTurns
+                {
+                    resume_compaction = true;
+                }
+                if hashes_changed {
+                    reasoning::strip_reasoning(turn);
+                }
+                if changed {
+                    resume_has_reasoning |= reasoning::has_reasoning(turn);
+                }
+            }
+        }
+        let rendered = state
+            .conversation
+            .items
+            .iter()
+            .filter_map(|item| match item {
+                Item::UserMessage(message) => Some(
+                    message
+                        .parts
+                        .iter()
+                        .filter(|part| part.kind == UserPartKind::Environment)
+                        .map(|part| part.text.as_str()),
+                ),
+                Item::AssistantTurn(_) | Item::ToolResult(_) => None,
+            })
+            .flatten()
+            .collect::<Vec<_>>();
+        if contexts.next().is_some() {
+            return Err(AgentError::InvalidConfiguration);
+        }
+        // 会話の始めでは run_request が環境の全文を入れる。差分は足さない。
+        let environment_changes = state
+            .tree
+            .tip
+            .and_then(|_| self.environment.changes_since_rendered(&rendered));
+        Ok(PreparedPath {
+            conversation: state.conversation,
+            current_node: state.tree.tip,
+            next_node: state.tree.next_node,
+            resume_results: state.missing_results,
+            resume_compaction,
+            resume_has_reasoning,
+            environment_changes,
+        })
+    }
+
+    fn apply_path_state(&mut self, state: PreparedPath) {
+        self.conversation = state.conversation;
+        self.current_node = state.current_node;
+        self.next_node = state.next_node;
+        self.resume_results = state.resume_results;
+        self.resume_compaction = state.resume_compaction;
+        self.resume_has_reasoning = state.resume_has_reasoning;
+        self.environment_changes = state.environment_changes;
+        self.started = self.current_node.is_some();
+        self.previous_last_item = None;
+        self.last_usage = None;
+        self.added_bytes = 0;
+        self.largest_input = None;
+        self.repeated = None;
+    }
+
+    fn commit_branch(&mut self, branch: &Record, prepared: PreparedPath) -> Result<(), AgentError> {
+        self.tool_context
+            .clear_read_versions()
+            .map_err(|_| AgentError::Worker)?;
+        let recorder = self.recorder()?.clone();
+        recorder.commit_node(prepared.current_node, || self.writer.append(branch))?;
+        self.apply_path_state(prepared);
+        Ok(())
+    }
+    // 会話の行はこの口だけで番号を割り当てる。補った結果も書く時点で番号を持つ。
+    fn append_node(&mut self, mut record: Record) -> Result<Record, AgentError> {
+        let next = self
+            .next_node
+            .checked_add(1)
+            .ok_or(session::SessionError::Invalid(
+                session::text::INVALID_FORMAT,
+            ))?;
+        record.set_node(self.next_node);
+        self.writer.append(&record)?;
+        self.current_node = Some(self.next_node);
+        self.next_node = next;
+        self.recorder()?.set_node(self.current_node)?;
+        Ok(record)
+    }
+
+    fn flush_resume_results(&mut self) -> Result<Vec<Record>, AgentError> {
+        let mut written = Vec::new();
+        for record in std::mem::take(&mut self.resume_results) {
+            written.push(self.append_node(record)?);
+        }
+        Ok(written)
     }
 
     /// 起動側の承認の方針と、LLM から独立した確認の受け手を設定する。
@@ -525,9 +615,7 @@ impl Agent {
     ) -> Result<RunReport, AgentError> {
         let started = Instant::now();
         let mut summary = Summary::default();
-        for record in std::mem::take(&mut self.resume_results) {
-            self.writer.append(&record)?;
-        }
+        self.flush_resume_results()?;
         if !self.started || self.resuming {
             let host = provider_host(&self.config.destination)?;
             self.emit(
@@ -645,12 +733,8 @@ impl Agent {
         }
         if let Some(recorder) = &self.tool_context.checkpoints {
             recorder.set_turn(self.turn)?;
-            let _recorded = recorder.capture(
-                crate::rewind::CheckpointReason::Request,
-                None,
-                Some(self.conversation.items.len()),
-                cancelled,
-            )?;
+            let _recorded =
+                recorder.capture(crate::rewind::CheckpointReason::Request, None, cancelled)?;
         }
         self.checkpoint_notices(events)?;
         let mut parts = Vec::new();
@@ -671,7 +755,8 @@ impl Agent {
             text: request,
         });
         let message = UserMessage { parts };
-        self.writer.append(&Record::User {
+        self.append_node(Record::User {
+            node: 0,
             kind: UserKind::Request,
             message: message.clone(),
         })?;
@@ -705,7 +790,8 @@ impl Agent {
                         text: changes,
                     }],
                 };
-                self.writer.append(&Record::User {
+                self.append_node(Record::User {
+                    node: 0,
                     kind: UserKind::Request,
                     message: message.clone(),
                 })?;
@@ -769,7 +855,8 @@ impl Agent {
             }
             summary.add_turn(&response.usage);
             self.note_usage(&response.usage);
-            self.writer.append(&Record::Assistant {
+            self.append_node(Record::Assistant {
+                node: 0,
                 turn: self.turn,
                 response: response.clone(),
             })?;
@@ -879,7 +966,8 @@ impl Agent {
             return Ok(false);
         }
         let message = UserMessage { parts };
-        self.writer.append(&Record::User {
+        self.append_node(Record::User {
+            node: 0,
             kind: UserKind::Steer,
             message: message.clone(),
         })?;

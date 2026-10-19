@@ -210,6 +210,7 @@ pub const COMPACTING: &str = "Compacting...";
 pub const REWINDING: &str = "Rewinding...";
 pub const WAIT_REWIND: &str = "Waiting for rewind to finish; rewind cannot be cancelled.";
 pub const NO_CHECKPOINTS: &str = "No checkpoints available.";
+pub const REQUEST_RESTORED: &str = "Request restored to the input. Press Ctrl+C to clear it.";
 pub const REWIND_CANCELLED: &str = "Rewind cancelled.";
 pub const SELECT_CHECKPOINT: &str = "Select a checkpoint (UTC)";
 pub const SELECT_SCOPE: &str = "Select rewind scope";

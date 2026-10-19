@@ -32,7 +32,6 @@ impl CheckpointRecorder {
         let before = self.capture(
             CheckpointReason::BeforeRewind,
             None,
-            None,
             &AtomicBool::new(false),
         )?;
         let current = self

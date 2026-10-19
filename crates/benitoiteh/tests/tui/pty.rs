@@ -480,7 +480,7 @@ fn second_signal_prints_checkpoint_after_terminal_restore_only_during_rewind() -
         assert_eq!(
             records
                 .iter()
-                .any(|record| matches!(record, Record::Rewind { .. })),
+                .any(|record| matches!(record, Record::Branch { .. })),
             !during,
             "rewind completion and signal timing"
         );

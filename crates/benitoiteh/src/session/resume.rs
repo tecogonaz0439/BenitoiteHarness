@@ -20,6 +20,7 @@ pub struct ResumeState {
     pub conversation: Conversation,
     pub missing_results: Vec<Record>,
     pub max_turn: u64,
+    pub tree: super::SessionTree,
     pub mode: RecordedMode,
     pub destination: Destination,
     pub project_dir: PathBuf,
@@ -35,6 +36,14 @@ impl ResumeState {
     }
 
     pub(super) fn from_records(records: &[Record]) -> Result<Self, SessionError> {
+        Self::from_records_with_tree(records, super::SessionTree::from_records(records)?)
+    }
+
+    /// 呼び出した操作が検査済みの木を使い、記録の再読込と索引の再構築を避ける。
+    pub(crate) fn from_records_with_tree(
+        records: &[Record],
+        tree: super::SessionTree,
+    ) -> Result<Self, SessionError> {
         let Some(Record::Header(header)) = records.first() else {
             return Err(SessionError::Invalid(text::INVALID_FORMAT));
         };
@@ -48,7 +57,8 @@ impl ResumeState {
             },
         };
         let mut state = Self {
-            conversation: replay::replay_records(records),
+            conversation: replay::replay_records(records, &tree),
+            tree,
             missing_results: Vec::new(),
             max_turn: 0,
             mode: header.mode,
@@ -57,7 +67,7 @@ impl ResumeState {
             reasoning: Vec::new(),
             files: FileHistory::from_records(records),
         };
-        let mut item_reasoning = Vec::new();
+        let mut node_reasoning = BTreeMap::new();
         let mut results = BTreeSet::new();
         let mut calls = BTreeMap::new();
         for record in records {
@@ -94,29 +104,29 @@ impl ResumeState {
                 Record::ProjectDirChanged { project_dir } => {
                     state.project_dir = project_dir.clone()
                 }
-                Record::Assistant { turn, response } => {
-                    item_reasoning.push(Some(segment.clone()));
+                Record::Assistant {
+                    node,
+                    turn,
+                    response,
+                } => {
+                    node_reasoning.insert(*node, vec![segment.clone()]);
                     for part in &response.parts {
                         if let crate::provider::AssistantPart::ToolCall(call) = part {
                             calls.insert(call.id.clone(), (*turn, call.name.clone()));
                         }
                     }
                 }
-                Record::User { .. } => item_reasoning.push(None),
-                Record::Rewind { items, .. } => item_reasoning.truncate(*items),
-                Record::ToolResult { result, .. } => {
-                    item_reasoning.push(None);
-                    results.insert(result.id.clone());
-                }
+
+                Record::ToolResult { .. } => {}
                 Record::ToolCall { turn, call, .. } => {
                     calls.insert(call.id.clone(), (*turn, call.name.clone()));
                 }
-                Record::Compaction { conversation, .. } => {
+                Record::Compaction {
+                    node, conversation, ..
+                } => {
                     for item in &conversation.items {
                         match item {
-                            Item::ToolResult(result) => {
-                                results.insert(result.id.clone());
-                            }
+                            Item::ToolResult(_) => {}
                             Item::AssistantTurn(response) => {
                                 for part in &response.parts {
                                     if let crate::provider::AssistantPart::ToolCall(call) = part {
@@ -135,15 +145,19 @@ impl ResumeState {
                             Item::UserMessage(_) => {}
                         }
                     }
-                    item_reasoning = conversation
-                        .items
-                        .iter()
-                        .map(|item| {
-                            matches!(item, Item::AssistantTurn(_)).then_some(segment.clone())
-                        })
-                        .collect();
+                    node_reasoning.insert(
+                        *node,
+                        conversation
+                            .items
+                            .iter()
+                            .filter(|item| matches!(item, Item::AssistantTurn(_)))
+                            .map(|_| segment.clone())
+                            .collect(),
+                    );
                 }
-                Record::Header(_)
+                Record::User { .. }
+                | Record::Branch { .. }
+                | Record::Header(_)
                 | Record::TurnStart { .. }
                 | Record::ToolStart { .. }
                 | Record::Approval { .. }
@@ -166,7 +180,27 @@ impl ResumeState {
                 state.max_turn = state.max_turn.max(*turn);
             }
         }
-        state.reasoning = item_reasoning.into_iter().flatten().collect();
+        for node in state.tree.path(state.tree.tip) {
+            if let Some((_, index)) = state.tree.entry(node) {
+                match records.get(index) {
+                    Some(Record::Compaction { conversation, .. }) => {
+                        state.reasoning.clear();
+                        results.clear();
+                        results.extend(conversation.items.iter().filter_map(|item| match item {
+                            Item::ToolResult(result) => Some(result.id.clone()),
+                            Item::UserMessage(_) | Item::AssistantTurn(_) => None,
+                        }));
+                    }
+                    Some(Record::ToolResult { result, .. }) => {
+                        results.insert(result.id.clone());
+                    }
+                    _ => {}
+                }
+            }
+            if let Some(contexts) = node_reasoning.remove(&node) {
+                state.reasoning.extend(contexts);
+            }
+        }
         state.max_turn = calls
             .values()
             .fold(state.max_turn, |maximum, (turn, _)| maximum.max(*turn));
@@ -180,6 +214,7 @@ impl ResumeState {
                     .cloned()
                     .unwrap_or((state.max_turn, String::new()));
                 state.missing_results.push(Record::ToolResult {
+                    node: 0,
                     turn,
                     name,
                     result: result.clone(),

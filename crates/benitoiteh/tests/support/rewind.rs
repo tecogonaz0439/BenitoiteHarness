@@ -120,7 +120,7 @@ impl Fixture {
     }
     pub fn recorder(&self) -> Result<CheckpointRecorder, Box<dyn Error>> {
         self.session.writer()?.append(&Record::Header(Header {
-            format: 1,
+            format: benitoiteh::session::FORMAT_VERSION,
             session_id: self.session.id().to_string(),
             started_at: self.session.id().started_at_utc(),
             benitoiteh_version: "test".into(),
@@ -156,12 +156,7 @@ impl Drop for Fixture {
 pub fn capture(
     recorder: &CheckpointRecorder,
 ) -> Result<benitoiteh::rewind::Checkpoint, Box<dyn Error>> {
-    Ok(recorder.capture(
-        CheckpointReason::Request,
-        None,
-        Some(0),
-        &AtomicBool::new(false),
-    )?)
+    Ok(recorder.capture(CheckpointReason::Request, None, &AtomicBool::new(false))?)
 }
 pub fn response(calls: &[(&str, Value)]) -> ResponseScript {
     let tools = calls.iter().enumerate().map(|(index,(name,args))| json!({"index":index,"id":format!("provider-{index}"),"type":"function","function":{"name":name,"arguments":args.to_string()}})).collect::<Vec<_>>();

@@ -1,4 +1,4 @@
-//! 形式の版 1 の記録と集計（設計書 01-05「セッションの記録」「LLM を使ったテストのための記録」）。
+//! 形式の版 2 の記録と集計（設計書 01-05「セッションの記録」「LLM を使ったテストのための記録」）。
 
 use std::collections::BTreeMap;
 use std::path::PathBuf;
@@ -13,7 +13,7 @@ use crate::provider::{
 };
 
 /// 再開用の記録の形式。利用者向けイベントの形式とは別に管理する。
-pub const FORMAT_VERSION: u32 = 1;
+pub const FORMAT_VERSION: u32 = 2;
 
 /// 認証情報を持たない提供者の識別。
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -259,11 +259,16 @@ pub enum Record {
     TurnStart { turn: u64 },
     /// 一つの UserMessage を分割せず保存する。
     User {
+        node: u64,
         kind: UserKind,
         message: UserMessage,
     },
     /// RawItems を含む、受け取りを終えた応答。
-    Assistant { turn: u64, response: AssistantTurn },
+    Assistant {
+        node: u64,
+        turn: u64,
+        response: AssistantTurn,
+    },
     /// 応答の後で記録する検証の結果。None は検証を通ったことを表す。
     ToolCall {
         turn: u64,
@@ -279,6 +284,7 @@ pub enum Record {
     WriteTarget { call_id: String, real_path: PathBuf },
     /// LLM に渡した結果と、全体または先頭を保存した場所。
     ToolResult {
+        node: u64,
         turn: u64,
         name: String,
         result: ToolResult,
@@ -286,7 +292,7 @@ pub enum Record {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         stderr_spill: Option<SpillInfo>,
     },
-    /// 確認の要求または結果。追加の欄がない形式の版 1 の記録も読む。
+    /// 確認の要求または結果。追加の欄がない形式の版 2 の記録も読む。
     Approval {
         phase: ApprovalPhase,
         id: String,
@@ -303,7 +309,7 @@ pub enum Record {
         user_message: Option<String>,
     },
     /// 画像を外した送り直しの成功。結果の内部 ID で、以後の再生でも画像を除く。
-    ImagesRemoved { results: Vec<String> },
+    ImagesRemoved { node: u64, results: Vec<String> },
     /// やり直しの分類と待ち時間。
     Retry {
         attempt: u64,
@@ -327,12 +333,17 @@ pub enum Record {
     },
     /// 後の段階で使う、プロジェクトの変更。
     ProjectDirChanged { project_dir: PathBuf },
-    /// 後の段階で使う、残す会話の項目数と記録時点。
-    Rewind { items: usize, checkpoint: String },
+    /// 今の先端を既存の節点へ移し、枝を残す。
+    Branch {
+        to: Option<u64>,
+        from: Option<u64>,
+        checkpoint: Option<String>,
+    },
     /// 道具または依頼の前のファイルの時点。
     Checkpoint(crate::rewind::Checkpoint),
     /// 圧縮後の会話を起点として保持する。後続の行だけをこの後へ加える。
     Compaction {
+        node: u64,
         conversation: Conversation,
         #[serde(default)]
         reason: CompactionReason,
@@ -368,6 +379,61 @@ impl CompactionReason {
             Self::Manual => "manual",
             Self::Overflow => "overflow",
             Self::Resume => "resume",
+        }
+    }
+}
+
+impl Record {
+    /// 会話を作る節点の番号。制御とファイルの記録は節点を持たない。
+    pub fn node(&self) -> Option<u64> {
+        match self {
+            Self::User { node, .. }
+            | Self::Assistant { node, .. }
+            | Self::ToolResult { node, .. }
+            | Self::Compaction { node, .. }
+            | Self::ImagesRemoved { node, .. } => Some(*node),
+            Self::Header(_)
+            | Self::SessionStart { .. }
+            | Self::TurnStart { .. }
+            | Self::ToolCall { .. }
+            | Self::ToolStart { .. }
+            | Self::WriteTarget { .. }
+            | Self::Approval { .. }
+            | Self::Retry { .. }
+            | Self::Error { .. }
+            | Self::TurnEnd { .. }
+            | Self::SessionEnd { .. }
+            | Self::Summary { .. }
+            | Self::ProjectDirChanged { .. }
+            | Self::Branch { .. }
+            | Self::Checkpoint(_)
+            | Self::Spilled { .. } => None,
+        }
+    }
+
+    pub(crate) fn set_node(&mut self, value: u64) {
+        match self {
+            Self::User { node, .. }
+            | Self::Assistant { node, .. }
+            | Self::ToolResult { node, .. }
+            | Self::Compaction { node, .. }
+            | Self::ImagesRemoved { node, .. } => *node = value,
+            Self::Header(_)
+            | Self::SessionStart { .. }
+            | Self::TurnStart { .. }
+            | Self::ToolCall { .. }
+            | Self::ToolStart { .. }
+            | Self::WriteTarget { .. }
+            | Self::Approval { .. }
+            | Self::Retry { .. }
+            | Self::Error { .. }
+            | Self::TurnEnd { .. }
+            | Self::SessionEnd { .. }
+            | Self::Summary { .. }
+            | Self::ProjectDirChanged { .. }
+            | Self::Branch { .. }
+            | Self::Checkpoint(_)
+            | Self::Spilled { .. } => {}
         }
     }
 }

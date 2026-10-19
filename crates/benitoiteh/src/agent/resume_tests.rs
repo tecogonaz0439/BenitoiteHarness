@@ -574,3 +574,116 @@ fn image_results_are_restored_only_when_enabled_and_metadata_and_hash_match()
     server.shutdown()?;
     Ok(())
 }
+
+// 作成時の関門: 正常な記録からは作れない推論の個数の不整合を準備の境界で与える。
+// 準備の失敗で会話・キャッシュの状態を変えず、成功後も追記まで反映しない契約を守る。
+#[test]
+fn branch_preparation_failure_preserves_log_and_memory_until_commit()
+-> Result<(), Box<dyn std::error::Error>> {
+    let id = session::SessionId::generate(std::time::SystemTime::now())?;
+    let directory = std::env::temp_dir().join(format!("benitoiteh-resume-approvals-{id}"));
+    std::fs::create_dir(&directory)?;
+    let fixture = Fixture(std::fs::canonicalize(directory)?);
+    for name in ["home", "project", "tmp"] {
+        std::fs::create_dir(fixture.0.join(name))?;
+    }
+    let paths = DataPaths::from_values(
+        Some(&fixture.0.join("home")),
+        Some(&fixture.0.join("config")),
+        Some(&fixture.0.join("state")),
+        Some(&fixture.0.join("tmp")),
+    )?;
+    let project = fixture.0.join("project");
+    let session = Session::create(&paths, id.clone())?;
+    let response = || {
+        mock_provider::ResponseScript::sse(format!(
+            "data: {}\n\ndata: [DONE]\n\n",
+            serde_json::json!({"choices":[{"delta":{"content":"answer"},"finish_reason":"stop"}]})
+        ))
+    };
+    let mut server = mock_provider::MockProvider::start(vec![response()])?;
+    let config = AgentConfig {
+        project_parent: None,
+        allow_effects: None,
+        mode: Mode::Normal,
+        destination: Destination {
+            provider: "test".into(),
+            base_url: server.base_url(),
+            model: "model".into(),
+        },
+        kind: AdapterKind::OpenAiChat,
+        capabilities: Capabilities::default(),
+        effort: "high".into(),
+        limits: Limits::default(),
+        http_timeouts: HttpTimeouts::default(),
+        retry_initial: Duration::from_millis(1),
+    };
+    let environment = Environment::capture(
+        &project,
+        Mode::Normal,
+        &[],
+        false,
+        std::time::SystemTime::now(),
+    )?;
+    let mut agent = Agent::new(
+        config.clone(),
+        String::new(),
+        tool_context(&paths, &project, &session)?,
+        environment.clone(),
+        session.clone(),
+    )?;
+
+    let (sender, _receiver) = std::sync::mpsc::sync_channel(1024);
+    agent.run("request".into(), Arc::new(AtomicBool::new(false)), sender)?;
+    let log = session.directory().join("session.jsonl");
+    let before = std::fs::read(&log)?;
+    let conversation = agent.conversation.clone();
+    let current_node = agent.current_node;
+    let next_node = agent.next_node;
+    agent.resume_compaction = true;
+    agent.resume_has_reasoning = true;
+    agent.environment_changes = Some("preserved environment changes".into());
+    agent.previous_last_item = Some(0);
+    let mut invalid = session::ResumeState::read(session.directory())?;
+    invalid.reasoning.clear();
+    assert!(matches!(
+        agent.prepare_path_state(invalid),
+        Err(AgentError::InvalidConfiguration)
+    ));
+    assert_eq!(std::fs::read(&log)?, before);
+    assert_eq!(agent.conversation, conversation);
+    assert_eq!(agent.current_node, current_node);
+    assert_eq!(agent.next_node, next_node);
+    assert!(agent.resume_compaction);
+    assert!(agent.resume_has_reasoning);
+    assert_eq!(
+        agent.environment_changes.as_deref(),
+        Some("preserved environment changes")
+    );
+    assert_eq!(agent.previous_last_item, Some(0));
+    let branch = Record::Branch {
+        to: None,
+        from: current_node,
+        checkpoint: None,
+    };
+    let mut records = session::read_records(session.directory())?;
+    let mut tree = session::SessionTree::from_records(&records)?;
+    tree.push_record(&branch, records.len())?;
+    records.push(branch.clone());
+    let state = session::ResumeState::from_records_with_tree(&records, tree)?;
+    let prepared = agent.prepare_path_state(state)?;
+    assert_eq!(std::fs::read(&log)?, before);
+    assert_eq!(agent.conversation, conversation);
+    agent.commit_branch(&branch, prepared)?;
+    assert!(agent.conversation.items.is_empty());
+    assert!(agent.environment_changes.is_none());
+    assert!(!agent.resume_compaction);
+    assert!(!agent.resume_has_reasoning);
+    assert_eq!(
+        session::read_records(session.directory())?.last(),
+        Some(&branch)
+    );
+    assert_eq!(session::replay(session.directory())?, agent.conversation);
+    server.shutdown()?;
+    Ok(())
+}

@@ -155,6 +155,15 @@ impl Screen {
         self.rewind_preview = Some(preview);
     }
     pub(super) fn rewind_result(&mut self, report: &crate::rewind::RewindReport) {
+        if let Some(request) = &report.request {
+            let input = if request.starts_with('/') {
+                format!("/{request}")
+            } else {
+                request.clone()
+            };
+            self.restore_input(input);
+            self.notice(text::REQUEST_RESTORED);
+        }
         self.notice(&text::rewind_result(report));
         for failure in report.failures.iter().take(20) {
             self.notice(&text::rewind_failure(failure));

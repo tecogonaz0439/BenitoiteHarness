@@ -630,6 +630,15 @@ impl ToolContext {
         Ok(())
     }
 
+    /// 枝を移った後、すべての edit に読み直しを求める。
+    pub fn clear_read_versions(&self) -> Result<(), ToolError> {
+        self.read_versions
+            .lock()
+            .map_err(|_| ToolError::State)?
+            .clear();
+        Ok(())
+    }
+
     /// 実行する側だけが呼ぶ。保存の失敗で道具は止めず、取り消しでは実行しない。
     pub fn checkpoint_before(
         &self,
@@ -641,7 +650,7 @@ impl ToolContext {
             && path.is_none_or(|path| recorder.contains(path))
         {
             let _recorded =
-                recorder.capture(reason, Some(invocation.call_id), None, invocation.cancelled);
+                recorder.capture(reason, Some(invocation.call_id), invocation.cancelled);
         }
         if invocation.cancelled.load(Ordering::Acquire) {
             return Err(ToolError::InvalidArguments(

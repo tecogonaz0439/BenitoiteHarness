@@ -47,7 +47,7 @@ fn evaluation_switches_reach_read_and_recorded_hashes_from_user_config() -> Test
         );
         let (_, records) = f.records()?;
         let header = records.first().ok_or("header")?;
-        assert_eq!(header.get("format"), Some(&json!(1)));
+        assert_eq!(header.get("format"), Some(&json!(2)));
         for key in ["after_write_check", "read_line_numbers"] {
             assert_eq!(header.get(key), (!enabled).then_some(&Value::Bool(false)));
         }
@@ -798,7 +798,7 @@ fn exec_sends_displays_and_records_instructions_and_reads_legacy_records() -> Te
         );
         assert_eq!(
             records.first().and_then(|value| value.get("format")),
-            Some(&json!(1))
+            Some(&json!(2))
         );
         assert_eq!(
             benitoiteh::session::read_records(&directory)?.len(),

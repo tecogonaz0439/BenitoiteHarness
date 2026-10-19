@@ -329,15 +329,13 @@ impl Agent {
             self.config.capabilities.reasoning_replay,
         );
         // 書き込みに失敗した場合は元の会話を保ち、replay とメモリの起点を揃える。
-        self.writer.append(&Record::Compaction {
+        self.append_node(Record::Compaction {
+            node: 0,
             conversation: conversation.clone(),
             reason: options.reason,
             summarized_items: count,
             kept_items: kept,
         })?;
-        if let Some(recorder) = &self.tool_context.checkpoints {
-            recorder.advance_generation()?;
-        }
         self.conversation = conversation;
         self.last_usage = None;
         self.added_bytes = 0;

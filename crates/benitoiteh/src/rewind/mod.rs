@@ -61,7 +61,7 @@ pub struct CheckpointNotice {
 struct State {
     next: u64,
     turn: u64,
-    generation: u64,
+    node: Option<u64>,
     limits: CheckpointLimits,
     checkpoints: Vec<Checkpoint>,
     previous: Option<Manifest>,
@@ -81,7 +81,7 @@ pub struct CheckpointRecorder {
 }
 
 impl CheckpointRecorder {
-    /// 記録の最大の連番と世代の続きから始める。渡された ID はパスに使わない。
+    /// 記録の最大の連番と節点の続きから始める。渡された ID はパスに使わない。
     pub fn new(
         session: Session,
         project: &ScopeRoot,
@@ -90,21 +90,19 @@ impl CheckpointRecorder {
     ) -> Result<Self, RewindError> {
         let mut checkpoints = Vec::new();
         let mut maximum = 0_u64;
-        let mut generation = 0_u64;
+        let tree = crate::session::SessionTree::from_records(records)?;
         for record in records {
             match record {
                 Record::Checkpoint(checkpoint) => {
                     let number = checkpoint_number(&checkpoint.id)
                         .ok_or(RewindError::Invalid(text::INVALID_CHECKPOINT))?;
                     maximum = maximum.max(number);
-                    generation = generation.max(checkpoint.generation);
                     checkpoints.push(checkpoint.clone());
                 }
                 Record::ProjectDirChanged { .. } => checkpoints.clear(),
-                Record::Compaction { .. } | Record::Rewind { .. } => {
-                    generation = generation.saturating_add(1)
-                }
-                Record::Header(_)
+                Record::Branch { .. }
+                | Record::Compaction { .. }
+                | Record::Header(_)
                 | Record::SessionStart { .. }
                 | Record::TurnStart { .. }
                 | Record::User { .. }
@@ -132,7 +130,7 @@ impl CheckpointRecorder {
                     .checked_add(1)
                     .ok_or(RewindError::Invalid(text::INVALID_CHECKPOINT))?,
                 turn: 0,
-                generation,
+                node: tree.tip,
                 limits: CheckpointLimits::default(),
                 checkpoints,
                 previous: None,
@@ -144,7 +142,7 @@ impl CheckpointRecorder {
         })
     }
 
-    /// 番号と世代の続きは保ち、新しい根の時点だけを記録し始める。
+    /// 番号と節点の続きは保ち、新しい根の時点だけを記録し始める。
     pub fn restart(
         &mut self,
         project: &ScopeRoot,
@@ -170,7 +168,7 @@ impl CheckpointRecorder {
             state: Arc::new(Mutex::new(State {
                 next: state.next,
                 turn: state.turn,
-                generation: state.generation,
+                node: state.node,
                 limits: state.limits.clone(),
                 checkpoints: Vec::new(),
                 previous: None,
@@ -184,13 +182,24 @@ impl CheckpointRecorder {
 
     /// 一覧の画面に必要な情報をセッションの行の情報だけから返す。
     pub fn checkpoints(&self) -> Result<Vec<CheckpointInfo>, RewindError> {
+        let records = crate::session::read_records(self.session.directory())?;
+        let tree = crate::session::SessionTree::from_records(&records)?;
+        self.checkpoints_from_tree(&tree)
+    }
+
+    /// 同じ操作が作った木の索引で、会話を戻せる時点を求める。
+    pub(crate) fn checkpoints_from_tree(
+        &self,
+        tree: &crate::session::SessionTree,
+    ) -> Result<Vec<CheckpointInfo>, RewindError> {
         let state = self.lock()?;
         Ok(state
             .checkpoints
             .iter()
             .map(|checkpoint| CheckpointInfo {
-                conversation_available: checkpoint.reason == CheckpointReason::Request
-                    && checkpoint.generation == state.generation,
+                conversation_available: tree
+                    .checkpoint_request(&checkpoint.id)
+                    .is_some_and(|node| tree.path_nodes().contains(&node)),
                 checkpoint: checkpoint.clone(),
                 request: None,
                 tool: None,
@@ -202,12 +211,24 @@ impl CheckpointRecorder {
         self.lock()?.turn = turn;
         Ok(())
     }
-    /// 圧縮か会話の巻き戻しを越えた時点に、会話を戻せなくする。
-    pub fn advance_generation(&self) -> Result<(), RewindError> {
-        let mut state = self.lock()?;
-        state.generation = state.generation.saturating_add(1);
+    /// 会話の節点を進めた後、次の時点の結び付け先を更新する。
+    pub fn set_node(&self, node: Option<u64>) -> Result<(), RewindError> {
+        self.lock()?.node = node;
         Ok(())
     }
+    // 追記の後に錠の取得で失敗すると、会話と記録の先端がずれるため、先に取る
+    // （設計書 01-05「セッションの木」）。
+    pub(crate) fn commit_node(
+        &self,
+        node: Option<u64>,
+        append: impl FnOnce() -> Result<(), SessionError>,
+    ) -> Result<(), RewindError> {
+        let mut state = self.lock()?;
+        append()?;
+        state.node = node;
+        Ok(())
+    }
+
     /// 次の時点から適用する、走査と保存の上限。
     pub fn set_limits(&self, limits: CheckpointLimits) -> Result<(), RewindError> {
         self.lock()?.limits = limits;
@@ -226,7 +247,6 @@ impl CheckpointRecorder {
         &self,
         reason: CheckpointReason,
         call_id: Option<&str>,
-        items: Option<usize>,
         cancelled: &AtomicBool,
     ) -> Result<Checkpoint, RewindError> {
         let mut state = self.lock()?;
@@ -283,12 +303,7 @@ impl CheckpointRecorder {
             turn: state.turn,
             call_id: call_id.map(str::to_owned),
             created_at: started_at,
-            items: if reason == CheckpointReason::Request {
-                items
-            } else {
-                None
-            },
-            generation: state.generation,
+            node: state.node,
             manifest: hash,
             incomplete,
         };

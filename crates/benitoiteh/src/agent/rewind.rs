@@ -9,66 +9,60 @@ use crate::session::Record;
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::mpsc::SyncSender;
 
+struct BranchMove {
+    to: Option<u64>,
+    checkpoint: Option<String>,
+    request: Option<String>,
+    scope: RewindScope,
+}
+
 impl Agent {
     /// セッションの時点を、会話を戻せるかとともに返す。
     pub fn checkpoints(&self) -> Result<Vec<CheckpointInfo>, AgentError> {
-        let mut points = self.recorder()?.checkpoints()?;
         let records = crate::session::read_records(self.session.directory())?;
-        for point in &mut points {
-            point.tool = point.checkpoint.call_id.as_ref().and_then(|id| {
-                records.iter().find_map(|record| {
-                    if let Record::ToolCall { call, .. } | Record::ToolStart { call } = record {
-                        (call.id == *id).then(|| call.clone())
-                    } else {
-                        None
-                    }
-                })
-            });
-            if point.checkpoint.reason == CheckpointReason::Request {
-                point.request = point
-                    .checkpoint
-                    .items
-                    .filter(|_| point.conversation_available)
-                    .and_then(|index| self.conversation.items.get(index))
-                    .and_then(request_text);
-                if point.request.is_none() {
-                    let mut after = false;
-                    for record in &records {
-                        if let Record::Checkpoint(checkpoint) = record {
-                            if after {
-                                break;
-                            }
-                            after = checkpoint.id == point.checkpoint.id;
-                        }
-                        if after
-                            && let Record::User {
-                                kind: crate::session::UserKind::Request,
-                                message,
-                            } = record
-                        {
-                            point.request = message
-                                .parts
-                                .iter()
-                                .find(|part| part.kind == crate::provider::UserPartKind::Request)
-                                .map(|part| {
-                                    part.text.lines().next().unwrap_or_default().to_owned()
-                                });
-                            break;
-                        }
-                    }
-                }
+        let tree = crate::session::SessionTree::from_records(&records)?;
+        self.checkpoints_from_records(&records, &tree)
+    }
+
+    fn checkpoints_from_records(
+        &self,
+        records: &[Record],
+        tree: &crate::session::SessionTree,
+    ) -> Result<Vec<CheckpointInfo>, AgentError> {
+        let mut points = self.recorder()?.checkpoints_from_tree(tree)?;
+        let mut calls = BTreeMap::new();
+        for record in records {
+            if let Record::ToolCall { call, .. } | Record::ToolStart { call } = record {
+                calls.entry(call.id.as_str()).or_insert(call);
             }
+        }
+        for point in &mut points {
+            point.tool = point
+                .checkpoint
+                .call_id
+                .as_deref()
+                .and_then(|id| calls.get(id))
+                .map(|call| (*call).clone());
+            point.request = tree
+                .checkpoint_request(&point.checkpoint.id)
+                .and_then(|node| tree.entry(node))
+                .and_then(|(_, index)| records.get(index))
+                .and_then(crate::session::request_text)
+                .map(|text| text.lines().next().unwrap_or_default().to_owned());
         }
         Ok(points)
     }
+
     /// ファイルも会話も変えず、実行前に戻せない操作を返す。
     pub fn rewind_preview(
         &self,
         checkpoint: &str,
         scope: RewindScope,
     ) -> Result<RewindPreview, AgentError> {
+        let records = crate::session::read_records(self.session.directory())?;
+        let tree = crate::session::SessionTree::from_records(&records)?;
         let selected = self
-            .checkpoints()?
+            .checkpoints_from_records(&records, &tree)?
             .into_iter()
             .find(|point| point.checkpoint.id == checkpoint)
             .ok_or(RewindError::Invalid(super::text::UNKNOWN_CHECKPOINT))?;
@@ -78,7 +72,7 @@ impl Agent {
         Ok(RewindPreview {
             selected,
             scope,
-            irreversible: self.irreversible(checkpoint)?,
+            irreversible: self.irreversible(checkpoint, &records)?,
         })
     }
     /// 記録する作業量の上限を変更する。
@@ -89,7 +83,8 @@ impl Agent {
     pub fn checkpoint_stats(&self) -> Result<CheckpointStats, AgentError> {
         Ok(self.recorder()?.stats()?)
     }
-    /// 一連の処理が終わった後に、選んだファイルと会話を戻す。&mut self の排他性で run と同時に呼べない。
+
+    /// 一連の処理が終わった後に、選んだファイルと会話を戻す。
     pub fn rewind(
         &mut self,
         checkpoint: &str,
@@ -97,80 +92,221 @@ impl Agent {
         allow_incomplete: bool,
         events: SyncSender<AgentEvent>,
     ) -> Result<RewindReport, AgentError> {
-        let files = scope != RewindScope::Conversation;
-        let conversation = scope != RewindScope::Files;
+        let (records, tree) = self.records_for_move(scope != RewindScope::Files)?;
         let selected = self
-            .checkpoints()?
+            .checkpoints_from_records(&records, &tree)?
             .into_iter()
             .find(|info| info.checkpoint.id == checkpoint)
             .ok_or(RewindError::Invalid(super::text::UNKNOWN_CHECKPOINT))?;
-        if conversation
-            && (!selected.conversation_available
-                || selected
-                    .checkpoint
-                    .items
-                    .is_none_or(|count| count > self.conversation.items.len()))
-        {
+        if scope != RewindScope::Files && !selected.conversation_available {
             return Err(RewindError::Invalid(super::text::CONVERSATION_REWIND_UNAVAILABLE).into());
         }
-        let irreversible = self.irreversible(checkpoint)?;
-        // 再開の直後は run がまだ時点の番を設定していない（設計書 01-05「再開」）。
-        self.recorder()?.set_turn(self.turn)?;
-        let restored = if files {
-            let prepared = self.recorder()?.prepare_restore_files(checkpoint)?;
-            self.checkpoint_notices(&events)?;
-            prepared.restore(allow_incomplete)
-        } else {
-            Ok(RewindReport::default())
-        };
-        self.checkpoint_notices(&events)?;
-        let mut report = restored?;
-        report.irreversible = irreversible;
-        for path in &report.changed_paths {
-            self.tool_context
-                .clear_read_version(&self.tool_context.project.real_path().join(path))
-                .map_err(|_| AgentError::Worker)?;
+        let request = tree
+            .checkpoint_request(checkpoint)
+            .and_then(|node| tree.entry(node))
+            .and_then(|(_, index)| records.get(index))
+            .and_then(crate::session::request_text);
+        self.move_branch(
+            records,
+            tree,
+            BranchMove {
+                to: selected.checkpoint.node,
+                checkpoint: Some(checkpoint.into()),
+                request,
+                scope,
+            },
+            allow_incomplete,
+            events,
+        )
+    }
+
+    /// どの枝でも、依頼の直前と枝の先端を移動の候補として返す。
+    pub fn branch_targets(&self) -> Result<Vec<BranchInfo>, AgentError> {
+        let records = crate::session::read_records(self.session.directory())?;
+        let tree = crate::session::SessionTree::from_records(&records)?;
+        self.branch_targets_from_records(&records, &tree)
+    }
+
+    fn branch_targets_from_records(
+        &self,
+        records: &[Record],
+        tree: &crate::session::SessionTree,
+    ) -> Result<Vec<BranchInfo>, AgentError> {
+        // 最後のプロジェクトの切り替えより前のファイルの時点は使わない。
+        let points = self
+            .recorder()?
+            .checkpoints_from_tree(tree)?
+            .into_iter()
+            .map(|point| point.checkpoint.id)
+            .collect::<BTreeSet<_>>();
+        let mut targets = Vec::new();
+        for record in records {
+            if let Some(request) = crate::session::request_text(record)
+                && let Some(node) = record.node()
+            {
+                let checkpoint = tree
+                    .request_checkpoint(node)
+                    .filter(|id| points.contains(*id))
+                    .map(str::to_owned);
+                targets.push(BranchInfo {
+                    target: BranchTarget::BeforeRequest(node),
+                    request: Some(request),
+                    checkpoint,
+                });
+            }
         }
-        if conversation {
-            let items = selected.checkpoint.items.ok_or(RewindError::Invalid(
+        for node in tree.leaves() {
+            let checkpoint = tree
+                .branch_checkpoint(node)
+                .filter(|id| points.contains(*id))
+                .map(str::to_owned);
+            targets.push(BranchInfo {
+                target: BranchTarget::Tip(node),
+                request: None,
+                checkpoint,
+            });
+        }
+        Ok(targets)
+    }
+
+    /// 一連の処理をしていないときに、指定した枝へ移る。今の先端なら何もしない。
+    pub fn switch_branch(
+        &mut self,
+        target: BranchTarget,
+        scope: RewindScope,
+        allow_incomplete: bool,
+        events: SyncSender<AgentEvent>,
+    ) -> Result<RewindReport, AgentError> {
+        if scope == RewindScope::Files {
+            return Err(RewindError::Invalid(super::text::CONVERSATION_REWIND_UNAVAILABLE).into());
+        }
+        // 補う結果の追記は先端を進めるため、同じ先端への移動は追記の前に止める。
+        if matches!(target, BranchTarget::Tip(node) if Some(node) == self.current_node) {
+            return Ok(RewindReport::default());
+        }
+        let (records, tree) = self.records_for_move(true)?;
+        let selected = self
+            .branch_targets_from_records(&records, &tree)?
+            .into_iter()
+            .find(|info| info.target == target)
+            .ok_or(RewindError::Invalid(
                 super::text::CONVERSATION_REWIND_UNAVAILABLE,
             ))?;
-            // 再開が補った結果は巻き戻しより前に確定する。次の run で捨てた枝へ
-            // 結果だけを追記すると replay とメモリの会話がずれる（設計書 01-05「再開」「会話を戻すとき」）。
-            for record in std::mem::take(&mut self.resume_results) {
-                self.writer.append(&record)?;
+        if scope == RewindScope::FilesAndConversation && selected.checkpoint.is_none() {
+            return Err(RewindError::Invalid(super::text::CONVERSATION_REWIND_UNAVAILABLE).into());
+        }
+        let to = match target {
+            BranchTarget::BeforeRequest(node) => {
+                tree.entry(node)
+                    .ok_or(RewindError::Invalid(
+                        super::text::CONVERSATION_REWIND_UNAVAILABLE,
+                    ))?
+                    .0
             }
-            self.writer.append(&Record::Rewind {
-                items,
-                checkpoint: checkpoint.into(),
-            })?;
-            self.conversation.items.truncate(items);
-            self.recorder()?.advance_generation()?;
-            self.previous_last_item = None;
-            self.last_usage = None;
-            self.added_bytes = 0;
-            self.largest_input = None;
-            self.repeated = None;
-            // 再開の最初の依頼の前でも、残った別のモデルの推論を要約する必要は
-            // 消さない。会話を空に戻したときだけ解除する（設計書 01-05「再開」）。
-            self.resume_has_reasoning = self.resume_has_reasoning
-                && self.conversation.items.iter().any(|item| match item {
-                    crate::provider::Item::AssistantTurn(turn) => {
-                        super::reasoning::has_reasoning(turn)
-                    }
-                    crate::provider::Item::UserMessage(_)
-                    | crate::provider::Item::ToolResult(_) => false,
-                });
-            self.started = !self.conversation.items.is_empty();
-            if !self.started {
-                self.resume_compaction = false;
-                self.environment_changes = None;
+            BranchTarget::Tip(node) => Some(node),
+        };
+        self.move_branch(
+            records,
+            tree,
+            BranchMove {
+                to,
+                checkpoint: selected.checkpoint,
+                request: selected.request,
+                scope,
+            },
+            allow_incomplete,
+            events,
+        )
+    }
+
+    fn records_for_move(
+        &mut self,
+        flush: bool,
+    ) -> Result<(Vec<Record>, crate::session::SessionTree), AgentError> {
+        let mut records = crate::session::read_records(self.session.directory())?;
+        let mut tree = crate::session::SessionTree::from_records(&records)?;
+        if flush {
+            for record in self.flush_resume_results()? {
+                tree.push_record(&record, records.len())?;
+                records.push(record);
             }
+        }
+        Ok((records, tree))
+    }
+
+    fn move_branch(
+        &mut self,
+        mut records: Vec<Record>,
+        mut tree: crate::session::SessionTree,
+        movement: BranchMove,
+        allow_incomplete: bool,
+        events: SyncSender<AgentEvent>,
+    ) -> Result<RewindReport, AgentError> {
+        let conversation = movement.scope != RewindScope::Files;
+        let irreversible = movement
+            .checkpoint
+            .as_deref()
+            .map(|id| self.irreversible(id, &records))
+            .transpose()?
+            .unwrap_or_default();
+        let mut branch = Record::Branch {
+            to: movement.to,
+            from: self.current_node,
+            checkpoint: None,
+        };
+        // 組み立ての失敗では記録もファイルも変えない。復元の準備は読み込んだ記録で済ませる。
+        let prepared_path = if conversation {
+            tree.push_record(&branch, records.len())?;
+            records.push(branch.clone());
+            let state = crate::session::ResumeState::from_records_with_tree(&records, tree)?;
+            Some(self.prepare_path_state(state)?)
+        } else {
+            None
+        };
+        self.recorder()?.set_turn(self.turn)?;
+        let mut report = if movement.scope != RewindScope::Conversation {
+            let id = movement
+                .checkpoint
+                .as_deref()
+                .ok_or(RewindError::Invalid(super::text::UNKNOWN_CHECKPOINT))?;
+            let prepared = self.recorder()?.prepare_restore_files(id)?;
+            self.checkpoint_notices(&events)?;
+            let report = prepared.restore(allow_incomplete)?;
+            // 以降の通知・追記が失敗しても、書き戻したファイルの読んだ版を残さない。
+            for path in &report.changed_paths {
+                self.tool_context
+                    .clear_read_version(&self.tool_context.project.real_path().join(path))
+                    .map_err(|_| AgentError::Worker)?;
+            }
+            report
+        } else {
+            let before = self
+                .recorder()?
+                .capture(
+                    CheckpointReason::BeforeRewind,
+                    None,
+                    &std::sync::atomic::AtomicBool::new(false),
+                )
+                .ok();
+            RewindReport {
+                before_rewind: before.map(|point| point.id),
+                ..RewindReport::default()
+            }
+        };
+        self.checkpoint_notices(&events)?;
+        report.irreversible = irreversible;
+        if let Some(prepared) = prepared_path {
+            if let Record::Branch { checkpoint, .. } = &mut branch {
+                *checkpoint = report.before_rewind.clone();
+            }
+            self.commit_branch(&branch, prepared)?;
             report.conversation_rewound = true;
+            report.request = movement.request;
         }
         Ok(report)
     }
-    fn recorder(&self) -> Result<&crate::rewind::CheckpointRecorder, AgentError> {
+
+    pub(super) fn recorder(&self) -> Result<&crate::rewind::CheckpointRecorder, AgentError> {
         self.tool_context
             .checkpoints
             .as_ref()
@@ -198,10 +334,13 @@ impl Agent {
         }
         Ok(())
     }
-    fn irreversible(&self, checkpoint: &str) -> Result<Vec<IrreversibleOperation>, AgentError> {
-        let records = crate::session::read_records(self.session.directory())?;
+    fn irreversible(
+        &self,
+        checkpoint: &str,
+        records: &[Record],
+    ) -> Result<Vec<IrreversibleOperation>, AgentError> {
         let mut calls = BTreeMap::new();
-        for record in &records {
+        for record in records {
             if let Record::ToolStart { call } = record {
                 calls.insert(call.id.clone(), call);
             }
@@ -221,7 +360,7 @@ impl Agent {
         let mut result = BTreeMap::new();
         let mut candidates = BTreeSet::new();
         let mut latest_checkpoint = checkpoint.to_owned();
-        for record in &records {
+        for record in records {
             if let Record::Checkpoint(point) = record {
                 latest_checkpoint = point.id.clone();
                 if point.id == checkpoint {
@@ -290,14 +429,17 @@ pub struct RewindPreview {
     pub irreversible: Vec<IrreversibleOperation>,
 }
 
-fn request_text(item: &crate::provider::Item) -> Option<String> {
-    if let crate::provider::Item::UserMessage(message) = item {
-        message
-            .parts
-            .iter()
-            .find(|part| part.kind == crate::provider::UserPartKind::Request)
-            .map(|part| part.text.lines().next().unwrap_or_default().to_owned())
-    } else {
-        None
-    }
+/// 木の中の移動先。依頼そのものの番号と先端の番号を区別する。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum BranchTarget {
+    BeforeRequest(u64),
+    Tip(u64),
+}
+
+/// 画面が移動先と、ファイルを戻せるかを示す情報。
+#[derive(Clone, Debug)]
+pub struct BranchInfo {
+    pub target: BranchTarget,
+    pub request: Option<String>,
+    pub checkpoint: Option<String>,
 }
