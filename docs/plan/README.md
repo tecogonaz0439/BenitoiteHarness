@@ -67,6 +67,7 @@
 | [P5-05](tasks/P5-05-performance.md) | 性能の測定の道具（06-02 の目標の各項目を測るテストと集める道具、`opt-level = "s"` との比べ） | P5-04 | 完了 |
 | [P5-06](tasks/P5-06-evaluation-switches.md) | 評価で決める選択肢を切り替える口（`restricted.after_write_check`、`read.line_numbers`、評価の道具の `config` と比べる項目） | P5-04 | 完了 |
 | [P5-07](tasks/P5-07-antigravity.md) | 評価の道具に Antigravity の項目を整える（`accept-edits` とフックで `benitoite` だけを許す、出力と会話の記録の読み取り、利用者の設定の確かめ） | P5-04 | 完了 |
+| [P5-08](tasks/P5-08-s-tier-decisions.md) | S の段の決定の反映（`opt-level = "s"`、`anthropic-messages` の effort の既定を `low`） | P5-05 | 未着手 |
 
 P1 の作業は P0-04・P0-05（OS のサンドボックス）の結果に依らないので、P0-04・P0-05 が設計者の判断を待つ間に先に進めてよい。
 
