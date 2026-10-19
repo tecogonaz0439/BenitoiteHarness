@@ -263,7 +263,23 @@ impl Fixture {
         server: &MockProvider,
         mode: Mode,
     ) -> Result<benitoiteh::ui::tui::NewSession, Box<dyn Error>> {
-        let session = Session::create(&self.paths, SessionId::generate(SystemTime::now())?)?;
+        self.session_in_mode(server, mode, None)
+    }
+
+    fn session_in_mode(
+        &self,
+        server: &MockProvider,
+        mode: Mode,
+        resumed: Option<Session>,
+    ) -> Result<benitoiteh::ui::tui::NewSession, Box<dyn Error>> {
+        let state = resumed
+            .as_ref()
+            .map(|session| benitoiteh::session::ResumeState::read(session.directory()))
+            .transpose()?;
+        let session = match resumed {
+            Some(session) => session,
+            None => Session::create(&self.paths, SessionId::generate(SystemTime::now())?)?,
+        };
         let directory = session.directory().to_owned();
         let spill = directory.join("spill");
         let config = AgentConfig {
@@ -332,13 +348,23 @@ impl Fixture {
             false,
             SystemTime::now(),
         )?;
-        let agent = Agent::new(
-            config,
-            "synthetic-tui-key".into(),
-            context,
-            environment,
-            session.clone(),
-        )?;
+        let agent = match state {
+            Some(state) => Agent::resume(
+                config,
+                "synthetic-tui-key".into(),
+                context,
+                environment,
+                session.clone(),
+                state,
+            ),
+            None => Agent::new(
+                config,
+                "synthetic-tui-key".into(),
+                context,
+                environment,
+                session.clone(),
+            ),
+        }?;
         assert!(agent.context_estimate() > 0);
         assert_eq!(agent.context_window(), None);
         Ok(benitoiteh::ui::tui::NewSession::new(
@@ -552,7 +578,7 @@ fn shutdown_drains_the_worker_and_preserves_the_restoration_position() -> TestRe
                 &mut output,
                 &signal,
                 |rows| below = rows,
-                &mut |_| Err("unexpected new session".into()),
+                &mut |_, _, _| Err("unexpected new session".into()),
             )?,
             if external { 130 } else { 0 }
         );
@@ -626,7 +652,7 @@ fn repeated_shutdown_returns_immediately_and_resize_is_kept_while_exiting() -> T
                 &mut bytes,
                 &signal,
                 |_| {},
-                &mut |_| Err("unexpected new session".into())
+                &mut |_, _, _| Err("unexpected new session".into())
             )?,
             130
         );

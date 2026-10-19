@@ -13,6 +13,8 @@ pub enum Command {
     Rewind,
     Tree,
     New,
+    Fork(crate::session::ForkTarget),
+    ForkBefore,
     /// 選択を終えた時点と範囲を、働き手へ渡す。
     PreviewRewind(String, crate::rewind::RewindScope),
     /// 木で選んだ移動先と範囲を、働き手で確かめる。
@@ -25,6 +27,7 @@ pub struct NewSession {
     pub session: Session,
     pub status: Status,
     pub diagnostics: Vec<String>,
+    pub(super) restored_request: Option<String>,
     pub(super) activate: Option<Box<dyn FnOnce()>>,
 }
 impl NewSession {
@@ -35,8 +38,14 @@ impl NewSession {
             session,
             status,
             diagnostics,
+            restored_request: None,
             activate: None,
         }
+    }
+    /// 選んだ依頼を、移った先の入力欄へ戻す。
+    pub fn with_request(mut self, request: Option<String>) -> Self {
+        self.restored_request = request;
+        self
     }
     /// 前の Agent の破棄を確かめた後に、panic の書き先を切り替える。
     pub fn on_start(mut self, activate: impl FnOnce() + 'static) -> Self {
@@ -102,6 +111,14 @@ impl Screen {
             "rewind" => Action::Command(Command::Rewind),
             "tree" => Action::Command(Command::Tree),
             "new" => Action::Command(Command::New),
+            "fork" => match arguments.trim() {
+                "" => Action::Command(Command::Fork(crate::session::ForkTarget::Current)),
+                "before" => Action::Command(Command::ForkBefore),
+                _ => {
+                    self.notice(text::FORK_USAGE);
+                    Action::None
+                }
+            },
             "quit" => Action::Quit,
             _ => {
                 self.notice(text::UNKNOWN_COMMAND);

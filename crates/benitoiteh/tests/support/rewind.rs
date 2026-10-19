@@ -120,6 +120,7 @@ impl Fixture {
     }
     pub fn recorder(&self) -> Result<CheckpointRecorder, Box<dyn Error>> {
         self.session.writer()?.append(&Record::Header(Header {
+            forked_from: None,
             format: benitoiteh::session::FORMAT_VERSION,
             session_id: self.session.id().to_string(),
             started_at: self.session.id().started_at_utc(),

@@ -144,6 +144,7 @@ impl Drop for Fixture {
 
 fn header(session: &Session) -> Record {
     Record::Header(Header {
+        forked_from: None,
         format: FORMAT_VERSION,
         session_id: session.id().to_string(),
         started_at: session.id().started_at_utc(),
@@ -557,6 +558,18 @@ fn oversized_records_are_spilled_losslessly_and_tool_output_counts_discarded_byt
     assert!(String::from_utf8(body)?.contains("\"type\":\"spilled\""));
     assert_eq!(
         replay(session.directory())?.items,
+        vec![Item::AssistantTurn(response.clone())]
+    );
+    // 写した側でも分割保存を読み直せ、元の分割行をそのまま参照しない。
+    let copied = session
+        .fork(
+            &fixture.paths,
+            std::path::Path::new("/project"),
+            benitoiteh::session::ForkTarget::Current,
+        )?
+        .session;
+    assert_eq!(
+        replay(copied.directory())?.items,
         vec![Item::AssistantTurn(response)]
     );
 
@@ -1336,5 +1349,580 @@ fn invalid_trees_are_rejected_before_resume_touches_temporary_files() -> TestRes
         serde_json::from_value::<Record>(json!({"type":"compaction", "conversation":{"items":[]}}))
             .is_err()
     );
+    Ok(())
+}
+
+// 関門: 写す道・推論の区間・独立した参照先を、実ファイルの再開の境界で守る。
+// 直線の再開では、別の枝や圧縮前の記録の混入・欠落を見つけられない。
+#[test]
+fn fork_copies_the_whole_selected_path_and_only_its_assets() -> TestResult {
+    use benitoiteh::session::{ForkTarget, ForkedFrom, ResumeState};
+    let f = Fixture::new()?;
+    let source = f.session()?;
+    let mut writer = source.writer()?;
+    writer.append(&header(&source))?;
+    let request = |node, value: &str| Record::User {
+        node,
+        kind: UserKind::Request,
+        message: UserMessage {
+            parts: vec![UserPart {
+                kind: UserPartKind::Request,
+                text: value.into(),
+            }],
+        },
+    };
+    let start = |hash: &str| Record::SessionStart {
+        session_id: source.id().to_string(),
+        resumed: true,
+        base_url: None,
+        system_prompt_sha256: Some(hash.repeat(64)),
+        tools_sha256: None,
+        mode: Mode::Restricted.into(),
+        provider: "test".into(),
+        model: "model".into(),
+        host: "example.test".into(),
+        benitoiteh_version: "old".into(),
+        notice: None,
+        instruction_files: vec![],
+        skipped_instructions: vec![],
+        skills: vec![],
+        skipped_skills: vec![],
+    };
+    writer.append(&start("a"))?;
+    writer.append(&request(1, "root request"))?;
+    let image_bytes = b"GIF89a\x01\x00\x01\x00\x80\x00\x00\x00\x00\x00\xff\xff\xff\x2c\x00\x00\x00\x00\x01\x00\x01\x00\x00\x02\x02\x44\x01\x00\x3b";
+    let (hash, _) = source.store_object(image_bytes)?.ok_or("image storage")?;
+    let mut image_call = call("image");
+    image_call.name = "read".into();
+    writer.append(&Record::Assistant {
+        node: 2,
+        turn: 1,
+        response: response(std::slice::from_ref(&image_call)),
+    })?;
+    writer.append(&Record::ToolCall {
+        turn: 1,
+        call: image_call.clone(),
+        validation_error: None,
+    })?;
+    let mut spill = source.spill_writer("image")?;
+    spill.write_all(b"full stdout")?;
+    let spill = spill.finish()?;
+    let mut stderr = source.spill_writer("stderr")?;
+    stderr.write_all(b"full stderr")?;
+    let stderr = stderr.finish()?;
+    let mut image = result(
+        &image_call,
+        &format!(
+            "Full output: {}/{}",
+            source.directory().display(),
+            spill.path.display()
+        ),
+    );
+    image.images.push(benitoiteh::provider::ToolImage {
+        sha256: hash.clone(),
+        media_type: "image/gif".into(),
+        width: 1,
+        height: 1,
+        bytes: u64::try_from(image_bytes.len())?,
+        data: None,
+    });
+    writer.append(&Record::ToolResult {
+        node: 3,
+        turn: 1,
+        name: "read".into(),
+        result: image.clone(),
+        spill: Some(spill.clone()),
+        stderr_spill: Some(stderr.clone()),
+    })?;
+    writer.append(&request(4, "other branch"))?;
+    let other_call = call("other");
+    writer.append(&Record::Assistant {
+        node: 5,
+        turn: 2,
+        response: response(std::slice::from_ref(&other_call)),
+    })?;
+    let mut compact_spill = source.spill_writer("only-in-compaction")?;
+    compact_spill.write_all(b"compacted output")?;
+    let compact_spill = compact_spill.finish()?;
+    let other_result = result(
+        &other_call,
+        &format!(
+            "Full output: {}/{}",
+            source.directory().display(),
+            compact_spill.path.display()
+        ),
+    );
+    writer.append(&Record::ToolResult {
+        node: 6,
+        turn: 2,
+        name: "write".into(),
+        result: other_result.clone(),
+        spill: Some(compact_spill.clone()),
+        stderr_spill: None,
+    })?;
+    writer.append(&start("d"))?;
+    writer.append(&Record::Branch {
+        to: Some(3),
+        from: Some(6),
+        checkpoint: None,
+    })?;
+    writer.append(&request(7, "/literal request"))?;
+    let compacted = Conversation {
+        items: vec![
+            Item::UserMessage(UserMessage {
+                parts: vec![UserPart {
+                    kind: UserPartKind::Request,
+                    text: "summary".into(),
+                }],
+            }),
+            Item::AssistantTurn(response(std::slice::from_ref(&image_call))),
+            Item::ToolResult(image),
+            Item::AssistantTurn(response(std::slice::from_ref(&other_call))),
+            Item::ToolResult(other_result),
+        ],
+    };
+    writer.append(&Record::Compaction {
+        node: 8,
+        conversation: compacted,
+        reason: Default::default(),
+        summarized_items: 4,
+        kept_items: 2,
+    })?;
+    writer.append(&Record::ImagesRemoved {
+        node: 9,
+        results: vec![],
+    })?;
+    let pending = call("turn-3-call-1");
+    writer.append(&Record::Assistant {
+        node: 10,
+        turn: 3,
+        response: response(std::slice::from_ref(&pending)),
+    })?;
+    // 最後の節点の後にも、未完の呼び出しに必要な制御の記録がある。
+    writer.append(&Record::ToolCall {
+        turn: 3,
+        call: pending.clone(),
+        validation_error: None,
+    })?;
+    writer.append(&Record::ToolStart { call: pending })?;
+    writer.append(&Record::Checkpoint(benitoiteh::rewind::Checkpoint {
+        id: "point".into(),
+        reason: benitoiteh::rewind::CheckpointReason::Request,
+        turn: 3,
+        call_id: None,
+        created_at: Default::default(),
+        node: Some(10),
+        manifest: None,
+        incomplete: vec![],
+    }))?;
+    writer.append(&Record::Approval {
+        phase: benitoiteh::session::ApprovalPhase::Result,
+        id: "approval".into(),
+        tool_id: "pending".into(),
+        request: None,
+        outcome: Some(ApprovalOutcome::ApprovedForSession),
+        kind: None,
+        facts: Default::default(),
+        justification: None,
+        user_message: None,
+    })?;
+    writer.append(&Record::WriteTarget {
+        call_id: "pending".into(),
+        real_path: "/unrelated".into(),
+    })?;
+    writer.append(&Record::TurnEnd {
+        turn: 3,
+        finish_reason: FinishReason::Cancelled,
+        usage: Default::default(),
+    })?;
+    let unused_object = source
+        .store_object(b"checkpoint-only")?
+        .ok_or("unused object")?
+        .0;
+    let mut unused_spill = source.spill_writer("unrelated")?;
+    unused_spill.write_all(b"not copied")?;
+    let unused_spill = unused_spill.finish()?;
+    let original = fs::read(source.directory().join("session.jsonl"))?;
+    let source_state = ResumeState::read(source.directory())?;
+    let copied = source
+        .fork(
+            &f.paths,
+            std::path::Path::new("/current-project"),
+            ForkTarget::Current,
+        )?
+        .session;
+    let records = read_records(copied.directory())?;
+    let Some(Record::Header(h)) = records.first() else {
+        return Err("missing header".into());
+    };
+    assert_eq!(
+        h.forked_from,
+        Some(ForkedFrom {
+            session: source.id().to_string(),
+            node: 10
+        })
+    );
+    assert_eq!(h.project_dir, PathBuf::from("/current-project"));
+    assert_eq!(h.system_prompt_sha256, "a".repeat(64));
+    assert_eq!(h.session_id, copied.id().to_string());
+    assert_eq!(
+        records.iter().filter_map(Record::node).collect::<Vec<_>>(),
+        (1..=7).collect::<Vec<_>>()
+    );
+    assert!(records.iter().all(|record| matches!(
+        record,
+        Record::Header(_)
+            | Record::SessionStart { .. }
+            | Record::User { .. }
+            | Record::Assistant { .. }
+            | Record::ToolCall { .. }
+            | Record::ToolStart { .. }
+            | Record::ToolResult { .. }
+            | Record::Compaction { .. }
+            | Record::ImagesRemoved { .. }
+    )));
+    assert_eq!(records.iter().filter(|record| matches!(record, Record::SessionStart { session_id, .. } if session_id == copied.id().as_str())).count(), 2);
+    assert!(
+        !copied
+            .directory()
+            .join("objects")
+            .join(unused_object)
+            .exists()
+    );
+    assert!(!copied.directory().join(unused_spill.path).exists());
+    let copied_state = ResumeState::read(copied.directory())?;
+    let mut expected = source_state.conversation.clone();
+    for item in &mut expected.items {
+        if let Item::ToolResult(result) = item {
+            result.text = result.text.replace(
+                &source.directory().display().to_string(),
+                &copied.directory().display().to_string(),
+            );
+        }
+    }
+    assert_eq!(copied_state.conversation, expected);
+    assert_eq!(copied_state.max_turn, source_state.max_turn);
+    assert_eq!(
+        copied_state
+            .reasoning
+            .iter()
+            .map(|r| (&r.system_prompt_sha256, &r.tools_sha256, &r.destination))
+            .collect::<Vec<_>>(),
+        source_state
+            .reasoning
+            .iter()
+            .map(|r| (&r.system_prompt_sha256, &r.tools_sha256, &r.destination))
+            .collect::<Vec<_>>()
+    );
+    assert_eq!(copied_state.files.read, source_state.files.read);
+    assert!(copied_state.missing_results.iter().any(|record| matches!(record, Record::ToolResult { result, .. } if result.text.contains("interrupted"))));
+    for node in [4, 7] {
+        let before = source
+            .fork(
+                &f.paths,
+                std::path::Path::new("/project"),
+                ForkTarget::BeforeRequest(node),
+            )?
+            .session;
+        let records = read_records(before.directory())?;
+        assert_eq!(
+            records.iter().filter_map(Record::node).collect::<Vec<_>>(),
+            vec![1, 2, 3]
+        );
+        assert_eq!(
+            records
+                .iter()
+                .filter(|record| matches!(record, Record::SessionStart { .. }))
+                .count(),
+            1
+        );
+        assert_eq!(ResumeState::read(before.directory())?.max_turn, 1);
+    }
+    assert!(
+        source
+            .fork(
+                &f.paths,
+                std::path::Path::new("/project"),
+                ForkTarget::BeforeRequest(1)
+            )
+            .is_err()
+    );
+    assert_eq!(
+        fs::read(source.directory().join("session.jsonl"))?,
+        original
+    );
+    let directory = source.directory().to_owned();
+    drop(writer);
+    drop(source);
+    fs::remove_dir_all(directory)?;
+    assert_eq!(copied.read_object(&hash, 4096)?, image_bytes);
+    for (info, bytes) in [
+        (spill, b"full stdout".as_slice()),
+        (stderr, b"full stderr".as_slice()),
+        (compact_spill, b"compacted output".as_slice()),
+    ] {
+        assert_eq!(fs::read(copied.directory().join(info.path))?, bytes);
+    }
+    let copied_id = copied.id().clone();
+    drop(copied);
+    let reopened = session_support::open_created_session(&f.paths, &copied_id)?;
+    assert_eq!(reopened.take_resume_state()?.conversation, expected);
+    Ok(())
+}
+
+// 関門: 上限超過・不正な参照先の失敗が元の記録を変えたり、作りかけを残す退行を守る。
+#[test]
+fn fork_failures_leave_no_destination_and_preserve_the_source() -> TestResult {
+    use benitoiteh::session::{ForkTarget, SessionError, TOTAL_LIMIT};
+    for failure in [
+        "session quota",
+        "total quota",
+        "spill link",
+        "spill mode",
+        "object hash",
+        "missing",
+    ] {
+        let f = Fixture::new()?;
+        let source = f.session()?;
+        let mut writer = source.writer()?;
+        writer.append(&header(&source))?;
+        let tool = call("output");
+        let mut spill = source.spill_writer("output")?;
+        spill.write_all(b"output")?;
+        let spill = spill.finish()?;
+        let mut output = result(&tool, "result");
+        let (hash, _) = source.store_object(b"image bytes")?.ok_or("object")?;
+        output.images.push(benitoiteh::provider::ToolImage {
+            media_type: "image/gif".into(),
+            sha256: hash.clone(),
+            width: 1,
+            height: 1,
+            bytes: 11,
+            data: None,
+        });
+        writer.append(&Record::ToolResult {
+            node: 1,
+            turn: 1,
+            name: "read".into(),
+            result: output,
+            spill: Some(spill.clone()),
+            stderr_spill: None,
+        })?;
+        let spill_path = source.directory().join(&spill.path);
+        match failure {
+            "session quota" => fs::File::options()
+                .write(true)
+                .open(&spill_path)?
+                .set_len(1024 * 1024 * 1024)?,
+            "total quota" => {
+                let filler = source.spill_writer("filler")?.finish()?;
+                fs::File::options()
+                    .write(true)
+                    .open(source.directory().join(filler.path))?
+                    .set_len(TOTAL_LIMIT)?;
+            }
+            "spill link" => {
+                fs::remove_file(&spill_path)?;
+                symlink(source.directory().join("session.jsonl"), &spill_path)?;
+            }
+            "spill mode" => fs::set_permissions(&spill_path, fs::Permissions::from_mode(0o644))?,
+            "object hash" => fs::write(source.directory().join("objects").join(&hash), b"corrupt")?,
+            "missing" => {
+                fs::remove_file(&spill_path)?;
+                fs::remove_file(source.directory().join("objects").join(&hash))?;
+            }
+            _ => return Err("case".into()),
+        }
+        let original = fs::read(source.directory().join("session.jsonl"))?;
+        let result = source.fork(
+            &f.paths,
+            std::path::Path::new("/project"),
+            ForkTarget::Current,
+        );
+        if failure == "missing" {
+            assert!(result.is_ok());
+        } else {
+            let error = result.err().ok_or("fork should fail")?;
+            if failure.contains("quota") {
+                assert!(
+                    matches!(error, SessionError::Invalid(message) if message.contains("storage limit"))
+                );
+            }
+            assert_eq!(fs::read_dir(&f.paths.sessions_dir)?.count(), 1, "{failure}");
+            assert_eq!(
+                fs::read_dir(&f.paths.temporary_root)?.count(),
+                1,
+                "{failure}"
+            );
+        }
+        assert_eq!(
+            fs::read(source.directory().join("session.jsonl"))?,
+            original
+        );
+    }
+    Ok(())
+}
+
+// 関門: 参照数に比例して記述子を保持する退行を、上限を下げた独立した子プロセスで守る。
+#[test]
+fn fork_copies_more_references_than_the_descriptor_limit() -> TestResult {
+    const CHILD: &str = "BENITOITEH_FORK_FD_CHILD";
+    let f = Fixture::new()?;
+    if std::env::var_os(CHILD).is_none() {
+        let output = std::process::Command::new(std::env::current_exe()?)
+            .args([
+                "--exact",
+                "fork_copies_more_references_than_the_descriptor_limit",
+                "--nocapture",
+            ])
+            .env(CHILD, "1")
+            .env("XDG_CONFIG_HOME", f.root.join("config"))
+            .env("XDG_STATE_HOME", f.root.join("state"))
+            .env("TMPDIR", &f.paths.temporary_root)
+            .output()?;
+        assert!(
+            output.status.success(),
+            "{}\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        return Ok(());
+    }
+    let source = f.session()?;
+    let mut writer = source.writer()?;
+    writer.append(&header(&source))?;
+    for node in 1..=300_u64 {
+        let mut spill = source.spill_writer(&format!("reference-{node}"))?;
+        spill.write_all(&node.to_le_bytes())?;
+        writer.append(&Record::ToolResult {
+            node,
+            turn: node,
+            name: "read".into(),
+            result: result(&call(&format!("call-{node}")), "output"),
+            spill: Some(spill.finish()?),
+            stderr_spill: None,
+        })?;
+    }
+    let mut limit = rustix::process::getrlimit(rustix::process::Resource::Nofile);
+    limit.current = Some(64);
+    rustix::process::setrlimit(rustix::process::Resource::Nofile, limit)?;
+    let copied = source
+        .fork(
+            &f.paths,
+            std::path::Path::new("/project"),
+            benitoiteh::session::ForkTarget::Current,
+        )?
+        .session;
+    assert_eq!(fs::read_dir(copied.directory().join("spill"))?.count(), 300);
+    assert_eq!(
+        read_records(copied.directory())?
+            .iter()
+            .filter_map(Record::node)
+            .count(),
+        300
+    );
+    Ok(())
+}
+
+// 関門: 同じセッションの別のファイルや、実在するパスの前方一致まで書き換える退行を守る。
+#[test]
+fn fork_rewrites_only_complete_spill_paths_owned_by_each_result() -> TestResult {
+    let f = Fixture::new()?;
+    let source = f.session()?;
+    let mut writer = source.writer()?;
+    writer.append(&header(&source))?;
+    let mut spill = source.spill_writer("stdout")?;
+    spill.write_all(b"stdout")?;
+    let spill = spill.finish()?;
+    let mut other = source.spill_writer("other")?;
+    other.write_all(b"other")?;
+    let other = other.finish()?;
+    let own = source.directory().join(&spill.path).display().to_string();
+    let foreign = source.directory().join(&other.path).display().to_string();
+    let fake = source
+        .directory()
+        .join("spill/not-a-real-spill")
+        .display()
+        .to_string();
+    let body = format!("Full output: {own}]\n{fake}\n{own}.suffix\n{own}/child\n{foreign}\n{own} ");
+    let first = result(&call("first"), &body);
+    writer.append(&Record::ToolResult {
+        node: 1,
+        turn: 1,
+        name: "bash".into(),
+        result: first.clone(),
+        spill: Some(spill.clone()),
+        stderr_spill: None,
+    })?;
+    writer.append(&Record::ToolResult {
+        node: 2,
+        turn: 1,
+        name: "bash".into(),
+        result: result(&call("second"), &foreign),
+        spill: Some(other.clone()),
+        stderr_spill: None,
+    })?;
+    writer.append(&Record::Compaction {
+        node: 3,
+        conversation: Conversation {
+            items: vec![Item::ToolResult(first)],
+        },
+        reason: Default::default(),
+        summarized_items: 2,
+        kept_items: 1,
+    })?;
+    let copied = source
+        .fork(
+            &f.paths,
+            std::path::Path::new("/project"),
+            benitoiteh::session::ForkTarget::Current,
+        )?
+        .session;
+    let replacement = copied.directory().join(&spill.path).display().to_string();
+    let expected = format!(
+        "Full output: {replacement}]\n{fake}\n{own}.suffix\n{own}/child\n{foreign}\n{replacement} "
+    );
+    let records = read_records(copied.directory())?;
+    assert!(records.iter().any(|record| matches!(record, Record::ToolResult { result, .. } if result.id == "first" && result.text == expected)));
+    assert!(records.iter().any(|record| matches!(record, Record::Compaction { conversation, .. } if matches!(conversation.items.first(), Some(Item::ToolResult(result)) if result.text == expected))));
+    Ok(())
+}
+
+// 関門: 一覧では断る写した元の不正な ID を、開く処理が受け入れる退行を守る。
+#[test]
+fn fork_origin_ids_are_checked_by_both_listing_and_opening() -> TestResult {
+    for origin in [
+        "invalid",
+        "../../escape",
+        "20261019T120000Z-0123456789abcdef",
+    ] {
+        let f = Fixture::new()?;
+        let source = f.session()?;
+        let mut value = serde_json::to_value(header(&source))?;
+        value
+            .as_object_mut()
+            .ok_or("header")?
+            .insert("forked_from".into(), json!({"session":origin,"node":1}));
+        fs::write(
+            source.directory().join("session.jsonl"),
+            format!("{value}\n"),
+        )?;
+        let id = source.id().clone();
+        drop(source);
+        let entries = benitoiteh::session::list_sessions(&f.paths)?;
+        let entry = entries
+            .iter()
+            .find(|entry| entry.id == id.as_str())
+            .ok_or("entry")?;
+        let opened = session_support::open_created_session(&f.paths, &id);
+        if origin == "20261019T120000Z-0123456789abcdef" {
+            assert!(entry.error.is_none());
+            assert!(opened.is_ok());
+        } else {
+            let error = opened.err().ok_or("invalid origin was accepted")?;
+            assert_eq!(entry.error.as_deref(), Some(error.to_string().as_str()));
+            assert!(error.to_string().contains("Invalid session record format"));
+        }
+    }
     Ok(())
 }

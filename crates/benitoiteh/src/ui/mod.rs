@@ -48,6 +48,7 @@ pub fn session_entry(entry: &crate::session::SessionEntry) -> String {
         mode,
         &project,
         &terminal_text(entry.first_request.as_deref().unwrap_or_default(), false),
+        entry.forked_from.as_ref(),
         entry.active,
     )
 }

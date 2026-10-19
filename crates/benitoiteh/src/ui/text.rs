@@ -59,10 +59,14 @@ pub fn session_entry(
     mode: &str,
     project: &str,
     request: &str,
+    forked_from: Option<&crate::session::ForkedFrom>,
     active: bool,
 ) -> String {
     let active = if active { " [active]" } else { "" };
-    format!("{id}  {started}  {mode}  {project}  {request}{active}")
+    let forked = forked_from
+        .map(|source| format!(" [forked from {}]", source.session))
+        .unwrap_or_default();
+    format!("{id}  {started}  {mode}  {project}  {request}{forked}{active}")
 }
 
 /// 記録のモードを一覧に示す綴りにする。

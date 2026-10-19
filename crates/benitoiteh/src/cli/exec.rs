@@ -108,6 +108,10 @@ pub(super) struct SessionOverrides {
     approval: Approval,
     safety: crate::agent::SessionSafety,
     benitoite_path: Option<PathBuf>,
+    forked_from: Option<session::ForkedFrom>,
+    // URL とキーを別の時点から組み合わせないよう、固定するのは名前だけとする。
+    provider_model: Option<(String, String)>,
+    fork_session: Option<Session>,
 }
 
 impl From<&crate::agent::AgentStatus> for SessionOverrides {
@@ -120,6 +124,9 @@ impl From<&crate::agent::AgentStatus> for SessionOverrides {
             approval: current.approval,
             safety: current.safety.clone(),
             benitoite_path: current.benitoite_path.clone(),
+            forked_from: None,
+            provider_model: None,
+            fork_session: None,
         }
     }
 }
@@ -175,6 +182,13 @@ pub(super) fn prepare(
             user.benitoite.path.clone_from(&fixed.benitoite_path);
             args.mode = Some(fixed.mode);
             args.project = Some(fixed.project.clone());
+            if let Some((provider, model)) = &fixed.provider_model {
+                if !user.providers.contains_key(provider) {
+                    return Err(StartupError::Invalid(text::FORK_PROVIDER_MISSING));
+                }
+                args.provider = Some(provider.clone());
+                args.model = Some(model.clone());
+            }
             user.normal.network = fixed.safety.network;
             user.normal
                 .writable_roots
@@ -197,7 +211,10 @@ pub(super) fn prepare(
         }
         let args = &args;
         let cwd = std::env::current_dir().map_err(StartupError::Io)?;
-        let opened = if let Some(id) = &args.resume {
+        let opened = if let Some(session) = overrides.and_then(|fixed| fixed.fork_session.as_ref())
+        {
+            Some(session.clone())
+        } else if let Some(id) = &args.resume {
             let id = id.parse::<SessionId>().map_err(StartupError::Session)?;
             Some(Session::open(paths, &id).map_err(StartupError::Session)?)
         } else if args.continue_session {
@@ -260,6 +277,7 @@ pub(super) fn prepare(
         if let Some(state) = &resume
             && state.mode == crate::session::RecordedMode::Restricted
             && resolved.mode == Mode::Normal
+            && !overrides.is_some_and(|fixed| fixed.forked_from.is_some())
             && !confirm_mode_change(&ModeChange {
                 session_id: opened
                     .as_ref()
@@ -354,7 +372,11 @@ pub(super) fn prepare(
         );
         let session = match opened {
             Some(session) => {
-                diagnostics.push(text::resuming(session.id(), root.real_path()));
+                if let Some(source) = overrides.and_then(|fixed| fixed.forked_from.as_ref()) {
+                    diagnostics.push(text::forked(source, session.id()));
+                } else {
+                    diagnostics.push(text::resuming(session.id(), root.real_path()));
+                }
                 session
             }
             None => Session::create(paths, id).map_err(StartupError::Session)?,
@@ -838,4 +860,48 @@ pub(super) fn prepare_new(
         query_launcher,
         &mut |_| false,
     )
+}
+
+/// UI の停止した働き手の記録を写し、安全の値を固定して再開の道へ渡す。
+pub(super) fn prepare_fork(
+    original: &ExecArgs,
+    current: &crate::agent::AgentStatus,
+    source: &Session,
+    paths: &DataPaths,
+    target: session::ForkTarget,
+    check_sandbox: impl FnOnce(&Path, &Path) -> Result<(), SandboxError>,
+    query_launcher: QueryLauncher,
+) -> Result<(Prepared, Option<String>), PreparationError> {
+    let session::ForkedSession {
+        session: copied,
+        from,
+        request,
+    } = source
+        .fork(paths, &current.project, target)
+        .map_err(|error| PreparationError {
+            error: StartupError::Session(error),
+            diagnostics: Vec::new(),
+        })?;
+    let id = copied.id().clone();
+    let mut fixed = SessionOverrides::from(current);
+    fixed.forked_from = Some(from);
+    fixed.provider_model = Some((current.provider.clone(), current.model.clone()));
+    fixed.fork_session = Some(copied);
+    let mut args = original.clone();
+    args.resume = Some(id.to_string());
+    args.continue_session = false;
+    args.request = super::args::Request::Text(String::new());
+    prepare(
+        &args,
+        Some(&fixed),
+        paths,
+        check_sandbox,
+        query_launcher,
+        &mut |_| false,
+    )
+    .map(|prepared| (prepared, request))
+    .map_err(|mut error| {
+        error.diagnostics.push(text::fork_retained(&id));
+        error
+    })
 }
