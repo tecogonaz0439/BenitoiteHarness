@@ -16,6 +16,13 @@ use std::sync::{
 };
 use std::time::{Duration, Instant};
 
+fn permission_errno(message: &str) -> bool {
+    // strerror の文言は libc によって異なる。Rust が添える番号で拒否を区別する。
+    [rustix::io::Errno::ACCESS, rustix::io::Errno::PERM]
+        .iter()
+        .any(|error| message.contains(&format!("(os error {})", error.raw_os_error())))
+}
+
 // 関門: Skill の実行を認めても、作業ディレクトリと書ける範囲はプロジェクトのままとする。
 #[test]
 fn loaded_skill_runs_after_confirmation_with_the_project_as_working_directory() -> TestResult {
@@ -287,12 +294,7 @@ fn report_effects_control_project_writes_ip_programs_and_environment() -> TestRe
                 .ok_or("program")?,
             json!({}),
         )?;
-        assert!(
-            !out.is_error
-                && (out.text.contains("Permission denied")
-                    || out.text.contains("Operation not permitted")),
-            "{out:?}"
-        );
+        assert!(!out.is_error && permission_errno(&out.text), "{out:?}");
     }
     let listener = std::net::TcpListener::bind("127.0.0.1:0")?;
     for (id, more, expected) in [("offline", "", false), ("online", ", Http.Connect", true)] {
@@ -830,8 +832,13 @@ fn allowed_programs_still_require_process_run_in_the_report() -> TestResult {
                 if !allowed {
                     let stderr = stderr.lock().map_err(|_| "stderr")?;
                     let stderr = String::from_utf8_lossy(&stderr);
+                    #[cfg(target_os = "linux")]
+                    assert!(permission_errno(&stderr), "{stderr}");
+                    // sandbox-exec は errno を出さない。実在する同じプログラムが許可時には
+                    // 成功する対照と、失敗した対象・段階を組み合わせて確かめる。
+                    #[cfg(target_os = "macos")]
                     assert!(
-                        stderr.contains("denied") || stderr.contains("permitted"),
+                        stderr.contains(&format!("execvp() of '{}' failed", probe.display())),
                         "{stderr}"
                     );
                 }
@@ -839,10 +846,7 @@ fn allowed_programs_still_require_process_run_in_the_report() -> TestResult {
             Err(error) => {
                 assert!(!allowed, "allowed program failed: {error}");
                 let message = error.to_string();
-                assert!(
-                    message.contains("denied") || message.contains("permitted"),
-                    "{message}"
-                );
+                assert!(permission_errno(&message), "{message}");
             }
         }
     }

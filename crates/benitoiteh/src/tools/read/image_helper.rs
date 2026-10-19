@@ -15,6 +15,7 @@ const MAX_DECODED_BYTES: u64 = 160_000_000;
 
 enum HelperError {
     Arguments,
+    Limits,
     #[cfg(target_os = "linux")]
     Memory,
     Input,
@@ -30,6 +31,7 @@ pub(crate) fn run_helper(args: impl Iterator<Item = OsString>) -> ExitCode {
         Err(error) => {
             let message = match error {
                 HelperError::Arguments => text::ARGUMENTS,
+                HelperError::Limits => text::LIMITS,
                 #[cfg(target_os = "linux")]
                 HelperError::Memory => text::MEMORY,
                 HelperError::Input => text::INPUT,
@@ -46,6 +48,27 @@ pub(crate) fn run_helper(args: impl Iterator<Item = OsString>) -> ExitCode {
     }
 }
 
+fn limit_resources() -> Result<(), HelperError> {
+    use rustix::process::{Resource, Rlimit, setrlimit};
+    // Linux の NPROC はスレッドも数える。上限を掛けた後はスレッドを作らない
+    // （設計書 01-03「画像のファイルの読み取り」）。
+    for resource in [Resource::Nproc, Resource::Fsize, Resource::Core] {
+        setrlimit(
+            resource,
+            Rlimit {
+                current: Some(0),
+                maximum: Some(0),
+            },
+        )
+        .map_err(|_| HelperError::Limits)?;
+    }
+    // execve は __sandbox の設定を戻す。パイプの core_pattern でも残さない。
+    #[cfg(target_os = "linux")]
+    rustix::process::set_dumpable_behavior(rustix::process::DumpableBehavior::NotDumpable)
+        .map_err(|_| HelperError::Limits)?;
+    Ok(())
+}
+
 #[cfg(target_os = "linux")]
 fn limit_memory() -> Result<(), HelperError> {
     use rustix::process::{Resource, Rlimit, setrlimit};
@@ -60,6 +83,7 @@ fn limit_memory() -> Result<(), HelperError> {
 }
 
 fn convert(mut args: impl Iterator<Item = OsString>) -> Result<(), HelperError> {
+    limit_resources()?;
     // macOS は意味のある RLIMIT_AS を拒むため Linux にだけ掛ける（BH-113）。
     #[cfg(target_os = "linux")]
     limit_memory()?;
@@ -113,6 +137,7 @@ fn convert(mut args: impl Iterator<Item = OsString>) -> Result<(), HelperError> 
         .write_all(&metadata)
         .and_then(|()| output.write_all(b"\n"))
         .and_then(|()| output.write_all(&bytes))
+        .and_then(|()| output.flush())
         .map_err(|_| HelperError::Output)
 }
 
@@ -218,6 +243,7 @@ fn has_transparency(image: &DynamicImage) -> bool {
 mod text {
     //! 補助が返す固定の失敗の種類。入力の中身や OS の診断を含めない。
     pub const ARGUMENTS: &str = "arguments";
+    pub const LIMITS: &str = "limits";
     #[cfg(target_os = "linux")]
     pub const MEMORY: &str = "memory";
     pub const INPUT: &str = "input";
@@ -226,10 +252,91 @@ mod text {
     pub const OUTPUT: &str = "output";
 }
 
-#[cfg(all(test, target_os = "linux"))]
+#[cfg(test)]
 mod tests {
+    #[cfg(target_os = "linux")]
     use super::limit_memory;
+    use super::limit_resources;
+    use rustix::process::{Resource, getrlimit};
+    use std::io::Write;
+
+    // 関門: 宣言した値に加え、子の起動と通常ファイルへの書き込みが実際に失敗し、
+    // パイプへは画像の上限を超える出力も書けることを隔離した子で確かめる。
+    #[test]
+    fn resource_limits_deny_children_and_file_data_but_allow_pipes()
+    -> Result<(), Box<dyn std::error::Error>> {
+        const CHILD: &str = "BENITOITEH_IMAGE_LIMITS_CHILD";
+        if let Some(mode) = std::env::var_os(CHILD) {
+            assert!(limit_resources().is_ok());
+            for resource in [Resource::Nproc, Resource::Fsize, Resource::Core] {
+                let limit = getrlimit(resource);
+                assert_eq!((limit.current, limit.maximum), (Some(0), Some(0)));
+            }
+            #[cfg(target_os = "linux")]
+            assert_eq!(
+                rustix::process::dumpable_behavior()?,
+                rustix::process::DumpableBehavior::NotDumpable
+            );
+            if mode == "file" {
+                let path = std::env::var_os("BENITOITEH_IMAGE_LIMITS_FILE").ok_or("test file")?;
+                let mut file = std::fs::File::create(path)?;
+                file.write_all(b"x")?;
+                return Err("file data limit was not enforced".into());
+            }
+            // Linux は特権のある root に NPROC を強制しない。
+            if !cfg!(target_os = "linux") || !rustix::process::geteuid().is_root() {
+                let result = std::process::Command::new(std::env::current_exe()?)
+                    .arg("--list")
+                    .output();
+                let error = result.err().ok_or("child unexpectedly started")?;
+                assert_eq!(
+                    error.raw_os_error(),
+                    Some(rustix::io::Errno::AGAIN.raw_os_error())
+                );
+            }
+            std::io::stdout()
+                .lock()
+                .write_all(&vec![b'x'; 4 * 1024 * 1024])?;
+            std::io::stdout().lock().flush()?;
+            return Ok(());
+        }
+        let mut random = [0; 16];
+        getrandom::fill(&mut random)?;
+        let directory = std::env::temp_dir().join(format!(
+            "bh-image-limits-{:032x}",
+            u128::from_ne_bytes(random)
+        ));
+        std::fs::create_dir(&directory)?;
+        let result = (|| -> Result<(), Box<dyn std::error::Error>> {
+            for mode in ["pipe", "file"] {
+                let output = std::process::Command::new(std::env::current_exe()?)
+                    .args(["--exact", "tools::read::image::helper::tests::resource_limits_deny_children_and_file_data_but_allow_pipes", "--nocapture"])
+                    .env(CHILD, mode)
+                    .env("BENITOITEH_IMAGE_LIMITS_FILE", directory.join("data"))
+                    .env("XDG_CONFIG_HOME", &directory)
+                    .env("XDG_STATE_HOME", &directory)
+                    .env("TMPDIR", &directory)
+                    .output()?;
+                if mode == "pipe" {
+                    assert!(
+                        output.status.success(),
+                        "{}",
+                        String::from_utf8_lossy(&output.stderr)
+                    );
+                    assert!(output.stdout.len() >= 4 * 1024 * 1024);
+                } else {
+                    assert!(!output.status.success());
+                    assert_eq!(std::fs::metadata(directory.join("data"))?.len(), 0);
+                }
+            }
+            Ok(())
+        })();
+        std::fs::remove_dir_all(&directory)?;
+        result
+    }
+
     // 関門: 上限の宣言だけでなく、子の確保が実際に失敗することを確かめる。
+    #[cfg(target_os = "linux")]
     #[test]
     fn address_space_limit_rejects_two_gib_allocation() -> Result<(), Box<dyn std::error::Error>> {
         const CHILD: &str = "BENITOITEH_IMAGE_MEMORY_CHILD";

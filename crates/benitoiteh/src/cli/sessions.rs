@@ -35,12 +35,15 @@ pub(super) fn run(args: impl Iterator<Item = OsString>) -> Result<u8, CliError> 
         DataPaths::from_env().map_err(|error| CliError::Startup(StartupError::Config(error)))?;
     let config = UserConfig::load(&paths.config_file)
         .map_err(|error| CliError::Startup(StartupError::Config(error)))?;
-    session::cleanup(
+    let cleanup = session::cleanup(
         &paths,
         config.sessions.retention_days,
         std::time::SystemTime::now(),
     )
     .map_err(|error| CliError::Startup(StartupError::Session(error)))?;
+    for failure in cleanup.failures {
+        ExecOutput::diagnostic(&failure.diagnostic()).map_err(CliError::Output)?;
+    }
     let usage = session::storage_usage(&paths, None)
         .map_err(|error| CliError::Startup(StartupError::Session(error)))?;
     if let Some(warning) = usage.warning() {

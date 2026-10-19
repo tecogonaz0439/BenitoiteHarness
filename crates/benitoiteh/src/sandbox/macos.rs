@@ -45,8 +45,6 @@ impl SandboxPolicy {
         let mut profile = SeatbeltProfile {
             source: String::from(
                 "(version 1)\n(deny default)\n\
-                 ; 子孫の起動と、同じプロセスグループ内へのシグナルに限る。\n\
-                 (allow process-fork)\n\
                  ; Rust の標準のライブラリが起動時にページの大きさを読むために必要。\n\
                  ; 拒否すると guard page の確保に失敗して SIGABRT になる。\n\
                  ; 2026-10-17 に、オーケストレータがこの sysctl だけで起動できることを確認した。\n\
@@ -62,6 +60,10 @@ impl SandboxPolicy {
             "(allow file-write-data (require-all (path \"/dev/null\") (vnode-type CHARACTER-DEVICE)))\n",
         );
         let config = self.config();
+        if config.allow_fork {
+            // 画像の補助には子孫の起動を許さない（設計書 01-03「画像のファイルの読み取り」）。
+            profile.source.push_str("(allow process-fork)\n");
+        }
         match &config.readable {
             ReadAccess::All => profile
                 .source

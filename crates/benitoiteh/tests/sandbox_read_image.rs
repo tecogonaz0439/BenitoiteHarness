@@ -13,7 +13,14 @@ fn oversized_opaque_png_becomes_jpeg_and_records_original_file_version() -> Test
     // 色の型にアルファがあっても、実際に透明でなければ JPEG にする。
     let source =
         DynamicImage::ImageRgba8(RgbaImage::from_pixel(2400, 1200, Rgba([48, 96, 192, 255])));
+    #[cfg(target_os = "linux")]
+    let locks_before = std::fs::read_dir(fixture.directory.join("placeholders"))?.count();
     let result = fixture.read(&png(&source)?)?;
+    #[cfg(target_os = "linux")]
+    assert_eq!(
+        std::fs::read_dir(fixture.directory.join("placeholders"))?.count(),
+        locks_before
+    );
     fixture.check_image(&result, ImageFormat::Jpeg, (2000, 1000), (2400, 1200))?;
     assert_eq!(
         std::fs::read_dir(fixture.session.directory().join("sandbox"))?.count(),
@@ -48,7 +55,7 @@ fn oversized_transparent_png_preserves_alpha_in_eight_bit_png() -> TestResult {
 // 関門: 方針の文字列ではなく、同じ方針で実際のホームのファイルと通信を拒む。
 // 囮のホームを一時ディレクトリ内に作り、設定ファイルや利用者のデータを読まない。
 #[test]
-fn image_policy_denies_home_reads_and_network_connections() -> TestResult {
+fn image_policy_denies_home_reads_network_writes_and_children() -> TestResult {
     use benitoiteh::sandbox::run::{self, Leftovers, RunCommand, RunLimits};
     use benitoiteh::sandbox::{self, SandboxCommand, SandboxStdin};
     use std::collections::BTreeMap;
@@ -65,8 +72,6 @@ fn image_policy_denies_home_reads_and_network_connections() -> TestResult {
     fs::write(&secret, "IMAGE_HOME_SECRET")?;
     assert_eq!(fs::read(&secret)?, b"IMAGE_HOME_SECRET");
     let private = fixture.session.directory().join("sandbox");
-    let work = private.join("probe-work");
-    fs::create_dir(&work)?;
     let helper = fs::canonicalize(env!("CARGO_BIN_EXE_benitoiteh"))?;
     let probe = std::env::current_exe()?
         .parent()
@@ -76,18 +81,36 @@ fn image_policy_denies_home_reads_and_network_connections() -> TestResult {
     let probe = fs::canonicalize(probe)?;
     let listener = TcpListener::bind("127.0.0.1:0")?;
     listener.set_nonblocking(true)?;
-    for args in [
+    let mut attempts = vec![
         vec!["read".into(), secret.into_os_string()],
         vec![
             "tcp-connect".into(),
             listener.local_addr()?.to_string().into(),
         ],
+    ];
+    for directory in [
+        &private,
+        fixture.session.temporary_dir(),
+        &fixture.directory,
     ] {
+        attempts.push(vec![
+            "write".into(),
+            directory.join("forbidden").into_os_string(),
+        ]);
+    }
+    #[cfg(target_os = "macos")]
+    attempts.push(vec!["exec".into(), probe.clone().into_os_string()]);
+    for args in attempts {
+        let write_target = if args.first().is_some_and(|operation| operation == "write") {
+            args.get(1).map(std::path::PathBuf::from)
+        } else {
+            None
+        };
         let command = SandboxCommand {
-            policy: sandbox::image_policy(&probe, &work)?,
+            policy: sandbox::image_policy(&probe)?,
             program: probe.clone(),
             args,
-            cwd: work.clone(),
+            cwd: "/".into(),
             env: BTreeMap::from([("HOME".into(), home.clone().into_os_string())]),
             stdin: SandboxStdin::Null,
         };
@@ -109,13 +132,26 @@ fn image_policy_denies_home_reads_and_network_connections() -> TestResult {
         )?;
         assert_eq!(result.leftovers, Leftovers::None);
         assert!(!result.status.success());
-        // 起動失敗で偶然通さず、探査が PermissionDenied を受けた終了状態を確かめる。
-        assert_eq!(
-            result.status.code(),
-            Some(10),
-            "{:?}",
-            diagnostics.lock().map_err(|_| "diagnostics lock")?
-        );
+        let diagnostics = diagnostics.lock().map_err(|_| "diagnostics lock")?;
+        let denied = result.status.code() == Some(10);
+        // Linux の読み取り専用マウントは、書き込みを EROFS で拒むこともある。
+        // 終了 11 だけでは他の誤りも通るため、探査の診断の番号まで確かめる。
+        #[cfg(target_os = "linux")]
+        let denied = denied
+            || (write_target.is_some()
+                && result.status.code() == Some(11)
+                && String::from_utf8_lossy(&diagnostics).contains(&format!(
+                    "(os error {})",
+                    rustix::io::Errno::ROFS.raw_os_error()
+                )));
+        assert!(denied, "{:?}: {:?}", result.status, diagnostics);
+        if let Some(path) = write_target {
+            assert!(
+                matches!(fs::symlink_metadata(&path), Err(error) if error.kind() == io::ErrorKind::NotFound),
+                "Expected no entry at {}",
+                path.display()
+            );
+        }
         assert!(
             !String::from_utf8_lossy(&output.lock().map_err(|_| "output lock")?)
                 .contains("IMAGE_HOME_SECRET")
@@ -126,7 +162,7 @@ fn image_policy_denies_home_reads_and_network_connections() -> TestResult {
 }
 
 #[test]
-fn failed_resize_does_not_store_or_record_and_removes_workdir() -> TestResult {
+fn failed_resize_does_not_store_record_or_create_workdir() -> TestResult {
     use benitoiteh::tools::MAX_IMAGE_BYTES;
     let fixture = Fixture::new(Mode::Normal, true)?;
     let mut state = 0x4d59_5df4_d0f3_3173_u64;

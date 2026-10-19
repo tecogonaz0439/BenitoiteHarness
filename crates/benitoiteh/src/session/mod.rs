@@ -5,6 +5,7 @@ mod id;
 mod objects;
 mod quota;
 mod record;
+mod remove;
 mod replay;
 mod resume;
 mod scan;
@@ -157,7 +158,7 @@ impl Session {
         let objects = open_directory_at(&directory, "objects")?;
         let temporary = paths.temporary_root.join(format!("benitoiteh-{id}"));
         match fs::symlink_metadata(&temporary) {
-            Ok(metadata) if private_metadata(&metadata, true) => fs::remove_dir_all(&temporary)?,
+            Ok(metadata) if private_metadata(&metadata, true) => remove::directory(&temporary)?,
             Ok(_) => return Err(SessionError::Invalid(text::UNSAFE_PATH)),
             Err(error) if error.kind() == io::ErrorKind::NotFound => {}
             Err(error) => return Err(error.into()),
@@ -235,7 +236,7 @@ impl Session {
         if result.is_err() {
             // 一時領域の作成に競合した場合、その既存の領域には触れない。
             // セッションのデータだけは自分が排他に作った（設計書 01-05「一時ディレクトリ」）。
-            let _cleanup = fs::remove_dir_all(path);
+            let _cleanup = remove::directory(&path);
         }
         result
     }
@@ -273,78 +274,125 @@ impl Drop for SessionState {
         {
             // 一時領域の中のリンクの先は消さない。ロックはこの後に解放される。
             // （設計書 01-05「一時ディレクトリ」）。失敗時は次の起動の掃除で再試行する。
-            let _cleanup = fs::remove_dir_all(&self.temporary);
+            let _cleanup = remove::directory(&self.temporary);
         }
     }
 }
 
-/// 起動時の掃除で削除した数。
+/// 起動時の掃除の件数と、削除できなかった項目。
 #[derive(Debug, Default, Eq, PartialEq)]
 pub struct CleanupReport {
     pub temporary_removed: u64,
     pub sessions_removed: u64,
+    pub failures: Vec<CleanupFailure>,
+}
+
+/// 一項目の掃除の失敗。誤りの文にファイルのパスは含めない。
+#[derive(Debug, Eq, PartialEq)]
+pub struct CleanupFailure {
+    /// 一覧の読み取り自体が失敗した場合は ID を得られない。
+    pub id: Option<SessionId>,
+    /// 一時ディレクトリの失敗か。
+    pub temporary: bool,
+    /// OS の短い診断、または固定の検証の誤り。
+    pub reason: String,
+}
+
+impl CleanupFailure {
+    /// 起動時に端末の制御文字を除いて表示するための文。
+    pub fn diagnostic(&self) -> String {
+        text::cleanup_failed(self)
+    }
 }
 
 /// 動いていないセッションの一時領域と、保持期間を過ぎた記録を掃除する。
 ///
 /// 不正な名前・所有者・権限・リンク、およびロックがないセッションは保守的に残す。
+/// 根の一覧を開けなければ失敗し、項目ごとの失敗は報告して次へ進む。
 pub fn cleanup(
     paths: &DataPaths,
     retention_days: u64,
     now: SystemTime,
 ) -> Result<CleanupReport, SessionError> {
     let sessions = sessions_root(&paths.sessions_dir)?;
+    let temporary_entries = fs::read_dir(&paths.temporary_root)?;
+    let session_entries = fs::read_dir(&paths.sessions_dir)?;
     let mut report = CleanupReport::default();
-    for entry in fs::read_dir(&paths.temporary_root)? {
-        let entry = entry?;
-        let name = entry.file_name();
-        let Some(id) = name
-            .to_str()
-            .and_then(|name| name.strip_prefix("benitoiteh-"))
-            .and_then(|name| name.parse::<SessionId>().ok())
-        else {
-            continue;
-        };
-        let metadata = fs::symlink_metadata(entry.path())?;
-        if !private_metadata(&metadata, true) {
-            continue;
-        }
-        let lock = inactive_lock(&sessions, &id)?;
-        if matches!(lock, Inactive::Busy) {
-            continue;
-        }
-        fs::remove_dir_all(entry.path())?;
-        report.temporary_removed = report.temporary_removed.saturating_add(1);
-        // lock は削除の間保持する。
-        drop(lock);
-    }
     let retention = Duration::from_secs(retention_days.saturating_mul(86400));
-    for entry in fs::read_dir(&paths.sessions_dir)? {
-        let entry = entry?;
-        let Some(id) = entry
-            .file_name()
-            .to_str()
-            .and_then(|name| name.parse::<SessionId>().ok())
-        else {
-            continue;
-        };
-        let metadata = fs::symlink_metadata(entry.path())?;
-        if !private_metadata(&metadata, true) {
-            continue;
-        }
-        let directory = open_directory_at(&sessions, id.as_str())?;
-        if !expired(&directory, retention, now)? {
-            continue;
-        }
-        let lock = inactive_lock(&sessions, &id)?;
-        if let Inactive::Locked(_guard) = lock {
-            let directory = open_directory_at(&sessions, id.as_str())?;
-            // 候補の判定後に再開され更新された記録は消さない（設計書 01-05「記録を残す期間」）。
-            if !expired(&directory, retention, now)? {
+    for (temporary, entries) in [(true, temporary_entries), (false, session_entries)] {
+        for entry in entries {
+            let entry = match entry {
+                Ok(entry) => entry,
+                Err(error) => {
+                    report.failures.push(CleanupFailure {
+                        id: None,
+                        temporary,
+                        reason: error.to_string(),
+                    });
+                    continue;
+                }
+            };
+            let name = entry.file_name();
+            let Some(id) = name.to_str().and_then(|name| {
+                let name = if temporary {
+                    name.strip_prefix("benitoiteh-")?
+                } else {
+                    name
+                };
+                name.parse::<SessionId>().ok()
+            }) else {
                 continue;
+            };
+            let result = (|| -> Result<bool, SessionError> {
+                let metadata = fs::symlink_metadata(entry.path())?;
+                if !private_metadata(&metadata, true) {
+                    return Ok(false);
+                }
+                if !temporary {
+                    let directory = open_directory_at(&sessions, id.as_str())?;
+                    if !expired(&directory, retention, now)? {
+                        return Ok(false);
+                    }
+                }
+                let lock = inactive_lock(&sessions, &id)?;
+                if matches!(lock, Inactive::Busy) {
+                    return Ok(false);
+                }
+                if temporary {
+                    remove::directory(&entry.path())?;
+                } else if let Inactive::Locked(_guard) = &lock {
+                    let directory = open_directory_at(&sessions, id.as_str())?;
+                    // 候補の判定後に再開され更新された記録は消さない（設計書 01-05「記録を残す期間」）。
+                    if !expired(&directory, retention, now)? {
+                        return Ok(false);
+                    }
+                    remove::directory_at(&sessions, name.as_os_str(), true)?;
+                } else {
+                    return Ok(false);
+                }
+                // 一時領域も削除の間ずっと錠を保持する。
+                drop(lock);
+                Ok(true)
+            })();
+            match result {
+                Ok(true) if temporary => {
+                    report.temporary_removed = report.temporary_removed.saturating_add(1)
+                }
+                Ok(true) => report.sessions_removed = report.sessions_removed.saturating_add(1),
+                Ok(false) => {}
+                Err(error) => report.failures.push(CleanupFailure {
+                    id: Some(id),
+                    temporary,
+                    reason: match error {
+                        SessionError::Io(error) => error.to_string(),
+                        other @ (SessionError::SafeFs(_)
+                        | SessionError::Json(_)
+                        | SessionError::Random(_)
+                        | SessionError::Invalid(_)
+                        | SessionError::Locked) => other.to_string(),
+                    },
+                }),
             }
-            fs::remove_dir_all(entry.path())?;
-            report.sessions_removed = report.sessions_removed.saturating_add(1);
         }
     }
     Ok(report)
@@ -391,7 +439,8 @@ fn inactive_lock(sessions: &File, id: &SessionId) -> Result<Inactive, SessionErr
     ) {
         Ok(lock) => File::from(lock),
         // 掃除は未完成のセッションや差し替わった要素を信用しない。
-        Err(_) => return Ok(Inactive::Busy),
+        Err(rustix::io::Errno::NOENT | rustix::io::Errno::LOOP) => return Ok(Inactive::Busy),
+        Err(error) => return Err(error.into()),
     };
     if !private_metadata(&lock.metadata()?, false) {
         return Ok(Inactive::Busy);

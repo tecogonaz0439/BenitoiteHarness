@@ -69,7 +69,6 @@ impl Fixture {
                 helper: fs::canonicalize(env!("CARGO_BIN_EXE_benitoiteh"))?,
                 scratch: private.clone(),
                 placeholders,
-                work_parent: private,
             });
         }
         Ok(Self {

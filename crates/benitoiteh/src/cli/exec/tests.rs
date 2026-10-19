@@ -99,6 +99,52 @@ impl Drop for Fixture {
     }
 }
 
+// 関門: cleanup の報告だけでは起動処理による通知の取り落としを捕まえない。
+// 他の起動テストと同じ準備の入口から、成功と画面へ渡す診断を確かめる。
+#[test]
+fn startup_continues_with_a_diagnostic_when_session_cleanup_fails() -> Result<(), Box<dyn Error>> {
+    if rustix::process::geteuid().is_root() {
+        eprintln!("Skipped cleanup startup check: root can read mode 000 directories.");
+        return Ok(());
+    }
+    struct Restore(PathBuf);
+    impl Drop for Restore {
+        fn drop(&mut self) {
+            let _restored = fs::set_permissions(&self.0, fs::Permissions::from_mode(0o700));
+        }
+    }
+    let fixture = Fixture::new()?;
+    let paths = fixture.paths("sandbox = 'danger-full-access'")?;
+    let stale = Session::create(&paths, SessionId::generate(SystemTime::now())?)?;
+    let id = stale.id().clone();
+    let directory = stale.directory().to_owned();
+    fs::File::open(directory.join("session.jsonl"))?.set_modified(SystemTime::UNIX_EPOCH)?;
+    let blocked = directory.join("blocked");
+    fs::create_dir(&blocked)?;
+    fs::write(blocked.join("keep"), b"keep")?;
+    fs::set_permissions(&blocked, fs::Permissions::from_mode(0o000))?;
+    let _restore = Restore(blocked);
+    drop(stale);
+    let prepared = prepare(
+        &fixture.args(&[])?,
+        None,
+        &paths,
+        |_, _| Ok(()),
+        &mut |_| false,
+    )
+    .map_err(|error| error.to_string())?;
+    assert_ne!(prepared.agent.status().session_id, id.as_str());
+    assert!(
+        prepared
+            .diagnostics
+            .iter()
+            .any(|message| message.contains("Could not clean up session")
+                && message.contains(id.as_str()))
+    );
+    assert!(directory.join("lock").exists());
+    Ok(())
+}
+
 // 作成時の関門: 実際の起動の設定解決とループを通す。OS の機能の欠落だけを差し替える
 // （P3-02 の明示した指示）。方針の単体の検査では、起動時の渡し忘れを検出できない。
 #[test]

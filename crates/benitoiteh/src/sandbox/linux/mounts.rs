@@ -66,7 +66,11 @@ pub(super) fn build(
     placeholders: &Path,
 ) -> Result<MountPlan, SandboxError> {
     let config = policy.config();
-    let store = Store::prepare(placeholders, &config.writable)?;
+    let store = if config.writable.is_empty() {
+        None
+    } else {
+        Some(Store::prepare(placeholders, &config.writable)?)
+    };
     let mut plan = MountPlan {
         args: [
             "--unshare-user",
@@ -100,7 +104,11 @@ pub(super) fn build(
     for root in &roots {
         for name in &config.protected_names {
             let path = root.join(name);
-            let mut placeholder = store.lock(path.clone()).map_err(placeholders::failure)?;
+            let mut placeholder = store
+                .as_ref()
+                .ok_or(SandboxError::InvalidPolicy(text::EMPTY_WRITABLE))?
+                .lock(path.clone())
+                .map_err(placeholders::failure)?;
             check_links(&path, &roots)?;
             if metadata(&path)?.is_none() {
                 placeholder

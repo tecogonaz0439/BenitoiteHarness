@@ -125,11 +125,8 @@ fn existing_path(path: &str) -> Result<Option<PathBuf>, SandboxError> {
 }
 
 /// 画像を解く補助を、利用者のファイルと通信から隔離する（設計書 01-03「画像のファイルの読み取り」）。
-pub fn image_policy(
-    exe: &std::path::Path,
-    workdir: &std::path::Path,
-) -> Result<SandboxPolicy, SandboxError> {
-    let mut config = PolicyConfig::new(vec![workdir.into()]);
+pub fn image_policy(exe: &std::path::Path) -> Result<SandboxPolicy, SandboxError> {
+    let mut config = PolicyConfig::without_writable();
     config.readable = ReadAccess::Roots(Vec::new());
     config.readable_files = vec![exe.into()];
     #[cfg(target_os = "macos")]

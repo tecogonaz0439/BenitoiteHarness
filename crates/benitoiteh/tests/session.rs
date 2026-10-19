@@ -575,6 +575,7 @@ fn cleanup_removes_only_inactive_matching_directories_and_expired_sessions() -> 
     let report = cleanup(&fixture.paths, DEFAULT_RETENTION_DAYS, SystemTime::now())?;
     assert_eq!(report.temporary_removed, 2);
     assert_eq!(report.sessions_removed, 1);
+    assert!(report.failures.is_empty());
     assert!(!stale_temp.exists());
     assert!(!stale_dir.exists());
     assert!(!orphan.exists());
@@ -584,6 +585,59 @@ fn cleanup_removes_only_inactive_matching_directories_and_expired_sessions() -> 
     assert!(updated_dir.exists());
     assert!(unrelated.exists());
     assert_eq!(fs::read_to_string(fixture.paths.home.join("keep"))?, "keep");
+    Ok(())
+}
+
+// 関門: /tmp のような一時の根のリンクで drop・再開・掃除が失敗する退行を、
+// 環境変数を変えずに本物のセッションの寿命と記録の入口から確かめる。
+#[test]
+fn linked_storage_parents_allow_drop_resume_and_cleanup() -> TestResult {
+    let fixture = Fixture::new()?;
+    let temporary_alias = fixture.root.join("tmp-alias");
+    let state = fixture.root.join("state-real");
+    let state_alias = fixture.root.join("state-alias");
+    fs::create_dir(&state)?;
+    symlink(&fixture.paths.temporary_root, &temporary_alias)?;
+    symlink(&state, &state_alias)?;
+    let paths = DataPaths::from_values(
+        Some(&fixture.paths.home),
+        Some(&fixture.root.join("config")),
+        Some(&state_alias),
+        Some(&temporary_alias),
+    )?;
+    let session = Session::create(&paths, SessionId::generate(SystemTime::now())?)?;
+    session.writer()?.append(&header(&session))?;
+    let id = session.id().clone();
+    let directory = session.directory().to_owned();
+    let temporary = session.temporary_dir().to_owned();
+    assert_eq!(temporary.parent(), Some(temporary_alias.as_path()));
+    fs::write(temporary.join("from-live-session"), b"temporary")?;
+    drop(session);
+    assert!(!temporary.exists());
+
+    // 異常終了で残った領域も、再開時には親の別名から消して作り直せる。
+    fs::create_dir(&temporary)?;
+    fs::set_permissions(&temporary, fs::Permissions::from_mode(0o700))?;
+    fs::write(temporary.join("from-crashed-session"), b"stale")?;
+    let resumed = session_support::open_created_session(&paths, &id)?;
+    assert_eq!(fs::read_dir(resumed.temporary_dir())?.count(), 0);
+    fs::write(
+        resumed.temporary_dir().join("from-resumed-session"),
+        b"temporary",
+    )?;
+    drop(resumed);
+    assert!(!temporary.exists());
+
+    fs::create_dir(&temporary)?;
+    fs::set_permissions(&temporary, fs::Permissions::from_mode(0o700))?;
+    fs::write(temporary.join("stale"), b"stale")?;
+    fs::File::open(directory.join("session.jsonl"))?.set_modified(UNIX_EPOCH)?;
+    let report = cleanup(&paths, DEFAULT_RETENTION_DAYS, SystemTime::now())?;
+    assert!(report.failures.is_empty(), "{:?}", report.failures);
+    assert_eq!((report.sessions_removed, report.temporary_removed), (1, 1));
+    assert!(!directory.exists() && !temporary.exists());
+    assert!(fs::symlink_metadata(temporary_alias)?.is_symlink());
+    assert!(fs::symlink_metadata(state_alias)?.is_symlink());
     Ok(())
 }
 
@@ -748,6 +802,182 @@ fn storage_skips_unreadable_entries_in_other_sessions() -> TestResult {
     assert_eq!(error.kind(), io::ErrorKind::PermissionDenied);
     let usage = benitoiteh::session::storage_usage(&fixture.paths, Some(current.id()))?;
     assert_eq!(usage.total, 7);
+    Ok(())
+}
+
+// 関門: 一項目の権限不足が以降の削除・起動を止める退行と、錠を先に消して
+// 次回に掃除できなくなる退行を、実際の権限と CLI の診断で捕まえる。
+#[test]
+fn cleanup_reports_failures_continues_and_retries_without_losing_locks() -> TestResult {
+    if rustix::process::geteuid().is_root() {
+        eprintln!("Skipped cleanup permission check: root can read mode 000 directories.");
+        return Ok(());
+    }
+    struct Restore(Vec<PathBuf>);
+    impl Drop for Restore {
+        fn drop(&mut self) {
+            for path in &self.0 {
+                let _restored = fs::set_permissions(path, fs::Permissions::from_mode(0o700));
+            }
+        }
+    }
+    let fixture = Fixture::new()?;
+    let blocked = fixture.session()?;
+    let id = blocked.id().clone();
+    let directory = blocked.directory().to_owned();
+    let temporary = blocked.temporary_dir().to_owned();
+    fs::File::open(directory.join("session.jsonl"))?.set_modified(UNIX_EPOCH)?;
+    let restore = Restore(vec![directory.join("blocked"), temporary.join("blocked")]);
+    for path in &restore.0 {
+        fs::create_dir(path)?;
+        fs::write(path.join("keep"), b"keep")?;
+        fs::set_permissions(path, fs::Permissions::from_mode(0o000))?;
+    }
+    drop(blocked);
+    let other = fixture.session()?;
+    let other_dir = other.directory().to_owned();
+    fs::File::open(other_dir.join("session.jsonl"))?.set_modified(UNIX_EPOCH)?;
+    drop(other);
+    let report = cleanup(&fixture.paths, DEFAULT_RETENTION_DAYS, SystemTime::now())?;
+    assert_eq!(report.sessions_removed, 1);
+    assert_eq!(report.failures.len(), 2);
+    let permission_error = format!("(os error {})", rustix::io::Errno::ACCESS.raw_os_error());
+    for failure in &report.failures {
+        assert_eq!(failure.id.as_ref(), Some(&id));
+        assert!(
+            failure.reason.contains(&permission_error),
+            "{}",
+            failure.reason
+        );
+        assert!(
+            !failure
+                .reason
+                .contains(&fixture.root.to_string_lossy().to_string())
+        );
+    }
+    assert!(report.failures.iter().any(|failure| failure.temporary));
+    assert!(report.failures.iter().any(|failure| !failure.temporary));
+    assert!(!other_dir.exists());
+    assert!(directory.join("lock").is_file());
+    assert!(directory.join("session.jsonl").is_file());
+    // 見えるまま残ったファイルは、後始末の失敗後も保存量に含める。
+    fs::write(directory.join("remaining"), b"count me")?;
+    assert!(benitoiteh::session::storage_usage(&fixture.paths, None)?.total >= 8);
+    let output = std::process::Command::new(env!("CARGO_BIN_EXE_benitoiteh"))
+        .args(["sessions", "--json"])
+        .env_clear()
+        .env("HOME", &fixture.paths.home)
+        .env("XDG_CONFIG_HOME", fixture.root.join("config"))
+        .env("XDG_STATE_HOME", fixture.root.join("state"))
+        .env("TMPDIR", &fixture.paths.temporary_root)
+        .output()?;
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let diagnostics = String::from_utf8(output.stderr)?;
+    assert_eq!(
+        diagnostics
+            .lines()
+            .filter(|line| line.contains("Could not clean up"))
+            .count(),
+        2
+    );
+    assert!(diagnostics.contains(id.as_str()));
+    assert!(!diagnostics.contains(&fixture.root.to_string_lossy().to_string()));
+    drop(restore);
+    let retry = cleanup(&fixture.paths, DEFAULT_RETENTION_DAYS, SystemTime::now())?;
+    assert!(retry.failures.is_empty(), "{:?}", retry.failures);
+    assert_eq!((retry.sessions_removed, retry.temporary_removed), (1, 1));
+    assert!(!directory.exists() && !temporary.exists());
+    Ok(())
+}
+
+// 関門: 再帰によるスタックの枯渇は浅い掃除のテストで捕まらない。
+// 子の小さいスタックから、公開の cleanup と最後の Session の破棄を通す。
+#[test]
+fn deep_cleanup_and_session_drop_do_not_depend_on_thread_stack_depth() -> TestResult {
+    use rustix::fs::{Mode as FsMode, OFlags, mkdirat, open, openat};
+    use rustix::process::{Resource, getrlimit, setrlimit};
+    const CHILD: &str = "BENITOITEH_DEEP_CLEANUP_CHILD";
+    const DEPTH: usize = 750;
+    let fixture = Fixture::new()?;
+    if std::env::var_os(CHILD).is_none() {
+        let output = std::process::Command::new(std::env::current_exe()?)
+            .args([
+                "--exact",
+                "deep_cleanup_and_session_drop_do_not_depend_on_thread_stack_depth",
+                "--nocapture",
+            ])
+            .env(CHILD, "1")
+            .env("XDG_CONFIG_HOME", fixture.root.join("config"))
+            .env("XDG_STATE_HOME", fixture.root.join("state"))
+            .env("TMPDIR", &fixture.paths.temporary_root)
+            .output()?;
+        assert!(
+            output.status.success(),
+            "{:?}: {}",
+            output.status,
+            String::from_utf8_lossy(&output.stderr)
+        );
+        return Ok(());
+    }
+    let mut limit = getrlimit(Resource::Nofile);
+    limit.current = Some(limit.maximum.unwrap_or(4096).min(4096));
+    setrlimit(Resource::Nofile, limit)?;
+    let flags = OFlags::RDONLY | OFlags::DIRECTORY | OFlags::NOFOLLOW | OFlags::CLOEXEC;
+    let build = |path: &std::path::Path| -> TestResult {
+        let mut directory = open(path, flags, FsMode::empty())?;
+        for _ in 0..DEPTH {
+            mkdirat(&directory, "d", FsMode::RWXU)?;
+            directory = openat(&directory, "d", flags, FsMode::empty())?;
+        }
+        Ok(())
+    };
+    let stale = fixture.session()?;
+    let directory = stale.directory().to_owned();
+    let temporary = stale.temporary_dir().to_owned();
+    fs::File::open(directory.join("session.jsonl"))?.set_modified(UNIX_EPOCH)?;
+    drop(stale);
+    fs::create_dir(&temporary)?;
+    fs::set_permissions(&temporary, fs::Permissions::from_mode(0o700))?;
+    build(&directory)?;
+    build(&temporary)?;
+    let live = fixture.session()?;
+    let live_temp = live.temporary_dir().to_owned();
+    build(&live_temp)?;
+    let paths = fixture.paths.clone();
+    let worker = std::thread::Builder::new().stack_size(256 * 1024).spawn(
+        move || -> Result<_, String> {
+            let mut limited = limit;
+            limited.current = Some(64);
+            setrlimit(Resource::Nofile, limited).map_err(|error| error.to_string())?;
+            let failed = cleanup(&paths, DEFAULT_RETENTION_DAYS, SystemTime::now())
+                .map_err(|error| error.to_string())?;
+            setrlimit(Resource::Nofile, limit).map_err(|error| error.to_string())?;
+            assert_eq!(failed.failures.len(), 2);
+            let descriptor_error =
+                format!("(os error {})", rustix::io::Errno::MFILE.raw_os_error());
+            assert!(
+                failed
+                    .failures
+                    .iter()
+                    .all(|failure| failure.reason.contains(&descriptor_error))
+            );
+            let report = cleanup(&paths, DEFAULT_RETENTION_DAYS, SystemTime::now())
+                .map_err(|error| error.to_string())?;
+            drop(live);
+            Ok(report)
+        },
+    )?;
+    let report = worker
+        .join()
+        .map_err(|_| "cleanup thread panicked")?
+        .map_err(io::Error::other)?;
+    assert!(report.failures.is_empty(), "{:?}", report.failures);
+    assert_eq!((report.sessions_removed, report.temporary_removed), (1, 1));
+    assert!(!directory.exists() && !temporary.exists() && !live_temp.exists());
     Ok(())
 }
 

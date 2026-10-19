@@ -2,7 +2,6 @@
 
 use std::collections::BTreeMap;
 use std::io::{self, Write};
-use std::os::unix::fs::DirBuilderExt;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
@@ -48,22 +47,7 @@ pub(super) fn resize(
     cancelled: &AtomicBool,
 ) -> Result<Vec<u8>, ProcessError> {
     check_cancelled(cancelled)?;
-    let work = Workdir::new(&context.work_parent)?;
-    let result = launch(context, &work.0, bytes, format, width, height, cancelled);
-    work.remove()?;
-    result
-}
-
-fn launch(
-    context: &ImageHelperContext,
-    work: &std::path::Path,
-    bytes: Vec<u8>,
-    format: Format,
-    width: u32,
-    height: u32,
-    cancelled: &AtomicBool,
-) -> Result<Vec<u8>, ProcessError> {
-    let policy = sandbox::image_policy(&context.helper, work)?;
+    let policy = sandbox::image_policy(&context.helper)?;
     let format = match format {
         Format::Png => "png",
         Format::Jpeg => "jpeg",
@@ -78,7 +62,7 @@ fn launch(
             width.to_string().into(),
             height.to_string().into(),
         ],
-        cwd: work.into(),
+        cwd: PathBuf::from("/"),
         env: BTreeMap::new(),
         stdin: SandboxStdin::Piped,
     };
@@ -94,7 +78,7 @@ fn launch(
         let mut direct = std::process::Command::new("/bin/sh");
         direct
             .args(["-c", script])
-            .current_dir(work)
+            .current_dir("/")
             .env_clear()
             .process_group(0);
         direct.into()
@@ -228,32 +212,6 @@ fn validate(
     Ok(payload.into())
 }
 
-struct Workdir(PathBuf);
-impl Workdir {
-    fn new(parent: &std::path::Path) -> Result<Self, io::Error> {
-        let mut random = [0; 16];
-        getrandom::fill(&mut random).map_err(io::Error::other)?;
-        let path = parent.join(format!("image-{:032x}", u128::from_ne_bytes(random)));
-        std::fs::DirBuilder::new().mode(0o700).create(&path)?;
-        let mut work = Self(path);
-        work.0 = std::fs::canonicalize(&work.0)?;
-        Ok(work)
-    }
-    fn remove(&self) -> io::Result<()> {
-        // remove_dir_all はシンボリックリンクを辿らない。補助が置いたリンクも対象外に書かせない。
-        match std::fs::remove_dir_all(&self.0) {
-            Ok(()) => Ok(()),
-            Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(()),
-            Err(error) => Err(error),
-        }
-    }
-}
-impl Drop for Workdir {
-    fn drop(&mut self) {
-        let _removed = self.remove();
-    }
-}
-
 struct Output {
     bytes: Vec<u8>,
     cap: usize,
@@ -290,11 +248,28 @@ mod tests {
     use serde_json::json;
     use std::collections::BTreeSet;
     use std::fs;
+    use std::os::unix::fs::DirBuilderExt;
     use std::time::SystemTime;
     type TestResult = Result<(), Box<dyn std::error::Error>>;
 
+    struct TestDirectory(PathBuf);
+    impl TestDirectory {
+        fn new(parent: &std::path::Path) -> io::Result<Self> {
+            let mut random = [0; 16];
+            getrandom::fill(&mut random).map_err(io::Error::other)?;
+            let path = parent.join(format!("image-test-{:032x}", u128::from_ne_bytes(random)));
+            std::fs::DirBuilder::new().mode(0o700).create(&path)?;
+            Ok(Self(std::fs::canonicalize(path)?))
+        }
+    }
+    impl Drop for TestDirectory {
+        fn drop(&mut self) {
+            let _removed = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
     struct Fixture {
-        directory: Workdir,
+        directory: TestDirectory,
         project: PathBuf,
         private: PathBuf,
         session: Session,
@@ -302,7 +277,7 @@ mod tests {
     }
     impl Fixture {
         fn new(script: String, timeout: Duration) -> Result<Self, Box<dyn std::error::Error>> {
-            let directory = Workdir::new(&std::env::temp_dir())?;
+            let directory = TestDirectory::new(&std::env::temp_dir())?;
             let project = directory.0.join("project");
             let temporary = directory.0.join("temporary");
             fs::create_dir(&project)?;
@@ -336,7 +311,6 @@ mod tests {
                 helper: fs::canonicalize(std::env::current_exe()?)?,
                 scratch: private.clone(),
                 placeholders: private.clone(),
-                work_parent: private.clone(),
                 test_command: Some((script, timeout)),
             });
             let mut bytes = Vec::new();
@@ -488,20 +462,24 @@ mod tests {
     }
 
     #[test]
-    fn cancellation_stops_running_helper_and_cleans_its_directory() -> TestResult {
-        let fixture = Fixture::new(
-            "printf ready > ready; /bin/sleep 5".into(),
+    fn cancellation_stops_running_helper_without_creating_workdir() -> TestResult {
+        let mut fixture = Fixture::new(String::new(), Duration::from_secs(10))?;
+        let ready = fixture.directory.0.join("ready");
+        fixture
+            .context
+            .image_helper
+            .as_mut()
+            .ok_or("helper context")?
+            .test_command = Some((
+            format!("printf ready > '{}'; /bin/sleep 5", ready.display()),
             Duration::from_secs(10),
-        )?;
+        ));
         let cancelled = AtomicBool::new(false);
         std::thread::scope(|scope| -> TestResult {
             let reader = scope.spawn(|| fixture.read(&cancelled));
             let start = std::time::Instant::now();
             loop {
-                let ready = fs::read_dir(&fixture.private)?
-                    .filter_map(Result::ok)
-                    .any(|entry| entry.path().join("ready").exists());
-                if ready {
+                if ready.exists() {
                     break;
                 }
                 if start.elapsed() > Duration::from_secs(2) {
@@ -515,23 +493,6 @@ mod tests {
         })
     }
 
-    #[test]
-    fn cleanup_does_not_follow_links_created_by_helper() -> TestResult {
-        let mut fixture = Fixture::new(String::new(), Duration::from_secs(2))?;
-        let script = format!(
-            "/bin/ln -s '{}' outside; printf 'decode\\n' >&2; exit 1",
-            fixture.project.display()
-        );
-        fixture
-            .context
-            .image_helper
-            .as_mut()
-            .ok_or("helper context")?
-            .test_command = Some((script, Duration::from_secs(2)));
-        fixture.no_saved_image(&fixture.read(&AtomicBool::new(false)), text::IMAGE_DECODE)?;
-        assert!(fixture.project.join("picture").is_file());
-        Ok(())
-    }
     #[test]
     #[ignore = "manual release measurement; launches the real image helper without the OS sandbox"]
     fn measure_parent_read_with_direct_image_helper() -> TestResult {
