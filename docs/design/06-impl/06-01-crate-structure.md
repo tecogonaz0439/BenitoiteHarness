@@ -92,6 +92,7 @@ TLS の暗号の実装 `graviola`（0.4.1）は、x86_64 では CPU の ADX の�
 | 乱数 | `getrandom` | セッションの ID。Benitoite と同じ |
 | Landlock | `landlock` | Linux だけ |
 | seccomp | `seccompiler` | Linux だけ。Codex CLI と同じ |
+| 画像を縮める | `image`（既定の機能を切り、`png` と `jpeg` だけ） | `read` で上限を超える PNG と JPEG を縮める（[道具](../01-agent/01-03-tools.md)の「画像のファイルの読み取り」） |
 
 次のものは使わない。`tokio` と非同期の HTTP のクライアント（前述）、`clap`（[CLI と設定ファイル](../05-interface/05-01-cli.md)の「コマンドラインの形」）、`ratatui`（[対話の画面](../05-interface/05-02-tui.md)）、トークナイザ（[文脈の管理](../01-agent/01-04-context.md)の「文脈の大きさの見積もり」）、HTML を文字に変えるクレート（`web_fetch` の変換は、タグを除いて段落と見出しと箇条書きと `pre` を残す自前の小さな変換で行う）、日時のクレート（記録の時刻は UTC だけを使い、自前で整形する）。
 
