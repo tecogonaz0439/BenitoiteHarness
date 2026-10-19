@@ -73,3 +73,38 @@
 
 - `scripts/check.sh --inside-codex` が通る（`BENITOITEH_TEST_BENITOITE` を設定して）。
 - 完了の報告に、入力の欄の画面の例と、実行ファイルの大きさの前と後を書く。
+
+## 補足（2026-10-20、始める前の点検）
+
+本節は、上の各節に優先する。行の番号は `main`（`5d7151c`）のもの。P5-19 を取り込んだ後に始めるので、`src/ui/tui/` と `src/cli/{exec,tui}.rs` の行の番号は目安とする。
+
+1. **補助の入口**: `src/cli/mod.rs:25-39` の `__sandbox`・`__session`・`__image` の分岐と `panic::install`（:39）より前に、`args_os()` の一つ目の `Path::file_name()` が `benitoiteh-ssh-askpass`・`benitoiteh-git-askpass`・`benitoiteh-sudo-askpass` のどれかなら補助として動き、return する。OpenSSH（`readpass.c`）、sudo（`tgetpass.c`）、git（`prompt.c`）はどれも、渡したパスを `argv[0]` にして起動する。環境の変数に入れるパスは絶対パスにする。リンクの先は正規化した今の実行ファイル（`exec.rs:302` の `helper`）とする。親のプロセスの番号は `rustix::process::getppid()`、自分の番号は `std::process::id()`。`unsafe` は要らない。
+2. **子プロセスの環境**:
+   - 補助に向ける常の変数（`SSH_ASKPASS`・`GIT_ASKPASS`・`SUDO_ASKPASS`・`SSH_ASKPASS_REQUIRE=force`・`GIT_TERMINAL_PROMPT=0`）は、`exec.rs:470` の `child_environment(...)` の後で `ShellContext.env`（`tools/mod.rs:357`）に足す（`child_environment` には呼び出し元が多いので引数は変えない）。外から引き継いだ窓口と合言葉の変数（例: `BENITOITEH_ASKPASS_SOCKET`・`BENITOITEH_ASKPASS_TOKEN`）は、`child_environment`（`config/environment.rs:25` 付近）でいつも除く。
+   - 呼び出しに限る変数（窓口のパスと合言葉）は、`bash.rs` の `prepare`（:187-238）のサンドボックスの外の枝（:225 以降）でだけ、仲介するときに足す。
+   - 仲介する呼び出しの条件: 窓口がある（対話の実行）、かつサンドボックスの外で起動する、かつ (`sandbox` が `danger-full-access`) か (`escalate` で、サンドボックスがあり（`policy.is_some()`）、承認の結果が `Approved`)。`approval/mod.rs:144-152` では、サンドボックスがあるときの `escalate` は `Ask` か `Deny` にしかならない。`tool_context.noninteractive` は通常モードではいつも偽なので、対話かどうかの判定に使わない。`ShellContext` に窓口（例: `askpass: Option<Arc<..>>`）を足し、あることで判定する。`ShellContext` を構造体の式で作る所（`exec.rs:489`、`tests/agent_loop.rs:177`、`tests/tui.rs:308`、`tests/support/bash.rs:80`、`tests/support/rewind.rs:67`）はすべて直す。
+   - サンドボックスを掛けられずに動かすとき（`--no-sandbox` など、`policy` がなく `danger-full-access` でもないとき）は、設計書の範囲（`escalate` と `danger-full-access`）に当たらないので仲介しない。
+3. **補助の置き場所**: 補助のディレクトリは、サンドボックスの中から読めて起動できる場所に置き、サンドボックスから書ける場所の下には置かない（中から起動されても、決まった文で失敗して LLM に返せるようにするため。macOS の通常モードは読み取りと起動を許し（`macos.rs:68-73, 100-102`）、Linux は `--ro-bind / /` で、Landlock は起動を限らない）。セッションのディレクトリ（データの場所の下で、サンドボックスから読めない）と、セッションの一時ディレクトリ（サンドボックスから書ける）は使わない。作った場所の正規化したパスが、どの書ける場所（プロジェクト、一時ディレクトリ、足した場所）の下にもないことを確かめる。サンドボックスの中から窓口にはつなげない（Seatbelt は Unix の宛先を許さず、Linux の seccomp は `socket` を拒む。`filter.rs:40-48`）。
+4. **窓口のソケット**:
+   - `paths.temporary_root` の下に `bha-<セッション ID>/`（0700。`exec.rs:702-719` の `private_directory` と同じ確かめ）を作り、ソケット `sock` と三つのリンクを直に置く。ソケットのパスが 103 バイトを超えるときは `/tmp/bha-<ID>` に替え、それでも超えるか、書ける場所の下に当たるときは仲介を止め（呼び出しに限る変数を足さない）、起動の診断を一行示す。
+   - 後始末は `session::remove::directory`（`pub(super)` を `pub(crate)` に広げる）で行い、その前に `sock` を名前で `unlink` する。落ちた後の残りは、`session/mod.rs:321-345` の `cleanup` が `bha-` の接頭辞も同じ規則で扱う。
+   - std の `UnixListener`・`UnixStream` を使い、読む時間の上限を 5 秒にする。Linux では `rustix::net::sockopt::socket_peercred` で相手の `uid` を得て `rustix::process::getuid()` と比べる（`net` の機能は Linux の対象の rustix にだけある。`#[cfg(target_os = "linux")]`）。macOS では相手を確かめず、0700 のディレクトリと合言葉で守る。依存は `zeroize` のほかに増やさない。
+5. **要求と答えの形**:
+   - 補助から窓口へ: 4 バイトのビッグエンディアンの長さと JSON（例: `{"v":1,"token":"<64 桁の 16 進>","kind":"ssh|git|sudo","ssh_prompt":null|"confirm"|"none","prompt":"…","pid":N,"ppid":N}`）。8 KiB を超えるものと JSON の誤りは断る。知らない `SSH_ASKPASS_PROMPT` の値は断る。
+   - 窓口から補助へ: 1 バイトの状態（`S` 秘密が続く、`Y` 許す、`N` いいえ・取り消し・断り）と、`S` なら秘密のバイト。秘密は JSON に入れず、`Zeroizing` の入れ物から直に書いて消す。
+   - タッチの知らせ（`SSH_ASKPASS_PROMPT=none`）は、窓口が答えずに接続を開いたまま待ち、補助が止められて接続が切れたら知らせを閉じる。補助は窓口が閉じたら 0 で終わる。
+   - 合言葉の比較は、時間が値に依らない形にする。回数の上限（3 回）は、正しい合言葉を持つ求め（確かめとタッチの知らせを含む）を数える。
+   - 補助の失敗の文は `askpass/text.rs` の英語の定数にする（変数がない: 設計書の文。つなげない: 例 `Secret input is no longer available for this command.`。断られた: 例 `Secret input was refused.`）。どれも 1 で終わる。
+6. **時間の上限と取り消し**: `sandbox/run.rs:331-357` の時間の判定で、経った時間から利用者を待った時間（タッチの知らせの間を含む）を引く。`RunLimits` は `Copy` なので、待った時間を数える共有の物を別の引数で渡す新しい関数（例: `run_with_pause`）を足し、今の `run` はそれに任せる。合言葉は、止める合図を送る時点（`run.rs:363` 付近の `end != Exited` の枝。猶予が最大 10 秒あるため）と、`bash.rs` の呼び出しの守りの `Drop` で無効にする。`bash` は並べて動かす道具でない（`definitions.rs:118`）ので、一つのエージェントで同時に仲介するのは一つの呼び出しだけである。
+7. **入力の欄**: `confirmation.rs` の `Confirmation` の新しい種類として作り、300 ミリ秒の判定（:15-42）、描画の後の早すぎるキーの破棄（`runtime.rs:199-208`）、端末の大きさが変わったときの扱い（`mod.rs:142-147`）、Ctrl+C・Ctrl+D の扱い（:675-686）を使い回す。
+   - 求めは、`InteractiveApprover`（`approval/interactive.rs`）と同じく返事の口を付けて送り、`Worker::drain` が `!screen.confirming()` のときに開く（`worker.rs:455-465` 付近）。結び付けは `tui.rs:152-155` と `/new`・`/fork` の作り直しの両方で行う。
+   - `answer()`（:647-659）は欄の本文を画面の履歴に写すが、秘密の欄では写さず、決まった一行（例: `Secret input for <呼び出しの番号>: answered`。`answered`・`declined`・`cancelled`・`refused`）だけを足す。伏せ字の数も残さない。
+   - ESC はその求めだけを取り消し、`bash` は続く。Ctrl+C は今と同じく依頼の全体を取り消す。事実が収まらないとき（`fits`、:227）は Enter と「はい」を受け付けない。信頼しない求めの文は、`justification` と同じ字下げの印と薄い色で、10 行まで示す。呼び出しが終わって合言葉を無効にしたときは、欄を閉じて「閉じた」と記す。
+   - 値に `\n`・`\r`・NUL は入れない。貼り付けは許し、末尾の改行だけを除く。上限は 4 KiB。見せる操作は Tab で切り替え、欄ごとに伏せ字に戻す。
+   - 欄に示す事実のうち、呼び出しの番号は `invocation.call_id`、作業のディレクトリは `context.project.real_path()`、モードは `normal` に `danger-full-access` か `escalated` を添える。
+8. **秘密を消すことと伏せ字への置き換えの両立**: 平文は補助へ渡したらすぐ消し、呼び出しの守りには秘密の `(長さ, SHA-256)` だけを残す（`sha2` は今の依存）。`bash.rs` の `output.tail()`（:111）の後、`ToolOutput` を作る前に、出力の各位置で同じ長さの窓の SHA-256 を比べ、一致した所を `[secret]` に置き換える。秘密を一度でも渡した呼び出しでは、生の出力を書いた保存のファイル（`spill_writer`、:83）を捨て、保存しなかったことを示す決まった一行を結果に足す（LLM が `read` で生の出力を読めないようにするため）。
+9. **記録**: `Record` の種類は増やさない。`bash` の結果の文に、求めごとの決まった一行（例: `Secret prompt (git): answered.`）を足し、`Record::ToolResult` に残す。求めの文と値は書かない。
+10. **設定**: `UserConfig`（`config/mod.rs:323-336`）に `secrets: SecretsConfig { askpass: bool }`（既定は真、`#[serde(default, deny_unknown_fields)]`）を足す。`askpass = false` のときは、五つの変数をどれも上書きせず引き継いだまま渡し、補助のディレクトリと窓口も作らない。プロジェクトの設定（`ProjectConfig`、:540-546）は `deny_unknown_fields` で `[secrets]` を断るので、そのことを確かめるテストを一つ加える。設計書 05-01 の設定の例は変えない（オーケストレータが取り込むときに行う）。
+11. **非対話の実行と `/new`**: `exec`（`args.interactive` が偽）は窓口を作らない。補助のディレクトリとリンクは作り、補助は決まった文で失敗する。窓口と補助のディレクトリはセッションごとに作り直し、古いものは `Drop` で止めて消す。
+12. **zeroize**: `Cargo.lock` に 1.9.1 が既にある（rustls が引く）。`zeroize = { version = "=1.9.1", default-features = false, features = ["alloc"] }` とする。
+13. **本物との結び付きのテスト**は git に限る（`GIT_ASKPASS` を直に起動するか、`git credential fill`。ネットワークに出ない形で）。sudo が窓口の変数を引き継ぐかは確かめていない。
