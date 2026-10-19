@@ -1,5 +1,8 @@
 //! 起動時の方針の選択と、使えないサンドボックスで続ける条件を確かめる（実装プラン P3-02）。
 
+#[path = "../../../tests/support/temporary_cleanup.rs"]
+mod temporary_cleanup;
+
 use std::cell::Cell;
 use std::error::Error;
 use std::fs;
@@ -227,7 +230,7 @@ fn startup_selects_policy_and_fails_closed_unless_explicitly_disabled() -> Resul
                     ..
                 })
             ));
-            assert_eq!(fs::read_dir(&paths.temporary_root)?.count(), 0);
+            temporary_cleanup::check_temporary_root(&paths.temporary_root)?;
             continue;
         };
         let Prepared {
@@ -282,7 +285,7 @@ fn startup_selects_policy_and_fails_closed_unless_explicitly_disabled() -> Resul
         );
         drop(agent);
         drop(session);
-        assert_eq!(fs::read_dir(&paths.temporary_root)?.count(), 0);
+        temporary_cleanup::check_temporary_root(&paths.temporary_root)?;
     }
     Ok(())
 }
@@ -1678,5 +1681,73 @@ fn fork_preparation_reuses_the_locked_session_and_cached_resume_state() -> Resul
     assert_eq!(fs::read(&marker)?, b"kept");
     assert!(prepared.agent.conversation().items.iter().any(|item| matches!(item, Item::UserMessage(message) if message.parts.iter().any(|part| part.text == "source request"))));
     assert!(prepared.session.take_resume_state().is_err());
+    Ok(())
+}
+
+// 関門: 設定の parse だけでは、起動時の仲介の有無の取り違えを捕まえない。
+#[test]
+fn startup_creates_secret_requests_only_for_enabled_interactive_normal_sessions()
+-> Result<(), Box<dyn Error>> {
+    for (enabled, interactive) in [(true, true), (false, true), (true, false)] {
+        let fixture = Fixture::new()?;
+        let paths = fixture.paths(&format!(
+            "sandbox = 'danger-full-access'\n[secrets]\naskpass = {enabled}"
+        ))?;
+        let mut args = fixture.args(&[])?;
+        args.interactive = interactive;
+        let prepared = prepare(&args, None, &paths, |_, _| Ok(()), &mut |_| false)
+            .map_err(|e| e.to_string())?;
+        assert_eq!(
+            prepared.agent.take_secret_requests().is_some(),
+            enabled && interactive
+        );
+        let status = prepared.agent.status();
+        // /new の新しい窓口は、古い画面の受け口を共有しない。
+        let next = prepare_new(&args, &status, &paths, |_, _| Ok(())).map_err(|e| e.to_string())?;
+        assert_eq!(
+            next.agent.take_secret_requests().is_some(),
+            enabled && interactive
+        );
+    }
+    Ok(())
+}
+
+// 関門: リンクを作れない失敗を、補助が使えて入力だけ拒まれる場合と区別して診断する。
+#[test]
+fn startup_reports_inherited_askpass_settings_when_helper_links_cannot_be_created()
+-> Result<(), Box<dyn Error>> {
+    let f = Fixture::new()?;
+    let paths = f.paths("sandbox = 'danger-full-access'")?;
+    let mut args = f.args(&[])?;
+    let prepared =
+        prepare(&args, None, &paths, |_, _| Ok(()), &mut |_| false).map_err(|e| e.to_string())?;
+    let id = prepared.session.id().to_string();
+    let directory = crate::askpass::runtime_directory()
+        .into_iter()
+        .chain([paths.temporary_root.clone(), PathBuf::from("/tmp")])
+        .map(|root| crate::askpass::parent_directory(&root).join(crate::askpass::helper_name(&id)))
+        .find(|path| path.exists())
+        .ok_or("missing helpers")?;
+    drop(prepared);
+    struct Remove(PathBuf);
+    impl Drop for Remove {
+        fn drop(&mut self) {
+            let _removed = fs::remove_dir_all(&self.0);
+        }
+    }
+    fs::create_dir(&directory)?;
+    let _remove = Remove(directory.clone());
+    fs::set_permissions(&directory, fs::Permissions::from_mode(0o755))?;
+    args.resume = Some(id);
+    let prepared =
+        prepare(&args, None, &paths, |_, _| Ok(()), &mut |_| false).map_err(|e| e.to_string())?;
+    assert!(
+        prepared
+            .diagnostics
+            .iter()
+            .any(|line| line == crate::askpass::text::DISABLED
+                && line.contains("inherited askpass settings will be used"))
+    );
+    assert!(!directory.join("benitoiteh-git-askpass").exists());
     Ok(())
 }

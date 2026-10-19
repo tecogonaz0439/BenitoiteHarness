@@ -575,6 +575,27 @@ impl Agent {
         self
     }
 
+    pub(crate) fn askpass_broker(&self) -> Option<Arc<crate::askpass::Broker>> {
+        self.tool_context
+            .shell
+            .as_ref()?
+            .askpass
+            .as_ref()
+            .map(Arc::clone)
+    }
+
+    /// 対話の画面へ、セッションに固有の秘密の受け口を渡す。
+    pub fn take_secret_requests(
+        &self,
+    ) -> Option<std::sync::mpsc::Receiver<crate::askpass::Prompt>> {
+        self.tool_context
+            .shell
+            .as_ref()?
+            .askpass
+            .as_ref()?
+            .take_requests()
+    }
+
     /// 準備で決めた方針を保ち、対話の確認の受け手だけを接続する。
     pub fn with_approver(mut self, approver: Box<dyn Approver>) -> Self {
         self.approver = approver;

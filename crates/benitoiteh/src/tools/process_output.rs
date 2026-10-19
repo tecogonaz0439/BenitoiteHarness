@@ -1,7 +1,9 @@
 //! 子プロセスの出力を排出しつつ末尾と保存を管理する（設計書 01-03「出力の切り詰め」）。
 use crate::session::SpillWriter;
 use std::io::{self, Write};
+use std::sync::{Arc, Mutex, PoisonError};
 pub(crate) struct Output {
+    redactor: Option<crate::askpass::Redactor>,
     max_bytes: usize,
     max_lines: usize,
     pub(super) writer: Option<SpillWriter>,
@@ -16,6 +18,7 @@ pub(crate) struct Output {
 impl Output {
     pub(super) fn new(writer: SpillWriter, max_bytes: usize, max_lines: usize) -> Self {
         Self {
+            redactor: None,
             writer: Some(writer),
             max_bytes,
             max_lines,
@@ -30,6 +33,7 @@ impl Output {
     }
     pub(crate) fn memory(max_bytes: usize, max_lines: usize) -> Self {
         Self {
+            redactor: None,
             writer: None,
             max_bytes,
             max_lines,
@@ -41,6 +45,22 @@ impl Output {
             ends_newline: false,
             closed: false,
         }
+    }
+    pub(crate) fn mediated(
+        max_bytes: usize,
+        max_lines: usize,
+        redactor: crate::askpass::Redactor,
+    ) -> Self {
+        let mut output = Self::memory(max_bytes, max_lines);
+        output.redactor = Some(redactor);
+        output
+    }
+    pub(crate) fn finish_redaction(&mut self) -> io::Result<()> {
+        if let Some(mut redactor) = self.redactor.take() {
+            let bytes = redactor.push(&[], true);
+            self.write_plain(&bytes)?;
+        }
+        Ok(())
     }
     // テスト結果の保持の予算には、捨てた出力でなく確保した末尾の領域を数える。
     pub(crate) fn retained_bytes(&self) -> usize {
@@ -110,6 +130,37 @@ impl Write for Output {
         if self.closed {
             return Ok(bytes.len());
         }
+        if self.redactor.is_some() {
+            for chunk in bytes.chunks(8192) {
+                let filtered = self
+                    .redactor
+                    .as_mut()
+                    .map(|redactor| redactor.push(chunk, false))
+                    .unwrap_or_default();
+                self.write_plain(&filtered)?;
+            }
+            Ok(bytes.len())
+        } else {
+            self.write_plain(bytes)
+        }
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        Ok(())
+    }
+}
+
+// 準備や巻き戻しの記録の段で止まった場合も、空の spill を残さない。
+impl Drop for Output {
+    fn drop(&mut self) {
+        if let Some(writer) = self.writer.take() {
+            let _removed = writer.discard();
+        }
+    }
+}
+
+impl Output {
+    fn write_plain(&mut self, bytes: &[u8]) -> io::Result<usize> {
         if let Some(writer) = &mut self.writer
             && writer.write_all(bytes).is_err()
             && let Some(writer) = self.writer.take()
@@ -159,16 +210,52 @@ impl Write for Output {
         }
         Ok(bytes.len())
     }
-    fn flush(&mut self) -> io::Result<()> {
+}
+
+/// それぞれのパイプで一致を確定してから共通の出力へ渡す。
+/// 別の流れの書き込みが秘密の途中へ割り込んでも、一致を失わない。
+pub(crate) struct StreamOutput {
+    output: Arc<Mutex<Output>>,
+    redactor: Option<crate::askpass::Redactor>,
+    closed: bool,
+}
+impl StreamOutput {
+    pub(crate) fn new(
+        output: Arc<Mutex<Output>>,
+        redactor: Option<crate::askpass::Redactor>,
+    ) -> Self {
+        Self {
+            output,
+            redactor,
+            closed: false,
+        }
+    }
+    pub(crate) fn finish(&mut self) -> io::Result<()> {
+        self.closed = true;
+        if let Some(mut redactor) = self.redactor.take() {
+            self.output
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .write_all(&redactor.push(&[], true))?;
+        }
         Ok(())
     }
 }
-
-// 準備や巻き戻しの記録の段で止まった場合も、空の spill を残さない。
-impl Drop for Output {
-    fn drop(&mut self) {
-        if let Some(writer) = self.writer.take() {
-            let _removed = writer.discard();
+impl Write for StreamOutput {
+    fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+        if !self.closed {
+            for chunk in bytes.chunks(8192) {
+                let mut output = self.output.lock().unwrap_or_else(PoisonError::into_inner);
+                if let Some(redactor) = self.redactor.as_mut() {
+                    output.write_all(&redactor.push(chunk, false))?;
+                } else {
+                    output.write_all(chunk)?;
+                }
+            }
         }
+        Ok(bytes.len())
+    }
+    fn flush(&mut self) -> io::Result<()> {
+        Ok(())
     }
 }

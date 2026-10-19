@@ -103,7 +103,7 @@ pub fn run(
     let mut pending_input = Vec::new();
     loop {
         match input.termination_count() {
-            // Worker の Drop は受信先を閉じるだけで join しない。二度目は記録を待たない。
+            // Worker の Drop は窓口を閉じるが Agent は join しない。二度目は記録を待たない。
             Ok(count) if count >= 2 => {
                 if worker.is_rewinding() {
                     screen.interrupted_rewind = screen.before_rewind.clone();
@@ -207,6 +207,10 @@ pub fn run(
                     worker.cancel();
                 }
                 if !output_failed && screen.presented(Instant::now()) {
+                    pending_input.retain(|(event, _)| {
+                        matches!(event, Event::Resize(_, _))
+                            || super::confirmation::is_interrupt(event)
+                    });
                     match input.discard_pending() {
                         Ok(events) => pending_input.extend(events),
                         Err(failure) => {

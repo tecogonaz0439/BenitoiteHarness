@@ -78,6 +78,7 @@ impl Fixture {
         )
         .with_session(session.clone())
         .with_shell(ShellContext {
+            askpass: None,
             policy,
             policy_name: (sandbox != Sandbox::DangerFullAccess).then_some(sandbox.name()),
             helper: fs::canonicalize(env!("CARGO_BIN_EXE_benitoiteh"))?,

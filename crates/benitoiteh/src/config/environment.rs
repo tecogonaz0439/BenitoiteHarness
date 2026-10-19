@@ -22,6 +22,8 @@ pub fn child_environment(
         })
         .collect();
     // 外側の benitoiteh の印を引き継ぐと、今回の制限を誤って伝える。
+    environment.remove(std::ffi::OsStr::new(crate::askpass::SOCKET_ENV));
+    environment.remove(std::ffi::OsStr::new(crate::askpass::TOKEN_ENV));
     environment.remove(std::ffi::OsStr::new("BENITOITEH_SANDBOX"));
     environment.remove(std::ffi::OsStr::new("BENITOITEH_SANDBOX_NETWORK_DISABLED"));
     environment.insert("TMPDIR".into(), temporary.as_os_str().to_owned());

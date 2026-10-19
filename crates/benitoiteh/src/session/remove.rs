@@ -13,7 +13,7 @@ const DIRECTORY: OFlags = OFlags::RDONLY
     .union(OFlags::NOFOLLOW)
     .union(OFlags::CLOEXEC);
 
-pub(super) fn directory(path: &Path) -> io::Result<()> {
+pub(crate) fn directory(path: &Path) -> io::Result<()> {
     let parent = path.parent().ok_or(io::ErrorKind::InvalidInput)?;
     let name = path.file_name().ok_or(io::ErrorKind::InvalidInput)?;
     // 親はハーネスが管理する根であり、/tmp などの別名も辿る。削除対象とその下は

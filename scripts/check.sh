@@ -22,10 +22,19 @@ skipped_tests=(crates/*/tests/sandbox_*.rs)
 x86_64_skipped=()
 aarch64_skipped=()
 skill_eval_work=
+askpass_test_guard=
 stage=setup
 
 finish() {
     local status=$?
+    if [[ -n "$askpass_test_guard" ]]; then
+        if ! python3 -I scripts/askpass_test_directory.py cleanup "$askpass_test_guard"; then
+            if ((status == 0)); then
+                status=1
+                stage=askpass-test-cleanup
+            fi
+        fi
+    fi
     if [[ -n "$skill_eval_work" ]]; then
         rm -rf -- "$skill_eval_work" || true
     fi
@@ -98,6 +107,9 @@ processor_report=$("$BENITOITEH_TEST_BENITOITE" --version=json)
 processor_hash=$(shasum -a 256 "$BENITOITEH_TEST_BENITOITE" | awk '{print $1}')
 processor_identity "$host_target" "$processor_report" "$processor_hash"
 begin_stage test
+python3 -I -m unittest discover -s scripts -p 'test_askpass_test_directory.py'
+askpass_test_guard=$(mktemp)
+python3 -I scripts/askpass_test_directory.py prepare "$askpass_test_guard"
 cargo build -p sandbox-probe
 if [[ $(uname -s) == Darwin ]]; then
     cargo rustc -p sandbox-probe --lib --crate-type cdylib

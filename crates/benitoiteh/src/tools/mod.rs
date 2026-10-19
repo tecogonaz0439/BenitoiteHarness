@@ -343,6 +343,8 @@ impl FileVersion {
 /// 通常モードの子プロセスに渡す、起動時に固定した値（設計書 03-02）。
 #[derive(Clone, Debug)]
 pub struct ShellContext {
+    /// セッションの補助と、対話でだけ作る秘密の窓口。
+    pub askpass: Option<Arc<crate::askpass::Broker>>,
     /// なしはサンドボックスの外での起動。
     pub policy: Option<SandboxPolicy>,
     /// サンドボックスを掛けるときだけ方針の名前を持つ。

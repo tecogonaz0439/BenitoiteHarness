@@ -116,3 +116,45 @@ fn read_only_shell_writes_temporary_files_but_not_project_files() -> TestResult 
     );
     Ok(())
 }
+
+// 関門: サンドボックス内から補助を起動できても、権限の環境と Unix IPC は渡らない。
+#[test]
+fn sandboxed_askpass_helpers_fail_without_authority_and_cannot_connect_to_broker() -> TestResult {
+    let mut f = Fixture::new(Sandbox::WorkspaceWrite)?;
+    probe(&f)?;
+    let shell = f.context.shell.as_mut().ok_or("missing shell")?;
+    let broker = std::sync::Arc::new(benitoiteh::askpass::Broker::create(
+        &f.root,
+        f.session.id().as_str(),
+        &shell.helper,
+        &[f.project.clone(), f.session.temporary_dir().into()],
+        true,
+    )?);
+    broker.environment(&mut shell.env);
+    let socket = std::path::PathBuf::from(
+        shell
+            .env
+            .get(std::ffi::OsStr::new("GIT_ASKPASS"))
+            .ok_or("missing helper")?,
+    )
+    .parent()
+    .ok_or("missing parent")?
+    .join("sock");
+    shell.askpass = Some(std::sync::Arc::clone(&broker));
+    let requests = broker.take_requests().ok_or("missing prompts")?;
+    let output = f.execute("inside-askpass", json!({"command":"test -z \"$BENITOITEH_ASKPASS_TOKEN\" && test -z \"$BENITOITEH_ASKPASS_SOCKET\" || exit 2; \"$GIT_ASKPASS\" untrusted"}), &AtomicBool::new(false))?;
+    assert!(output.is_error);
+    assert!(
+        output.text.contains(benitoiteh::askpass::text::UNAVAILABLE),
+        "{}",
+        output.text
+    );
+    let output = f.execute(
+        "socket",
+        json!({"command": format!("./probe unix-connect {}", quote(&socket))}),
+        &AtomicBool::new(false),
+    )?;
+    assert!(output.is_error, "{}", output.text);
+    assert!(requests.try_recv().is_err());
+    Ok(())
+}

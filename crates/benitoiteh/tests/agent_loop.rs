@@ -49,6 +49,7 @@ struct Fixture {
     root: PathBuf,
     project: PathBuf,
     paths: DataPaths,
+    askpass: bool,
 }
 
 impl Fixture {
@@ -73,6 +74,7 @@ impl Fixture {
             root,
             project,
             paths,
+            askpass: false,
         })
     }
 
@@ -174,18 +176,37 @@ impl Fixture {
             } else {
                 None
             };
+            let helper = fs::canonicalize(env!("CARGO_BIN_EXE_benitoiteh"))?;
+            let broker = self
+                .askpass
+                .then(|| {
+                    benitoiteh::askpass::Broker::create(
+                        &self.paths.temporary_root,
+                        session.id().as_str(),
+                        &helper,
+                        &[self.project.clone(), session.temporary_dir().into()],
+                        true,
+                    )
+                })
+                .transpose()?
+                .map(Arc::new);
+            let mut env = benitoiteh::config::child_environment(
+                [("PATH".into(), "/bin:/usr/bin".into())],
+                &Default::default(),
+                session.temporary_dir(),
+                sandboxed.then_some((sandbox.name(), false)),
+            );
+            if let Some(broker) = &broker {
+                broker.environment(&mut env);
+            }
             context = context.with_shell(ShellContext {
+                askpass: broker,
                 policy,
                 policy_name: None,
-                helper: fs::canonicalize(env!("CARGO_BIN_EXE_benitoiteh"))?,
+                helper,
                 scratch: directory.join("sandbox"),
                 placeholders: self.paths.data_dir.join("placeholders"),
-                env: benitoiteh::config::child_environment(
-                    [("PATH".into(), "/bin:/usr/bin".into())],
-                    &Default::default(),
-                    session.temporary_dir(),
-                    sandboxed.then_some((sandbox.name(), false)),
-                ),
+                env,
                 approval: Approval::Never,
                 sandbox,
                 sandboxed,
@@ -1803,5 +1824,67 @@ fn web_approval_policy_and_denials_are_recorded() -> TestResult {
             server.shutdown()?;
         }
     }
+    Ok(())
+}
+
+// 関門: 秘密と求めの文を、記録・次の提供者への要求へ渡す接続の退行を捕まえる。
+#[test]
+fn askpass_secret_and_prompt_do_not_enter_records_or_provider_requests() -> TestResult {
+    let mut f = Fixture::new()?;
+    f.askpass = true;
+    let server = MockProvider::start(vec![
+        ResponseScript::sse(calls(
+            &[(
+                "bash",
+                json!({"command":"\"$GIT_ASKPASS\" 'untrusted-authentication-prompt'"}),
+            )],
+            "tool_calls",
+        )),
+        final_text(),
+    ])?;
+    let (mut agent, directory) = f.agent_with_shell(
+        f.config(&server, AdapterKind::OpenAiChat),
+        Some((Sandbox::DangerFullAccess, false)),
+    )?;
+    let prompts = agent
+        .take_secret_requests()
+        .ok_or("missing secret receiver")?;
+    thread::scope(|scope| -> TestResult {
+        let responder = scope.spawn(move || -> Result<(), String> {
+            let prompt = prompts
+                .recv_timeout(Duration::from_secs(5))
+                .map_err(|e| e.to_string())?;
+            prompt
+                .reply
+                .send(benitoiteh::askpass::Answer::Secret(
+                    zeroize::Zeroizing::new("only-synthetic-secret".into()),
+                ))
+                .map_err(|_| "answer failed".to_owned())?;
+            Ok(())
+        });
+        let (report, events) = complete(&mut agent)?;
+        responder.join().map_err(|_| "responder panicked")??;
+        assert_eq!(report.outcome, Outcome::Completed);
+        let encoded = serde_json::to_string(&events)?;
+        assert!(!encoded.contains("only-synthetic-secret"));
+        Ok(())
+    })?;
+    let result = results(&agent).first().copied().ok_or("missing result")?;
+    assert!(
+        result.text.contains("[secret]") && result.text.contains("Secret prompt (git): answered.")
+    );
+    assert!(!result.text.contains("untrusted-authentication-prompt"));
+    let records = fs::read_to_string(directory.join("session.jsonl"))?;
+    assert!(!records.contains("only-synthetic-secret"));
+    for record in read_records(&directory)? {
+        if let Record::ToolResult { result, .. } = record {
+            assert!(!result.text.contains("untrusted-authentication-prompt"));
+        }
+    }
+    let requests = server.requests()?;
+    for request in requests {
+        assert!(!request.body.to_string().contains("only-synthetic-secret"));
+    }
+    assert_eq!(fs::read_dir(directory.join("spill"))?.count(), 0);
     Ok(())
 }

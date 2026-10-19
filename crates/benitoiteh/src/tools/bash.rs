@@ -79,29 +79,100 @@ pub(super) fn execute(
         return Err(ToolError::InvalidArguments(text::BASH_CONTEXT.into()));
     };
     let sandboxed = shell.policy.is_some() && !escalate;
-    let launch = prepare(shell, context.project.real_path(), command, sandboxed)?;
-    let sink = Arc::new(Mutex::new(Output::new(
-        session
-            .spill_writer(invocation.call_id)
-            .map_err(|e| failure(&e))?,
-        MAX_BYTES,
-        MAX_LINES,
+    let mediated = !sandboxed
+        && (shell.sandbox == crate::config::Sandbox::DangerFullAccess
+            || (escalate && shell.policy.is_some() && approval == ApprovalStatus::Approved));
+    let mut changed_directory = shell
+        .askpass
+        .as_ref()
+        .is_some_and(|broker| !broker.valid_directory());
+    let secret_call = if mediated && !changed_directory {
+        shell
+            .askpass
+            .as_ref()
+            .map(|broker| {
+                broker.begin(crate::askpass::Facts {
+                    call_id: invocation.call_id.into(),
+                    command: command.into(),
+                    cwd: context.project.real_path().into(),
+                    mode: if shell.sandbox == crate::config::Sandbox::DangerFullAccess {
+                        crate::askpass::text::NORMAL_FULL
+                    } else {
+                        crate::askpass::text::NORMAL_ESCALATED
+                    },
+                })
+            })
+            .transpose()
+            .or_else(|error| {
+                if matches!(error, crate::askpass::AskpassError::ChangedDirectory) {
+                    changed_directory = true;
+                    Ok(None)
+                } else {
+                    Err(error)
+                }
+            })
+            .map_err(|error| failure(&error))?
+            .flatten()
+    } else {
+        None
+    };
+    let launch = prepare(
+        shell,
+        context.project.real_path(),
+        command,
+        sandboxed,
+        secret_call.as_ref(),
+        &mut changed_directory,
+    )?;
+    let captured = if let Some(call) = &secret_call {
+        Output::mediated(MAX_BYTES, MAX_LINES, call.redactor())
+    } else {
+        Output::new(
+            session
+                .spill_writer(invocation.call_id)
+                .map_err(|e| failure(&e))?,
+            MAX_BYTES,
+            MAX_LINES,
+        )
+    };
+    let sink = Arc::new(Mutex::new(captured));
+    let stdout = Arc::new(Mutex::new(super::process_output::StreamOutput::new(
+        Arc::clone(&sink),
+        secret_call.as_ref().map(|call| call.redactor()),
+    )));
+    let stderr = Arc::new(Mutex::new(super::process_output::StreamOutput::new(
+        Arc::clone(&sink),
+        secret_call.as_ref().map(|call| call.redactor()),
     )));
     context.checkpoint_before(crate::rewind::CheckpointReason::Bash, None, &invocation)?;
-    let outcome = run::run(
+    let outcome = run::run_with_pause(
         launch,
         Vec::new(),
-        Arc::clone(&sink),
-        Arc::clone(&sink),
+        Arc::clone(&stdout),
+        Arc::clone(&stderr),
         RunLimits {
             timeout: Duration::from_secs(timeout),
             ..RunLimits::default()
         },
         invocation.cancelled,
+        secret_call.as_ref().map(|call| call as &dyn run::RunPause),
     );
+    if let Some(call) = &secret_call {
+        call.finish();
+    }
+    // 流れごとの保留を先に流し、混合列の二段目も切り詰め前に確定する。
+    stdout
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+        .finish()?;
+    stderr
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+        .finish()?;
     // パイプの読み手が残っていても、この錠の中で書き手を抜いた後は出力を捨てる。
     // （設計書 03-02「子プロセスの後始末」）。
     let mut output = sink.lock().unwrap_or_else(PoisonError::into_inner);
+    output.finish_redaction()?;
     output.closed = true;
     let writer = output.writer.take();
     let outcome = match outcome {
@@ -145,6 +216,17 @@ pub(super) fn execute(
         sandboxed,
         cfg!(target_os = "linux"),
     );
+    if changed_directory {
+        append(&mut contents, crate::askpass::text::CHANGED_DIRECTORY);
+    }
+    if secret_call.is_some() {
+        append(&mut contents, crate::askpass::text::SPILL_DISCARDED);
+    }
+    if let Some(call) = &secret_call {
+        for event in call.events() {
+            append(&mut contents, &event);
+        }
+    }
     append(&mut contents, &text::bash_exit(code));
     match outcome.end {
         RunEnd::TimedOut => append(&mut contents, &text::bash_timed_out(timeout)),
@@ -189,12 +271,26 @@ fn prepare(
     cwd: &Path,
     command: &str,
     sandboxed: bool,
+    secret_call: Option<&crate::askpass::CallGuard>,
+    changed_directory: &mut bool,
 ) -> Result<RunCommand, ToolError> {
     let path = if Path::new("/bin/bash").is_file() {
         Path::new("/bin/bash")
     } else {
         Path::new("/bin/sh")
     };
+    let mut env = shell.env.clone();
+    if *changed_directory
+        || shell
+            .askpass
+            .as_ref()
+            .is_some_and(|broker| !broker.valid_directory())
+    {
+        *changed_directory = true;
+        crate::askpass::clear_environment(&mut env);
+    } else if let Some(call) = secret_call {
+        call.environment(&mut env);
+    }
     if sandboxed {
         let program = path.canonicalize()?;
         let command = SandboxCommand {
@@ -205,7 +301,7 @@ fn prepare(
             args: shell_arguments(&program, command),
             program,
             cwd: cwd.to_owned(),
-            env: shell.env.clone(),
+            env,
             stdin: SandboxStdin::Null,
         };
         #[cfg(target_os = "linux")]
@@ -223,7 +319,6 @@ fn prepare(
                 .map_err(|e| failure(&e))
         }
     } else {
-        let mut env = shell.env.clone();
         env.remove(std::ffi::OsStr::new("BENITOITEH_SANDBOX"));
         env.remove(std::ffi::OsStr::new("BENITOITEH_SANDBOX_NETWORK_DISABLED"));
         let mut launch = crate::sandbox::session::command(&shell.helper, path);

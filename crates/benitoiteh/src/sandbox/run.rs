@@ -229,6 +229,14 @@ fn cleanup_exited_group(pid: Pid) -> io::Result<()> {
     }
 }
 
+/// 利用者を待つ時間と、停止の直前に無効にする権限。
+pub trait RunPause {
+    /// 現在待っている時間も含む、待ち時間の合計。
+    fn paused(&self) -> Duration;
+    /// 停止の合図の前、および正常終了の観測時に呼ぶ。
+    fn stop(&self);
+}
+
 /// 呼び出したスレッドで起動して回収する。出力は上限なく読み、受け取り先へ渡す。
 /// Linux の PreparedSandbox は、入力があるとき Piped、ないとき Null で準備すること。
 pub fn run<O, E>(
@@ -238,6 +246,23 @@ pub fn run<O, E>(
     stderr: Arc<Mutex<E>>,
     limits: RunLimits,
     cancelled: &AtomicBool,
+) -> Result<RunOutcome, RunError>
+where
+    O: Write + Send + 'static,
+    E: Write + Send + 'static,
+{
+    run_with_pause(command, input, stdout, stderr, limits, cancelled, None)
+}
+
+/// 時間の上限から対話の待機を除き、子を止める前に呼び出しの権限を失効させる。
+pub fn run_with_pause<O, E>(
+    command: impl Into<RunCommand>,
+    input: Vec<u8>,
+    stdout: Arc<Mutex<O>>,
+    stderr: Arc<Mutex<E>>,
+    limits: RunLimits,
+    cancelled: &AtomicBool,
+    pause: Option<&dyn RunPause>,
 ) -> Result<RunOutcome, RunError>
 where
     O: Write + Send + 'static,
@@ -265,7 +290,7 @@ where
         pid,
         reaped: false,
     };
-    execution.execute(input, stdout, stderr, limits, cancelled)
+    execution.execute(input, stdout, stderr, limits, cancelled, pause)
 }
 
 struct Execution<'a> {
@@ -304,6 +329,7 @@ impl Execution<'_> {
         stderr: Arc<Mutex<E>>,
         limits: RunLimits,
         cancelled: &AtomicBool,
+        pause: Option<&dyn RunPause>,
     ) -> Result<RunOutcome, RunError> {
         let pid = self.pid;
         let child = &mut self.child;
@@ -343,13 +369,16 @@ impl Execution<'_> {
             if cancelled.load(Ordering::Acquire) {
                 break RunEnd::Cancelled;
             }
-            if start.elapsed() >= limits.timeout {
+            let elapsed = start
+                .elapsed()
+                .saturating_sub(pause.map_or(Duration::ZERO, RunPause::paused));
+            if elapsed >= limits.timeout {
                 break RunEnd::TimedOut;
             }
             match ended.recv_timeout(
                 limits
                     .timeout
-                    .saturating_sub(start.elapsed())
+                    .saturating_sub(elapsed)
                     .min(Duration::from_millis(50)),
             ) {
                 Ok(result) => {
@@ -362,6 +391,9 @@ impl Execution<'_> {
                 }
             }
         };
+        if let Some(pause) = pause {
+            pause.stop();
+        }
         let mut leftovers = Leftovers::None;
         if end != RunEnd::Exited {
             child.stop(pid, limits.stop_signal)?;

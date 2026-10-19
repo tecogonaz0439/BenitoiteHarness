@@ -23,6 +23,13 @@ enum CliError {
 
 /// プロセスの引数を処理し、CLI の終了状態を返す。
 pub fn main() -> ExitCode {
+    if let Some(kind) = std::env::args_os()
+        .next()
+        .as_deref()
+        .and_then(crate::askpass::helper::kind)
+    {
+        return crate::askpass::helper::run(kind);
+    }
     let mut args = std::env::args_os().skip(1);
     let argument = args.next();
     // panic hook と通常の引数の解釈より先に補助の入口を分ける（設計書 03-02「サンドボックスの掛け方」）。
