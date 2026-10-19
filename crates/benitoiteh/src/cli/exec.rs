@@ -344,8 +344,14 @@ pub(super) fn prepare(
         {
             return Err(StartupError::Invalid(text::SESSION_PATH_CHANGED));
         }
-        let _cleanup = session::cleanup(paths, user.sessions.retention_days, now)
+        let cleanup = session::cleanup(paths, user.sessions.retention_days, now)
             .map_err(StartupError::Session)?;
+        diagnostics.extend(
+            cleanup
+                .failures
+                .iter()
+                .map(session::CleanupFailure::diagnostic),
+        );
         let session = match opened {
             Some(session) => {
                 diagnostics.push(text::resuming(session.id(), root.real_path()));
@@ -557,7 +563,6 @@ pub(super) fn prepare(
                 helper: helper.clone(),
                 scratch: scratch.clone(),
                 placeholders: placeholders.clone(),
-                work_parent: scratch.clone(),
                 #[cfg(test)]
                 test_command: None,
             });

@@ -413,8 +413,6 @@ pub struct ImageHelperContext {
     pub scratch: PathBuf,
     /// Linux の守る名前の錠を置く場所。
     pub placeholders: PathBuf,
-    /// 補助ごとの空の作業ディレクトリを作る非公開の親。
-    pub work_parent: PathBuf,
     #[cfg(test)]
     pub(crate) test_command: Option<(String, std::time::Duration)>,
 }

@@ -65,6 +65,28 @@ fn json_round_trip_preserves_rules_and_rejects_invalid_policy() -> TestResult {
             .deny_exec_in_writable
     );
 
+    let readonly = SandboxPolicy::new(PolicyConfig::without_writable())?;
+    assert_eq!(
+        serde_json::from_value::<SandboxPolicy>(serde_json::to_value(&readonly)?)?,
+        readonly
+    );
+    let mut no_fork = serde_json::to_value(&readonly)?;
+    no_fork
+        .as_object_mut()
+        .ok_or("policy object")?
+        .remove("allow_fork");
+    assert!(serde_json::from_value::<SandboxPolicy>(no_fork).is_err());
+    let mut omitted = serde_json::to_value(&config)?;
+    omitted
+        .as_object_mut()
+        .ok_or("policy object")?
+        .remove("require_writable");
+    assert!(
+        serde_json::from_value::<SandboxPolicy>(omitted)?
+            .config()
+            .require_writable
+    );
+
     let alias = fixture.0.join("alias");
     symlink(&fixture.0, &alias)?;
     let mut invalid_configs = Vec::new();
@@ -76,6 +98,9 @@ fn json_round_trip_preserves_rules_and_rejects_invalid_policy() -> TestResult {
     let mut empty = config.clone();
     empty.writable.clear();
     invalid_configs.push(empty);
+    let mut readonly_with_writable = config.clone();
+    readonly_with_writable.require_writable = false;
+    invalid_configs.push(readonly_with_writable);
     let mut unprotected = config.clone();
     unprotected.protected_names.clear();
     invalid_configs.push(unprotected);

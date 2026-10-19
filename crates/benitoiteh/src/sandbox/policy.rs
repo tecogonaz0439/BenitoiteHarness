@@ -42,8 +42,13 @@ pub struct PolicyConfig {
     pub readable_metadata: Vec<PathBuf>,
     /// 読み取りを拒む実のパス。
     pub denied_read: Vec<PathBuf>,
-    /// 書き込みを許すディレクトリ。空にはできない。
+    /// 書き込みを許すディレクトリ。require_writable が偽なら空に限る。
     pub writable: Vec<PathBuf>,
+    /// 書ける場所を必須にするか。省略時も必須とする。
+    #[serde(default = "default_require_writable")]
+    pub require_writable: bool,
+    /// 子のプロセスの作成を許すか（macOS の方針）。
+    pub allow_fork: bool,
     /// 各書ける場所の下で、作成と変更を拒む名前。
     pub protected_names: Vec<String>,
     /// IP の通信を許すか。外部の Unix IPC は常に拒む。
@@ -55,12 +60,25 @@ pub struct PolicyConfig {
     pub deny_exec_in_writable: bool,
 }
 
+fn default_require_writable() -> bool {
+    true
+}
+
 fn default_deny_exec_in_writable() -> bool {
     // 方針の JSON で省略されても、制限モードの拒否を弱めない（設計書 03-02「制限モードの方針」）。
     true
 }
 
 impl PolicyConfig {
+    /// 書ける場所を持たず、子のプロセスの作成も許さない入力を作る。
+    pub fn without_writable() -> Self {
+        Self {
+            require_writable: false,
+            allow_fork: false,
+            ..Self::new(Vec::new())
+        }
+    }
+
     /// 全体を読め、指定した場所にだけ書け、IP 通信と書ける場所での実行を拒む入力を作る。
     pub fn new(writable: Vec<PathBuf>) -> Self {
         Self {
@@ -70,6 +88,8 @@ impl PolicyConfig {
             readable_metadata: Vec::new(),
             denied_read: Vec::new(),
             writable,
+            require_writable: true,
+            allow_fork: true,
             protected_names: vec![".git".into(), ".benitoiteh".into()],
             allow_ip: false,
             programs: ProgramAccess::Unrestricted,
@@ -84,7 +104,7 @@ impl PolicyConfig {
 pub struct SandboxPolicy(PolicyConfig);
 
 impl SandboxPolicy {
-    /// 正規の絶対パスと、空でない書ける場所を確かめる。
+    /// 正規の絶対パスと、指定した書ける場所の有無を確かめる。
     pub fn new(config: PolicyConfig) -> Result<Self, SandboxError> {
         let policy = Self(config);
         policy.validate()?;
@@ -98,7 +118,7 @@ impl SandboxPolicy {
 
     pub(super) fn validate(&self) -> Result<(), SandboxError> {
         let config = self.config();
-        if config.writable.is_empty() {
+        if config.require_writable == config.writable.is_empty() {
             return Err(SandboxError::InvalidPolicy(text::EMPTY_WRITABLE));
         }
         for name in &config.protected_names {
