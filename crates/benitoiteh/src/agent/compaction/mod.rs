@@ -64,6 +64,9 @@ pub struct CompactReport {
     pub estimate_after: u64,
     pub summarized_items: usize,
     pub kept_items: usize,
+    /// 選んだ範囲の再構築前のバイト数を 3 で切り上げて割った値。
+    /// SameDestination では推論を除くので、実際に送る範囲の見積もりより多くなりうる。
+    pub kept_estimate: u64,
 }
 
 impl Agent {
@@ -111,6 +114,7 @@ impl Agent {
                     estimate_after: self.estimate(),
                     summarized_items: 0,
                     kept_items: 0,
+                    kept_estimate: 0,
                 })
             }
             Err(error) => Err(error),
@@ -180,7 +184,7 @@ impl Agent {
                     .capabilities
                     .max_output_tokens
                     .unwrap_or(32_000)
-                    .saturating_add(16_384)
+                    .saturating_add(self.config.compaction.reserve_tokens)
                     .min(window / 2);
                 self.estimate() > window.saturating_sub(reserve)
             })
@@ -211,8 +215,8 @@ impl Agent {
         };
         let budget = window
             .map(|window| window / 4)
-            .unwrap_or(20_000)
-            .min(20_000);
+            .unwrap_or(self.config.compaction.keep_tokens)
+            .min(self.config.compaction.keep_tokens);
         let end = conversation::tail_start(
             &self.conversation,
             budget,
@@ -221,6 +225,20 @@ impl Agent {
             options.keep_recent,
             self.config.kind,
         );
+        // 選択と同じ量を再構築前に記録する（設計書 01-04「圧縮の値を比べる設定」）。
+        let kept_estimate = self
+            .conversation
+            .items
+            .iter()
+            .skip(end)
+            .fold(0_u64, |bytes, item| {
+                bytes.saturating_add(conversation::item_bytes(
+                    item,
+                    self.config.capabilities.reasoning_replay,
+                    &self.config.destination,
+                ))
+            })
+            .div_ceil(3);
         let ordinary = end
             .saturating_sub(1)
             .saturating_add(conversation::first_request_count(&self.conversation));
@@ -233,6 +251,7 @@ impl Agent {
             estimate_after: before,
             summarized_items: count,
             kept_items: kept,
+            kept_estimate,
         };
         if cancelled.load(Ordering::Acquire) {
             report.outcome = CompactOutcome::Cancelled;
@@ -335,6 +354,8 @@ impl Agent {
             reason: options.reason,
             summarized_items: count,
             kept_items: kept,
+            usage: Some(report.usage.clone()),
+            kept_estimate: Some(kept_estimate),
         })?;
         self.conversation = conversation;
         self.last_usage = None;
@@ -349,6 +370,8 @@ impl Agent {
                 reason: options.reason,
                 summarized_items: count,
                 kept_items: kept,
+                usage: Some(report.usage.clone()),
+                kept_estimate: Some(kept_estimate),
                 estimate_before: before,
                 estimate_after: report.estimate_after,
             },

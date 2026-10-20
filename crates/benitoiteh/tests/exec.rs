@@ -30,6 +30,8 @@ fn evaluation_switches_reach_read_and_recorded_hashes_from_user_config() -> Test
                 false,
             )),
             ResponseScript::sse(protocol.response(None, "done", false)),
+            ResponseScript::sse(protocol.response(None, "summary", false)),
+            ResponseScript::sse(protocol.response(None, "resumed", false)),
         ])?;
         let f = Fixture::new(protocol, &server)?;
         fs::write(f.root.join("project/a.bnt"), "one\ntwo\nthree\n")?;
@@ -39,7 +41,7 @@ fn evaluation_switches_reach_read_and_recorded_hashes_from_user_config() -> Test
             fs::write(
                 path,
                 format!(
-                    "{contents}\n[restricted]\nafter_write_check=false\n[read]\nline_numbers=false\n"
+                    "{contents}\n[restricted]\nafter_write_check=false\n[read]\nline_numbers=false\n[compaction]\nreserve_tokens=8192\nkeep_tokens=8000\n"
                 ),
             )?;
         }
@@ -54,6 +56,12 @@ fn evaluation_switches_reach_read_and_recorded_hashes_from_user_config() -> Test
         let header = records.first().ok_or("header")?;
         assert_eq!(header.get("format"), Some(&json!(2)));
         assert!(header.get("completion_check").is_none());
+        assert_eq!(
+            header.get("compaction"),
+            (!enabled).then_some(&json!({
+                "reserve_tokens": 8192, "keep_tokens": 8000,
+            }))
+        );
         for key in ["after_write_check", "read_line_numbers"] {
             assert_eq!(header.get(key), (!enabled).then_some(&Value::Bool(false)));
         }
@@ -96,6 +104,42 @@ fn evaluation_switches_reach_read_and_recorded_hashes_from_user_config() -> Test
                 "Read a text file."
             })
         );
+        if !enabled {
+            let path = f.root.join("config/benitoiteh/config.toml");
+            let contents = fs::read_to_string(&path)?
+                .replace("[providers.mock]", "[providers.mock]\ncontext_window=1000")
+                .replace("keep_tokens=8000", "keep_tokens=0");
+            fs::write(path, contents)?;
+            let id = header
+                .get("session_id")
+                .and_then(Value::as_str)
+                .ok_or("session id")?;
+            let output =
+                Running::start(f.command("continue").args(["--resume", id, "--json"]))?.finish()?;
+            assert!(
+                output.status.success(),
+                "{}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+            let events = lines(&output.stdout)?;
+            let event = events
+                .iter()
+                .find(|event| event.get("type") == Some(&json!("compaction")))
+                .ok_or("compaction on resume")?;
+            assert_eq!(event.get("kept_items"), Some(&json!(0)));
+            assert_eq!(event.get("kept_estimate"), Some(&json!(0)));
+            let (_, resumed) = f.records()?;
+            assert_eq!(resumed.first(), records.first());
+            let requests = server.requests()?;
+            assert!(
+                requests
+                    .last()
+                    .ok_or("resumed request")?
+                    .body
+                    .to_string()
+                    .contains("<compacted_summary>")
+            );
+        }
         server.shutdown()?;
     }
     let (numbered, plain) = (

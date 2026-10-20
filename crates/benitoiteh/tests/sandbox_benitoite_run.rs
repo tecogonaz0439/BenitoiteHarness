@@ -474,6 +474,7 @@ fn agent(
     resume: bool,
 ) -> Result<Agent, Box<dyn std::error::Error>> {
     let config = AgentConfig {
+        compaction: Default::default(),
         agent: Default::default(),
         project_parent: None,
         allow_effects: None,

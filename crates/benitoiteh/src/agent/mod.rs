@@ -28,7 +28,9 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use crate::approval::{ApprovalPolicy, Approver, NonInteractiveApprover};
-use crate::config::{AgentBehaviorConfig, Approval, Limits, Mode, ResolvedExec, Sandbox};
+use crate::config::{
+    AgentBehaviorConfig, Approval, CompactionConfig, Limits, Mode, ResolvedExec, Sandbox,
+};
 use crate::context::{self, ContextError, Environment, SystemContext};
 use crate::http::{HttpClient, HttpTimeouts, Uri};
 use crate::provider::{
@@ -57,6 +59,7 @@ pub struct AgentConfig {
     pub effort: String,
     pub limits: Limits,
     pub agent: AgentBehaviorConfig,
+    pub compaction: CompactionConfig,
     pub http_timeouts: HttpTimeouts,
     /// 既定 1 秒。試験や呼び出す側の待ち時間の方針で短くできる。
     pub retry_initial: Duration,
@@ -74,6 +77,7 @@ impl From<ResolvedExec> for AgentConfig {
             effort: config.effort,
             limits: config.limits,
             agent: config.agent,
+            compaction: config.compaction,
             http_timeouts: HttpTimeouts::default(),
             retry_initial: Duration::from_secs(1),
         }
@@ -371,6 +375,8 @@ impl Agent {
                 system_prompt_sha256: context::system_prompt_hash(&system.system_prompt),
                 tools_sha256: context::tool_definitions_hash(&system.tools)?,
                 completion_check: config.agent.completion_check.then_some(true),
+                compaction: (config.compaction != CompactionConfig::default())
+                    .then_some(config.compaction.into()),
                 after_write_check: (!tool_context.after_write_check).then_some(false),
                 read_line_numbers: (!tool_context.read_line_numbers).then_some(false),
                 plugins: environment.skills().plugins.clone(),
@@ -649,6 +655,8 @@ impl Agent {
             self.emit(
                 &events,
                 AgentEvent::SessionStart {
+                    compaction: Some(self.config.compaction.into()),
+                    completion_check: Some(self.config.agent.completion_check),
                     session_id: self.session.id().to_string(),
                     resumed: self.resuming,
                     base_url: Some(self.config.destination.base_url.clone()),

@@ -41,6 +41,12 @@ impl Outcome {
 pub enum AgentEvent {
     /// 送り先と送る内容の通知。
     SessionStart {
+        /// この段の圧縮の実効値。旧イベントにはない。
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        compaction: Option<crate::session::RecordedCompaction>,
+        /// この段の完了の促し。新しいイベントでは無効も明示する。
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        completion_check: Option<bool>,
         session_id: String,
         #[serde(default)]
         resumed: bool,
@@ -130,6 +136,12 @@ pub enum AgentEvent {
         reason: CompactionReason,
         summarized_items: usize,
         kept_items: usize,
+        /// この圧縮の要約の要求とやり直しだけの使用量。集計済みなので再加算しない。
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        usage: Option<Usage>,
+        /// 再構築前に選んだ範囲の見積もり。推論を除いた送信量より多くなりうる。
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        kept_estimate: Option<u64>,
         estimate_before: u64,
         estimate_after: u64,
     },
@@ -160,6 +172,8 @@ impl AgentEvent {
     pub(super) fn record(&self) -> Option<Record> {
         Some(match self {
             Self::SessionStart {
+                compaction,
+                completion_check,
                 session_id,
                 resumed,
                 base_url,
@@ -179,6 +193,8 @@ impl AgentEvent {
                 skills,
                 skipped_skills,
             } => Record::SessionStart {
+                compaction: *compaction,
+                completion_check: *completion_check,
                 session_id: session_id.clone(),
                 resumed: *resumed,
                 base_url: base_url.clone(),

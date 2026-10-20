@@ -86,6 +86,24 @@ pub struct RecordedPlugin {
     pub source: SkillSource,
 }
 
+/// 圧縮の実効値の記録。後の版の欄を読めるよう、設定の未知の欄の検査とは分ける。
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct RecordedCompaction {
+    /// 出力の上限へ足す予備。
+    pub reserve_tokens: u64,
+    /// 残す会話の目安。
+    pub keep_tokens: u64,
+}
+
+impl From<crate::config::CompactionConfig> for RecordedCompaction {
+    fn from(config: crate::config::CompactionConfig) -> Self {
+        Self {
+            reserve_tokens: config.reserve_tokens,
+            keep_tokens: config.keep_tokens,
+        }
+    }
+}
+
 /// 最初の行。キーや HTTP のヘッダを受け取る欄を持たない。
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Header {
@@ -103,6 +121,9 @@ pub struct Header {
     pub after_write_check: Option<bool>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub completion_check: Option<bool>,
+    /// 起動時の実効値。省略は既定値で、再開では現在の利用者の設定を使う。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub compaction: Option<RecordedCompaction>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub read_line_numbers: Option<bool>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -266,6 +287,12 @@ pub enum Record {
     Header(Header),
     /// 画面にも示す開始の通知。ヘッダとは別の行。
     SessionStart {
+        /// この段の実効値。旧記録にはない。新しい記録では既定値でも残す。
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        compaction: Option<RecordedCompaction>,
+        /// この段の完了の促し。旧記録の欠落と無効を区別する。
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        completion_check: Option<bool>,
         session_id: String,
         #[serde(default)]
         resumed: bool,
@@ -392,6 +419,12 @@ pub enum Record {
         summarized_items: usize,
         #[serde(default)]
         kept_items: usize,
+        /// この圧縮の要約の要求とやり直しだけの使用量。
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        usage: Option<Usage>,
+        /// 再構築前に選んだ範囲の見積もり。推論を除いた送信量より多くなりうる。
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        kept_estimate: Option<u64>,
     },
     /// 行の上限を超えた記録の JSON の分割保存先。読み手が元の Record に戻す。
     Spilled { parts: Vec<PathBuf> },
