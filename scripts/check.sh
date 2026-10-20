@@ -50,7 +50,7 @@ finish() {
         fi
         printf '  linux: container tests for %s\n' "${linux_targets[@]}"
         printf '  skill-eval: http_client (loopback listening is blocked in the Codex sandbox)\n'
-        printf '  skill-eval: benitoiteh-mock pass (needs loopback and the benitoiteh sandbox outside Codex)\n'
+        printf '  skill-eval: benitoiteh-mock and benitoiteh-mock-completion-check passes (needs loopback and the benitoiteh sandbox outside Codex)\n'
     fi
     if ((${#aarch64_skipped[@]} != 0)); then
         printf '\nNot run on aarch64-unknown-linux-musl:\n'
@@ -141,7 +141,13 @@ fi
 
 target_dir=${CARGO_TARGET_DIR:-target}
 begin_stage skill-eval
-python3 -I -m unittest discover -s tools/skill-eval -p 'test_*.py'
+skill_eval_work=$(mktemp -d)
+mkdir -p "$skill_eval_work"/{home,config,state,tmp}
+skill_eval_python() {
+    env HOME="$skill_eval_work/home" XDG_CONFIG_HOME="$skill_eval_work/config" \
+        XDG_STATE_HOME="$skill_eval_work/state" TMPDIR="$skill_eval_work/tmp" python3 -I "$@"
+}
+skill_eval_python -m unittest discover -s tools/skill-eval -p 'test_*.py'
 skill_eval_args=()
 if "$inside_codex"; then
     # Codex のサンドボックスではループバックの待ち受けができない（実装プラン P5-01）。
@@ -153,10 +159,9 @@ if "$inside_codex"; then
         fi
     done
 fi
-python3 -I tools/skill-eval/skill_eval.py --self-test --benitoite "$BENITOITEH_TEST_BENITOITE" \
+skill_eval_python tools/skill-eval/skill_eval.py --self-test --benitoite "$BENITOITEH_TEST_BENITOITE" \
     ${skill_eval_args[@]+"${skill_eval_args[@]}"}
-skill_eval_work=$(mktemp -d)
-python3 -I tools/skill-eval/skill_eval.py --dry-run --benitoite "$BENITOITEH_TEST_BENITOITE" \
+skill_eval_python tools/skill-eval/skill_eval.py --dry-run --benitoite "$BENITOITEH_TEST_BENITOITE" \
     --work-root "$skill_eval_work" ${skill_eval_args[@]+"${skill_eval_args[@]}"}
 warning_count=$(awk '/^\| W[0-9][0-9][0-9][0-9] \|/ { count++ } END { print count+0 }' "$skill_eval_work/record.md")
 if [[ "$warning_count" != 5 ]]; then
@@ -164,10 +169,10 @@ if [[ "$warning_count" != 5 ]]; then
     exit 1
 fi
 if ! "$inside_codex"; then
-    python3 -I tools/skill-eval/skill_eval.py --harness benitoiteh-mock \
+    skill_eval_python tools/skill-eval/skill_eval.py --harness benitoiteh-mock \
         --benitoite "$BENITOITEH_TEST_BENITOITE" --benitoiteh "$target_dir/debug/benitoiteh" \
         --work-root "$skill_eval_work/mock" --record "$skill_eval_work/mock-record.md"
-    python3 -I - "$skill_eval_work/mock-record.jsonl" <<'EOF'
+    skill_eval_python - "$skill_eval_work/mock-record.jsonl" <<'EOF'
 import json
 import sys
 
@@ -178,12 +183,34 @@ if len(rows) != 11 or any(row.get('success') is not True or row.get('end') != 'c
                           or not isinstance(row.get('wall_seconds'), (int, float)) for row in rows):
     raise SystemExit('Expected 11 successful, completed mock trials without shell output, with zero cost and measured time.')
 EOF
+    skill_eval_python tools/skill-eval/skill_eval.py --harness benitoiteh-mock-completion-check \
+        --task json_summary --benitoite "$BENITOITEH_TEST_BENITOITE" \
+        --benitoiteh "$target_dir/debug/benitoiteh" --work-root "$skill_eval_work/completion" \
+        --record "$skill_eval_work/completion-record.md"
+    skill_eval_python - "$skill_eval_work/completion-record.jsonl" <<'EOF'
+import json
+import sys
+
+with open(sys.argv[1], encoding='utf-8') as f:
+    rows = [json.loads(line) for line in f if line.strip()]
+if (len(rows) != 1 or rows[0].get('success') is not True or rows[0].get('end') != 'completed'
+        or rows[0].get('completion_prompts') != 1 or rows[0].get('turns') != 5
+        or rows[0].get('verification_calls_before', {}).get('benitoite_run') != 1
+        or rows[0].get('verification_calls_after', {}).get('benitoite_run') != 1
+        or rows[0].get('edits_after_prompt') != 0 or rows[0].get('cost_usd') != 0):
+    raise SystemExit('Expected a successful five-turn completion-check mock trial with before/after execution counts.')
+EOF
 fi
 
 begin_stage perf-tools
 python3 -I -m unittest discover -s tools/perf -p 'test_*.py'
 
 begin_stage linux
+if "$inside_codex"; then
+    for target in "${linux_targets[@]}"; do
+        cargo test --workspace --target "$target" --no-run
+    done
+fi
 if ! "$inside_codex"; then
     processor_report=$(scripts/container-run.sh "$BENITOITEH_TEST_BENITOITE_AARCH64" --version=json)
     processor_hash=$(shasum -a 256 "$BENITOITEH_TEST_BENITOITE_AARCH64" | awk '{print $1}')

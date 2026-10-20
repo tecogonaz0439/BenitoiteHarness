@@ -632,6 +632,7 @@ mod tests {
             )?,
         );
         let config = crate::agent::AgentConfig {
+            agent: Default::default(),
             project_parent: None,
             allow_effects: None,
             mode: Mode::Normal,

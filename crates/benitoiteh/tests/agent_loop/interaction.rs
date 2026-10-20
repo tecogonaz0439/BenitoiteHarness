@@ -4,7 +4,7 @@ use super::*;
 use benitoiteh::agent::RunControl;
 use benitoiteh::provider::{FinishReason, UserPartKind};
 
-fn controlled(
+pub(super) fn controlled(
     agent: &mut Agent,
     control: RunControl,
     mut observe: impl FnMut(&AgentEvent),

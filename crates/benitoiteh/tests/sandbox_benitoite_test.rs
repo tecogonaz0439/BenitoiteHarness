@@ -335,6 +335,7 @@ fn noninteractive_execution_resets_denials_counts_launches_and_records_rewind_po
     .with_skill(support::skills()?)
     .with_run_context(f.context.run.clone().ok_or("run")?);
     let config = AgentConfig {
+        agent: Default::default(),
         project_parent: None,
         allow_effects: Some(Default::default()),
         mode: Mode::Restricted,

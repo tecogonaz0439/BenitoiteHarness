@@ -356,6 +356,13 @@ impl Default for SecretsConfig {
     }
 }
 
+/// 利用者だけが選べるループの振る舞い（設計書 01-01「完了の前の確かめ」）。
+#[derive(Clone, Debug, Default, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct AgentBehaviorConfig {
+    pub completion_check: bool,
+}
+
 /// 利用者の設定。信頼しないプロジェクトの設定とは別の型にする。
 #[derive(Clone, Debug, Default, Deserialize)]
 #[serde(default, deny_unknown_fields)]
@@ -367,6 +374,7 @@ pub struct UserConfig {
     pub restricted: RestrictedConfig,
     pub normal: NormalConfig,
     pub limits: Limits,
+    pub agent: AgentBehaviorConfig,
     pub web_fetch: WebFetchConfig,
     pub read: UserReadConfig,
     pub skills: UserSkillsConfig,
@@ -526,6 +534,7 @@ impl UserConfig {
                 max_check_fix: args.max_check_fix.unwrap_or(self.limits.max_check_fix),
                 max_run_tokens: args.max_run_tokens.or(self.limits.max_run_tokens),
             },
+            agent: self.agent.clone(),
             read: ReadConfig { exclude },
             read_line_numbers: self.read.line_numbers,
             skills: self.skills.clone(),
@@ -581,6 +590,7 @@ pub struct ResolvedExec {
     pub api_key: Option<ApiKeyRef>,
     pub auth: Option<ProviderAuth>,
     pub limits: Limits,
+    pub agent: AgentBehaviorConfig,
     pub read: ReadConfig,
     pub read_line_numbers: bool,
     pub skills: UserSkillsConfig,

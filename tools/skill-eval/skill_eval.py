@@ -65,7 +65,8 @@ PROCESS_TOOLS = {'benitoite_check': 'check', 'benitoite_run': 'run',
 SHELL_OUTPUT = re.compile(r'(?m)^components with errors: [0-9]+$')
 BH_FIELDS = ('kind', 'allow', 'session_id', 'benitoiteh_version', 'system_prompt_sha256', 'tools_sha256',
              'turns', 'tool_calls', 'after_write_checks', 'checks', 'fixes', 'policy_denied', 'input_tokens',
-             'cache_read_tokens', 'cache_write_tokens', 'output_tokens', 'total_tokens', 'end', 'shell_output_seen')
+             'cache_read_tokens', 'cache_write_tokens', 'output_tokens', 'total_tokens', 'end', 'shell_output_seen',
+             'completion_prompts', 'verification_calls_before', 'verification_calls_after', 'edits_after_prompt')
 TOKEN_FIELDS = ('input_tokens', 'cache_read_tokens', 'cache_write_tokens', 'output_tokens', 'total_tokens')
 # deepseek-harness 687f282e: packages/core/session/src/types.ts の TurnEndReasonMap と
 # packages/bundle/headless/{src/json-stream.ts,README.md} の Exit mapping。
@@ -186,10 +187,11 @@ def benitoiteh_config(harness: Dict[str, object], model: str, processor: str,
     config = harness.get('config', {})
     lines += ['%s = %s' % (key, toml_value(value))
               for key, value in sorted(config.get('restricted', {}).items())]
-    if 'read' in config:
-        lines += ['', '[read]']
-        lines += ['%s = %s' % (key, toml_value(value))
-                  for key, value in sorted(config['read'].items())]
+    for table in ('read', 'agent'):
+        if table in config:
+            lines += ['', '[%s]' % table]
+            lines += ['%s = %s' % (key, toml_value(value))
+                      for key, value in sorted(config[table].items())]
     lines += ['', '[skills]', 'user = false', '', '[plugins]', 'user = false', '']
     return '\n'.join(lines)
 
@@ -525,8 +527,23 @@ def session_file(directory: str, relative: str) -> bytes:
         return f.read()
 
 
-def benitoiteh_results(directory: str) -> Tuple[List[List[str]], bool]:
+class CompletionPromptMismatch(ValueError):
+    """実行ファイルが送った促しと評価の集計に使う促しの版が一致しない。"""
+
+
+def completion_check_prompt() -> str:
+    """集計と見出しで、実行ファイルと同じ規則で包んだ促しを使う。"""
+    with open(os.path.join(REPO, 'crates/benitoiteh/prompts/completion-check.md'), encoding='utf-8') as f:
+        return '<completion_check>\n%s\n</completion_check>' % f.read().rstrip()
+
+
+def benitoiteh_results(directory: str, metrics: Optional[Dict[str, object]] = None) -> Tuple[List[List[str]], bool]:
     """記録の結果を既存の診断の集計に渡す。退避した出力は安全の検査だけに使う。"""
+    if metrics is not None:
+        metrics.update(completion_prompts=0, edits_after_prompt=0,
+                       verification_calls_before=dict.fromkeys(PROCESS_TOOLS, 0),
+                       verification_calls_after=dict.fromkeys(PROCESS_TOOLS, 0))
+    prompt = completion_check_prompt()
     path = os.path.join(directory, 'session.jsonl')
     if not os.path.isfile(path):
         return [], False
@@ -535,20 +552,47 @@ def benitoiteh_results(directory: str) -> Tuple[List[List[str]], bool]:
     shell_seen = False
     with open(path, encoding='utf-8', errors='replace') as f:
         for line in f:
+            if not line.strip():
+                continue
             value = json_object(line)
-            if value is not None and value.get('type') == 'spilled':
+            if value is None:
+                raise TypeError('session record must be an object')
+            if value.get('type') == 'spilled':
                 if not isinstance(value['parts'], list):
                     raise TypeError('parts must be a list')
                 # UTF-8 の文字の途中で分かれた部分も、バイト列を繋いでから復元する。
                 restored = b''.join(session_file(directory, part) for part in value['parts'])
                 value = json_object(restored.decode('utf-8', 'replace'))
             if value is None:
-                continue
+                raise TypeError('restored session record must be an object')
+            if value.get('type') == 'user' and value.get('kind') == 'environment':
+                message = value.get('message')
+                if not isinstance(message, dict) or not isinstance(message.get('parts'), list):
+                    raise TypeError('environment message must contain a parts list')
+                is_prompt = False
+                for part in message['parts']:
+                    if (not isinstance(part, dict) or not isinstance(part.get('kind'), str)
+                            or not isinstance(part.get('text'), str)):
+                        raise TypeError('environment parts must contain kind and text strings')
+                    text = part['text']
+                    if part['kind'] == 'environment' and text.startswith('<completion_check>\n'):
+                        if text != prompt:
+                            raise CompletionPromptMismatch('completion-check prompt version mismatch')
+                        is_prompt = True
+                if metrics is not None and is_prompt:
+                    metrics['completion_prompts'] += 1
             if value.get('type') == 'tool_call':
                 call = value['call']
                 if not isinstance(call, dict) or not isinstance(call.get('arguments', {}), dict):
                     raise TypeError('invalid tool call')
                 calls[call['id']] = call.get('arguments', {})
+                if metrics is not None and value.get('validation_error') is None:
+                    after = metrics['completion_prompts'] > 0
+                    if call.get('name') in PROCESS_TOOLS:
+                        counts = metrics['verification_calls_after' if after else 'verification_calls_before']
+                        counts[call['name']] += 1
+                    elif after and call.get('name') in ('write', 'edit'):
+                        metrics['edits_after_prompt'] += 1
             if value.get('type') != 'tool_result':
                 continue
             name = value.get('name')
@@ -1467,7 +1511,8 @@ def load_harnesses() -> Dict[str, Dict[str, object]]:
     for name, harness in harnesses.items():
         if 'config' in harness:
             config = harness['config']
-            allowed = {'restricted': {'after_write_check'}, 'read': {'line_numbers'}}
+            allowed = {'restricted': {'after_write_check'}, 'read': {'line_numbers'},
+                       'agent': {'completion_check'}}
             if harness.get('kind') != 'benitoiteh' or not isinstance(config, dict):
                 raise ValueError('harness %s config requires a benitoiteh table dictionary' % name)
             for table, values in config.items():
@@ -1591,7 +1636,9 @@ def run_trial(task: Task, trial_dir: str, benitoite: str, harness_name: str, har
             port = None
             if harness.get('mock'):
                 with open(task.path('reference.bnt'), encoding='utf-8') as f:
-                    mock, _base = mock_provider.start(task.kind, task.script, f.read())
+                    mock, _base = mock_provider.start(
+                        task.kind, task.script, f.read(),
+                        completion_check=harness.get('config', {}).get('agent', {}).get('completion_check', False))
                 port = mock.server_address[1]
                 env['SKILL_EVAL_MOCK_KEY'] = 'skill-eval-synthetic-key'
             config = benitoiteh_config(harness, model, benitoite, port)
@@ -1671,7 +1718,7 @@ def run_trial(task: Task, trial_dir: str, benitoite: str, harness_name: str, har
                     directory = os.path.join(sessions, str(session_id))
                     if os.path.dirname(os.path.realpath(directory)) != os.path.realpath(sessions):
                         raise ValueError('invalid session_id')
-                    entries, seen = benitoiteh_results(directory)
+                    entries, seen = benitoiteh_results(directory, fields)
                     fields['shell_output_seen'] = seen if task.name == 'process_shell' else False
             elif output:
                 external, end_reason, final = external_output(output, out, harness_exit, err)
@@ -2070,6 +2117,8 @@ def evaluate_main(argv: Optional[List[str]] = None) -> int:
     mode.add_argument('--harness', help='harness names in harnesses.json, comma-separated, or `default` '
                       'for the default set (calls an LLM)')
     parser.add_argument('--task', action='append', default=[], help='task name (repeatable; default: all)')
+    parser.add_argument('--interleave', action='store_true',
+                        help='run all conditions per task/trial, rotating their order each trial')
     parser.add_argument('--trials', type=int, default=1, help='trials per task')
     parser.add_argument('--model', help='model passed to the harness (default: harnesses.json)')
     parser.add_argument('--agent', default='codex', help='harness whose Skill location --dry-run uses')
@@ -2110,6 +2159,8 @@ def evaluate_main(argv: Optional[List[str]] = None) -> int:
                              'SOURCE.md with the designer and pass --allow-unverified' % name)
     if len(names) > 1 and (args.record or args.model):
         raise SystemExit('--record and --model need a single harness')
+    if args.interleave and len(names) < 2:
+        parser.error('--interleave requires multiple harnesses')
     skill_dir = os.path.abspath(args.skill_dir) if args.skill_dir else None
     if not args.dry_run and any(harnesses[name].get('kind') == 'benitoiteh' for name in names):
         args.benitoiteh = find_benitoiteh(args.benitoiteh)
@@ -2122,20 +2173,18 @@ def evaluate_main(argv: Optional[List[str]] = None) -> int:
     args.work_root = os.path.abspath(args.work_root) if args.work_root else work_root
     budget = CostBudget(args.stop_cost)
     headers = {}
+    launches = []
     status = 0
     try:
-        for name in names:
-            root = os.path.join(work_root, name) if len(names) > 1 else work_root
-            status = max(status, evaluate(args, tasks, benitoite, name, harnesses[name], skill_dir, root,
-                                          budget, headers))
-            if budget.message:
-                break
+        status = evaluate(args, tasks, benitoite, names, harnesses, skill_dir, work_root, budget, headers, launches)
     finally:
-        if len(names) > 1 and ALL_ROWS:
+        if len(names) > 1 and (ALL_ROWS or (args.interleave and launches)):
             # 中断でも、それまでに終わった項目を全体の記録に残す。
             directory = work_root if args.dry_run else RESULTS_DIR
             record = os.path.join(directory, '%s-overall.md' % datetime.datetime.now().strftime('%Y-%m-%d-%H%M'))
             header = {'ハーネス': ', '.join(names), '生の記録': work_root, '項目': headers}
+            if args.interleave:
+                header['起動順'] = launches
             if budget.message:
                 header['停止'] = budget.message
             write_record(record, header, ALL_ROWS, tasks, args.work_root)
@@ -2191,6 +2240,7 @@ def evaluation_header(args: argparse.Namespace, benitoite: str, harness_name: st
         '試行の回数': str(args.trials), '生の記録': work_root + '（リポジトリの外）',
     }
     if harness.get('kind') == 'benitoiteh':
+        header['completion_check_sha256'] = hashlib.sha256(completion_check_prompt().encode('utf-8')).hexdigest()
         for key in ('benitoiteh_version', 'system_prompt_sha256', 'tools_sha256'):
             header[key] = record_value(first.get(key))
     if is_dsh:
@@ -2204,72 +2254,97 @@ def evaluation_header(args: argparse.Namespace, benitoite: str, harness_name: st
     return header
 
 
-def evaluate(args: argparse.Namespace, tasks: List[Task], benitoite: str, harness_name: str,
-             harness: Dict[str, object], skill_dir: Optional[str], work_root: str,
-             budget: CostBudget, headers: Dict[str, object]) -> int:
-    """試行が終わるたびに累計し、途中で止まっても完了した試行を記録する。"""
-    model = args.model or str(harness['model'])
-    rows = []
-    dsh_key = None
-    if harness.get('prepare') == 'dsh' and not args.dry_run:
-        try:
-            check_dsh_workspace(work_root)
-            dsh_overlay(model, harness.get('options', {}).get('effort', 'high'))
-            dsh_key = read_dsh_key(harness)
-        except ValueError as error:
-            raise SystemExit(str(error)) from None
+def evaluate(args: argparse.Namespace, tasks: List[Task], benitoite: str, names: List[str],
+             harnesses: Dict[str, Dict[str, object]], skill_dir: Optional[str], work_root: str,
+             budget: CostBudget, headers: Dict[str, object], launches: List[Dict[str, object]]) -> int:
+    """全条件で費用を共有し、中断時も条件ごとの完了済みの試行を保存する。"""
+    rows_by_name = {name: [] for name in names}
+    roots = {name: os.path.join(work_root, name) if len(names) > 1 else work_root for name in names}
+    keys = {}
+    if args.interleave:
+        groups = ((task, trial) for task in tasks for trial in range(1, args.trials + 1))
+        plan = ((name, task, trial, position) for group, (task, trial) in enumerate(groups)
+                for position, name in enumerate(names[group % len(names):] + names[:group % len(names)], 1))
+    else:
+        plan = ((name, task, trial, position) for position, name in enumerate(names, 1)
+                for task in tasks for trial in range(1, args.trials + 1))
     try:
-        for task in tasks:
-            for trial in range(1, args.trials + 1):
-                number = trial
-                while os.path.exists(os.path.join(work_root, task.name, str(number))):
-                    number += args.trials
-                trial_dir = os.path.join(work_root, task.name, str(number))
-                os.makedirs(trial_dir)
-                try:
-                    extra = {'dsh_key': dsh_key} if dsh_key is not None else {}
-                    if harness.get('prepare') == 'agy':
-                        extra['work_root'] = work_root
-                    row = run_trial(task, trial_dir, benitoite, harness_name, harness, model, skill_dir, args.dry_run,
-                                    args.benitoiteh, **extra)
-                except ValueError as error:
-                    raise SystemExit(str(error))
-                row['billing'] = harness.get('billing', 'none')
-                rows.append(row)
-                ALL_ROWS.append(row)
-                print('%s %-16s trial %d: %s, attempts %d, %s' % (
-                    harness_name, task.name, trial, 'success' if row['success'] else 'failure', row['attempts'],
-                    row['reason']), flush=True)
-                budget.add(row)
-                if harness.get('prepare') == 'agy' and not args.dry_run:
-                    stops = []
-                    if row['agy_settings_changed']:
-                        stops.append('user Antigravity settings changed')
-                    if row['harness_version_start'] != row['harness_version_end']:
-                        stops.append('harness version changed %s -> %s' % (
-                            row['harness_version_start'], row['harness_version_end']))
-                    if stops:
-                        # 費用の上限と同じく、後続の項目も止めて完了済みの記録を残す。
-                        budget.message = 'stopped: ' + '; '.join(stops)
-                if budget.message:
-                    print(budget.message, file=sys.stderr)
-                    return 3
-        wins = sum(1 for r in rows if r['success'])
-        print('%s: %d of %d trials succeeded; workspaces in %s' % (harness_name, wins, len(rows), work_root))
+        for name, task, trial, position in plan:
+            harness_name, harness = name, harnesses[name]
+            model = args.model or str(harness['model'])
+            work_root = roots[name]
+            rows = rows_by_name[name]
+            if name not in keys:
+                keys[name] = None
+                if harness.get('prepare') == 'dsh' and not args.dry_run:
+                    try:
+                        check_dsh_workspace(work_root)
+                        dsh_overlay(model, harness.get('options', {}).get('effort', 'high'))
+                        keys[name] = read_dsh_key(harness)
+                    except ValueError as error:
+                        raise SystemExit(str(error)) from None
+            dsh_key = keys[name]
+            number = trial
+            while os.path.exists(os.path.join(work_root, task.name, str(number))):
+                number += args.trials
+            trial_dir = os.path.join(work_root, task.name, str(number))
+            os.makedirs(trial_dir)
+            launch = dict(harness=name, task=task.name, repetition=trial,
+                          condition_order=len(launches) + 1, condition_position=position, completed=False)
+            launches.append(launch)
+            try:
+                extra = {'dsh_key': dsh_key} if dsh_key is not None else {}
+                if harness.get('prepare') == 'agy':
+                    extra['work_root'] = work_root
+                row = run_trial(task, trial_dir, benitoite, harness_name, harness, model, skill_dir, args.dry_run,
+                                args.benitoiteh, **extra)
+            except ValueError as error:
+                raise SystemExit(str(error))
+            row['repetition'] = trial
+            row['condition_order'] = launch['condition_order']
+            row['condition_position'] = position
+            launch['completed'] = True
+            row['billing'] = harness.get('billing', 'none')
+            rows.append(row)
+            ALL_ROWS.append(row)
+            print('%s %-16s trial %d: %s, attempts %d, %s' % (
+                harness_name, task.name, trial, 'success' if row['success'] else 'failure', row['attempts'],
+                row['reason']), flush=True)
+            budget.add(row)
+            if harness.get('prepare') == 'agy' and not args.dry_run:
+                stops = []
+                if row['agy_settings_changed']:
+                    stops.append('user Antigravity settings changed')
+                if row['harness_version_start'] != row['harness_version_end']:
+                    stops.append('harness version changed %s -> %s' % (
+                        row['harness_version_start'], row['harness_version_end']))
+                if stops:
+                    # 費用の上限と同じく、後続の項目も止めて完了済みの記録を残す。
+                    budget.message = 'stopped: ' + '; '.join(stops)
+            if budget.message:
+                print(budget.message, file=sys.stderr)
+                return 3
+            if len(rows) == len(tasks) * args.trials:
+                wins = sum(1 for row in rows if row['success'])
+                print('%s: %d of %d trials succeeded; workspaces in %s' % (name, wins, len(rows), roots[name]))
         if args.dry_run:
-            bad = [r for r in rows if not (r['success'] and r['log_exists'] and r['attempts'] >= 1)]
+            bad = [r for r in ALL_ROWS if not (r['success'] and r['log_exists'] and r['attempts'] >= 1)]
             return 1 if bad else 0
         return 0
     finally:
-        if rows:
-            header = evaluation_header(args, benitoite, harness_name, harness, skill_dir, work_root, rows)
+        for name, rows in rows_by_name.items():
+            if not rows:
+                continue
+            harness, root = harnesses[name], roots[name]
+            header = evaluation_header(args, benitoite, name, harness, skill_dir, root, rows)
+            header['条件の順'] = 'interleave: rotate per task/repetition group' if args.interleave else 'sequential'
             if args.dry_run:
                 header['種類'] = 'dry-run'
             if budget.message:
                 header['停止'] = budget.message
-            headers[harness_name] = header
-            record = (os.path.join(work_root, 'record.md') if args.dry_run else args.record or os.path.join(
-                RESULTS_DIR, '%s-%s.md' % (datetime.datetime.now().strftime('%Y-%m-%d-%H%M'), harness_name)))
+            headers[name] = header
+            record = (os.path.join(root, 'record.md') if args.dry_run else args.record or os.path.join(
+                RESULTS_DIR, '%s-%s.md' % (datetime.datetime.now().strftime('%Y-%m-%d-%H%M'), name)))
             write_record(record, header, rows, tasks, args.work_root)
             print('record: %s' % record)
 

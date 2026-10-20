@@ -255,6 +255,39 @@ class SessionTests(unittest.TestCase):
             self.assertEqual(stats['first_check'], ['E0405'])
             self.assertEqual(stats['resolved'], {'E0405': 1, 'W0401': 1})
 
+    # 関門: 文だけの検査報告、結果だけの行、入力エラーの呼び出しを実行として数えない。
+    def test_completion_metrics_use_exact_environment_prompt_and_valid_calls(self):
+        with open(os.path.join(evaluation.REPO, 'crates/benitoiteh/tests/expected/completion-check.txt'),
+                  encoding='utf-8') as f:
+            prompt = f.read().rstrip()
+        def call(name, error=None):
+            return dict(type='tool_call', call=dict(id=name, name=name, arguments={}), validation_error=error)
+        marker = dict(type='user', kind='environment', message=dict(parts=[dict(kind='environment', text=prompt)]))
+        with tempfile.TemporaryDirectory(prefix='skill-eval-completion-') as directory:
+            for present in (False, True):
+                records = [call('benitoite_check'), call('benitoite_run'),
+                           dict(type='assistant', response=dict(text='I ran all tests.')),
+                           dict(marker, kind='request'),
+                           dict(marker, message=dict(parts=[dict(kind='environment', text='other environment information')]))]
+                if present:
+                    records.append(marker)
+                records += [call('benitoite_test'), call('benitoite_scratch'), call('write'), call('edit'),
+                            call('benitoite_check', 'bad args'), call('write', 'bad args'),
+                            dict(type='tool_result', name='benitoite_run', result=dict(id='unused', text='cancelled'))]
+                # 退避された呼び出しの行も、通常の行と同じ集計に入る。
+                with open(os.path.join(directory, 'part'), 'w', encoding='utf-8') as f:
+                    json.dump(records.pop(-5), f)
+                records.append(dict(type='spilled', parts=['part']))
+                with open(os.path.join(directory, 'session.jsonl'), 'w', encoding='utf-8') as f:
+                    f.write('\n'.join(json.dumps(r) for r in records) + '\n')
+                metrics = {}
+                evaluation.benitoiteh_results(directory, metrics)
+                self.assertEqual(metrics, dict(completion_prompts=int(present), edits_after_prompt=2 if present else 0,
+                    verification_calls_before={'benitoite_check': 1, 'benitoite_run': 1,
+                                               'benitoite_test': 0 if present else 1, 'benitoite_scratch': 0 if present else 1},
+                    verification_calls_after={'benitoite_check': 0, 'benitoite_run': 0,
+                                              'benitoite_test': 1 if present else 0, 'benitoite_scratch': 1 if present else 0}))
+
     def test_shell_line_is_distinct_from_a_source_diagnostic(self):
         with tempfile.TemporaryDirectory(prefix='skill-eval-safety-test-') as directory:
             cases = [
@@ -286,6 +319,7 @@ class ConfigTests(unittest.TestCase):
         for suffix, difference in (
             ('no-after-write-check', {'config': {'restricted': {'after_write_check': False}}}),
             ('no-line-numbers', {'config': {'read': {'line_numbers': False}}}),
+            ('completion-check', {'config': {'agent': {'completion_check': True}}}),
             ('effort-low', {'effort': 'low'}),
             ('effort-max', {'effort': 'max'}),
         ):
@@ -295,6 +329,9 @@ class ConfigTests(unittest.TestCase):
                 text = evaluation.benitoiteh_config(harness, harness['model'], '/processor')
                 self.assertIn('effort = "%s"' % harness['effort'], text)
         harness = copy.deepcopy(base)
+        completion = evaluation.benitoiteh_config(
+            harnesses['benitoiteh-deepseek-completion-check'], base['model'], '/processor')
+        self.assertIn('\n[agent]\ncompletion_check = true\n', completion)
         harness['config'] = {'restricted': {'after_write_check': False}, 'read': {'line_numbers': False}}
         text = evaluation.benitoiteh_config(harness, harness['model'], '/processor')
         self.assertTrue(text.endswith('[restricted]\nallowed_programs = ["/usr/bin/sort"]\n'
@@ -310,12 +347,20 @@ class ConfigTests(unittest.TestCase):
                     header = evaluation.evaluation_header(args, processor, 'test', item, None, directory,
                                                           [{'trial_dir': directory}])
                 self.assertEqual(header['config'], expected)
+                self.assertEqual(header['completion_check_sha256'],
+                                 '65e20f220a2700e09b7ae6b7f8e2861c6b9d9fbf73bc05c80b420511317e216e')
 
     def test_invalid_evaluation_config_is_rejected_while_loading(self):
         with tempfile.TemporaryDirectory(prefix='skill-eval-invalid-config-') as directory:
             path = os.path.join(directory, 'harnesses.json')
             for kind, config in (
                 ('external', {}),
+                ('external', {'agent': {'completion_check': True}}),
+                ('benitoiteh', {'agents': {'completion_check': True}}),
+                ('benitoiteh', {'agent': {'completion_checks': True}}),
+                ('benitoiteh', {'agent': {'completion_check': 1}}),
+                ('benitoiteh', {'agent': {'completion_check': 'true'}}),
+                ('benitoiteh', {'agent': []}),
                 ('benitoiteh', None),
                 ('benitoiteh', []),
                 ('benitoiteh', {'normal': {}}),
@@ -372,20 +417,23 @@ class ConfigTests(unittest.TestCase):
 
 
 class MockProviderTests(unittest.TestCase):
-    def start_server(self, kind):
+    def start_server(self, kind, completion_check=False):
         try:
-            server, base = mock_provider.start(kind, 'main.bnt', 'source text')
+            server, base = mock_provider.start(kind, 'main.bnt', 'source text', completion_check=completion_check)
         except OSError as error:
             self.skipTest('loopback listening is unavailable: %s' % error)
         self.addCleanup(server.server_close)
         self.addCleanup(server.shutdown)
         return server
 
-    def request(self, server, has_result=True):
+    def request(self, server, has_result=True, prompt=None, messages=None):
         connection = http.client.HTTPConnection('127.0.0.1', server.server_address[1], timeout=5)
         try:
             content = [{'type': 'tool_result', 'tool_use_id': 'call', 'content': 'ok'}] if has_result else 'hello'
-            body = json.dumps({'stream': True, 'messages': [{'role': 'user', 'content': content}]})
+            if prompt is not None:
+                content = [{'type': 'text', 'text': prompt}]
+            body = json.dumps({'stream': True, 'messages': messages if messages is not None
+                               else [{'role': 'user', 'content': content}]})
             connection.request('POST', '/v1/messages', body=body, headers={'Content-Type': 'application/json'})
             response = connection.getresponse()
             data = response.read()
@@ -421,6 +469,34 @@ class MockProviderTests(unittest.TestCase):
                 self.assertEqual(server.problems, [])
                 self.assertEqual(self.request(server)[0], 500)
                 self.assertIn('unexpected request 4', server.problems[0])
+
+    def test_completion_scenario_verifies_after_the_prompt_then_finishes(self):
+        with open(os.path.join(evaluation.REPO, 'crates/benitoiteh/tests/expected/completion-check.txt'),
+                  encoding='utf-8') as f:
+            prompt = f.read().rstrip()
+        for kind in ('run', 'test'):
+            with self.subTest(kind=kind):
+                server = self.start_server(kind, completion_check=True)
+                for number in range(1, 6):
+                    status, body = self.request(server, prompt=prompt if number == 4 else None)
+                    self.assertEqual(status, 200)
+                    events = [json.loads(line[6:]) for line in body.splitlines() if line.startswith('data: ')]
+                    if number == 4:
+                        self.assertEqual(events[1]['content_block']['name'],
+                                         'benitoite_run' if kind == 'run' else 'benitoite_test')
+                    if number in (3, 5):
+                        self.assertEqual(events[1]['content_block'], {'type': 'text', 'text': 'Done.'})
+                self.assertEqual(server.problems, [])
+                self.assertEqual(self.request(server)[0], 500)
+
+    def test_completion_scenario_rejects_malformed_messages_without_disconnect(self):
+        for message in (None, 42, [], {'role': 'user', 'content': [{'type': 'text', 'text': 42}]}):
+            with self.subTest(message=message):
+                server = self.start_server('run', completion_check=True)
+                for _ in range(3):
+                    self.assertEqual(self.request(server)[0], 200)
+                self.assertEqual(self.request(server, messages=[message])[0], 400)
+                self.assertEqual(server.problems, ['request 4 has no completion prompt'])
 
     def test_missing_tool_result(self):
         server = self.start_server('run')
@@ -586,6 +662,52 @@ class RecordsAndCostTests(unittest.TestCase):
             overall = next(name for name in os.listdir(results) if name.endswith('-overall.md'))
             with open(os.path.join(results, overall), encoding='utf-8') as f:
                 self.assertIn('stopped: estimated cost reached 1 USD for deepseek', f.read())
+
+    # 関門: 条件を課題・反復ごとに揃え、同じ提供者の累計と途中の実行順を失わない。
+    def test_interleave_rotation_partial_records_and_shared_cost_stop(self):
+        names = 'benitoiteh-deepseek,benitoiteh-deepseek-completion-check'
+        for stop, width in (('none', 2), ('none', 3), ('cost', 2), ('interrupt', 2), ('interrupt-first', 2)):
+            selected = names + ',benitoiteh-deepseek-no-line-numbers' if width == 3 else names
+            with self.subTest(stop=stop, width=width), tempfile.TemporaryDirectory(prefix='skill-eval-interleave-') as directory:
+                calls = []
+                def trial(task, trial_dir, processor, name, *args):
+                    calls.append((task.name, int(os.path.basename(trial_dir)), name))
+                    if stop.startswith('interrupt') and len(calls) == (1 if stop == 'interrupt-first' else 4):
+                        raise KeyboardInterrupt()
+                    row = self.row(trial_dir, name, .25)
+                    row['task'] = task.name
+                    return row
+                extra = ['--interleave', '--task', 'file_process']
+                if stop == 'cost':
+                    extra += ['--stop-cost', '0.5']
+                if stop.startswith('interrupt'):
+                    with self.assertRaises(KeyboardInterrupt):
+                        self.run_main(directory, trial, selected, extra)
+                else:
+                    status, _ = self.run_main(directory, trial, selected, extra)
+                    self.assertEqual(status, 3 if stop == 'cost' else 0)
+                expected = []
+                a, b = names.split(',')
+                c = 'benitoiteh-deepseek-no-line-numbers'
+                orders = ((1, (a,b)), (2, (b,a)), (3, (a,b))) if width == 2 else ((1, (a,b,c)), (2, (b,c,a)), (3, (c,a,b)))
+                task_orders = (orders, ((1, (b,a)), (2, (a,b)), (3, (b,a)))) if width == 2 else (orders, orders)
+                for task, orders_for_task in zip(('json_summary', 'file_process'), task_orders):
+                    for repetition, order in orders_for_task:
+                        expected += [(task, repetition, name) for name in order]
+                launched = {'cost': 2, 'interrupt': 4, 'interrupt-first': 1}.get(stop, 6 * width)
+                self.assertEqual(calls, expected[:launched])
+                completed = launched - int(stop.startswith('interrupt'))
+                self.assertEqual([r['condition_order'] for r in evaluation.ALL_ROWS], list(range(1, completed + 1)))
+                self.assertEqual([r['condition_position'] for r in evaluation.ALL_ROWS],
+                                 (list(range(1, width + 1)) * 6)[:completed])
+                overall = next(name for name in os.listdir(os.path.join(directory, 'results')) if name.endswith('-overall.md'))
+                with open(os.path.join(directory, 'results', overall), encoding='utf-8') as f:
+                    text = f.read()
+                self.assertIn('起動順', text)
+                if stop.startswith('interrupt'):
+                    self.assertIn("'completed': False", text)
+                with open(os.path.join(directory, 'results', overall.replace('.md', '.jsonl')), encoding='utf-8') as f:
+                    self.assertEqual(len(f.readlines()), completed)
 
     def test_partial_records_survive_interrupt_and_exception_and_next_main_is_fresh(self):
         for exception, failure_at in ((KeyboardInterrupt, 2), (RuntimeError, 2), (RuntimeError, 4), (RuntimeError, 1)):
@@ -796,8 +918,15 @@ class RecordsAndCostTests(unittest.TestCase):
                  ({'type': 'tool_call'}, 'KeyError'),
                  ({'type': 'tool_result', 'name': 'benitoite_run', 'result': {'id': 'id', 'text': 'ok'},
                    'spill': {'path': '../outside'}}, 'ValueError')]
+        cases += [(['not an object'], 'TypeError')]
+        for message in (None, [], {'parts': None}, {'parts': 'wrong'}, {'parts': [None]},
+                        {'parts': [{'kind': 'environment', 'text': None}]}):
+            cases.append((dict(type='user', kind='environment', message=message), 'TypeError'))
+        cases.append((dict(type='user', kind='environment', message=dict(parts=[
+            dict(kind='environment', text='<completion_check>\nolder prompt\n</completion_check>')])),
+                      'CompletionPromptMismatch'))
         for record, error in cases:
-            with self.subTest(error=error), tempfile.TemporaryDirectory(prefix='skill-eval-bad-session-') as directory:
+            with self.subTest(record=record, error=error), tempfile.TemporaryDirectory(prefix='skill-eval-bad-session-') as directory:
                 task = evaluation.Task('json_summary')
                 with open(task.path('reference.bnt'), encoding='utf-8') as f:
                     source = f.read()
@@ -841,6 +970,40 @@ class RecordsAndCostTests(unittest.TestCase):
                     self.assertIn('| json_summary | 1 / 2 |', f.read())
 
 
+
+
+    # 関門: HOME の書き換えで秘密の拒否と資格情報の探索を変える退行を、
+    # 実際の子プロセスの環境で捕まえる。本物のホーム・提供者・キーチェーンは使わない。
+    @unittest.skipUnless(os.environ.get('BENITOITEH_TEST_BENITOITE'), 'BENITOITEH_TEST_BENITOITE is not set')
+    def test_benitoiteh_preserves_parent_home_for_execution_and_version_queries(self):
+        with tempfile.TemporaryDirectory(prefix='skill-eval-home-') as directory:
+            home = os.path.join(directory, 'parent-home')
+            os.mkdir(home)
+            task = evaluation.Task('json_summary')
+            with open(task.path('reference.bnt'), encoding='utf-8') as f:
+                source = f.read()
+            executable = os.path.join(directory, 'fake-benitoiteh')
+            script = ('#!%s\nimport os, sys\nfrom pathlib import Path\n'
+                      'assert os.environ["HOME"] == %r\n'
+                      'if "--version" in sys.argv:\n print("fake version")\n sys.exit(0)\n'
+                      'Path("main.bnt").write_text(%r)\n'
+                      'print(%r)\n') % (sys.executable, home, source, event_output())
+            with open(executable, 'w', encoding='utf-8') as f:
+                f.write(script)
+            os.chmod(executable, 0o755)
+            harness = copy.deepcopy(evaluation.load_harnesses()['benitoiteh-mock'])
+            harness.pop('mock')
+            root = os.path.join(directory, 'trial')
+            with mock.patch.dict(os.environ, HOME=home):
+                row = evaluation.run_trial(task, root, os.environ['BENITOITEH_TEST_BENITOITE'],
+                                           'fake', harness, 'mock', None, False, executable)
+                self.assertTrue(row['success'], row['reason'])
+                # 通常はイベントの版を使う。欠けた場合の版の問い合わせも同じ HOME を保つ。
+                args = evaluation.argparse.Namespace(dry_run=False, model=None, trials=1, skill_dir=None,
+                                                     benitoiteh=executable)
+                header = evaluation.evaluation_header(args, os.environ['BENITOITEH_TEST_BENITOITE'],
+                    'fake', harness, None, root, [dict(row, benitoiteh_version=None)])
+            self.assertEqual(header['ハーネス'], 'fake（fake version）')
 
 
 class ExternalPreparationTests(unittest.TestCase):

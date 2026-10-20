@@ -28,7 +28,7 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use crate::approval::{ApprovalPolicy, Approver, NonInteractiveApprover};
-use crate::config::{Approval, Limits, Mode, ResolvedExec, Sandbox};
+use crate::config::{AgentBehaviorConfig, Approval, Limits, Mode, ResolvedExec, Sandbox};
 use crate::context::{self, ContextError, Environment, SystemContext};
 use crate::http::{HttpClient, HttpTimeouts, Uri};
 use crate::provider::{
@@ -56,6 +56,7 @@ pub struct AgentConfig {
     pub capabilities: Capabilities,
     pub effort: String,
     pub limits: Limits,
+    pub agent: AgentBehaviorConfig,
     pub http_timeouts: HttpTimeouts,
     /// 既定 1 秒。試験や呼び出す側の待ち時間の方針で短くできる。
     pub retry_initial: Duration,
@@ -72,6 +73,7 @@ impl From<ResolvedExec> for AgentConfig {
             capabilities: config.capabilities,
             effort: config.effort,
             limits: config.limits,
+            agent: config.agent,
             http_timeouts: HttpTimeouts::default(),
             retry_initial: Duration::from_secs(1),
         }
@@ -252,6 +254,7 @@ pub struct Agent {
     repeated: Option<(String, serde_json::Value, u64)>,
     check_failures: BTreeMap<std::path::PathBuf, u64>,
     check_limit: BTreeMap<std::path::PathBuf, String>,
+    completion_prompted: bool,
     resuming: bool,
     resume_compaction: bool,
     resume_has_reasoning: bool,
@@ -367,6 +370,7 @@ impl Agent {
                 }),
                 system_prompt_sha256: context::system_prompt_hash(&system.system_prompt),
                 tools_sha256: context::tool_definitions_hash(&system.tools)?,
+                completion_check: config.agent.completion_check.then_some(true),
                 after_write_check: (!tool_context.after_write_check).then_some(false),
                 read_line_numbers: (!tool_context.read_line_numbers).then_some(false),
                 plugins: environment.skills().plugins.clone(),
@@ -429,6 +433,7 @@ impl Agent {
             repeated: None,
             check_failures: BTreeMap::new(),
             check_limit: BTreeMap::new(),
+            completion_prompted: false,
             resuming: false,
             resume_compaction: false,
             resume_has_reasoning: false,
@@ -731,6 +736,7 @@ impl Agent {
         summary: &mut Summary,
     ) -> Result<Outcome, AgentError> {
         self.check_limit.clear();
+        self.completion_prompted = false;
         self.effects_denied = 0;
         let cancelled = &*control.cancel_step;
         self.resuming = false;
@@ -969,6 +975,33 @@ impl Agent {
                 return Err(AgentError::Refusal(category));
             }
             let steered = self.apply_steering(control, events)?;
+            // 最後の番で正常に終えた場合は、促しのためだけに上限の失敗へ変えない
+            // （設計書 01-01「完了の前の確かめ」）。
+            if calls.is_empty()
+                && response.finish_reason == FinishReason::Completed
+                && !steered
+                && self.config.agent.completion_check
+                && !self.completion_prompted
+                && summary.turns < self.config.limits.max_turns
+            {
+                let message = UserMessage {
+                    parts: vec![UserPart {
+                        kind: UserPartKind::Environment,
+                        text: format!(
+                            "<completion_check>\n{}\n</completion_check>",
+                            include_str!("../../prompts/completion-check.md").trim_end()
+                        ),
+                    }],
+                };
+                self.append_node(Record::User {
+                    node: 0,
+                    kind: UserKind::Environment,
+                    message: message.clone(),
+                })?;
+                self.push_item(Item::UserMessage(message));
+                self.completion_prompted = true;
+                continue;
+            }
             if calls.is_empty() && response.finish_reason != FinishReason::OutputLimit && !steered {
                 return Ok(Outcome::Completed);
             }

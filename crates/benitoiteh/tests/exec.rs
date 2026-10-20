@@ -53,6 +53,7 @@ fn evaluation_switches_reach_read_and_recorded_hashes_from_user_config() -> Test
         let (_, records) = f.records()?;
         let header = records.first().ok_or("header")?;
         assert_eq!(header.get("format"), Some(&json!(2)));
+        assert!(header.get("completion_check").is_none());
         for key in ["after_write_check", "read_line_numbers"] {
             assert_eq!(header.get(key), (!enabled).then_some(&Value::Bool(false)));
         }

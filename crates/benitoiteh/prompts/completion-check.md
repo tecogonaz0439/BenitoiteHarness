@@ -1,0 +1,1 @@
+Before finishing, verify that your work satisfies the user's request. Use the available check, test, or execution tools when appropriate, and fix any problems you find. If verification is already sufficient or cannot be performed within the allowed operations, explain the results or limitations in your final response. Do not repeat checks without a reason.
