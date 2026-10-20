@@ -8,7 +8,8 @@ use serde_json::Value;
 use crate::approval::{ApprovalFacts, ApprovalKind, ApprovalOutcome};
 use crate::provider::{FinishReason, ProviderError, Usage};
 use crate::session::{
-    ApprovalPhase, CompactionReason, Record, RecordedMode, RecordedSkill, SkippedInstruction,
+    ApprovalPhase, CompactionReason, Record, RecordedMode, RecordedPlugin, RecordedSkill,
+    SkippedInstruction,
 };
 
 /// 一連の処理の終了状態。
@@ -59,6 +60,12 @@ pub enum AgentEvent {
         instruction_files: Vec<PathBuf>,
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         skipped_instructions: Vec<SkippedInstruction>,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        plugins: Vec<RecordedPlugin>,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        skipped_plugins: Vec<SkippedInstruction>,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        plugin_notices: Vec<SkippedInstruction>,
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         skills: Vec<RecordedSkill>,
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -166,6 +173,9 @@ impl AgentEvent {
                 notice,
                 instruction_files,
                 skipped_instructions,
+                plugins,
+                skipped_plugins,
+                plugin_notices,
                 skills,
                 skipped_skills,
             } => Record::SessionStart {
@@ -182,6 +192,9 @@ impl AgentEvent {
                 notice: notice.clone(),
                 instruction_files: instruction_files.clone(),
                 skipped_instructions: skipped_instructions.clone(),
+                plugins: plugins.clone(),
+                skipped_plugins: skipped_plugins.clone(),
+                plugin_notices: plugin_notices.clone(),
                 skills: skills.clone(),
                 skipped_skills: skipped_skills.clone(),
             },

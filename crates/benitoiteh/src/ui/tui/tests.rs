@@ -651,11 +651,27 @@ fn status_prints_all_fields_and_sanitizes_values_without_a_base_url() {
         safety: crate::agent::SessionSafety::default(),
         estimate: 123,
         context_window: Some(456),
+        plugins: vec![crate::session::RecordedPlugin {
+            name: "p".into(),
+            version: Some("1.0\x1b".into()),
+            path: "/plugins/p".into(),
+            sha256: "a".repeat(64),
+            source: crate::session::SkillSource::User,
+        }],
         skills: vec![crate::session::RecordedSkill {
             name: "sample".into(),
             path: "/skills/sample/SKILL.md".into(),
             source: crate::session::SkillSource::User,
             sha256: "a".repeat(64),
+            plugin: Some("p".into()),
+        }],
+        skipped_plugins: vec![crate::session::SkippedInstruction {
+            path: "/plugins/bad".into(),
+            reason: "invalid\x1b".into(),
+        }],
+        plugin_notices: vec![crate::session::SkippedInstruction {
+            path: "/plugins/p".into(),
+            reason: "MCP\x1b".into(),
         }],
         skipped_skills: vec![crate::session::SkippedInstruction {
             path: "/skills/bad".into(),
@@ -689,7 +705,11 @@ fn status_prints_all_fields_and_sanitizes_values_without_a_base_url() {
         "Context: 123 / 456",
         "/project/AGENTS.md",
         "/project/secret: denied\\x1b",
-        "Skill loaded: sample (/skills/sample/SKILL.md)",
+        "Plugin loaded: p (user; sha256 ",
+        "; version 1.0\\x1b; /plugins/p)",
+        "Plugin skipped: /plugins/bad: invalid\\x1b",
+        "Plugin notice: /plugins/p: MCP\\x1b",
+        "Skill loaded: sample (plugin p; /skills/sample/SKILL.md)",
         "Skill skipped: /skills/bad: invalid\\x1b",
     ] {
         assert!(value.contains(expected), "{expected}: {value}");
@@ -1651,4 +1671,32 @@ fn revealed_secret_clips_at_terminal_width_and_remasks_without_changing_the_answ
     stream.read_to_end(&mut answer)?;
     assert_eq!(answer, format!("S{value}").as_bytes());
     Ok(())
+}
+
+// 関門: パスの中の区切りの文字で、出所・SHA-256・版を装える退行を守る
+// （設計書 01-04「Agent Plugins のプラグイン」の「記録と表示」）。
+#[test]
+fn plugin_line_puts_the_untrusted_path_last() {
+    let spoof = format!("/x; sha256 {}) version 9.9 (user; /p", "0".repeat(64));
+    let plugin = crate::session::RecordedPlugin {
+        name: "p".into(),
+        version: None,
+        path: spoof.clone().into(),
+        sha256: "a".repeat(64),
+        source: crate::session::SkillSource::Project,
+    };
+    let line = crate::ui::text::plugin_loaded(&plugin);
+    assert_eq!(
+        line,
+        format!(
+            "Plugin loaded: p (project; sha256 {}; no version; {spoof})",
+            "a".repeat(64)
+        )
+    );
+    let fields = line.find(&spoof).is_some_and(|start| {
+        line.get(..start).is_some_and(|prefix| {
+            prefix.contains("project; sha256 a") && prefix.contains("no version")
+        })
+    });
+    assert!(fields);
 }

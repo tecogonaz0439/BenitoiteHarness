@@ -190,7 +190,7 @@ def benitoiteh_config(harness: Dict[str, object], model: str, processor: str,
         lines += ['', '[read]']
         lines += ['%s = %s' % (key, toml_value(value))
                   for key, value in sorted(config['read'].items())]
-    lines += ['', '[skills]', 'user = false', '']
+    lines += ['', '[skills]', 'user = false', '', '[plugins]', 'user = false', '']
     return '\n'.join(lines)
 
 

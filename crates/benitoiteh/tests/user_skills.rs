@@ -1,5 +1,8 @@
 //! Skill の索引と読み取り範囲を、探索と道具の境界で確かめる（設計書 01-04、07-01）。
 
+#[path = "user_skills/plugins.rs"]
+mod plugins;
+
 use std::error::Error;
 use std::fs;
 use std::os::unix::fs::symlink;
@@ -27,6 +30,7 @@ struct Fixture {
 
 impl Fixture {
     fn new() -> Result<Self, Box<dyn Error>> {
+        // 根は TMPDIR の下に短い名前で置き、長い TMPDIR でも索引の上限に先に達しにくくする。
         let root = std::env::temp_dir().join(
             SessionId::generate(SystemTime::now())?
                 .to_string()
@@ -92,7 +96,13 @@ impl Fixture {
     }
 
     fn collect(&self, config: &UserSkillsConfig) -> (skills::UserSkills, Vec<ScopeRoot>) {
-        skills::collect(&self.project, &self.home, config, &self.exclude)
+        skills::collect(
+            &self.project,
+            &self.home,
+            config,
+            &benitoiteh::config::UserPluginsConfig::default(),
+            &self.exclude,
+        )
     }
 
     fn context(&self, mode: Mode, roots: Vec<ScopeRoot>) -> Result<ToolContext, Box<dyn Error>> {
@@ -159,6 +169,7 @@ fn discovers_both_sources_in_root_order_and_obeys_each_switch_and_home_boundary(
                 user: false,
                 project: true,
             },
+            &benitoiteh::config::UserPluginsConfig::default(),
             &f.exclude,
         );
         let names = skills
@@ -190,6 +201,7 @@ fn discovers_both_sources_in_root_order_and_obeys_each_switch_and_home_boundary(
         &f.project,
         &f.root.join("missing-home"),
         &UserSkillsConfig::default(),
+        &benitoiteh::config::UserPluginsConfig::default(),
         &f.exclude,
     );
     assert_eq!(skills.loaded.len(), 1);
@@ -395,6 +407,7 @@ fn rejects_unsafe_files_and_broad_roots_and_accepts_only_contained_links() -> Te
                 user: true,
                 project: false,
             },
+            &benitoiteh::config::UserPluginsConfig::default(),
             &f.exclude,
         );
         assert_eq!(skills.loaded.len(), 1, "{kind}: {:?}", skills.skipped);
@@ -470,6 +483,7 @@ fn rejects_unsafe_files_and_broad_roots_and_accepts_only_contained_links() -> Te
                 user,
                 project: !user,
             },
+            &benitoiteh::config::UserPluginsConfig::default(),
             &f.exclude,
         );
         assert!(
@@ -510,11 +524,17 @@ fn caps_entries_skills_and_escaped_index_bytes_in_name_order() -> TestResult {
     let (skills, roots) = f.collect(&UserSkillsConfig::default());
     assert_eq!(skills.loaded.len(), 3);
     assert_eq!(roots.len(), 3);
-    assert!(
+    // 境界を越えた後の 101 個は開かずに一行へまとめる（設計書 01-04 の「長さと数の上限」）。
+    assert_eq!(
         skills
             .skipped
             .iter()
-            .all(|entry| entry.reason.contains("16 KiB"))
+            .map(|entry| entry.reason.as_str())
+            .collect::<Vec<_>>(),
+        [
+            "Skill exceeds the 16 KiB index limit; skills are counted in order: user skills, user plugin skills, project skills, project plugin skills; each stage is ordered by plugin name then skill name.",
+            "Skipped 101 skills beyond the skill or index limit without reading them."
+        ]
     );
     assert!(
         skills
@@ -571,13 +591,20 @@ fn user_skills_take_count_and_byte_budgets_before_project_skills() -> TestResult
                 .iter()
                 .all(|skill| skill.source == SkillSource::User)
         );
-        assert_eq!(skills.skipped.len(), if count == 3 { 106 } else { 105 });
-        let reason = if count == 100 { "100-skill" } else { "16 KiB" };
-        assert!(
-            skills
-                .skipped
-                .iter()
-                .all(|skill| skill.reason.contains(reason))
+        let mut reasons = skills.skipped.iter().map(|skill| skill.reason.as_str());
+        if count == 3 {
+            assert!(
+                reasons
+                    .next()
+                    .is_some_and(|reason| reason.contains("16 KiB"))
+            );
+        }
+        assert_eq!(
+            reasons.collect::<Vec<_>>(),
+            [format!(
+                "Skipped {} skills beyond the skill or index limit without reading them.",
+                105
+            )]
         );
     }
     // 利用者側で一つが上限を超えても、余ったバイト数はプロジェクト側で使える。
@@ -610,6 +637,24 @@ fn user_skills_take_count_and_byte_budgets_before_project_skills() -> TestResult
     Ok(())
 }
 
+// 関門: 開かずに打ち切った利用者の Skill の名前を覚えず、後の段の同名に優先順位を
+// 覆させる退行を守る（Collector::precut。設計書 01-04 の「長さと数の上限」）。
+#[test]
+fn a_user_skill_cut_without_opening_still_shadows_a_project_skill() -> TestResult {
+    let f = Fixture::new()?;
+    let large = "d".repeat(1000);
+    for n in 0..20 {
+        f.skill("home/.agents/skills", &format!("z{n:03}"), &large)?;
+    }
+    let project = f.skill("repo/sub/project/.agents/skills", "z019", "small")?;
+    let (skills, _roots) = f.collect(&UserSkillsConfig::default());
+    let user_cut = f.root.join("home/.agents/skills/z019/SKILL.md");
+    assert!(skills.skipped.iter().any(|skill| skill.path == user_cut));
+    assert!(skills.skipped.iter().any(|skill| skill.path == project));
+    assert!(!skills.loaded.iter().any(|skill| skill.name == "z019"));
+    Ok(())
+}
+
 // 関門: 残した候補だけでなく、探索の間の持ちすぎで後の候補を失う退行を子で検出する。
 #[test]
 fn collection_keeps_later_candidates_with_a_256_descriptor_limit() -> TestResult {
@@ -639,6 +684,14 @@ fn collection_keeps_later_candidates_with_a_256_descriptor_limit() -> TestResult
         f.skill("repo/.agents/skills", &format!("z{n:03}"), "root skill")?;
     }
     f.skill("repo/sub/project/.agents/skills", "a-later", "later skill")?;
+    for n in 0..100 {
+        f.manifest("home/.agents/plugins", &format!("p{n:03}"))?;
+    }
+    f.skill(
+        "home/.agents/plugins/p099/skills",
+        "user-plugin",
+        "last plugin",
+    )?;
     let duplicate = f.skill(
         "repo/sub/project/.agents/skills",
         "z599",
@@ -660,12 +713,8 @@ fn collection_keeps_later_candidates_with_a_256_descriptor_limit() -> TestResult
         "{:?}",
         skills.skipped
     );
-    assert!(
-        skills
-            .skipped
-            .iter()
-            .any(|skill| skill.path == duplicate && skill.reason.contains("takes precedence"))
-    );
+    assert!(duplicate.exists());
+    assert!(!skills.loaded.iter().any(|skill| skill.name == "z599"));
     Ok(())
 }
 
@@ -726,6 +775,7 @@ fn non_utf8_entries_and_real_paths_do_not_break_skill_records() -> TestResult {
             user: true,
             project: false,
         },
+        &benitoiteh::config::UserPluginsConfig::default(),
         &f.exclude,
     );
     drop(roots);

@@ -88,58 +88,72 @@ impl Drop for Fixture {
 // 関門: Skill の検査の診断を、読める実のファイルの行と絶対パスで表示する。
 #[test]
 fn loaded_skill_scripts_and_directories_can_be_checked_with_absolute_diagnostics() -> TestResult {
-    let f = Fixture::new(Mode::Restricted)?;
-    let directory = f.root.join(".agents/skills/sample");
-    fs::create_dir_all(&directory)?;
-    fs::write(
-        directory.join("SKILL.md"),
-        "---\nname: sample\ndescription: test\n---\n",
-    )?;
-    fs::write(directory.join("main.bnt"), GOOD)?;
-    let (_, roots) = benitoiteh::context::skills::collect(
-        &f.project,
-        &f.root,
-        &benitoiteh::config::UserSkillsConfig::default(),
-        &f.context.exclude,
-    );
-    let context = ToolContext::new(
-        Mode::Restricted,
-        ScopeRoot::open(&f.project)?,
-        ScopeRoot::open(&f.temporary)?,
-        ScopeRoot::open(
-            f.root
-                .join(".local/state/benitoiteh/sessions/current/spill"),
-        )?,
-        f.context.exclude.clone(),
-    )
-    .with_skill_roots(roots)
-    .with_check_query(support::checks(f.project.clone())?);
-    for (path, tests) in [
-        (directory.join("main.bnt"), false),
-        (directory.clone(), true),
-    ] {
+    for plugin in [false, true] {
+        let f = Fixture::new(Mode::Restricted)?;
+        let relative = if plugin {
+            ".agents/plugins/p/skills/sample"
+        } else {
+            ".agents/skills/sample"
+        };
+        let directory = f.root.join(relative);
+        fs::create_dir_all(&directory)?;
+        fs::write(
+            directory.join("SKILL.md"),
+            "---\nname: sample\ndescription: test\n---\n",
+        )?;
+        if plugin {
+            fs::write(
+                f.root.join(".agents/plugins/p/plugin.json"),
+                r#"{"$schema":"https://agent-plugins.org/schemas/1.0.0/plugin.schema.json","name":"p"}"#,
+            )?;
+        }
+        fs::write(directory.join("main.bnt"), GOOD)?;
+        let (_, roots) = benitoiteh::context::skills::collect(
+            &f.project,
+            &f.root,
+            &benitoiteh::config::UserSkillsConfig::default(),
+            &benitoiteh::config::UserPluginsConfig::default(),
+            &f.context.exclude,
+        );
+        let context = ToolContext::new(
+            Mode::Restricted,
+            ScopeRoot::open(&f.project)?,
+            ScopeRoot::open(&f.temporary)?,
+            ScopeRoot::open(
+                f.root
+                    .join(".local/state/benitoiteh/sessions/current/spill"),
+            )?,
+            f.context.exclude.clone(),
+        )
+        .with_skill_roots(roots)
+        .with_check_query(support::checks(f.project.clone())?);
+        for (path, tests) in [
+            (directory.join("main.bnt"), false),
+            (directory.clone(), true),
+        ] {
+            let output = f.tools.execute(
+                &context,
+                "benitoite_check",
+                json!({"path":path,"tests":tests}),
+            );
+            assert!(!output.is_error && output.text == "ok", "{output:?}");
+        }
+        fs::write(directory.join("main.bnt"), BAD)?;
         let output = f.tools.execute(
             &context,
             "benitoite_check",
-            json!({"path":path,"tests":tests}),
+            json!({"path":directory.join("main.bnt")}),
         );
-        assert!(!output.is_error && output.text == "ok", "{output:?}");
+        assert!(
+            output.is_error && output.text.contains("UNKNOWN_NAME"),
+            "{output:?}"
+        );
+        assert!(
+            output
+                .text
+                .contains(directory.join("main.bnt").to_str().ok_or("path")?)
+        );
     }
-    fs::write(directory.join("main.bnt"), BAD)?;
-    let output = f.tools.execute(
-        &context,
-        "benitoite_check",
-        json!({"path":directory.join("main.bnt")}),
-    );
-    assert!(
-        output.is_error && output.text.contains("UNKNOWN_NAME"),
-        "{output:?}"
-    );
-    assert!(
-        output
-            .text
-            .contains(directory.join("main.bnt").to_str().ok_or("path")?)
-    );
     Ok(())
 }
 

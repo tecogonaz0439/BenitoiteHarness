@@ -139,6 +139,7 @@ impl Fixture {
             tools_sha256: "test".into(),
             after_write_check: None,
             read_line_numbers: None,
+            plugins: Vec::new(),
             skills: Vec::new(),
         }))?;
         let context = self.context()?;

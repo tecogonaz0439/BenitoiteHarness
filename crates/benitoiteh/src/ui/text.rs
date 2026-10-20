@@ -114,8 +114,44 @@ pub fn project_changed(path: &std::path::Path) -> String {
 }
 
 /// 起動時に受け付けた Skill の実のパス。
-pub fn skill_loaded(name: &str, path: &std::path::Path) -> String {
-    format!("Skill loaded: {name} ({})", path.display())
+pub fn skill_loaded(skill: &crate::session::RecordedSkill) -> String {
+    if let Some(plugin) = &skill.plugin {
+        format!(
+            "Skill loaded: {} (plugin {plugin}; {})",
+            skill.name,
+            skill.path.display()
+        )
+    } else {
+        format!("Skill loaded: {} ({})", skill.name, skill.path.display())
+    }
+}
+
+/// 読んだプラグイン。パスにはリポジトリが選べる文字が入りうるので、出所・SHA-256・版を
+/// 先に、パスを最後に置き、パスの中の文字でほかの欄を装えないようにする
+/// （設計書 01-04「Agent Plugins のプラグイン」の「記録と表示」）。
+pub fn plugin_loaded(plugin: &crate::session::RecordedPlugin) -> String {
+    let source = match plugin.source {
+        crate::session::SkillSource::User => "user",
+        crate::session::SkillSource::Project => "project",
+    };
+    let version = plugin.version.as_deref().map_or_else(
+        || "no version".to_owned(),
+        |version| format!("version {version}"),
+    );
+    format!(
+        "Plugin loaded: {} ({source}; sha256 {}; {version}; {})",
+        plugin.name,
+        plugin.sha256,
+        plugin.path.display(),
+    )
+}
+
+pub fn plugin_skipped(entry: &crate::session::SkippedInstruction) -> String {
+    format!("Plugin skipped: {}: {}", entry.path.display(), entry.reason)
+}
+
+pub fn plugin_notice(entry: &crate::session::SkippedInstruction) -> String {
+    format!("Plugin notice: {}: {}", entry.path.display(), entry.reason)
 }
 
 /// 起動時に読まなかった Skill と理由。

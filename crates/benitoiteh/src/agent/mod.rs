@@ -369,6 +369,7 @@ impl Agent {
                 tools_sha256: context::tool_definitions_hash(&system.tools)?,
                 after_write_check: (!tool_context.after_write_check).then_some(false),
                 read_line_numbers: (!tool_context.read_line_numbers).then_some(false),
+                plugins: environment.skills().plugins.clone(),
                 skills: environment.skills().recorded(),
             }))?;
         }
@@ -662,6 +663,9 @@ impl Agent {
                         .map(|file| file.path.clone())
                         .collect(),
                     skipped_instructions: self.environment.skipped_instructions().to_vec(),
+                    plugins: self.environment.skills().plugins.clone(),
+                    skipped_plugins: self.environment.skills().skipped_plugins.clone(),
+                    plugin_notices: self.environment.skills().plugin_notices.clone(),
                     skills: self.environment.skills().recorded(),
                     skipped_skills: self.environment.skills().skipped.clone(),
                     notice: Some({

@@ -2,6 +2,7 @@
 
 mod environment;
 pub mod instructions;
+mod plugins;
 pub mod skills;
 mod text;
 

@@ -71,6 +71,19 @@ pub struct RecordedSkill {
     pub path: PathBuf,
     pub sha256: String,
     pub source: SkillSource,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub plugin: Option<String>,
+}
+
+/// 起動時に検査した Agent Plugins の識別情報。部品の内容は記録しない。
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct RecordedPlugin {
+    pub name: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub version: Option<String>,
+    pub path: PathBuf,
+    pub sha256: String,
+    pub source: SkillSource,
 }
 
 /// 最初の行。キーや HTTP のヘッダを受け取る欄を持たない。
@@ -92,6 +105,8 @@ pub struct Header {
     pub read_line_numbers: Option<bool>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub skills: Vec<RecordedSkill>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub plugins: Vec<RecordedPlugin>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub forked_from: Option<ForkedFrom>,
 }
@@ -268,6 +283,12 @@ pub enum Record {
         instruction_files: Vec<PathBuf>,
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         skipped_instructions: Vec<SkippedInstruction>,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        plugins: Vec<RecordedPlugin>,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        skipped_plugins: Vec<SkippedInstruction>,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        plugin_notices: Vec<SkippedInstruction>,
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         skills: Vec<RecordedSkill>,
         #[serde(default, skip_serializing_if = "Vec::is_empty")]

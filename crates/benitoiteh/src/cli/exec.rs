@@ -630,8 +630,13 @@ pub(super) fn prepare(
         } else {
             instructions::ProjectInstructions::default()
         };
-        let (skills, skill_roots) =
-            skills::collect(root.real_path(), &paths.home, &resolved.skills, &exclude);
+        let (skills, skill_roots) = skills::collect(
+            root.real_path(),
+            &paths.home,
+            &resolved.skills,
+            &resolved.plugins,
+            &exclude,
+        );
         let mut context = ToolContext::new(
             resolved.mode,
             root,

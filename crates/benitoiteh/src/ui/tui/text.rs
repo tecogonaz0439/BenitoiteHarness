@@ -332,12 +332,10 @@ pub fn session_status(
             .iter()
             .map(|entry| format!("  {}: {}", entry.path.display(), entry.reason)),
     );
-    lines.extend(
-        status
-            .skills
-            .iter()
-            .map(|skill| skill_loaded(&skill.name, &skill.path)),
-    );
+    lines.extend(status.plugins.iter().map(plugin_loaded));
+    lines.extend(status.skipped_plugins.iter().map(plugin_skipped));
+    lines.extend(status.plugin_notices.iter().map(plugin_notice));
+    lines.extend(status.skills.iter().map(skill_loaded));
     lines.extend(
         status
             .skipped_skills
@@ -635,9 +633,7 @@ pub fn effect_description(effect: crate::benitoite::Effect) -> &'static str {
     }
 }
 
-pub fn skill_loaded(name: &str, path: &std::path::Path) -> String {
-    super::super::text::skill_loaded(name, path)
-}
+pub use super::super::text::{plugin_loaded, plugin_notice, plugin_skipped, skill_loaded};
 pub fn skill_skipped(path: &std::path::Path, reason: &str) -> String {
     super::super::text::skill_skipped(path, reason)
 }
