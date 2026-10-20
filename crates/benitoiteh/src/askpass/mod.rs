@@ -75,13 +75,25 @@ impl Prompt {
     }
 }
 
-#[derive(Default)]
 struct State {
     requests: usize,
-    hashes: Vec<output::SecretHash>,
+    /// 照合の値。手放すときに 0 で上書きする（設計書 03-04「秘密の扱い」）。
+    /// 呼び出しの途中では空にしない（空なら伏せ字を掛けずに渡すため）。
+    hashes: Zeroizing<Vec<output::SecretHash>>,
     events: Vec<String>,
     wait_start: Option<Instant>,
     waited: Duration,
+}
+impl Default for State {
+    fn default() -> Self {
+        Self {
+            requests: 0,
+            hashes: output::hash_list(),
+            events: Vec::new(),
+            wait_start: None,
+            waited: Duration::ZERO,
+        }
+    }
 }
 struct CallState {
     active: AtomicBool,
@@ -95,6 +107,8 @@ struct CallState {
 pub struct CallGuard {
     call: Arc<CallState>,
     socket: PathBuf,
+    /// 終わった呼び出しの状態を窓口から外して手放すため（設計書 03-04「秘密の扱い」）。
+    current: Arc<Mutex<Option<Arc<CallState>>>>,
 }
 impl CallGuard {
     pub(crate) fn environment(&self, env: &mut BTreeMap<OsString, OsString>) {
@@ -151,7 +165,17 @@ impl crate::sandbox::run::RunPause for CallGuard {
 }
 impl Drop for CallGuard {
     fn drop(&mut self) {
+        // stop は state の錠だけを取って放す。その後に current → state の順
+        // （shutdown と同じ）で、自分の呼び出しのときだけ窓口から外す。
+        // 後の呼び出しが既に替わっていれば、それを外さない。
         crate::sandbox::run::RunPause::stop(self);
+        let mut current = self.current.lock().unwrap_or_else(PoisonError::into_inner);
+        if current
+            .as_ref()
+            .is_some_and(|call| Arc::ptr_eq(call, &self.call))
+        {
+            let _released = current.take();
+        }
     }
 }
 
@@ -268,6 +292,12 @@ impl Broker {
                 {
                     return Err(io::ErrorKind::PermissionDenied.into());
                 }
+                // macOS の子の名前は ID の乱数の部分だけなので、ほかのセッションの子と
+                // 重なりうる。`id` が自分のものでなければ（ないときと確かめに通らない
+                // ときを含む）消さずに仲介を止める（設計書 03-04「補助」）。
+                if read_id(&directory).ok().flatten().as_deref() != Some(id) {
+                    return Err(io::ErrorKind::PermissionDenied.into());
+                }
                 match fs::remove_file(directory.join("sock")) {
                     Ok(()) => {}
                     Err(error) if error.kind() == io::ErrorKind::NotFound => {}
@@ -296,6 +326,8 @@ impl Broker {
             stop: Arc::new(StopSignal::default()),
             thread: Mutex::new(None),
         };
+        // リンクとソケットの前に置く。失敗すれば broker の Drop が子を消す。
+        write_id(&broker.directory, id)?;
         let executable = executable.canonicalize()?;
         for kind in [Kind::Ssh, Kind::Git, Kind::Sudo] {
             symlink(&executable, broker.directory.join(kind.helper()))?;
@@ -435,6 +467,7 @@ impl Broker {
         Ok(Some(CallGuard {
             call,
             socket: socket.clone(),
+            current: Arc::clone(&self.current),
         }))
     }
 }
@@ -455,6 +488,79 @@ pub(crate) fn helper_name(id: &str) -> &str {
         return id.rsplit_once('-').map_or(id, |(_, random)| random);
     }
     id
+}
+
+/// 子の中の、セッションの ID の全体を書いたファイルの名前（設計書 03-04「補助」）。
+const ID_FILE: &str = "id";
+/// `id` の大きさの上限。ID は 33 バイトなので、改行を含めても十分に収まる。
+const MAX_ID_FILE: u64 = 64;
+
+fn open_child(directory: &Path) -> io::Result<rustix::fd::OwnedFd> {
+    use rustix::fs::{Mode, OFlags};
+    Ok(rustix::fs::open(
+        directory,
+        OFlags::RDONLY | OFlags::DIRECTORY | OFlags::NOFOLLOW | OFlags::CLOEXEC,
+        Mode::empty(),
+    )?)
+}
+
+/// 子に `id` を新しく作る。既にあるものとリンクは辿らない。
+fn write_id(directory: &Path, id: &str) -> io::Result<()> {
+    use rustix::fs::{Mode, OFlags};
+    let child = open_child(directory)?;
+    let mut file = fs::File::from(rustix::fs::openat(
+        &child,
+        ID_FILE,
+        OFlags::WRONLY | OFlags::CREATE | OFlags::EXCL | OFlags::NOFOLLOW | OFlags::CLOEXEC,
+        Mode::from_raw_mode(0o600),
+    )?);
+    // umask によらず、読むときに確かめる 0600 にそろえる。
+    rustix::fs::fchmod(&file, Mode::from_raw_mode(0o600))?;
+    file.write_all(format!("{id}\n").as_bytes())?;
+    Ok(())
+}
+
+/// 子の `id` を読む。ないときは `None`。リンク・通常のファイルでないもの・持ち主の違うもの・
+/// 0600 でないもの・リンクの数が 1 でないもの・64 バイトを超えるものは、読まずに断る。
+/// FIFO で止まらないよう NONBLOCK で開く（設計書 03-04「補助」）。
+pub(crate) fn read_id(directory: &Path) -> io::Result<Option<String>> {
+    use rustix::fs::{Mode, OFlags};
+    let child = open_child(directory)?;
+    let file = match rustix::fs::openat(
+        &child,
+        ID_FILE,
+        OFlags::RDONLY | OFlags::NOFOLLOW | OFlags::NONBLOCK | OFlags::CLOEXEC,
+        Mode::empty(),
+    ) {
+        Ok(file) => fs::File::from(file),
+        Err(rustix::io::Errno::NOENT) => return Ok(None),
+        Err(error) => return Err(error.into()),
+    };
+    let metadata = file.metadata()?;
+    if !metadata.file_type().is_file()
+        || metadata.uid() != rustix::process::geteuid().as_raw()
+        || metadata.mode() & 0o7777 != 0o600
+        || metadata.nlink() != 1
+        || metadata.len() > MAX_ID_FILE
+    {
+        return Err(io::ErrorKind::PermissionDenied.into());
+    }
+    let mut bytes = Vec::new();
+    file.take(MAX_ID_FILE.saturating_add(1))
+        .read_to_end(&mut bytes)?;
+    // 確かめた後に伸びたものも断る。
+    let text = std::str::from_utf8(&bytes)
+        .ok()
+        .filter(|_| u64::try_from(bytes.len()).is_ok_and(|length| length <= MAX_ID_FILE))
+        .and_then(|text| text.strip_suffix('\n'))
+        .filter(|id| {
+            !id.is_empty()
+                && id
+                    .bytes()
+                    .all(|byte| byte.is_ascii_graphic() && byte != b'/')
+        })
+        .ok_or(io::ErrorKind::InvalidData)?;
+    Ok(Some(text.to_owned()))
 }
 
 /// 有効な Linux の runtime だけを使い、共有場所やリンクは候補にしない。
@@ -646,10 +752,12 @@ fn serve(
                     && secret.len() <= protocol::MAX_SECRET
                     && !secret.bytes().any(|b| matches!(b, 0 | b'\r' | b'\n')) =>
             {
-                state.hashes.push(output::SecretHash::new(
-                    secret.as_bytes(),
-                    *call.rolling_base,
-                ));
+                // 求めは 3 件までなので容量を超えない。超える形でも伸ばさない。
+                if let Some(hash) = output::SecretHash::new(secret.as_bytes(), *call.rolling_base)
+                    && state.hashes.len() < output::MAX_HASHES
+                {
+                    state.hashes.push(hash);
+                }
                 outcome = if stream
                     .write_all(b"S")
                     .and_then(|()| stream.write_all(secret.as_bytes()))

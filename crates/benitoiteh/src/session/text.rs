@@ -17,11 +17,11 @@ pub const WRITER_FAILED: &str = "Session writer cannot continue after a failed a
 pub const INTERRUPTED: &str = "Tool call was interrupted before its result was recorded. Its effects are unknown; check the files before retrying.";
 pub const CANCELLED: &str = "Tool call was cancelled by the user.";
 
+/// ID の分からない失敗の `reason` は既にパスを含む文なので、二重に包まずそのまま返す。
 pub fn cleanup_failed(failure: &super::CleanupFailure) -> String {
-    let id = failure
-        .id
-        .as_ref()
-        .map_or("unknown", super::SessionId::as_str);
+    let Some(id) = failure.id.as_ref().map(super::SessionId::as_str) else {
+        return failure.reason.clone();
+    };
     let kind = if failure.temporary {
         "temporary directory"
     } else {

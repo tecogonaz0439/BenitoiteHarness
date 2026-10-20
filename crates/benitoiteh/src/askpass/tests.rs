@@ -239,6 +239,7 @@ fn helper_directories_fall_back_reject_writable_locations_and_recover_stale_entr
     let target = f.root.join("keep");
     fs::write(&target, b"keep")?;
     DirBuilder::new().mode(0o700).create(&directory)?;
+    place_id(&directory, format!("{id}\n").as_bytes())?;
     fs::write(directory.join("sock"), b"stale")?;
     symlink(&target, directory.join("stale-link"))?;
     let resumed = Broker::create(&long, id.as_str(), &std::env::current_exe()?, &[], true)
@@ -259,6 +260,101 @@ fn helper_directories_fall_back_reject_writable_locations_and_recover_stale_entr
         .is_err()
     );
     assert!(!directory.exists());
+    Ok(())
+}
+
+// 落ちた前回の子を模して、`id` を 0600 で置く。
+fn place_id(directory: &Path, contents: &[u8]) -> io::Result<()> {
+    use std::os::unix::fs::OpenOptionsExt;
+    let mut file = fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .mode(0o600)
+        .open(directory.join("id"))?;
+    file.set_permissions(fs::Permissions::from_mode(0o600))?;
+    file.write_all(contents)
+}
+
+// 関門: macOS の子の名前は乱数の部分だけなので、ほかのセッションの子と重なりうる。
+// `id` が自分のものでない子（ない・違う・確かめに通らない）を作り直しで消す退行を捕まえる。
+#[test]
+fn helper_recreation_requires_its_own_id_file() -> io::Result<()> {
+    if rerun_without_runtime("helper_recreation_requires_its_own_id_file")? {
+        return Ok(());
+    }
+    let f = Fixture::new()?;
+    let id = crate::session::SessionId::generate(std::time::SystemTime::now())
+        .map_err(io::Error::other)?;
+    let other = crate::session::SessionId::generate(std::time::SystemTime::now())
+        .map_err(io::Error::other)?;
+    let exe = std::env::current_exe()?;
+    let broker =
+        Broker::create(&f.root, id.as_str(), &exe, &[], false).map_err(io::Error::other)?;
+    let directory = broker.directory.clone();
+    assert_eq!(
+        fs::read(directory.join("id"))?,
+        format!("{id}\n").into_bytes()
+    );
+    assert_eq!(
+        fs::symlink_metadata(directory.join("id"))?.mode() & 0o7777,
+        0o600
+    );
+    drop(broker);
+    assert!(!directory.exists());
+    let mut cases = vec!["foreign", "missing", "link", "mode", "fifo", "long"];
+    // 持ち主の違う `id` は root でないと作れない。
+    if rustix::process::geteuid().is_root() {
+        cases.push("owner");
+    }
+    for case in cases {
+        DirBuilder::new().mode(0o700).create(&directory)?;
+        fs::write(directory.join("keep"), b"keep")?;
+        let own = format!("{id}\n");
+        match case {
+            "foreign" => place_id(&directory, format!("{other}\n").as_bytes())?,
+            "missing" => {}
+            "link" => {
+                let target = f.root.join("id-target");
+                fs::write(&target, own.as_bytes())?;
+                fs::set_permissions(&target, fs::Permissions::from_mode(0o600))?;
+                symlink(&target, directory.join("id"))?;
+            }
+            "mode" => {
+                place_id(&directory, own.as_bytes())?;
+                fs::set_permissions(directory.join("id"), fs::Permissions::from_mode(0o644))?;
+            }
+            "fifo" => {
+                // rustix は macOS で mknodat を持たないので、OS の mkfifo を使う。
+                let made = std::process::Command::new("mkfifo")
+                    .args(["-m", "600"])
+                    .arg(directory.join("id"))
+                    .status()?;
+                assert!(made.success());
+            }
+            "long" => place_id(&directory, format!("{}\n", "x".repeat(64)).as_bytes())?,
+            _ => {
+                place_id(&directory, own.as_bytes())?;
+                rustix::fs::chown(
+                    directory.join("id").as_path(),
+                    Some(rustix::process::Uid::from_raw(65534)),
+                    None,
+                )?;
+            }
+        }
+        assert!(
+            Broker::create(&f.root, id.as_str(), &exe, &[], false).is_err(),
+            "{case}"
+        );
+        assert_eq!(fs::read(directory.join("keep"))?, b"keep", "{case}");
+        fs::remove_dir_all(&directory)?;
+    }
+    DirBuilder::new().mode(0o700).create(&directory)?;
+    fs::write(directory.join("keep"), b"stale")?;
+    place_id(&directory, format!("{id}\n").as_bytes())?;
+    let resumed =
+        Broker::create(&f.root, id.as_str(), &exe, &[], false).map_err(io::Error::other)?;
+    assert!(!directory.join("keep").exists());
+    drop(resumed);
     Ok(())
 }
 
@@ -461,7 +557,14 @@ fn redaction_covers_read_boundaries_before_the_output_tail_is_limited() -> io::R
     for input in [
         format!("{}abababTAIL", "x".repeat(4093)),
         format!("{}TAIL", "ab".repeat(9000)),
+        // 区切りの手前まで渡す形でも、区切りの前後の一致を読み取りの境目によらず伏せる。
+        format!(
+            "{}\nabab\rxabab\0{}\nababTAIL",
+            "x".repeat(4090),
+            "x".repeat(8190)
+        ),
     ] {
+        let mut tails = Vec::new();
         for chunk_size in [1, 4095, 8192] {
             let mut output =
                 crate::tools::process_output::Output::mediated(12, 2, f.call.redactor());
@@ -475,7 +578,19 @@ fn redaction_covers_read_boundaries_before_the_output_tail_is_limited() -> io::R
                 output.tail().0
             );
             assert!(!output.tail().0.contains("ab"));
+            let mut whole = crate::tools::process_output::Output::mediated(
+                usize::MAX,
+                usize::MAX,
+                f.call.redactor(),
+            );
+            for chunk in input.as_bytes().chunks(chunk_size) {
+                whole.write_all(chunk)?;
+            }
+            whole.finish_redaction()?;
+            tails.push(whole.tail().0);
         }
+        assert!(tails.windows(2).all(|pair| pair.first() == pair.last()));
+        assert!(tails.iter().all(|tail| !tail.contains("ab")));
     }
     let sink = Arc::new(Mutex::new(crate::tools::process_output::Output::mediated(
         100,
@@ -651,6 +766,113 @@ fn interleaved_stream_redaction_preserves_each_stream_secret() -> io::Result<()>
     assert!(result.contains("progress 50%\n"), "{result}");
     assert!(!result.contains("Zq9-sec"), "{result}");
     assert!(!result.contains("ret-Value"), "{result}");
+    Ok(())
+}
+
+// 関門: 秘密の長さだけ出力を留める退行は、改行まで届いた行を次の出力まで示さず、
+// 混ぜた並びの順も書いた順と変える。区切りの手前まで渡しても、読み取りをまたぐ秘密は伏せる。
+#[test]
+fn line_separators_release_output_in_written_order_without_missing_secrets() -> io::Result<()> {
+    let f = Fixture::new()?;
+    let requests = f.broker.take_requests().ok_or(io::ErrorKind::Other)?;
+    let secret = "Zq9-secret-Value0123456789abcdef";
+    assert_eq!(secret.len(), 32);
+    let stream = f.request(None, "synthetic")?;
+    requests
+        .recv()
+        .map_err(io::Error::other)?
+        .reply
+        .send(Answer::Secret(Zeroizing::new(secret.into())))
+        .map_err(|_| io::ErrorKind::BrokenPipe)?;
+    status(stream)?;
+    let sink = Arc::new(Mutex::new(crate::tools::process_output::Output::mediated(
+        100,
+        10,
+        f.call.redactor(),
+    )));
+    let stdout = Arc::new(Mutex::new(crate::tools::process_output::StreamOutput::new(
+        Arc::clone(&sink),
+        Some(f.call.redactor()),
+    )));
+    let stderr = Arc::new(Mutex::new(crate::tools::process_output::StreamOutput::new(
+        Arc::clone(&sink),
+        Some(f.call.redactor()),
+    )));
+    for (stream, line) in [(&stdout, b"a\n"), (&stderr, b"b\n"), (&stdout, b"c\n")] {
+        stream
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .write_all(line)?;
+    }
+    // 最後を流す前に、書いた順のまま届いている。
+    assert_eq!(
+        sink.lock().unwrap_or_else(PoisonError::into_inner).tail().0,
+        "a\nb\nc\n"
+    );
+    let mut redactor = f.call.redactor();
+    let line = b"progress 50% of five\n";
+    assert_eq!(line.len(), 21);
+    assert_eq!(redactor.push(line, false), line);
+    assert_eq!(redactor.push(b"x\r", false), b"x\r");
+    assert_eq!(redactor.push(b"y\0", false), b"y\0");
+    let mut output = redactor.push(b"pw=Zq9-secret-Va", false);
+    output.extend(redactor.push(b"lue0123456789abcdef\n", false));
+    assert_eq!(output, b"pw=[secret]\n");
+    assert_eq!(redactor.push(&[], true), b"");
+    Ok(())
+}
+
+// 関門: 呼び出しの状態（照合の値を含む）を次の呼び出しまで持ち続ける退行と、
+// 先の守りの後始末が後の呼び出しを窓口から外す退行を捕まえる（設計書 03-04「秘密の扱い」）。
+#[test]
+fn finished_calls_release_their_state_without_disturbing_the_next_call() -> io::Result<()> {
+    let f = Fixture::new()?;
+    let requests = f.broker.take_requests().ok_or(io::ErrorKind::Other)?;
+    let facts = f.call.call.facts.clone();
+    let first = f
+        .broker
+        .begin(facts.clone())
+        .map_err(io::Error::other)?
+        .ok_or(io::ErrorKind::Other)?;
+    let weak = Arc::downgrade(&first.call);
+    let redactor = first.redactor();
+    let second = f
+        .broker
+        .begin(facts)
+        .map_err(io::Error::other)?
+        .ok_or(io::ErrorKind::Other)?;
+    drop(first);
+    assert!(weak.upgrade().is_some());
+    drop(redactor);
+    assert!(weak.upgrade().is_none());
+    let mut client = UnixStream::connect(&second.socket)?;
+    client.set_read_timeout(Some(Duration::from_secs(6)))?;
+    protocol::write_request(
+        &mut client,
+        &Request {
+            v: 1,
+            token: second.call.token.to_string(),
+            kind: Kind::Ssh,
+            ssh_prompt: Some("confirm".into()),
+            prompt: "second".into(),
+            pid: 42,
+            ppid: 41,
+        },
+    )?;
+    let prompt = requests
+        .recv_timeout(Duration::from_secs(5))
+        .map_err(io::Error::other)?;
+    assert_eq!(prompt.prompt, "second");
+    prompt
+        .reply
+        .send(Answer::Yes)
+        .map_err(|_| io::ErrorKind::BrokenPipe)?;
+    assert_eq!(status(client)?, b"Y");
+    // 後の呼び出しも、守りを手放せば窓口から外れる。
+    let weak = Arc::downgrade(&second.call);
+    drop(prompt);
+    drop(second);
+    assert!(weak.upgrade().is_none());
     Ok(())
 }
 

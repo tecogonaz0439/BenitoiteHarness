@@ -34,7 +34,7 @@ getrandom = { version = "=0.4.3", default-features = false }
 toml = { version = "=1.1.8", default-features = false, features = ["std", "parse", "serde"] }
 serde = { version = "=1.0.229", default-features = false, features = ["std", "derive"] }
 serde_json = { version = "=1.0.151", default-features = false, features = ["std"] }
-sha2 = { version = "=0.11.0", default-features = false }
+sha2 = { version = "=0.11.0", default-features = false, features = ["zeroize"] }
 rustix = { version = "=1.1.5", default-features = false, features = ["std", "fs", "process", "termios", "pty"] }
 ureq = { version = "=3.4.2", default-features = false, features = ["rustls-no-provider", "platform-verifier"] }
 rustls = { version = "=0.23.45", default-features = false, features = ["std", "tls12"] }
