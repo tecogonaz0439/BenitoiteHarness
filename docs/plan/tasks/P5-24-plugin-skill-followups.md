@@ -65,3 +65,8 @@ P5-23 の 2 回目の再レビュー（2026-10-20）で「公開の後でよい�
     - 原因: `src/safe_fs/linux.rs` の `open` と `open_no_follow` は、`openat2` の `RESOLVE_BENEATH` で `..` を含むパス（テストの範囲の中を指す相対のリンク）を解くときの `EAGAIN` を、そのまま誤りにしている。
     - 直し: 設計書 01-03「道具の定義の共通の規則」に加えたとおり、`EAGAIN` のときは同じ引数で 8 回まで開き直し、それでも `EAGAIN` なら今と同じ誤りにする。`EAGAIN` を返す試しを作れないなら、開き直しの判定を小さな関数に切り出し、その関数の単体のテストを置く。
     - このテストの `plugins.len()` の確かめでは、誤りの文を、`skipped_plugins` の全体を示す形にしてある。オーケストレータが原因を調べるときに改めたもので、そのままにする。
+12. **レビューを受けた追加**（2026-10-20。重大と中はなかった）:
+    - **絶対のパスのリンク**: 設計書 01-04 の「利用者の Agent Skill」に加えたとおり、範囲の中を指していても絶対のパスのリンクは読まない。今は「範囲の外」の理由で断っている（`src/context/skills.rs` の `search_plugins` の `open_dir`（691 あたり）と `read` の `open_dir`（794 あたり）、理由の文は 200 あたりの `outside_scope`）。最後の要素がシンボリックリンクで、その中身（`readlinkat`）が絶対のパスのときは、別の理由の文を示す。文の例: Skill は `Skill path is an absolute symbolic link; use a relative link inside the search scope.`、プラグインは `Plugin path is an absolute symbolic link; use a relative link inside the search scope.`（`skills/text.rs` と `plugins/text.rs` に置き、`SKILL_REASONS`・`PLUGIN_REASONS` の組に加える）。範囲の判定は今のまま（開くのは `RESOLVE_BENEATH`・`O_RESOLVE_BENEATH` のまま）とし、理由の文だけを変える。利用者の段・プロジェクトの段、Skill・プラグインの四つで確かめるテストを置く。
+    - **名前を覚える段**: 候補の上限で飛ばした名前を覚えるのは、利用者の段（`SkillSource::User`）だけにする（プロジェクトの段では覚えても使わず、信頼しないリポジトリに約 7〜13 MB の記憶を使わせうる）。
+    - **テスト (d) の下限**: 段ごとの示したバイト数に下限を assert する（64 KiB から一件の最大の大きさを引いた値より大きい）。加えて、枠を越えた後に小さい項目を置き、それが示されないことを一点確かめる（越えた後に短い項目を詰めて示す実装で落ちるように）。
+    - **テストの引き算**: `tests/exec/skills.rs` の `920 - base.as_os_str().len() - "/p000".len()` と、`tests/user_skills.rs` の `986 - f.root.as_os_str().len()` を `checked_sub(...).ok_or("temporary root too long")?` の形にする。
