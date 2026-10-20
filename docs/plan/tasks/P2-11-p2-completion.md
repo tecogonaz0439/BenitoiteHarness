@@ -60,7 +60,7 @@ P2-05〜P2-10 と P2-12 を取り込んだ後に、この文書を実装に突�
 
 ### 結果の文書の形
 
-- `docs/plan/results/P2-safety.md` の形は `docs/plan/results/P4-safety.md` に揃える。環境の記号は P4 と同じく、C（Codex の中の macOS）、M（サンドボックスの外の macOS）、A（Apple の `container` の aarch64 Linux。Landlock も bubblewrap もない）、X（intelmacmini の rootless podman の x86_64 Linux）とする。表の列は「項目｜確かめるテスト（ファイルと関数）｜環境・未確認の範囲」とする。
+- `docs/plan/results/P2-safety.md` の形は `docs/plan/results/P4-safety.md` に揃える。環境の記号は P4 と同じく、C（Codex の中の macOS）、M（サンドボックスの外の macOS）、A（Apple の `container` の aarch64 Linux。Landlock も bubblewrap もない）、X（x86_64 の試験の機械の rootless podman の Linux）とする。表の列は「項目｜確かめるテスト（ファイルと関数）｜環境・未確認の範囲」とする。
 - P4-safety.md が「P2」と書いて先送りした項目（DYLD の `InvalidInput`、`E0512`、スクリプトによる `Process.Run`・`File.Write`・`Http.Connect`、処理系の道具の確認と提供者のキー、未確認の `Process.Run` と `benitoite_test`、偽の診断、処理系を含む起動の拒否、`allowed_programs` の適用）には、すべて答える。
 - 07-01「安全の性質のテスト」に、P2-09・P2-10・P2-12 で加わった性質（読まないファイルの取り込み、非対話の `--allow` と和、一時的なスクリプトの確認なしの経路、確認の画面の範囲）を加えた。これらも表に載せる。
 - A では `scripts/check.sh` の列挙のとおり `sandbox_linux.rs`・`sandbox_benitoite*.rs`・`sandbox_exec_restricted.rs` を走らせない。これらを Linux で走らせるのは X だけである（Landlock を要する）。表の環境の欄はこれに合わせる。ロードマップ 00-03 の P2 の完了条件も、この分け方に改めた。

@@ -11,7 +11,7 @@
 - [評価](../../design/07-quality/07-02-evaluation.md)（「比べる相手」の Antigravity の項、「測る項目」「評価の手順」）
 - [P5-03](P5-03-records-and-cost.md)・[P5-04](P5-04-dsh-and-claude-code.md)（それぞれの補足を含む。行の欄、時間の上限、子の環境、外部のハーネスの集計の読み取り、利用者が加えた設定の確かめ）
 - 既存のもの: `tools/skill-eval/`（`skill_eval.py`、`harnesses.json`、`test_skill_eval.py`、`SOURCE.md`、`README.md` の Antigravity の行）
-- Antigravity の同梱の文書（読むだけ）: `~/.gemini/antigravity-cli/builtin/skills/agy-customizations/docs/`（`hooks.md`、`skills.md` ほか）。実行ファイルの中の変更の記録の写しが `/private/tmp/claude-501/-Users-tecogonaz-src-BenitoiteHarness/def9f39f-a672-4ff4-ab05-a3a7fe59fbfd/scratchpad/agy/changelog.txt` にある（以下の「L1.x.y」は、その中の版である）
+- Antigravity の同梱の文書（読むだけ）: `~/.gemini/antigravity-cli/builtin/skills/agy-customizations/docs/`（`hooks.md`、`skills.md` ほか）。以下の「L1.x.y」は、調査時に実行ファイルから取り出した変更の記録の版である
 
 ## この作業が認める型の変更
 

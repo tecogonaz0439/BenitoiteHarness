@@ -20,6 +20,8 @@
 
 Benitoite のプロジェクトは改造の途中であることが多い。処理系のプログラム、文書、そのほかのファイルを Benitoite から取り込むときは、次のどちらかから、最新のリリースの時点のものを取る。手元の Benitoite の作業ツリー（`../Benitoite`）のファイルを、そのまま写さない。
 
+処理系のリポジトリの既定の場所は、作業ツリーの隣の `../Benitoite` とする。違うときは、オーケストレータが依頼時に実際の場所を示す。以下の `../Benitoite` も、その場所に読み替える。
+
 - 手元の Benitoite のリポジトリの git のアーカイブ（`git -C ../Benitoite archive <リリースのタグ>`）。
 - GitHub のリポジトリ（<https://github.com/tecogonaz0439/Benitoite>）の、リリースのタグの時点のファイル。
 
@@ -58,7 +60,7 @@ Benitoite のプロジェクトは改造の途中であることが多い。処�
 | `docs/plan/results/` | 実装プランの作業で確かめた結果 | 作業の文書から参照する |
 | `assets/benitoite/` | Benitoite のリリースから取り込んだ文書（同梱の Agent Skill など） | 手で直さない。取り込み直すときは「Benitoite の処理系と事前検討の参照」に従う |
 | `tools/` | 評価と測定の道具 | LLM を呼ぶ評価は設計者の了承を得てから行う |
-| `.claude/skills/` | プロジェクト固有のスキル（`git-workflow`、`test-audit`） | `.agents/skills/` にシンボリックリンクを置く |
+| `.claude/skills/` | プロジェクト固有のスキル（`git-workflow`、`test-audit`、`orchestration`） | `.agents/skills/` にシンボリックリンクを置く |
 
 ## 設計書の規約
 
@@ -165,6 +167,7 @@ Benitoite のプロジェクトは改造の途中であることが多い。処�
 
 ## Agent Skills の運用
 
+- オーケストレータ（Claude Code）の作業は、スキル [orchestration](.claude/skills/orchestration/SKILL.md) に従う。
 - プロジェクト固有のスキルの実体は `.claude/skills/<スキル名>/` に置く。
 - スキルを新しく作成したら、`.agents/skills/<スキル名>` に実体を指すシンボリックリンクを作成する。相対パスで作成する（例: `ln -s ../../.claude/skills/<スキル名> .agents/skills/<スキル名>`）。
 - スキルを改名・削除したら、対応するシンボリックリンクも改名・削除する。

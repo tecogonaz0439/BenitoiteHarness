@@ -10,7 +10,7 @@
 - [テスト](../../design/07-quality/07-01-testing.md)の「完了の前に通す検査」
 - [性能](../../design/06-impl/06-02-performance.md)の「測り方」
 - [CLI と設定ファイル](../../design/05-interface/05-01-cli.md)の「コマンドラインの形」「終了状態」
-- Benitoite の `v0.0.6` の `Cargo.toml`（`[workspace.lints]`）と `deny.toml`。`git -C ../Benitoite show v0.0.6:Cargo.toml` のように、タグの時点のものを読む。
+- 処理系のリポジトリ（既定は作業ツリーの隣の `../Benitoite`。違うときはオーケストレータが示す）にある、Benitoite の `v0.0.6` の `Cargo.toml`（`[workspace.lints]`）と `deny.toml`。`git -C <処理系のリポジトリ> show v0.0.6:Cargo.toml` のように、タグの時点のものを読む。
 
 ## 作るもの
 
