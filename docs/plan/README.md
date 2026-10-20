@@ -88,7 +88,7 @@
 | [P5-26](tasks/P5-26-askpass-followups.md) | 秘密の入力の段 2 の残り（区切りの手前までの伏せ字、照合の値を消す、補助のディレクトリの `id`、掃除の失敗の文） | P5-25 | 完了 |
 | [P5-27](tasks/P5-27-chatgpt-followups.md) | Sign in with ChatGPT の残り（戻り先の `poll`、後片付けの誤り、408・429、壊れた更新の応答、失敗したログインの取り消し、取り消しと更新の錠、誤りの文） | P5-26 | 完了 |
 | [P5-28](tasks/P5-28-image-helper-and-rewind-memory.md) | 画像の補助の seccomp によるプロセスの作成の禁止と、枝を移るときの記録の写しの除去 | P5-27 | 完了 |
-| [P5-29](tasks/P5-29-completion-check.md) | M の段の完了の前の確かめ（BH-011）の促し、利用者だけの切り替えの口、評価の集計と条件の順の入れ替え（`--interleave`） | P5-28、P5-06 | 未着手 |
+| [P5-29](tasks/P5-29-completion-check.md) | M の段の完了の前の確かめ（BH-011）の促し、利用者だけの切り替えの口、評価の集計と条件の順の入れ替え（`--interleave`） | P5-28、P5-06 | 完了 |
 | [P5-30](tasks/P5-30-compaction-evaluation.md) | M の段の圧縮（BH-014）の Rust の設定、境と残す量、記録とイベントの欄、ループのテスト | P5-29 | 未着手 |
 | [P5-31](tasks/P5-31-normal-mode-tasks.md) | 通常モードの判定の実行器とそのテスト（macOS のみ） | P5-29 | 未着手 |
 | [P5-32](tasks/P5-32-compaction-runner.md) | 圧縮の評価の道具（組の選択、段の実行、上限と費用、模擬、`check.sh`） | P5-30 | 未着手 |

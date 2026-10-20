@@ -6,6 +6,8 @@ mod allow;
 mod checks;
 #[path = "agent_loop/compaction.rs"]
 mod compaction;
+#[path = "agent_loop/completion.rs"]
+mod completion;
 #[path = "agent_loop/create_project.rs"]
 mod create_project;
 #[path = "agent_loop/gemini.rs"]
@@ -80,6 +82,7 @@ impl Fixture {
 
     fn config(&self, server: &MockProvider, kind: AdapterKind) -> AgentConfig {
         AgentConfig {
+            agent: Default::default(),
             project_parent: None,
             allow_effects: None,
             mode: Mode::Normal,

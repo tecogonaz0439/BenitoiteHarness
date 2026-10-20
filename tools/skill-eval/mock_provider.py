@@ -8,8 +8,9 @@ from typing import List, Tuple
 
 
 class MockServer(ThreadingHTTPServer):
-    def __init__(self, kind: str, script: str, content: str) -> None:
+    def __init__(self, kind: str, script: str, content: str, completion_check: bool) -> None:
         super().__init__(('127.0.0.1', 0), Handler)
+        self.completion_check = completion_check
         self.kind = kind
         self.script = script
         self.content = content
@@ -38,7 +39,7 @@ class Handler(BaseHTTPRequestHandler):
         with server.request_lock:
             server.requests += 1
             number = server.requests
-        if number > 3:
+        if number > (5 if server.completion_check else 3):
             self.problem(500, 'unexpected request %d after the scenario ended' % number)
             return
         if self.path != '/v1/messages':
@@ -57,17 +58,26 @@ class Handler(BaseHTTPRequestHandler):
             self.problem(400, 'request is not JSON')
             return
         messages = request.get('messages') if isinstance(request, dict) else None
-        if number > 1:
+        if number > 1 and number != 4:
             last = messages[-1] if isinstance(messages, list) and messages else {}
             blocks = last.get('content') if isinstance(last, dict) else None
             if not (isinstance(last, dict) and last.get('role') == 'user' and isinstance(blocks, list)
                     and any(isinstance(block, dict) and block.get('type') == 'tool_result' for block in blocks)):
                 self.problem(400, 'request %d has no final user tool_result' % number)
                 return
+        if number == 4:
+            last = messages[-1] if isinstance(messages, list) and messages else {}
+            blocks = last.get('content', []) if isinstance(last, dict) else []
+            if not (isinstance(last, dict) and last.get('role') == 'user' and isinstance(blocks, list)
+                    and any(block.get('type') == 'text' and isinstance(block.get('text'), str)
+                            and block['text'].startswith('<completion_check>\n')
+                            for block in blocks if isinstance(block, dict))):
+                self.problem(400, 'request 4 has no completion prompt')
+                return
         if number == 1:
             block = {'type': 'tool_use', 'id': 'mock-write', 'name': 'write',
                      'input': {'path': server.script, 'content': server.content}}
-        elif number == 2:
+        elif number in (2, 4):
             block = {'type': 'tool_use', 'id': 'mock-execute',
                      'name': 'benitoite_test' if server.kind == 'test' else 'benitoite_run',
                      'input': {'paths': [server.script]} if server.kind == 'test' else {'path': server.script}}
@@ -80,7 +90,7 @@ class Handler(BaseHTTPRequestHandler):
                 'output_tokens': 0}}},
             {'type': 'content_block_start', 'index': 0, 'content_block': block},
             {'type': 'content_block_stop', 'index': 0},
-            {'type': 'message_delta', 'delta': {'stop_reason': 'end_turn' if number == 3 else 'tool_use'},
+            {'type': 'message_delta', 'delta': {'stop_reason': 'end_turn' if number in (3, 5) else 'tool_use'},
              'usage': {'output_tokens': 50}},
             {'type': 'message_stop'},
         ]
@@ -92,11 +102,11 @@ class Handler(BaseHTTPRequestHandler):
         pass
 
 
-def start(kind: str, script: str, content: str) -> Tuple[MockServer, str]:
+def start(kind: str, script: str, content: str, completion_check: bool = False) -> Tuple[MockServer, str]:
     """試行ごとの筋書きで起動する。呼び出し側が shutdown と server_close を行う。"""
     if kind not in ('run', 'test'):
         raise ValueError('unknown task kind: %s' % kind)
-    server = MockServer(kind, script, content)
+    server = MockServer(kind, script, content, completion_check)
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
     return server, 'http://127.0.0.1:%d' % server.server_address[1]

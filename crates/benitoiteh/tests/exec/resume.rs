@@ -708,3 +708,135 @@ fn sessions_lists_fork_origin_and_rejects_an_invalid_origin_id() -> TestResult {
     server.shutdown()?;
     Ok(())
 }
+
+// 関門: 最初の応答を最後の応答として出す退行、環境の促しを依頼として数える退行、
+// 再開で古いヘッダの設定を使う退行は exec の準備・出力・記録をつないで守る。
+#[test]
+fn completion_final_summary_resume_and_fork_preserve_environment_messages() -> TestResult {
+    let protocol = Protocol::Chat;
+    let mut server = MockProvider::start(vec![
+        ResponseScript::sse(protocol.response(None, "initial answer", false)),
+        ResponseScript::sse(protocol.response(None, "verified answer", false)),
+        ResponseScript::sse(protocol.response(None, "resumed without prompt", false)),
+        ResponseScript::sse(protocol.response(None, "new answer", false)),
+        ResponseScript::sse(protocol.response(None, "new verified answer", false)),
+    ])?;
+    let f = Fixture::new(protocol, &server)?;
+    let config = f.root.join("config/benitoiteh/config.toml");
+    let original = fs::read_to_string(&config)?;
+    fs::write(
+        &config,
+        format!("{original}\n[agent]\ncompletion_check=true\n"),
+    )?;
+    let output = Running::start(&mut f.command("First request"))?.finish()?;
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(String::from_utf8(output.stdout)?, "verified answer\n");
+    let (directory, records) = f.records()?;
+    assert_eq!(
+        records.first().and_then(|r| r.get("completion_check")),
+        Some(&json!(true))
+    );
+    let summary = records.last().ok_or("summary")?;
+    assert_eq!(summary.get("turns"), Some(&json!(2)));
+    assert_eq!(summary.pointer("/tokens/input"), Some(&json!(20)));
+    assert_eq!(summary.pointer("/tokens/output"), Some(&json!(4)));
+    let prompts = records
+        .iter()
+        .filter(|r| {
+            r.get("type") == Some(&json!("user")) && r.get("kind") == Some(&json!("environment"))
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(prompts.len(), 1);
+    assert_eq!(
+        benitoiteh::session::read_records(&directory)?
+            .iter()
+            .filter_map(benitoiteh::session::request_text)
+            .collect::<Vec<_>>(),
+        ["First request"]
+    );
+    let data_paths = paths(&f)?;
+    let source = session_support::open_created_session(&data_paths, &id(&directory)?.parse()?)?;
+    let copied = source
+        .fork(
+            &data_paths,
+            &f.root.join("project"),
+            benitoiteh::session::ForkTarget::Current,
+        )?
+        .session;
+    assert_eq!(
+        ResumeState::read(copied.directory())?.conversation,
+        ResumeState::read(&directory)?.conversation
+    );
+    drop(source);
+    for (enabled, turns, final_text) in [
+        (false, 1, "resumed without prompt"),
+        (true, 2, "new verified answer"),
+    ] {
+        fs::write(
+            &config,
+            format!("{original}\n[agent]\ncompletion_check={enabled}\n"),
+        )?;
+        let output = Running::start(f.command("Next request").args([
+            "--resume",
+            id(&directory)?,
+            "--json",
+        ]))?
+        .finish()?;
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let events = lines(&output.stdout)?;
+        assert_eq!(
+            events.last().and_then(|e| e.get("turns")),
+            Some(&json!(turns))
+        );
+        let last_text = events
+            .iter()
+            .rev()
+            .find(|e| e.get("type") == Some(&json!("text_delta")))
+            .ok_or("text delta")?;
+        assert_eq!(last_text.get("text"), Some(&json!(final_text)));
+        let records = benitoiteh::session::read_records(&directory)?;
+        let Some(Record::Header(header)) = records.first() else {
+            return Err("header".into());
+        };
+        assert_eq!(header.completion_check, Some(true));
+    }
+    let state = ResumeState::read(&directory)?;
+    let user_parts = state
+        .conversation
+        .items
+        .iter()
+        .filter_map(|item| {
+            if let Item::UserMessage(message) = item {
+                Some(&message.parts)
+            } else {
+                None
+            }
+        })
+        .flatten();
+    assert_eq!(
+        user_parts
+            .filter(|part| part.text.starts_with("<completion_check>\n"))
+            .count(),
+        2
+    );
+    let requests = server.requests()?;
+    assert_eq!(requests.len(), 5);
+    assert!(
+        requests
+            .get(2)
+            .ok_or("resume request")?
+            .body
+            .to_string()
+            .contains("initial answer")
+    );
+    server.shutdown()?;
+    Ok(())
+}

@@ -299,6 +299,7 @@ impl Fixture {
         let directory = session.directory().to_owned();
         let spill = directory.join("spill");
         let config = AgentConfig {
+            agent: Default::default(),
             project_parent: None,
             allow_effects: None,
             mode,

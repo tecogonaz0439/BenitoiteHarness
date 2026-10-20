@@ -102,6 +102,8 @@ pub struct Header {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub after_write_check: Option<bool>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub completion_check: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub read_line_numbers: Option<bool>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub skills: Vec<RecordedSkill>,

@@ -702,9 +702,10 @@ fn evaluation_switches_are_user_only_and_preserve_read_exclusions() -> TestResul
         let config = UserConfig::parse(input)?;
         assert!(config.restricted.after_write_check);
         assert!(config.read.line_numbers);
+        assert!(!config.agent.completion_check);
     }
     let user = UserConfig::parse(
-        "default_provider='p'\n[providers.p]\nkind='openai-chat'\nmodel='m'\n[restricted]\nafter_write_check=false\n[read]\nline_numbers=false\nexclude=['user.*']\n[skills]\nuser=false\nproject=false\n[plugins]\nuser=false\nproject=false",
+        "default_provider='p'\n[providers.p]\nkind='openai-chat'\nmodel='m'\n[agent]\ncompletion_check=true\n[restricted]\nafter_write_check=false\n[read]\nline_numbers=false\nexclude=['user.*']\n[skills]\nuser=false\nproject=false\n[plugins]\nuser=false\nproject=false",
     )?;
     assert!(!user.restricted.after_write_check);
     assert!(!user.read.line_numbers);
@@ -716,11 +717,13 @@ fn evaluation_switches_are_user_only_and_preserve_read_exclusions() -> TestResul
     let resolved =
         user.resolve_exec(&ExecArgs::parse(["request"])?, &loaded.config, &project_dir)?;
     assert!(!resolved.read_line_numbers);
+    assert!(resolved.agent.completion_check);
     assert!(!resolved.skills.user && !resolved.skills.project);
     assert!(!resolved.plugins.user && !resolved.plugins.project);
     assert_eq!(resolved.read.exclude, ["user.*", "project.*"]);
     for (input, field) in [
         ("[read]\nline_numbers=false", "line_numbers"),
+        ("model='discarded'\n[agent]\ncompletion_check=true", "agent"),
         ("[restricted]\nafter_write_check=false", "restricted"),
         ("[skills]\nuser=false", "skills"),
         ("[plugins]\nuser=false", "plugins"),
@@ -728,6 +731,7 @@ fn evaluation_switches_are_user_only_and_preserve_read_exclusions() -> TestResul
         fs::write(&path, input)?;
         let loaded = ProjectConfig::load(&root);
         assert!(loaded.read);
+        assert!(loaded.config.model.is_none());
         let error = loaded.error.ok_or("accepted project evaluation switch")?;
         assert_eq!(
             error.to_string(),
@@ -735,6 +739,9 @@ fn evaluation_switches_are_user_only_and_preserve_read_exclusions() -> TestResul
         );
     }
     for input in [
+        "[agent]\ncompletion_check=1",
+        "[agent]\ncompletion_check='true'",
+        "[agent]\ncompletion_checks=true",
         "[read]\nline_numbers=0",
         "[restricted]\nafter_write_check='false'",
     ] {

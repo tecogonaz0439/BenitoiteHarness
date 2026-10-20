@@ -4,14 +4,14 @@ use benitoiteh::benitoite::{BenitoiteError, CheckQuery, QueryOutput};
 use std::collections::VecDeque;
 
 #[derive(Clone, Copy)]
-enum Response {
+pub(super) enum Response {
     Failed,
     Warning,
     Passed,
     Usage,
     Processor,
 }
-fn query(responses: Vec<Response>) -> Arc<CheckQuery> {
+pub(super) fn query(responses: Vec<Response>) -> Arc<CheckQuery> {
     let responses = Mutex::new(VecDeque::from(responses));
     Arc::new(move |args, _, _| {
         let response = responses

@@ -318,7 +318,10 @@ pub(super) fn rebuild(
         Some(Item::UserMessage(first)) => first
             .parts
             .iter()
-            .filter(|part| part.kind == UserPartKind::Environment)
+            .filter(|part| {
+                part.kind == UserPartKind::Environment
+                    && !part.text.starts_with("<completion_check>\n")
+            })
             .cloned()
             .collect::<Vec<_>>(),
         _ => Vec::new(),

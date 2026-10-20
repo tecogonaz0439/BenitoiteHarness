@@ -154,9 +154,42 @@ python3 -I tools/skill-eval/skill_eval.py \
 
 ### 評価で決める選択肢の切り替え
 
-`harnesses.json` の `kind: benitoiteh` の項目には、利用者の設定に足す `config` を指定できる。受け付けるのは `{"restricted": {"after_write_check": false}}` と `{"read": {"line_numbers": false}}` の二つの表と鍵であり、値は真偽に限る。両方を同じ項目に指定することもできる。知らない表・鍵、真偽以外の値、ほかの kind の項目への指定は、`--dry-run` を含め、項目を読むときに誤りにする。`[restricted]` の `allowed_programs` は残し、`[read]` は指定されたときに加える。記録の見出しの `config` には指定した辞書を、指定がなければ `-` を書く。
+`harnesses.json` の `kind: benitoiteh` の項目には、利用者の設定に足す `config` を指定できる。受け付けるのは `{"restricted": {"after_write_check": false}}`、`{"read": {"line_numbers": false}}`、`{"agent": {"completion_check": true}}` の三つの表と鍵であり、値は真偽に限る。同じ項目に組み合わせて指定することもできる。知らない表・鍵、真偽以外の値、ほかの kind の項目への指定は、`--dry-run` を含め、項目を読むときに誤りにする。`[restricted]` の `allowed_programs` は残し、`[read]` と `[agent]` は指定されたときに加える。記録の見出しの `config` には指定した辞書を、指定がなければ `-` を書く。
 
 比較用の項目は `benitoiteh-deepseek-no-after-write-check`、`benitoiteh-deepseek-no-line-numbers`、`benitoiteh-deepseek-effort-low`、`benitoiteh-deepseek-effort-max` である。いずれも `benitoiteh-deepseek` と同じ接続先・モデル・上限・単価を使い、一つの値だけを替える。起動には `--harness <項目の名前> --allow-unverified` を指定する。DeepSeek の `/anthropic` の口が `output_config.effort` の `low`・`max` を受け付け、その値で振る舞いを変えるかは未検証であり、評価の最初に確かめる。比較する回数の割り振りは、走らせる前に設計者に諮る。
+
+### 完了の前の確かめの比較（BH-011）
+
+`benitoiteh-deepseek-completion-check` は `benitoiteh-deepseek` に `config.agent.completion_check: true` だけを加えた条件である。`verified: false`・`default: false` のまま置く。比較の両側を同じ `--benitoiteh` で起動し、過去の試行を使い回さない。省略した側の実効値は `false` である。両側とも制限モード、DeepSeek-V4.1-Flash（`deepseek-flash`、Anthropic 互換）、effort `high`、行の番号あり、書いた後の検査あり、文脈の窓 200,000、1 試行の上限 50 番・200 万トークン・30 分を使う。
+
+本物の提供者を呼ぶ前に、設計者へ回数・費用・時間・停止額を示して了承を得る。[設計書 07-02「M の段の残りの規模と費用」](../../docs/design/07-quality/07-02-evaluation.md#m-の段の残りの規模と費用)の条件は、試しの走行が同じ 1 課題で各条件 1 回の計 2 回、本体が `json_summary`・`file_process`・`error_handling`・`write_tests` の各条件 3 回の計 24 回である。計 26 回で $0.31〜0.52、13〜52 分を見込み、試しの走行と本体を合わせた停止額は $0.60 とする。別の起動では、使用済みの費用を差し引いた残額を `--stop-cost` に渡す。試しの走行の後に見積もりを見直し、本体の前に改めて了承を得る。
+
+了承を得た後の本体の指定例は次のとおりである。`<残額>`、処理系と実行ファイルのパス、リポジトリの外の作業場所を、走行前に確定する。
+
+```sh
+python3 -I tools/skill-eval/skill_eval.py \
+  --harness benitoiteh-deepseek,benitoiteh-deepseek-completion-check \
+  --allow-unverified --interleave --trials 3 \
+  --task json_summary --task file_process --task error_handling --task write_tests \
+  --benitoite <v0.0.7の処理系> --benitoiteh <両条件で共通の実行ファイル> \
+  --work-root <リポジトリの外の作業場所> --stop-cost <残額>
+```
+
+`--interleave` は複数条件にだけ使える。同じ課題・反復の全条件を実行してから次の組へ進み、（課題, 反復）の組の通し番号で条件の先頭を回す。課題が変わっても回転を戻さない。2 条件・各課題 3 反復なら、最初の課題は A→B、B→A、A→B、次の課題は B→A、A→B、B→A となる。各行の `repetition` と `condition_order` に反復と全体の起動順、`condition_position` に組の中で何番目に起動したか（1 から始まる）を残す。全体の記録の `起動順` にも組の中の位置を書き、中断した試行は `completed: False` として残す。費用は条件をまたいで同じ提供者の累計に足す。費用不明でも後続を止め、上限は試行の後に判定するので最後の 1 試行分は超えうる。
+
+試行ごとの `.jsonl` には次を加える。促しの境は、環境の発言の本文が `prompts/completion-check.md` を `<completion_check>` で囲んだ文に一致する行である。見出しの `completion_check_sha256` は、評価が照合に使う包んだ文の UTF-8 の SHA-256 である（末尾の `</completion_check>` の後に改行を足さない）。環境の部分が `<completion_check>\n` で始まるのに文が一致しなければ、`CompletionPromptMismatch` としてその試行を失敗にし、次の試行を続ける。これにより、別の版の実行ファイルが送った促しを、黙って 0 回として集計しない。記録の行・環境の発言・部分の型が違う場合も、その試行の記録を読めないものとして失敗にする。
+
+- `completion_prompts`: 固定の促しの回数。
+- `verification_calls_before`・`verification_calls_after`: `benitoite_check`・`benitoite_run`・`benitoite_test`・`benitoite_scratch` の名前ごとの回数。`validation_error` がない `tool_call` だけを数え、単なる検査済みという文や `tool_result` の行は数えない。促しのない側の `after` はすべて 0 とする。
+- `edits_after_prompt`: 同じ規則で数えた、促しの後の `write` と `edit` の合計。
+
+`verification_calls_before`・`verification_calls_after` と `edits_after_prompt` は、引数の検証を通った、要求された呼び出しの数である。出力の上限、取り消し、トークンの上限、拒否などで実行されなかった呼び出しも含む。実際の実行回数や検査の成功回数を表すものではない。`tool_result` にも実行されなかった呼び出しの結果が残るため、結果の行を数えても実行回数にはならない。
+
+書いた後の自動の検査は、既存の `after_write_checks` に分けて残す。最後の応答は試行の `final.txt` に保存する。未検証の報告の有無は自動で採点しない。要約の記録を作る者が `final.txt` を読み、試行ごとに報告の有無、判断の理由、判定した者を記す。成功率と、促しの前後の実行・修正、余分な番・トークン・時間・費用を比べる。差が小さい場合の追加評価と BH-011 を閉じる判断は設計者に委ねる。
+
+`benitoiteh` の起動と版の問い合わせには、親の `HOME` をそのまま渡す。理由: 制限モードの読ませない場所と資格情報の探索に、利用者のホームを使うからである。`XDG_CONFIG_HOME`・`XDG_STATE_HOME`・`TMPDIR` は試行の中へ向ける。テストでは `scripts/check.sh` の `skill_eval_python` が Python の処理全体を一時のホーム・設定・状態・一時領域で起動し、利用者の設定とキーチェーンを使わずに確かめる。
+
+本物の LLM を呼ばない通しには `benitoiteh-mock-completion-check` を使う。既存の模擬の 11 課題とは別に、`scripts/check.sh` が `json_summary` の 1 課題を実行する。3 番目の `Done.`、固定の促し、4 番目の検査・実行、5 番目の `Done.` まで進み、前後の呼び出しが各 1 回となることを確認する。`--inside-codex` では、この通しを既存の模擬の通しとともに除く。
 
 ## 写した後に加えたファイル
 
@@ -237,3 +270,11 @@ python3 -I tools/skill-eval/skill_eval.py \
 ### P5-23 Agent Plugins の Skill
 
 - `benitoiteh` の評価の設定に `[plugins] user = false` を加え、利用者のプラグインを読まないようにした。生成する設定のテストも合わせて更新した。
+
+### P5-29 完了の前の確かめと条件の順
+
+- 利用者だけの `[agent] completion_check` の生成と検証、および既定条件からその値だけを変えた DeepSeek と模擬の項目を加えた。
+- セッションの固定の促しから、前後の検査・実行と後の編集の要求を集計する。包んだ促しの SHA-256 を見出しへ残し、記録の促しとの版違いと、記録の型違いを試行の失敗として扱う。最後の応答の未検証の報告は、判定した者を添えて人が記録する手順にした。
+- `--interleave` を加え、（課題, 反復）の組の通し番号で条件の順を回し、中断した試行を含む全体の起動順・組の中の位置と、条件をまたぐ費用を記録する。
+- `benitoiteh` の起動と版の問い合わせは、読ませない場所と資格情報の探索を変えないため、親の `HOME` を保持する。`scripts/check.sh` の評価の検査では、Python の処理全体のホーム・設定・状態・一時領域を分ける。
+- 既存の模擬の 11 課題に加え、促しのある 1 課題を別に検査する。
