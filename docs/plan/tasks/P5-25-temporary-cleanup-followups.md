@@ -92,3 +92,14 @@
    - テストの後に一時の根に墓標が残っていないことは、`tests/support/temporary_cleanup.rs` の `check_temporary_root`（9-）で確かめられる。墓標が残るテスト（権限を戻す前の段）は、そのテストの最後に権限を戻して掃除を走らせてから確かめる。
    - 二つのデータの置き場所（項目 5）は、`DataPaths` を二つ作り、`temporary_root` を同じにし、`data_dir`（`sessions_dir`）を分ける。片方でセッションを開いて錠を持ったまま、もう片方で `cleanup` を呼ぶ。
 6. **Linux の `TMPDIR`**: Linux で `TMPDIR` を設定せず `normal.writable_roots = ["/tmp"]` としていた設定は、項目 4 で起動できなくなる。完了の報告の「残したこと」に書く（利用者への案内は設計書 03-02 に書いた）。
+
+## 補足 2（2026-10-20、レビューを受けた直し）
+
+本節は、上の各節と補足に優先する。レビューで中が 3 件出た。行の番号は、1 回目の実装の作業ツリーのもの。設計書 01-05「一時ディレクトリ」「記録を残す期間」を、下のとおり改めた（main にある）。
+
+1. **中 1: 期間切れのセッションの墓標が、一時ディレクトリより先に消える**（`session/mod.rs` の 434-446 の墓標の掃除、630-637 の `remove_session_tombstone`、553-576 の `session_kept`）。`remove_session_tombstone` は、墓標の錠を持ったまま、先に `temporary::remove_all(root, &paths.temporary_root, &id)` で一時ディレクトリ（墓標の名前のものを含む）を消す。消せなければ、墓標の中の `lock` 以外（`session.jsonl` を含む）を消して残し、失敗を示す。消せたら墓標を消す。知らせの文「the session is kept until its temporary directory is removed」を、この振る舞いに合わせる。テスト: 一時の側だけを塞ぎ（000 の子。root では飛ばす）、権限を戻さずに掃除を 3 回走らせ、毎回失敗が示され、墓標の錠が残り、`session.jsonl` が消えていることを確かめる。その後に権限を戻して掃除し、両方が消えることを確かめる。
+2. **中 2: macOS の ACL の deny delete で再開が止まる**（`session/temporary.rs` の 113-120 の `discard`、177 の `prepare`）。`renameat` が `NOENT` のほかの誤り（`ACCES`・`PERM` など）で失敗したら、`Pinned` と同じに扱い、代わりの名前へ進む。macOS の知らせには、`chflags -R nouchg <パス>` に加えて `chmod -R -N <パス>` を示し、パスはシェルの引用（一重引用符。中の一重引用符は `'\''`）を付ける（`session/text.rs` の 74 あたり）。テスト（macOS だけ）: 一時ディレクトリに `/bin/chmod +a "everyone deny delete" <パス>` を付けて再開でき、代わりの名前を使い、知らせが出ることを確かめる。`Drop` で `/bin/chmod -N <パス>` を走らせて外す。
+3. **中 3: 一時ディレクトリへ移された入れ子の `.git` を消す**（`session/remove.rs` の歩き方）。一時ディレクトリの削除（`session == false` の経路）で、守る名前（`sandbox` の守る名前の一覧を使う。macOS では大文字と小文字を区別しない）の項目に当たったら、その項目を消さずに残し、残したパスを失敗として示す（一時ディレクトリは消せなかったものと同じ扱いになり、中 1 の形で残る）。セッションのディレクトリの削除（`session == true`）は今のまま。テスト: 一時ディレクトリに `sub/.git/HEAD` と `sub/other` を置いて掃除し、`sub/.git/HEAD` が残り、`sub/other` が消え、失敗にそのパスが出ることを確かめる。macOS では `sub/.GIT` でも残ることを確かめる。
+4. **低 1: `Removal::push` が段の数に比例する走査を毎回行う**（`remove.rs` の 93-107）。開いた段の数と、最初の開いた段の添字を持ち、O(1) にする（閉じた段は常に先頭の連続した並びである）。
+5. **低 2: `remove_all` の墓標の枝が持ち主と種類を確かめない**（`temporary.rs` の 149-150）。`discard` と同じく、`statat` の NOFOLLOW で、ディレクトリであり持ち主が自分であることを先に確かめ、合わなければ触らない。
+6. **競合の見かけの失敗**: 同時に掃除する二つの起動の一方がセッションを墓標に替えると、他方の `open_directory_at(&sessions, id)?`（`mod.rs` の 510）が NotFound になる。NotFound は `Ok(false)`（消すものがない）として扱い、失敗を示さない。
