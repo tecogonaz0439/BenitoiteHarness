@@ -139,7 +139,7 @@ impl ForkPlan {
         })
     }
 
-    fn finish(self, source: &Session, session: Session) -> Result<ForkedSession, SessionError> {
+    fn finish(mut self, source: &Session, session: Session) -> Result<ForkedSession, SessionError> {
         session.configure_budget(&self.usage);
         let result = self.write(source, &session);
         if let Err(error) = result {
@@ -163,7 +163,7 @@ impl ForkPlan {
         })
     }
 
-    fn write(&self, source: &Session, session: &Session) -> Result<(), SessionError> {
+    fn write(&mut self, source: &Session, session: &Session) -> Result<(), SessionError> {
         for asset in &self.assets {
             asset.copy(source, session)?;
         }
@@ -187,7 +187,7 @@ impl ForkPlan {
             writer.append(record)?;
         }
         // 再開の状態は既に検査した記録から一度だけ組み立て、起動側へ渡す。
-        let state = super::ResumeState::from_records(&self.records)?;
+        let state = super::ResumeState::from_records(std::mem::take(&mut self.records))?;
         // 名前の確定より先に内容を同期し、不完全な記録を再開可能な名前で残さない。
         staged.sync_all()?;
         rustix::fs::renameat(&directory, "fork.jsonl", &directory, "session.jsonl")?;
@@ -640,7 +640,7 @@ mod tests {
     #[test]
     fn asset_failure_does_not_publish_any_session_records() -> TestResult {
         let f = Fixture::new()?;
-        let plan = ForkPlan::read(&f.source, &f.paths, &f.root, ForkTarget::Current)?;
+        let mut plan = ForkPlan::read(&f.source, &f.paths, &f.root, ForkTarget::Current)?;
         let session = Session::create(&f.paths, plan.id.clone())?;
         fs::write(
             f.source.directory().join("objects").join(&f.hash),

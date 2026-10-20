@@ -670,7 +670,7 @@ fn branch_preparation_failure_preserves_log_and_memory_until_commit()
     let mut tree = session::SessionTree::from_records(&records)?;
     tree.push_record(&branch, records.len())?;
     records.push(branch.clone());
-    let state = session::ResumeState::from_records_with_tree(&records, tree)?;
+    let state = session::ResumeState::from_records_with_tree(records, tree)?;
     let prepared = agent.prepare_path_state(state)?;
     assert_eq!(std::fs::read(&log)?, before);
     assert_eq!(agent.conversation, conversation);

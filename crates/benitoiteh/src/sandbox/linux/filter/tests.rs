@@ -1,6 +1,6 @@
 //! 発行した BPF に模擬の syscall データを渡して CPU・番号・引数の拒否を検証する（実装プラン P0-05「テスト」）。
 
-use super::compile;
+use super::{compile, compile_no_process};
 use seccompiler::BpfProgram;
 
 type TestResult = Result<(), Box<dyn std::error::Error>>;
@@ -114,6 +114,63 @@ fn compiled_filter_rejects_bypass_syscalls_and_foreign_architectures() -> TestRe
                 denied
             );
         }
+    }
+    Ok(())
+}
+
+// 作成時の関門: musl の子起動で通る clone 以外の番号や互換 ABI の拒否を落とす退行を捕まえる。
+// 既存の評価器で発行した BPF の動作を確かめ、画像補助の子テストは実際の OS の拒否を持つ。
+#[test]
+fn compiled_image_filter_rejects_process_syscalls_and_compatible_abis() -> TestResult {
+    let filter = compile_no_process()?;
+    let denied = libc::SECCOMP_RET_ERRNO | u32::try_from(libc::EPERM)?;
+    let process_syscalls = [
+        libc::SYS_clone,
+        libc::SYS_clone3,
+        libc::SYS_execve,
+        libc::SYS_execveat,
+    ]
+    .into_iter();
+    #[cfg(target_arch = "x86_64")]
+    let process_syscalls = process_syscalls.chain([libc::SYS_fork, libc::SYS_vfork]);
+    for syscall in process_syscalls {
+        assert_eq!(
+            evaluate(&filter, arch(), u32::try_from(syscall)?, [0; 6])?,
+            denied,
+            "syscall {syscall}"
+        );
+    }
+    for syscall in [
+        libc::SYS_read,
+        libc::SYS_write,
+        libc::SYS_mmap,
+        libc::SYS_exit_group,
+    ] {
+        assert_eq!(
+            evaluate(&filter, arch(), u32::try_from(syscall)?, [0; 6])?,
+            libc::SECCOMP_RET_ALLOW,
+            "syscall {syscall}"
+        );
+        #[cfg(target_arch = "x86_64")]
+        assert_eq!(
+            evaluate(
+                &filter,
+                arch(),
+                u32::try_from(syscall)? | 0x4000_0000,
+                [0; 6]
+            )?,
+            denied,
+            "x32 syscall {syscall}"
+        );
+    }
+    // i386 の fork・execve・socketcall。ネイティブの番号と解釈して許してはならない。
+    #[cfg(target_arch = "x86_64")]
+    for syscall in [2, 11, 102] {
+        assert_eq!(
+            evaluate(&filter, 0x4000_0003, syscall, [0; 6])?,
+            libc::SECCOMP_RET_KILL_PROCESS,
+            "i386 syscall {syscall}"
+        );
     }
     Ok(())
 }
