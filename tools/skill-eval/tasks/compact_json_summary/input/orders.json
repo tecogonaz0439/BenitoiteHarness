@@ -1,0 +1,21 @@
+[
+  {
+    "amount": 20,
+    "region": "west",
+    "status": "paid"
+  },
+  {
+    "amount": 10,
+    "region": "east",
+    "status": "paid"
+  },
+  {
+    "amount": 900,
+    "region": "east",
+    "status": "cancelled"
+  },
+  {
+    "region": "north",
+    "status": "paid"
+  }
+]

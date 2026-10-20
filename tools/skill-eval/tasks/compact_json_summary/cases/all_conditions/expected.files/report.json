@@ -1,0 +1,14 @@
+{
+  "east": {
+    "amount": 3,
+    "count": 1
+  },
+  "other": {
+    "amount": 5,
+    "count": 2
+  },
+  "west": {
+    "amount": 8,
+    "count": 2
+  }
+}

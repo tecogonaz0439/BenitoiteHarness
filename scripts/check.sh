@@ -148,8 +148,9 @@ skill_eval_work=$(mktemp -d)
 mkdir -p "$skill_eval_work"/{home,config,state,tmp}
 skill_eval_python() {
     env HOME="$skill_eval_work/home" XDG_CONFIG_HOME="$skill_eval_work/config" \
-        XDG_STATE_HOME="$skill_eval_work/state" TMPDIR="$skill_eval_work/tmp" python3 -I "$@"
+        XDG_STATE_HOME="$skill_eval_work/state" TMPDIR="$skill_eval_work/tmp" /usr/bin/python3 -I "$@"
 }
+skill_eval_python tools/skill-eval/generate_compaction_materials.py --check
 if "$inside_codex"; then
     BENITOITEH_SKILL_EVAL_JUDGE_SANDBOX=0 BENITOITEH_SKILL_EVAL_STAGED_E2E=0 skill_eval_python -m unittest discover -v -s tools/skill-eval -p 'test_*.py'
 else
@@ -183,9 +184,11 @@ if ! "$inside_codex"; then
         exit 1
     fi
 fi
-if ((compaction_tasks == 0)); then
-    printf 'skill-eval compaction: 課題未作成（P5-33）。self-test・dry-run・模擬の通しを除外。Python の一時的な課題のテストは実行済み。\n'
-elif ! "$inside_codex"; then
+if ((compaction_tasks != 2)); then
+    printf 'Expected the two compaction tasks, found %s.\n' "$compaction_tasks" >&2
+    exit 1
+fi
+if ! "$inside_codex"; then
     skill_eval_python tools/skill-eval/skill_eval.py --self-test --suite compaction \
         --benitoite "$BENITOITEH_TEST_BENITOITE"
     skill_eval_python tools/skill-eval/skill_eval.py --dry-run --suite compaction \

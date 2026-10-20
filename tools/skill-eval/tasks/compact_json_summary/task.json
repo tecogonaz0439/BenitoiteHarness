@@ -1,0 +1,160 @@
+{
+  "attempt_limit": 20,
+  "generation": {
+    "added_units_kib": [
+      12,
+      12,
+      12,
+      12,
+      12,
+      12,
+      12,
+      12,
+      12,
+      12,
+      12,
+      12,
+      12,
+      12,
+      12,
+      12,
+      12
+    ],
+    "arguments": {
+      "chunk_kib": 10,
+      "seed": 33,
+      "total_kib": 268
+    },
+    "bytes": 275165,
+    "files_sha256": {
+      "materials/1/notes-01.md": "630e619ed72f001b9e468636b97b3ca874f0287253bdcf79eab870e62d3e40d3",
+      "materials/1/notes-02.md": "3cf291fc0c3fd34755554fa585abc3de85a850c85f1a65be7f58bae49b49531f",
+      "materials/1/notes-03.md": "539bc407054f191d18fe2ff06eadcba74eff5068d0d866a0422d07b8981a1cf2",
+      "materials/1/notes-04.md": "3bf69d71d85cfcbff64596e968914ea371e8fed4b4e8cbbbe4a3879628d7915e",
+      "materials/1/notes-05.md": "c18b5fd9b0a8ec09f54e1e24e269b6fe9c4ef9c33ba7b2b24fefb8a3c83b000b",
+      "materials/1/notes-06.md": "8516d463bda636a734b04d159fc878b3cd0d83a1bbc7c88b50bd3eb0c1fee44a",
+      "materials/1/notes-07.md": "f5329894f8289c38c19b20eac1f3a61ca88ffadd1b48ae4f025723ff37faa17a",
+      "materials/1/notes-08.md": "556dd0728053e6bb7436b2d7ed5367db3eb8659b7ca309f7d0f0d411c674f904",
+      "materials/1/notes-09.md": "550979b126b42bb37cb2180ba80b5200525846d1e5d8b115e4fc7ed4379ae953",
+      "materials/2/notes-01.md": "420bb25cd566fdc9da25a3c69aa0bf6db1f2c6e45c794f04c5e84ffd96ace2e8",
+      "materials/2/notes-02.md": "38f86e58033151f885fc9c6d61f47ad49760a1bfb4f4588d6f1061c8a665f992",
+      "materials/2/notes-03.md": "c4aaead8af6532df42ca2f462eb985ce92929834254d8f354965b4a13434a6df",
+      "materials/2/notes-04.md": "ea67e187d85d3f1310649967c6edd932ed86cca7a4028655d58178193c1e9a12",
+      "materials/2/notes-05.md": "21ea380c3596d96bf64a315498ecab5e0cb799d67171ab895a0942b18902f5f6",
+      "materials/2/notes-06.md": "0678767fdc10f3fc85ab837eb6a053f0e95bb617e22dbce675ad665dfa76aec2",
+      "materials/2/notes-07.md": "a5b903377252337231cecd36c9820a5caacf1e87fc53c0f9ab6582141742c3b0",
+      "materials/2/notes-08.md": "94fa5447a43e0e0a08abb8759e82e13b303c837f73d32e54d6a06945e2f8e139",
+      "materials/2/notes-09.md": "fec30acf34ecc252b2c3005f6ce2c83ca7c68ffecec7fd2e778ffd1fe431f9b0",
+      "materials/3/notes-01.md": "a6dfcd1665e66cfadf25ca1741e23f39e7793c034be3492fb07363a601deec79",
+      "materials/3/notes-02.md": "806af025cac8a52a756d507d94fca06bc7c97ff0e6daf22c67f16e2ed969155c",
+      "materials/3/notes-03.md": "78dbe78f566f5b6c5a985796bd9bb3af1ce77210fd75ef6ba50825d9970e0204",
+      "materials/3/notes-04.md": "5a07642a78d203b2a42f3121bfa087cdf0113e3ec215d00e63b486b9051280cf",
+      "materials/3/notes-05.md": "980a538954df721111269ffb17b2a21ab0832fec49f894d2ca100c8f02978e2f",
+      "materials/3/notes-06.md": "174da03fee3816d960c8b2cfb9fd1e8970e4d6c6cf1ad63352e6a7279f9f11f4",
+      "materials/3/notes-07.md": "3b0cac45c876309ebe1519eb804a97be553ac2b35aab636a6471952594e5c13f",
+      "materials/3/notes-08.md": "cd60b8c2f50506e7a7de5ac98cb17abe4d84a87574cbbc98cf30a43fc8bd219a",
+      "materials/3/notes-09.md": "e6353f4dd498033f63c7d31bf7f5533505890d332106b08291008c48fbb77226"
+    },
+    "generator": "generate_compaction_materials.py",
+    "initial_candidate_kib": 64,
+    "initial_candidates_kib": [
+      24,
+      48,
+      64
+    ],
+    "length_status": "provisional; fix common length and stages after paid pilot",
+    "sha256": "9e153abcfb4a208f3eaaa6cfec8cc66a6ab6457b5ed5c2c54e86428bd56318a0",
+    "stage_bytes": {
+      "1": 91799,
+      "2": 91602,
+      "3": 91764
+    },
+    "version": 1
+  },
+  "http": false,
+  "judge_cases": [
+    {
+      "args": [],
+      "expected_files": "cases/default/expected.files",
+      "expected_stdout": "cases/default/expected.stdout",
+      "input": "cases/default/input",
+      "name": "default"
+    },
+    {
+      "args": [
+        "batches/cancelled.json"
+      ],
+      "expected_files": "cases/s1_cancelled/expected.files",
+      "expected_stdout": "cases/s1_cancelled/expected.stdout",
+      "input": "cases/s1_cancelled/input",
+      "name": "s1_cancelled"
+    },
+    {
+      "args": [
+        "batches/missing.json"
+      ],
+      "expected_files": "cases/s1_missing_amount/expected.files",
+      "expected_stdout": "cases/s1_missing_amount/expected.stdout",
+      "input": "cases/s1_missing_amount/input",
+      "name": "s1_missing_amount"
+    },
+    {
+      "args": [
+        "batches/sorted.json"
+      ],
+      "expected_files": "cases/s1_name_order/expected.files",
+      "expected_stdout": "cases/s1_name_order/expected.stdout",
+      "input": "cases/s1_name_order/input",
+      "name": "s1_name_order"
+    },
+    {
+      "args": [
+        "batches/markets.json"
+      ],
+      "expected_files": "cases/s2_unknown/expected.files",
+      "expected_stdout": "cases/s2_unknown/expected.stdout",
+      "input": "cases/s2_unknown/input",
+      "name": "s2_unknown"
+    },
+    {
+      "args": [
+        "batches/empty.json"
+      ],
+      "expected_files": "cases/s3_empty/expected.files",
+      "expected_stdout": "cases/s3_empty/expected.stdout",
+      "input": "cases/s3_empty/input",
+      "name": "s3_empty"
+    },
+    {
+      "args": [
+        "batches/combined.json"
+      ],
+      "expected_files": "cases/all_conditions/expected.files",
+      "expected_stdout": "cases/all_conditions/expected.stdout",
+      "input": "cases/all_conditions/input",
+      "name": "all_conditions"
+    }
+  ],
+  "kind": "staged",
+  "result_kind": "run",
+  "script": "main.bnt",
+  "self_test_failures": [
+    {
+      "case": "s1_cancelled",
+      "script": "negative/include_cancelled.bnt"
+    },
+    {
+      "case": "s1_missing_amount",
+      "script": "negative/missing_is_one.bnt"
+    },
+    {
+      "case": "s1_name_order",
+      "script": "negative/reverse_names.bnt"
+    }
+  ],
+  "stages": [
+    "stages/1.md",
+    "stages/2.md",
+    "stages/3.md"
+  ]
+}

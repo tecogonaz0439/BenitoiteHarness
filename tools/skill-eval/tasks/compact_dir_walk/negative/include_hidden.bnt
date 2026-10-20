@@ -1,0 +1,37 @@
+// 除外はディレクトリの成分だけに適用する（実装プラン P5-33）。
+import Benitoite.Unofficial.IO.Console
+import Benitoite.Unofficial.IO.File
+import Benitoite.Unofficial.IO.Process
+import Benitoite.Unofficial.Json
+
+function directories(path: String) -> List[String]
+  bind parts <- String.split(s: path, separator: "/")
+  return List.take(xs: parts, n: List.length(parts) - 1)
+end function
+
+function selected(root: String, path: String) -> Result[Boolean, String] uses File.Read
+  if List.any(xs: directories(path), p: lambda(value) return value = "drafts" end lambda) then return Result.Ok(false) end if
+  if not String.endsWith(s: String.toLowercase(path), suffix: ".md") then return Result.Ok(false) end if
+  bind info <- try File.info(root + "/" + path) |> Result.mapError(r: _, f: lambda(error) return IOError.message(error) end lambda) or return
+  return Result.Ok(File.Info.kind(info) = File.EntryKind.RegularFile)
+end function
+
+function main() -> Result[Unit, String] uses File.Read, File.Write, Process.Environment, Console.Write
+  bind root <- Option.unwrapOr(o: List.head(Process.arguments()), fallback: "docs")
+  bind paths <- try File.walk(root) |> Result.mapError(r: _, f: lambda(error) return IOError.message(error) end lambda) or return
+  bind files <- try List.fold(xs: paths, initial: Result.Ok([]), f: lambda(acc, value)
+    bind current <- try acc or return
+    bind keep <- try selected(root: root, path: value) or return
+    return Result.Ok(if keep then List.append(xs: current, x: value) else current end if)
+  end lambda) or return
+  List.forEach(xs: List.sort(files), f: lambda(value) Console.writeLine(value))
+  bind counts <- List.fold(xs: files, initial: Map.empty(), f: lambda(acc, value)
+    bind parent <- String.join(xs: directories(value), separator: "/")
+    bind key <- if parent = "" then "." else parent end if
+    bind count <- Option.unwrapOr(o: Map.get(m: acc, k: key), fallback: 0)
+    return Map.set(m: acc, k: key, value: count + 1)
+  end lambda)
+  bind report <- Json.Value.Object(Map.map(m: counts, f: lambda(key, value) return Json.Value.Integer(value) end lambda))
+  bind _ <- try File.writeText(path: "counts.json", text: Json.stringify(report) + "\n") |> Result.mapError(r: _, f: lambda(error) return IOError.message(error) end lambda) or return
+  return Result.Ok(())
+end function

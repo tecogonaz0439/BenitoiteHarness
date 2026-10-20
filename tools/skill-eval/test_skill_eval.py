@@ -4,6 +4,7 @@
 import copy
 import contextlib
 import http.client
+import hashlib
 import io
 import json
 import os
@@ -19,6 +20,7 @@ from unittest import mock
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import mock_provider
+import generate_compaction_materials as materials
 from test_judge_sandbox import requires_sandbox
 import skill_eval as evaluation
 
@@ -2578,7 +2580,8 @@ if mode=='exit': sys.exit(1)
             if os.path.isfile(os.path.join(original, entry, 'task.json')):
                 shutil.copytree(os.path.join(original, entry), os.path.join(self.tasks, entry))
         self.assertEqual(len(evaluation.load_tasks([])), 11)
-        self.assertEqual([task.name for task in evaluation.load_tasks([], 'compaction')], ['staged'])
+        self.assertEqual([task.name for task in evaluation.load_tasks([], 'compaction')],
+                         ['compact_dir_walk', 'compact_json_summary', 'staged'])
         with self.assertRaisesRegex(SystemExit, 'outside suite'):
             evaluation.load_tasks(['staged'])
         with self.assertRaisesRegex(SystemExit, 'outside suite'):
@@ -2854,6 +2857,9 @@ if mode=='exit': sys.exit(1)
             except OSError as error:
                 self.skipTest('loopback listening is unavailable: %s' % error)
         harness = evaluation.load_harnesses()['benitoiteh-mock-compact']
+        # 小さい既存の準備データは、提供者の使用量で道具の途中の圧縮を起こす。
+        # 実課題は低い固定値と複数の読み取りにより、再開のバイト数で圧縮する。
+        harness['mock_input_tokens'] = 45000
         with mock.patch.object(mock_provider, 'start', side_effect=available):
             row = evaluation.run_trial(evaluation.Task('staged'), os.path.join(self.root, 'real'), self.processor,
                 'mock-compact', harness, 'mock', None, False, os.environ['BENITOITEH_SKILL_EVAL_BINARY'])
@@ -2864,6 +2870,122 @@ if mode=='exit': sys.exit(1)
         self.assertGreaterEqual(row['mock_summary_requests'], row['compactions'])
         self.assertEqual(row['total_tokens'], sum(stage['total_tokens'] for stage in row['stages']))
         self.assertEqual(row['cost_usd'], 0)
+
+
+class CompactionTaskTests(unittest.TestCase):
+    # 関門: 具体的な課題の生成・公開順と exec の接続が持ち主である。
+    # 一時的な段のテストは、資料の実量による再開時の圧縮と残す量の差を捕まえない。
+    def test_generation_reproduces_checked_in_bytes_and_publishes_one_stage_at_a_time(self):
+        for name in materials.TASKS:
+            task = evaluation.Task(name)
+            with open(task.path('task.json')) as f:
+                config = json.load(f)
+            with tempfile.TemporaryDirectory(prefix='cm-', dir='/tmp') as temporary:
+                generated = os.path.join(temporary, name)
+                os.mkdir(generated)
+                shutil.copyfile(task.path('task.json'), os.path.join(generated, 'task.json'))
+                command = [sys.executable, os.path.join(evaluation.HERE, 'generate_compaction_materials.py'),
+                           '--task', name, '--tasks-dir', temporary]
+                with self.subTest(task=name):
+                    for _repeat in range(2):
+                        result = subprocess.run(command, capture_output=True, text=True)
+                        self.assertEqual(result.returncode, 0, result.stderr)
+                        result = subprocess.run(command + ['--check'], capture_output=True, text=True)
+                        self.assertEqual(result.returncode, 0, result.stderr)
+                    with open(os.path.join(generated, 'task.json')) as f:
+                        self.assertEqual(json.load(f)['generation'], config['generation'])
+                    workspace = os.path.join(temporary, 'workspace')
+                    evaluation.prepare_inputs(task, workspace)
+                    self.assertFalse(os.path.exists(os.path.join(workspace, 'materials')))
+                    for stage in range(1, 4):
+                        prompt = evaluation.prepare_stage(task, workspace, stage)
+                        self.assertLessEqual(len(evaluation.prepare_stage_prompt(task, stage).encode()), 4096)
+                        self.assertTrue(prompt)
+                        for later in range(stage + 1, 4):
+                            self.assertFalse(os.path.exists(os.path.join(workspace, 'materials', str(later))))
+                        for path in evaluation.stage_materials(task, stage):
+                            with open(os.path.join(workspace, path), 'rb') as f:
+                                data = f.read()
+                            with open(os.path.join(generated, path), 'rb') as f:
+                                self.assertEqual(data, f.read())
+                            self.assertLessEqual(len(data), 12 * 1024)
+                            self.assertEqual(hashlib.sha256(data).hexdigest(),
+                                             config['generation']['files_sha256'][path])
+                    changed = os.path.join(generated, evaluation.stage_materials(task, 1)[0])
+                    with open(changed, 'ab') as f:
+                        f.write(b'changed')
+                    result = subprocess.run(command + ['--check'], capture_output=True, text=True)
+                    self.assertNotEqual(result.returncode, 0)
+
+    @requires_sandbox
+    def test_real_task_references_negative_controls_and_dry_run(self):
+        tasks = evaluation.load_tasks([], 'compaction')
+        processor = os.environ['BENITOITEH_TEST_BENITOITE']
+        with contextlib.redirect_stdout(io.StringIO()):
+            self.assertEqual(evaluation.self_test(tasks, processor), 0)
+        harness = evaluation.load_harnesses()['benitoiteh-mock-compact']
+        for task in tasks:
+            with self.subTest(task=task.name), tempfile.TemporaryDirectory(prefix='cd-', dir='/tmp') as root:
+                row = evaluation.run_trial(task, os.path.join(root, 'trial'), processor,
+                    'mock-compact', harness, 'mock', None, True)
+                self.assertTrue(row['success'], row['reason'])
+                self.assertTrue(row['artifact_success'])
+                self.assertFalse(row['comparison_valid'])
+                self.assertIn('dry-run; no harness execution', row['comparison_reasons'])
+
+    @unittest.skipUnless(os.environ.get('BENITOITEH_SKILL_EVAL_STAGED_E2E') == '1',
+                         'staged mock pass needs the benitoiteh sandbox outside Codex')
+    @requires_sandbox
+    def test_real_tasks_retain_multiple_read_results_and_distinguish_settings(self):
+        start = mock_provider.start
+        def available(*args, **kwargs):
+            try:
+                return start(*args, **kwargs)
+            except OSError as error:
+                self.skipTest('loopback listening is unavailable: %s' % error)
+        settings = [('base', 16384, 20000), ('reserve', 8192, 20000), ('keep', 16384, 8000)]
+        for task in evaluation.load_tasks([], 'compaction'):
+            rows = {}
+            with tempfile.TemporaryDirectory(prefix='ce-', dir='/tmp') as root:
+                for label, reserve, keep in settings:
+                    harness = evaluation.load_harnesses()['benitoiteh-mock-compact']
+                    harness['config']['compaction'].update(reserve_tokens=reserve, keep_tokens=keep)
+                    with self.subTest(task=task.name, setting=label), mock.patch.object(
+                            mock_provider, 'start', side_effect=available):
+                        row = evaluation.run_trial(task, os.path.join(root, label),
+                            os.environ['BENITOITEH_TEST_BENITOITE'], 'mock-' + label, harness,
+                            'mock', None, False, os.environ['BENITOITEH_SKILL_EVAL_BINARY'])
+                        self.assertTrue(row['success'], row['reason'])
+                        self.assertTrue(row['comparison_valid'], row['comparison_reasons'])
+                        self.assertEqual(row['exec_launches'], 3)
+                        self.assertTrue(row['compaction_records_match'])
+                        self.assertEqual(row['total_tokens'], sum(stage['total_tokens'] for stage in row['stages']))
+                        self.assertEqual(row['cost_usd'], 0)
+                        self.assertLessEqual(row['turns'], 50)
+                        self.assertEqual([stage['limits']['turns'] for stage in row['stages']],
+                                         [50 - sum(s['turns'] for s in row['stages'][:n]) for n in range(3)])
+                        self.assertEqual([stage['limits']['tokens'] for stage in row['stages']],
+                            [2000000 - sum(s['total_tokens'] for s in row['stages'][:n]) for n in range(3)])
+                        session = os.path.join(root, label, 'bh', 'state', 'benitoiteh', 'sessions',
+                                               row['session_id'], 'session.jsonl')
+                        with open(session) as f:
+                            records = [json.loads(line) for line in f if line.strip()]
+                        reads = [r['result']['text'] for r in records
+                                 if r.get('type') == 'tool_result' and r.get('name') == 'read'
+                                 and 'field notes, part' in r['result']['text']]
+                        self.assertEqual(len(reads), sum(len(evaluation.stage_materials(task, n)) for n in range(1, 4)))
+                        self.assertTrue(all('sample-' in text and len(text.encode()) > 4000 for text in reads))
+                        retained = [e for e in row['compaction_events'] if e['stage'] > 1 and e['kept_items'] > 0]
+                        self.assertTrue(retained)
+                        self.assertTrue(all(e['kept_estimate'] <= min(keep, 16384) for e in retained))
+                        # 呼び出しと結果の組を複数残す。Anthropic の道具の途中では残さない。
+                        self.assertGreater(max(e['kept_items'] for e in retained), 4)
+                        rows[label] = row
+                self.assertGreater(max(e['kept_estimate'] for e in rows['base']['compaction_events']),
+                                   max(e['kept_estimate'] for e in rows['keep']['compaction_events']))
+                # 低い固定使用量は途中の圧縮を起こさず、段の境のバイト数が予備の差を示す。
+                self.assertLess(rows['base']['compaction_events'][0]['stage'],
+                                rows['reserve']['compaction_events'][0]['stage'])
 
 
 class JudgmentReportTests(unittest.TestCase):

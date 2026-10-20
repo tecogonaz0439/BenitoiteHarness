@@ -1,0 +1,11 @@
+[
+  {
+    "region": "north",
+    "status": "paid"
+  },
+  {
+    "amount": 8,
+    "region": "north",
+    "status": "paid"
+  }
+]
