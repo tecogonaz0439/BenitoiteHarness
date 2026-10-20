@@ -489,14 +489,14 @@ fn refresh_observes_expiry_earliest_time_and_serializes_rotation() -> TestResult
     )?])?;
     let ep = endpoints(&server);
     assert_eq!(
-        auth::access_token(&store, &ep, NOW)?.expose_secret(),
+        auth::access_token(&store, &ep, NOW, &AtomicBool::new(false))?.expose_secret(),
         "access-secret"
     );
     saved.tokens.as_mut().ok_or("tokens")?.expires_at = NOW;
     saved.tokens.as_mut().ok_or("tokens")?.earliest_refresh_at = Some(NOW.saturating_add(1));
     store.lock()?.save(&saved)?;
     assert_eq!(
-        auth::access_token(&store, &ep, NOW)?.expose_secret(),
+        auth::access_token(&store, &ep, NOW, &AtomicBool::new(false))?.expose_secret(),
         "access-secret"
     );
     saved.tokens.as_mut().ok_or("tokens")?.earliest_refresh_at = Some(NOW);
@@ -511,7 +511,7 @@ fn refresh_observes_expiry_earliest_time_and_serializes_rotation() -> TestResult
             workers.push(scope.spawn(move || -> Result<Secret, AuthError> {
                 let store = Store::open(&directory)?;
                 barrier.wait();
-                auth::access_token(&store, &ep, NOW)
+                auth::access_token(&store, &ep, NOW, &AtomicBool::new(false))
             }));
         }
         for worker in workers {
@@ -562,11 +562,11 @@ fn forced_refresh_ignores_earliest_and_reuses_another_writers_token() -> TestRes
     let ep = endpoints(&server);
     let old = Secret::new("access-secret".into());
     assert_eq!(
-        auth::force_refresh(&store, &ep, &old, NOW)?.expose_secret(),
+        auth::force_refresh(&store, &ep, &old, NOW, &AtomicBool::new(false))?.expose_secret(),
         "forced"
     );
     assert_eq!(
-        auth::force_refresh(&store, &ep, &old, NOW)?.expose_secret(),
+        auth::force_refresh(&store, &ep, &old, NOW, &AtomicBool::new(false))?.expose_secret(),
         "forced"
     );
     assert_eq!(server.requests()?.len(), 1);
@@ -602,7 +602,7 @@ fn refresh_removes_only_permanently_rejected_credentials() -> TestResult {
             status,
             &json!({"error":code,"error_description":"secret-refresh"}),
         )?])?;
-        let result = auth::access_token(&store, &endpoints(&server), NOW);
+        let result = auth::access_token(&store, &endpoints(&server), NOW, &AtomicBool::new(false));
         assert_eq!(result.err(), Some(expected), "{code} {status}");
         assert_eq!(store.load()?.ok_or("saved")?.tokens.is_none(), clear);
         server.shutdown()?;
@@ -615,7 +615,7 @@ fn refresh_removes_only_permanently_rejected_credentials() -> TestResult {
     let ep = endpoints(&server);
     drop(server);
     assert_eq!(
-        auth::access_token(&store, &ep, NOW).err(),
+        auth::access_token(&store, &ep, NOW, &AtomicBool::new(false)).err(),
         Some(AuthError::Communication)
     );
     assert!(store.load()?.ok_or("saved")?.tokens.is_some());
@@ -882,7 +882,7 @@ fn discovery_and_response_bounds_are_checked_before_saving_tokens() -> TestResul
 // 作成時の関門: 接続・保存・錠の実際の境界で、レビューの問題を決まった順に再現する。
 #[test]
 fn security_idle_connections_do_not_block_a_callback() -> TestResult {
-    for count in [1, 2] {
+    for count in [0, 16, 100] {
         let fixture = Fixture::new()?;
         let store = fixture.store()?;
         let (mut server, scripts) = MockProvider::start_channel()?;
@@ -899,26 +899,24 @@ fn security_idle_connections_do_not_block_a_callback() -> TestResult {
                 for _ in 0..count {
                     idle.push(TcpStream::connect(address)?);
                 }
-                // connect の完了順に、無送信の接続を先に待ち受けの列へ入れる。
-                let host = format!("Host: {address}");
-                let status = callback(
-                    redirect,
-                    "GET",
-                    &format!(
-                        "/auth/callback?state={}&error=access_denied",
-                        get(&fields, "state")?
-                    ),
-                    &host,
+                let mut socket = TcpStream::connect(address)?;
+                socket.set_read_timeout(Some(Duration::from_secs(5)))?;
+                write!(
+                    socket,
+                    "GET /auth/callback?state={}&error=access_denied HTTP/1.1\r\n",
+                    get(&fields, "state")?
                 )?;
-                assert_eq!(status, 200);
-                for socket in &idle {
-                    socket.set_nonblocking(true)?;
-                    assert!(
-                        matches!(socket.peek(&mut [0]), Err(error) if error.kind() == std::io::ErrorKind::WouldBlock),
-                        "idle peer must remain open until the valid callback is accepted"
-                    );
+                // 頭を分割して送り、未完の接続として保った後にも読み続けることを確かめる。
+                std::thread::sleep(Duration::from_millis(100));
+                write!(socket, "Host: {address}\r\nConnection: close\r\n\r\n")?;
+                let mut response = String::new();
+                socket.read_to_string(&mut response)?;
+                assert!(response.starts_with("HTTP/1.1 200 "), "{count}: {response}");
+                for mut socket in idle {
+                    socket.set_read_timeout(Some(Duration::from_secs(2)))?;
+                    // 64 を超えた接続と、完了時に残った接続の両方が閉じる。
+                    assert!(matches!(socket.read(&mut [0]), Ok(0)));
                 }
-                drop(idle);
                 Ok(())
             },
             &AtomicBool::new(false),
@@ -937,6 +935,8 @@ fn security_unconfirmed_client_recovers_but_successful_exchange_pins_client() ->
         (403, false, "other"),
         (200, false, ""),
         (500, false, "invalid_grant"),
+        (408, false, "invalid_request"),
+        (429, false, "invalid_request"),
         (400, true, "invalid_client"),
     ] {
         let fixture = Fixture::new()?;
@@ -995,7 +995,9 @@ fn security_unconfirmed_client_recovers_but_successful_exchange_pins_client() ->
                 &endpoints(&server),
                 move |url| {
                     let fields = form(url.split_once('?').ok_or("query")?.1)?;
-                    let pinned = known_client || status == 200 || (status == 500 && attempt == 0);
+                    let pinned = known_client
+                        || status == 200
+                        || (matches!(status, 408 | 429 | 500) && attempt == 0);
                     assert_eq!(
                         get(&fields, "client_id")?,
                         if pinned {
@@ -1080,7 +1082,7 @@ fn security_refresh_understands_nested_error_codes_and_types() -> TestResult {
         store.lock()?.save(&credentials(NOW))?;
         let mut server = MockProvider::start(vec![ResponseScript::json(status, &body)?])?;
         assert_eq!(
-            auth::access_token(&store, &endpoints(&server), NOW).err(),
+            auth::access_token(&store, &endpoints(&server), NOW, &AtomicBool::new(false)).err(),
             Some(expected)
         );
         assert_eq!(store.load()?.ok_or("saved")?.tokens.is_none(), clear);
@@ -1132,7 +1134,7 @@ fn security_valid_access_token_does_not_open_or_take_the_lock() -> TestResult {
     // 錠は既に保持中。新しく開こうとしたことも、権限の検査で待たずに検出する。
     fs::set_permissions(&lock, fs::Permissions::from_mode(0o000))?;
     let mut server = MockProvider::start(vec![])?;
-    let result = auth::access_token(&store, &endpoints(&server), NOW);
+    let result = auth::access_token(&store, &endpoints(&server), NOW, &AtomicBool::new(false));
     fs::set_permissions(&lock, fs::Permissions::from_mode(0o600))?;
     drop(held);
     assert_eq!(result?.expose_secret(), "access-secret");
@@ -1351,46 +1353,223 @@ fn rereview_unconfirmed_client_is_reset_after_timeout_cancellation_or_validation
     }
     Ok(())
 }
+
+// 作成時の関門: 応答を止めて実際の保存を読めなくし、後片付けによる誤りの置換を再現する。
 #[test]
-fn rereview_complete_callback_is_accepted_after_four_or_eight_idle_connections() -> TestResult {
-    for count in [4, 8] {
+fn followups_cleanup_preserves_original_login_and_refresh_errors() -> TestResult {
+    use std::sync::mpsc;
+    for login in [true, false] {
         let fixture = Fixture::new()?;
         let store = fixture.store()?;
+        if !login {
+            store.lock()?.save(&credentials(NOW))?;
+        }
         let (mut server, scripts) = MockProvider::start_channel()?;
-        scripts.send(ResponseScript::json(200, &discovery(&server, &server))?)?;
+        if login {
+            scripts.send(ResponseScript::json(200, &discovery(&server, &server))?)?;
+        }
+        let ep = endpoints(&server);
+        let (entered, arrival) = mpsc::channel();
+        let (release, permit) = mpsc::channel();
+        let mut response = ResponseScript::json(
+            400,
+            &json!({"error":if login {"invalid_request"} else {"invalid_grant"}}),
+        )?;
+        response.delivery = Delivery::Controlled {
+            entered,
+            release: permit,
+        };
+        scripts.send(response)?;
+        std::thread::scope(|scope| -> TestResult {
+            let worker = scope.spawn(|| -> Result<Result<(), AuthError>, String> {
+                if login {
+                    login_with(
+                        &store,
+                        &ep,
+                        |url| {
+                            let fields = form(url.split_once('?').ok_or("query")?.1)?;
+                            let redirect = get(&fields, "redirect_uri")?;
+                            let uri: benitoiteh::http::Uri = redirect.parse()?;
+                            callback(
+                                redirect,
+                                "GET",
+                                &format!(
+                                    "/auth/callback?state={}&code=code&client_id={CLIENT}",
+                                    get(&fields, "state")?
+                                ),
+                                &format!("Host: {}", uri.authority().ok_or("host")?),
+                            )?;
+                            Ok(())
+                        },
+                        &AtomicBool::new(false),
+                        Duration::from_secs(5),
+                    )
+                    .map(|result| result.map(|_| ()))
+                    .map_err(|e| e.to_string())
+                } else {
+                    Ok(auth::access_token(&store, &ep, NOW, &AtomicBool::new(false)).map(|_| ()))
+                }
+            });
+            let arrived = arrival.recv_timeout(Duration::from_secs(5));
+            let permissions =
+                fs::set_permissions(fixture.file(), fs::Permissions::from_mode(0o644));
+            let _released = release.send(());
+            let result = worker
+                .join()
+                .map_err(|_| "auth worker")?
+                .map_err(std::io::Error::other)?;
+            arrived?;
+            permissions?;
+            assert_eq!(
+                result,
+                Err(if login {
+                    AuthError::Communication
+                } else {
+                    AuthError::LoginRequired
+                })
+            );
+            Ok(())
+        })?;
+        server.shutdown()?;
+    }
+    Ok(())
+}
+
+// 作成時の関門: 応答の検証に失敗しても、次の要求がローテーション後の値を使う契約。
+#[test]
+fn followups_invalid_refresh_saves_rotation_before_returning_validation() -> TestResult {
+    for invalid in [
+        json!({"refresh_token":"rotated-refresh"}),
+        json!({"refresh_token":"rotated-refresh","access_token":"invalid-access","expires_in":0}),
+    ] {
+        let fixture = Fixture::new()?;
+        let store = fixture.store()?;
+        let mut saved = credentials(NOW);
+        saved.tokens.as_mut().ok_or("tokens")?.earliest_refresh_at = Some(NOW);
+        store.lock()?.save(&saved)?;
+        let mut server = MockProvider::start(vec![
+            ResponseScript::json(200, &invalid)?,
+            ResponseScript::json(200, &json!({"access_token":"recovered","expires_in":3600}))?,
+        ])?;
+        let ep = endpoints(&server);
+        assert_eq!(
+            auth::access_token(&store, &ep, NOW, &AtomicBool::new(false)).err(),
+            Some(AuthError::Validation)
+        );
+        let tokens = store.load()?.ok_or("saved")?.tokens.ok_or("tokens")?;
+        assert_eq!(tokens.refresh_token.expose_secret(), "rotated-refresh");
+        assert_eq!(tokens.access_token.expose_secret(), "access-secret");
+        assert_eq!(tokens.expires_at, NOW);
+        assert_eq!(tokens.earliest_refresh_at, None);
+        assert_eq!(
+            auth::access_token(&store, &ep, NOW, &AtomicBool::new(false))?.expose_secret(),
+            "recovered"
+        );
+        let requests = server.requests()?;
+        assert_eq!(requests.len(), 2);
+        let fields = form(std::str::from_utf8(
+            &requests.get(1).ok_or("second refresh")?.raw_body,
+        )?)?;
+        assert_eq!(get(&fields, "refresh_token")?, "rotated-refresh");
+        server.shutdown()?;
+    }
+    Ok(())
+}
+
+// 作成時の関門: 交換後の失敗に限って取り消し、保存済みの同じ許可を保護する契約。
+#[test]
+fn followups_failed_login_revokes_only_unshared_received_tokens() -> TestResult {
+    for (case, previous, revoke_status, expected, should_revoke) in [
+        ("jwks", false, 200, AuthError::Communication, true),
+        ("signature", false, 200, AuthError::Validation, true),
+        ("jwks", true, 200, AuthError::Communication, false),
+        ("scope", true, 200, AuthError::Scope, false),
+        ("account", true, 200, AuthError::Account, true),
+        ("account", true, 500, AuthError::Account, true),
+    ] {
+        let fixture = Fixture::new()?;
+        let store = fixture.store()?;
+        if previous {
+            store.lock()?.save(&credentials(NOW))?;
+        }
+        let (mut server, scripts) = MockProvider::start_channel()?;
+        let mut jwks = MockProvider::start(vec![ResponseScript::json(
+            if case == "jwks" { 500 } else { 200 },
+            &auth_key::jwks()?,
+        )?])?;
+        let config = discovery(&server, &jwks);
+        scripts.send(ResponseScript::json(200, &config)?)?;
         let result = login_with(
             &store,
             &endpoints(&server),
             move |url| {
                 let fields = form(url.split_once('?').ok_or("query")?.1)?;
+                let mut token = auth_key::sign(
+                    &json!({"alg":"RS256","kid":"test-key"}),
+                    &json!({"iss":ISSUER,"aud":CLIENT,"exp":NOW.saturating_add(3600),"nonce":get(&fields,"nonce")?,"sub":if case == "account" {"other"} else {"subject"}}),
+                )?;
+                if case == "signature" {
+                    use graviola::signing::rsa::{KeySize, SigningKey};
+                    let other_key =
+                        SigningKey::generate(KeySize::Rsa2048).map_err(|_| "other test key")?;
+                    let message = token.rsplit_once('.').ok_or("signed token")?.0;
+                    let mut buffer = [0; 256];
+                    let signature = other_key
+                        .sign_pkcs1_sha256(&mut buffer, message.as_bytes())
+                        .map_err(|_| "other signature")?;
+                    token = format!("{message}.{}", auth_key::encode(signature));
+                }
+                scripts.send(ResponseScript::json(200, &json!({"access_token":"received-access","refresh_token":"received-refresh","expires_in":3600,"scope":if case == "scope" {"openid"} else {"chatgpt.tokens.use.direct"},"id_token":token}))?)?;
+                // 常に台本を置き、余計な取り消しが届いた場合も数で検出する。
+                scripts.send(ResponseScript::json(200, &config)?)?;
+                scripts.send(ResponseScript {
+                    status: revoke_status,
+                    headers: vec![],
+                    body: vec![],
+                    delivery: Delivery::Once,
+                })?;
                 let redirect = get(&fields, "redirect_uri")?;
                 let uri: benitoiteh::http::Uri = redirect.parse()?;
-                let address = uri.authority().ok_or("host")?.as_str();
-                let mut idle = Vec::new();
-                for _ in 0..count {
-                    idle.push(TcpStream::connect(address)?);
-                }
-                // 全ての無送信の接続を保持したまま、正しい要求の応答を受け取る。
                 assert_eq!(
                     callback(
                         redirect,
                         "GET",
                         &format!(
-                            "/auth/callback?state={}&error=access_denied",
+                            "/auth/callback?state={}&code=code&client_id={CLIENT}",
                             get(&fields, "state")?
                         ),
-                        &format!("Host: {address}")
+                        &format!("Host: {}", uri.authority().ok_or("host")?)
                     )?,
                     200
                 );
-                drop(idle);
                 Ok(())
             },
             &AtomicBool::new(false),
-            Duration::from_secs(30),
+            Duration::from_secs(5),
         )?;
-        assert_eq!(result, Err(AuthError::Rejected("access_denied".into())));
+        assert_eq!(result, Err(expected.clone()), "{case}");
+        assert_eq!(
+            result.err().ok_or("error")?.to_string(),
+            expected.to_string()
+        );
+        let requests = server.requests()?;
+        assert_eq!(requests.len(), if should_revoke { 4 } else { 2 }, "{case}");
+        let revocations: Vec<_> = requests.iter().filter(|r| r.path == "/revoke").collect();
+        assert_eq!(revocations.len(), usize::from(should_revoke));
+        if let Some(request) = revocations.first() {
+            assert_eq!(request.method, "POST");
+            assert_eq!(
+                form(std::str::from_utf8(&request.raw_body)?)?,
+                BTreeMap::from([
+                    ("token".into(), "received-refresh".into()),
+                    ("token_type_hint".into(), "refresh_token".into()),
+                    ("client_id".into(), CLIENT.into()),
+                ])
+            );
+        }
+        assert_eq!(store.load()?.ok_or("saved")?.tokens.is_some(), previous);
         server.shutdown()?;
+        jwks.shutdown()?;
     }
     Ok(())
 }

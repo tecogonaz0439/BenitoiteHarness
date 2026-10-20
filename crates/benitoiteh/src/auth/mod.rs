@@ -11,7 +11,7 @@ use serde::Deserialize;
 use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;
 use std::net::TcpListener;
-use std::sync::atomic::AtomicBool;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 pub use store::{Account, Credentials, LockedStore, Secret, Store, Tokens};
 use zeroize::Zeroizing;
@@ -201,6 +201,8 @@ fn discovery(endpoints: &Endpoints, http: &HttpClient) -> Result<Discovery, Logi
 struct LoginFailure {
     error: AuthError,
     preserve_client: bool,
+    refresh_token: Option<Secret>,
+    subject: Option<String>,
 }
 impl From<AuthError> for LoginFailure {
     fn from(error: AuthError) -> Self {
@@ -208,6 +210,8 @@ impl From<AuthError> for LoginFailure {
         Self {
             error,
             preserve_client,
+            refresh_token: None,
+            subject: None,
         }
     }
 }
@@ -229,7 +233,9 @@ impl From<HttpError> for LoginFailure {
                 };
                 Self {
                     error,
-                    preserve_client: (500..600).contains(&status.head.status),
+                    preserve_client: matches!(status.head.status, 408 | 429 | 500..=599),
+                    refresh_token: None,
+                    subject: None,
                 }
             }
             HttpError::Connection
@@ -239,10 +245,14 @@ impl From<HttpError> for LoginFailure {
             | HttpError::Worker => Self {
                 error: AuthError::Communication,
                 preserve_client: true,
+                refresh_token: None,
+                subject: None,
             },
             HttpError::BodyLimit { .. } | HttpError::InvalidRequest => Self {
                 error: AuthError::Communication,
                 preserve_client: false,
+                refresh_token: None,
+                subject: None,
             },
         }
     }
@@ -282,17 +292,26 @@ impl ErrorCode {
     }
 }
 fn exchange(endpoints: &Endpoints, fields: &[(&str, &str)]) -> Result<TokenResponse, LoginFailure> {
-    let body = Zeroizing::new(encode_form(fields));
-    let response = client(false)
-        .post_form(
-            &endpoints.uri(&endpoints.token)?,
-            &HeaderMap::new(),
-            body.as_bytes(),
-            JSON_LIMIT,
-        )
-        .map_err(LoginFailure::from)?;
-    let bytes = Zeroizing::new(response.body);
+    let bytes = exchange_bytes(endpoints, fields, None)?;
     serde_json::from_slice(&bytes).map_err(|_| LoginFailure::from(AuthError::Validation))
+}
+fn exchange_bytes(
+    endpoints: &Endpoints,
+    fields: &[(&str, &str)],
+    cancelled: Option<&AtomicBool>,
+) -> Result<Zeroizing<Vec<u8>>, LoginFailure> {
+    let body = Zeroizing::new(encode_form(fields));
+    let http = client(false);
+    let uri = endpoints.uri(&endpoints.token)?;
+    if let Some(cancelled) = cancelled {
+        check_cancelled(cancelled)?;
+    }
+    // ここから保存までは取り消さず、ローテーションした値を失わない
+    // （設計書 02-01「更新」）。
+    let response = http
+        .post_form(&uri, &HeaderMap::new(), body.as_bytes(), JSON_LIMIT)
+        .map_err(LoginFailure::from)?;
+    Ok(Zeroizing::new(response.body))
 }
 
 /// ブラウザの操作だけを呼び出し側に任せてログインする。now は Unix の秒を返す。
@@ -335,8 +354,9 @@ pub fn login(
     match result {
         Ok(account) => Ok(account),
         Err(failure) => {
+            let _revoked = revoke_failed_login(store, endpoints, &credentials, &failure);
             if !failure.preserve_client && !credentials.client_confirmed {
-                reset_unconfirmed_client(store, &credentials, now())?;
+                let _cleanup = reset_unconfirmed_client(store, &credentials, now());
             }
             Err(failure.error)
         }
@@ -438,91 +458,111 @@ fn login_attempt(
             ("resource", RESOURCE),
         ],
     )?;
-    // 交換の成功を、確認済みの印の保存が失敗した場合にも取り消さない。
-    credentials.client_confirmed = true;
-    {
+    let refresh_token = response.refresh_token.clone();
+    let mut subject = None;
+    let result = (|| -> Result<Account, LoginFailure> {
+        // 交換の成功を、確認済みの印の保存が失敗した場合にも取り消さない。
+        credentials.client_confirmed = true;
+        {
+            let locked = store.lock()?;
+            let mut latest = locked.load()?.ok_or(AuthError::Storage)?;
+            if latest.client_id != client_id {
+                return Err(AuthError::Validation.into());
+            }
+            latest.client_confirmed = true;
+            latest.saved_at = now();
+            locked.save(&latest)?;
+            *credentials = latest;
+        }
+        let id_token = response.id_token.as_ref().ok_or(AuthError::Validation)?;
+        let jwks_response = http
+            .get(
+                &endpoints.uri(&discovery.jwks_uri)?,
+                &HeaderMap::new(),
+                256 * 1024,
+            )
+            .map_err(LoginFailure::from)?;
+        let jwks: jwt::Jwks =
+            serde_json::from_slice(&jwks_response.body).map_err(|_| AuthError::Validation)?;
+        let account = jwt::verify(
+            id_token.expose_secret(),
+            &jwks,
+            &endpoints.issuer,
+            &client_id,
+            &nonce,
+            now(),
+        )?;
+        subject = Some(account.subject.clone());
+        let tokens = response.tokens(now(), None)?;
+        if !tokens.scopes.iter().any(|scope| scope == DIRECT) {
+            return Err(AuthError::Scope.into());
+        }
         let locked = store.lock()?;
-        let mut latest = locked.load()?.ok_or(AuthError::Storage)?;
+        let latest = locked.load()?.ok_or(AuthError::Storage)?;
         if latest.client_id != client_id {
             return Err(AuthError::Validation.into());
         }
-        latest.client_confirmed = true;
-        latest.saved_at = now();
-        locked.save(&latest)?;
-        *credentials = latest;
-    }
-    let id_token = response.id_token.as_ref().ok_or(AuthError::Validation)?;
-    let jwks_response = http
-        .get(
-            &endpoints.uri(&discovery.jwks_uri)?,
-            &HeaderMap::new(),
-            256 * 1024,
-        )
-        .map_err(LoginFailure::from)?;
-    let jwks: jwt::Jwks =
-        serde_json::from_slice(&jwks_response.body).map_err(|_| AuthError::Validation)?;
-    let account = jwt::verify(
-        id_token.expose_secret(),
-        &jwks,
-        &endpoints.issuer,
-        &client_id,
-        &nonce,
-        now(),
-    )?;
-    let tokens = response.tokens(now(), None)?;
-    if !tokens.scopes.iter().any(|scope| scope == DIRECT) {
-        return Err(AuthError::Scope.into());
-    }
-    let locked = store.lock()?;
-    let latest = locked.load()?.ok_or(AuthError::Storage)?;
-    if latest.client_id != client_id {
-        return Err(AuthError::Validation.into());
-    }
-    if latest
-        .account
-        .as_ref()
-        .is_some_and(|previous| previous.subject != account.subject)
-    {
-        return Err(AuthError::Account.into());
-    }
-    credentials.account = Some(account.clone());
-    credentials.tokens = Some(tokens);
-    credentials.saved_at = now();
-    locked.save(credentials)?;
-    Ok(account)
+        if latest
+            .account
+            .as_ref()
+            .is_some_and(|previous| previous.subject != account.subject)
+        {
+            return Err(AuthError::Account.into());
+        }
+        credentials.account = Some(account.clone());
+        credentials.tokens = Some(tokens);
+        credentials.saved_at = now();
+        locked.save(credentials)?;
+        Ok(account)
+    })();
+    result.map_err(|mut failure| {
+        failure.refresh_token = refresh_token;
+        failure.subject = subject;
+        failure
+    })
 }
 
 /// 要求の前に使えるアクセストークンを返し、必要なら錠の中で更新する。
-pub fn access_token(store: &Store, endpoints: &Endpoints, now: u64) -> Result<Secret, AuthError> {
-    access_token_with_snapshot(store, endpoints, now, store.load())
+/// 錠待ちと送信前は cancelled を見て、送信後は保存まで終える。
+pub fn access_token(
+    store: &Store,
+    endpoints: &Endpoints,
+    now: u64,
+    cancelled: &AtomicBool,
+) -> Result<Secret, AuthError> {
+    check_cancelled(cancelled)?;
+    access_token_with_snapshot(store, endpoints, now, store.load(), cancelled)
 }
 fn access_token_with_snapshot(
     store: &Store,
     endpoints: &Endpoints,
     now: u64,
     snapshot: Result<Option<Credentials>, AuthError>,
+    cancelled: &AtomicBool,
 ) -> Result<Secret, AuthError> {
     // rename の直前に開いた inode は、錠なしの検査では nlink=0 になりうる。
     // 読めなかったときは錠の中で一度だけ読み直し、恒久的な失敗はそのまま返す。
     let saved = match snapshot {
         Ok(saved) => saved.ok_or(AuthError::LoginRequired)?,
-        Err(_) => return refresh(store, endpoints, now, None),
+        Err(_) => return refresh(store, endpoints, now, None, cancelled),
     };
     let tokens = saved.tokens.as_ref().ok_or(AuthError::LoginRequired)?;
     if !needs_refresh(tokens, now) {
         return Ok(tokens.access_token.clone());
     }
-    refresh(store, endpoints, now, None)
+    refresh(store, endpoints, now, None, cancelled)
 }
 /// 401 で拒まれたトークンを渡し、一度だけ強制して更新する。
 /// 既に別のプロセスが更新した値なら、再度更新せずその値を返す。
+/// 錠待ちと送信前は cancelled を見て、送信後は保存まで終える。
 pub fn force_refresh(
     store: &Store,
     endpoints: &Endpoints,
     rejected: &Secret,
     now: u64,
+    cancelled: &AtomicBool,
 ) -> Result<Secret, AuthError> {
-    refresh(store, endpoints, now, Some(rejected))
+    refresh(store, endpoints, now, Some(rejected), cancelled)
 }
 fn needs_refresh(tokens: &Tokens, now: u64) -> bool {
     tokens.expires_at.saturating_sub(now) < 60
@@ -555,8 +595,11 @@ fn refresh(
     endpoints: &Endpoints,
     now: u64,
     rejected: Option<&Secret>,
+    cancelled: &AtomicBool,
 ) -> Result<Secret, AuthError> {
-    let locked = store.lock()?;
+    check_cancelled(cancelled)?;
+    let locked = store.lock_cancellable(cancelled)?;
+    check_cancelled(cancelled)?;
     let mut saved = locked.load()?.ok_or(AuthError::LoginRequired)?;
     let previous = saved.tokens.as_ref().ok_or(AuthError::LoginRequired)?;
     let required = if let Some(rejected) = rejected {
@@ -570,7 +613,7 @@ fn refresh(
     if !required {
         return Ok(previous.access_token.clone());
     }
-    let response = exchange(
+    let response = exchange_bytes(
         endpoints,
         &[
             ("grant_type", "refresh_token"),
@@ -578,18 +621,40 @@ fn refresh(
             ("refresh_token", previous.refresh_token.expose_secret()),
             ("resource", RESOURCE),
         ],
+        Some(cancelled),
     )
     .map_err(|failure| failure.error);
     let response = match response {
         Err(AuthError::LoginRequired) => {
             saved.tokens = None;
             saved.saved_at = now;
-            locked.save(&saved)?;
+            let _cleanup = locked.save(&saved);
             return Err(AuthError::LoginRequired);
         }
         other => other?,
     };
-    let tokens = response.tokens(now, Some(previous))?;
+    let tokens = serde_json::from_slice::<TokenResponse>(&response)
+        .map_err(|_| AuthError::Validation)
+        .and_then(|response| response.tokens(now, Some(previous)));
+    let tokens = match tokens {
+        Ok(tokens) => tokens,
+        Err(error) => {
+            #[derive(Deserialize)]
+            struct Rotation {
+                refresh_token: Secret,
+            }
+            if let Ok(rotation) = serde_json::from_slice::<Rotation>(&response)
+                && !rotation.refresh_token.expose_secret().is_empty()
+                && let Some(tokens) = &mut saved.tokens
+            {
+                tokens.refresh_token = rotation.refresh_token;
+                tokens.earliest_refresh_at = None;
+                saved.saved_at = now;
+                locked.save(&saved)?;
+            }
+            return Err(error);
+        }
+    };
     let access = tokens.access_token.clone();
     saved.tokens = Some(tokens);
     saved.saved_at = now;
@@ -620,26 +685,7 @@ pub fn logout(store: &Store, endpoints: &Endpoints, now: u64) -> Result<LogoutOu
         }
         return Ok(LogoutOutcome::NotSignedIn);
     };
-    let revoked = (|| {
-        let http = client(true);
-        let discovery = discovery(endpoints, &http).map_err(|failure| failure.error)?;
-        let uri = endpoints.uri(
-            discovery
-                .revocation_endpoint
-                .as_deref()
-                .ok_or(AuthError::Validation)?,
-        )?;
-        let body = Zeroizing::new(encode_form(&[
-            ("token", tokens.refresh_token.expose_secret()),
-            ("token_type_hint", "refresh_token"),
-            ("client_id", &saved.client_id),
-        ]));
-        let response = http
-            .post_form(&uri, &HeaderMap::new(), body.as_bytes(), JSON_LIMIT)
-            .map_err(|_| AuthError::Communication)?;
-        Ok::<bool, AuthError>(response.head.status == 200 && response.body.is_empty())
-    })()
-    .unwrap_or(false);
+    let revoked = revoke(endpoints, &saved.client_id, &tokens.refresh_token);
     saved.tokens = None;
     saved.account = None;
     saved.saved_at = now;
@@ -649,6 +695,64 @@ pub fn logout(store: &Store, endpoints: &Endpoints, now: u64) -> Result<LogoutOu
     } else {
         LogoutOutcome::Unconfirmed
     })
+}
+fn revoke(endpoints: &Endpoints, client_id: &str, refresh_token: &Secret) -> bool {
+    (|| {
+        let http = client(true);
+        let discovery = discovery(endpoints, &http).map_err(|failure| failure.error)?;
+        let uri = endpoints.uri(
+            discovery
+                .revocation_endpoint
+                .as_deref()
+                .ok_or(AuthError::Validation)?,
+        )?;
+        let body = Zeroizing::new(encode_form(&[
+            ("token", refresh_token.expose_secret()),
+            ("token_type_hint", "refresh_token"),
+            ("client_id", client_id),
+        ]));
+        let response = http
+            .post_form(&uri, &HeaderMap::new(), body.as_bytes(), JSON_LIMIT)
+            .map_err(|_| AuthError::Communication)?;
+        Ok::<bool, AuthError>(response.head.status == 200 && response.body.is_empty())
+    })()
+    .unwrap_or(false)
+}
+fn revoke_failed_login(
+    store: &Store,
+    endpoints: &Endpoints,
+    credentials: &Credentials,
+    failure: &LoginFailure,
+) -> Result<(), AuthError> {
+    let Some(token) = failure
+        .refresh_token
+        .as_ref()
+        .filter(|token| !token.expose_secret().is_empty())
+    else {
+        return Ok(());
+    };
+    let locked = store.lock()?;
+    let saved = locked.load()?;
+    // 既存の許可に取り消しが及びうる場合は送らない。判定から送信まで同じ錠を保つ
+    // （設計書 02-01「ログイン」、BH-117）。
+    if saved.as_ref().is_some_and(|saved| {
+        saved.tokens.is_some()
+            && saved.client_id == credentials.client_id
+            && (failure.subject.is_none()
+                || saved.account.as_ref().map(|account| &account.subject)
+                    == failure.subject.as_ref())
+    }) {
+        return Ok(());
+    }
+    let _revoked = revoke(endpoints, &credentials.client_id, token);
+    Ok(())
+}
+fn check_cancelled(cancelled: &AtomicBool) -> Result<(), AuthError> {
+    if cancelled.load(Ordering::Acquire) {
+        Err(AuthError::Cancelled)
+    } else {
+        Ok(())
+    }
 }
 fn valid_client(id: &str) -> bool {
     id.starts_with("oaiapp_")

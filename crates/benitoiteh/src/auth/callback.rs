@@ -1,19 +1,21 @@
 //! ループバックの戻り先を制限し、期限と取り消しを監視する（設計書 02-01「Sign in with ChatGPT」）。
 
 use super::{AuthError, constant_time_eq, decode_form, text};
+use rustix::event::{PollFd, PollFlags, Timespec, poll};
 use std::collections::{BTreeMap, VecDeque};
 use std::io::{Read, Write};
 use std::net::{Shutdown, TcpListener, TcpStream};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
-const MAX_READERS: usize = 4;
+const MAX_READERS: usize = 64;
+const READ_LIMIT: Duration = Duration::from_secs(5);
 const HEAD_LIMIT: usize = 8192;
 type Fields = BTreeMap<String, String>;
 struct Reader {
     socket: TcpStream,
-    worker: std::thread::JoinHandle<()>,
+    bytes: Vec<u8>,
+    accepted_at: Instant,
 }
 enum Head {
     Waiting,
@@ -34,7 +36,6 @@ pub(super) fn wait(
         .local_addr()
         .map_err(|_| AuthError::Communication)?
         .to_string();
-    let (sender, receiver) = mpsc::sync_channel(MAX_READERS);
     let mut readers: VecDeque<Reader> = VecDeque::new();
     loop {
         if cancelled.load(Ordering::Acquire) {
@@ -43,99 +44,100 @@ pub(super) fn wait(
         if start.elapsed() >= timeout {
             return Err(AuthError::Timeout);
         }
-        if let Ok((mut socket, fields)) = receiver.try_recv() {
-            let _sent = reply(&mut socket, 200);
-            return Ok(fields);
-        }
-        readers.retain(|reader| !reader.worker.is_finished());
-        let Some(mut socket) = accepted(listener.accept())? else {
-            std::thread::sleep(Duration::from_millis(50));
-            continue;
-        };
-        // macOS で引き継いだ指定をまず解除し、失敗した接続は使わない。
-        if socket.set_nonblocking(false).is_err() {
-            continue;
-        }
-        if socket.set_nonblocking(true).is_err() {
-            continue;
-        }
-        let mut bytes = Vec::new();
-        // 満杯でも、既に届いている完全な戻りを捨てない。非ブロックで頭だけ読む。
-        let initial = loop {
-            match read_head(&mut socket, &mut bytes, &host, state) {
-                Ok(Head::Progress) => continue,
-                result => break result,
+        let budget = readers.iter().fold(
+            timeout
+                .saturating_sub(start.elapsed())
+                .min(Duration::from_millis(50)),
+            |budget, reader| budget.min(READ_LIMIT.saturating_sub(reader.accepted_at.elapsed())),
+        );
+        let poll_timeout = Timespec::try_from(budget).map_err(|_| AuthError::Communication)?;
+        let ready = {
+            let mut fds = Vec::with_capacity(readers.len().saturating_add(1));
+            fds.push(PollFd::new(listener, PollFlags::IN));
+            fds.extend(
+                readers
+                    .iter()
+                    .map(|reader| PollFd::new(&reader.socket, PollFlags::IN)),
+            );
+            match poll(&mut fds, Some(&poll_timeout)) {
+                Ok(_) => {}
+                Err(rustix::io::Errno::INTR) => continue,
+                Err(_) => return Err(AuthError::Communication),
             }
+            fds.iter()
+                .map(|fd| !fd.revents().is_empty())
+                .collect::<Vec<_>>()
         };
-        if socket.set_nonblocking(false).is_err() {
-            continue;
+        if cancelled.load(Ordering::Acquire) {
+            return Err(AuthError::Cancelled);
         }
-        match initial {
-            Ok(Head::Complete(fields)) => {
-                let _sent = reply(&mut socket, 200);
-                return Ok(fields);
-            }
-            Err(status) => {
-                let _sent = reply(&mut socket, status);
+        if start.elapsed() >= timeout {
+            return Err(AuthError::Timeout);
+        }
+        // 既存の接続を先に読み、受け付けによる追い出しと戻りの完了を競合させない
+        // （設計書 02-01「ログイン」）。
+        for readable in ready.iter().skip(1) {
+            let Some(mut reader) = readers.pop_front() else {
+                break;
+            };
+            if reader.accepted_at.elapsed() >= READ_LIMIT {
+                close_with_reply(&mut reader.socket, 400);
                 continue;
             }
-            Ok(Head::Waiting | Head::Progress) => {}
-        }
-        // 未完の接続だけをスレッドへ回す。最も古い未完の読み取りを終了して場所を空ける。
-        if readers.len() >= MAX_READERS
-            && let Some(reader) = readers.pop_front()
-        {
-            let _closed = reader.socket.shutdown(Shutdown::Both);
-            let _finished = reader.worker.join();
-        }
-        let control = match socket.try_clone() {
-            Ok(control) => control,
-            Err(_) => continue,
-        };
-        let budget = timeout
-            .saturating_sub(start.elapsed())
-            .min(Duration::from_secs(1));
-        let sender = sender.clone();
-        let host = host.clone();
-        let state = state.to_owned();
-        if let Ok(worker) = std::thread::Builder::new().spawn(move || {
-            match read(&mut socket, &host, &state, budget, bytes) {
-                Ok(fields) => {
-                    let _sent = sender.send((socket, fields));
-                }
-                Err(status) => {
-                    let _sent = reply(&mut socket, status);
+            if *readable {
+                match read_available(&mut reader, &host, state) {
+                    Ok(Head::Complete(fields)) => {
+                        close_with_reply(&mut reader.socket, 200);
+                        return Ok(fields);
+                    }
+                    Err(status) => {
+                        close_with_reply(&mut reader.socket, status);
+                        continue;
+                    }
+                    Ok(Head::Waiting | Head::Progress) => {}
                 }
             }
-        }) {
+            readers.push_back(reader);
+        }
+        if !ready.first().copied().unwrap_or(false) {
+            continue;
+        }
+        let accepting = Instant::now();
+        while let Some(socket) = accepted(listener.accept())? {
+            if socket.set_nonblocking(true).is_err() {
+                continue;
+            }
             readers.push_back(Reader {
-                socket: control,
-                worker,
+                socket,
+                bytes: Vec::new(),
+                accepted_at: Instant::now(),
             });
+            if readers.len() > MAX_READERS {
+                let _oldest = readers.pop_front();
+            }
+            // 受け付けが続いても、期限と取り消しを見る間隔を超えて回し続けない。
+            if cancelled.load(Ordering::Acquire) {
+                return Err(AuthError::Cancelled);
+            }
+            if accepting.elapsed() >= Duration::from_millis(50) {
+                break;
+            }
         }
     }
 }
-fn read(
-    socket: &mut TcpStream,
-    host: &str,
-    state: &str,
-    budget: Duration,
-    mut bytes: Vec<u8>,
-) -> Result<Fields, u16> {
-    let start = Instant::now();
-    socket
-        .set_read_timeout(Some(Duration::from_millis(50)))
-        .map_err(|_| 400u16)?;
+fn read_available(reader: &mut Reader, host: &str, state: &str) -> Result<Head, u16> {
     loop {
-        if start.elapsed() >= budget {
-            return Err(400);
-        }
-        match read_head(socket, &mut bytes, host, state)? {
-            Head::Complete(fields) => return Ok(fields),
-            Head::Progress => {}
-            Head::Waiting => std::thread::park_timeout(Duration::from_millis(1)),
+        match read_head(&mut reader.socket, &mut reader.bytes, host, state)? {
+            Head::Progress => continue,
+            result @ (Head::Waiting | Head::Complete(_)) => return Ok(result),
         }
     }
+}
+fn close_with_reply(socket: &mut TcpStream, status: u16) {
+    if socket.set_nonblocking(false).is_ok() {
+        let _sent = reply(socket, status);
+    }
+    let _closed = socket.shutdown(Shutdown::Write);
 }
 fn read_head(
     socket: &mut TcpStream,

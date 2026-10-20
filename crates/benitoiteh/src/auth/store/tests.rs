@@ -53,13 +53,20 @@ fn rereview_unlinked_snapshot_retries_once_under_the_lock() -> TestResult {
     let first = read_credentials(before);
     assert!(matches!(first, Err(AuthError::Storage)));
     assert_eq!(
-        auth::access_token_with_snapshot(&store, &endpoints(), 100, first)?.expose_secret(),
+        auth::access_token_with_snapshot(
+            &store,
+            &endpoints(),
+            100,
+            first,
+            &AtomicBool::new(false)
+        )?
+        .expose_secret(),
         "after"
     );
     // 再読しても権限が不正なら、さらに繰り返さず誤りを返す。
     std::fs::set_permissions(fixture.file(), std::fs::Permissions::from_mode(0o644))?;
     assert_eq!(
-        auth::access_token(&store, &endpoints(), 100).err(),
+        auth::access_token(&store, &endpoints(), 100, &AtomicBool::new(false)).err(),
         Some(AuthError::Storage)
     );
     Ok(())

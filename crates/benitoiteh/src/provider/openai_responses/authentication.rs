@@ -1,6 +1,7 @@
 //! 保存した許可と、再送をまたぐ取り消しを管理する（設計書 02-01「Sign in with ChatGPT」）。
 
 use std::fmt;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -32,12 +33,20 @@ impl ChatGptTokens {
         }
     }
 
-    pub(super) fn access_token(&self) -> Result<Secret, OpenAiResponsesError> {
-        auth::access_token(&self.store, &self.endpoints, now()).map_err(|e| classify(e, false))
+    pub(super) fn access_token(
+        &self,
+        cancelled: &AtomicBool,
+    ) -> Result<Secret, OpenAiResponsesError> {
+        auth::access_token(&self.store, &self.endpoints, now(), cancelled)
+            .map_err(|e| classify(e, false))
     }
 
-    pub(super) fn refresh(&self, rejected: &Secret) -> Result<Secret, OpenAiResponsesError> {
-        auth::force_refresh(&self.store, &self.endpoints, rejected, now())
+    pub(super) fn refresh(
+        &self,
+        rejected: &Secret,
+        cancelled: &AtomicBool,
+    ) -> Result<Secret, OpenAiResponsesError> {
+        auth::force_refresh(&self.store, &self.endpoints, rejected, now(), cancelled)
             .map_err(|e| classify(e, true))
     }
 }
@@ -57,9 +66,9 @@ fn classify(error: AuthError, forced: bool) -> OpenAiResponsesError {
         AuthError::Communication | AuthError::Timeout => ProviderError::NonRetryable {
             reason: NonRetryableKind::Authentication,
         },
+        AuthError::Cancelled => return OpenAiResponsesError::Cancelled,
         AuthError::Validation
         | AuthError::Storage
-        | AuthError::Cancelled
         | AuthError::LoginRequired
         | AuthError::InvalidClient
         | AuthError::Scope
@@ -83,7 +92,7 @@ pub(super) fn authorize(
 }
 
 struct State {
-    cancelled: bool,
+    cancelled: Arc<AtomicBool>,
     current: Option<Cancellation>,
 }
 
@@ -99,11 +108,8 @@ impl fmt::Debug for ResponsesCancellation {
 }
 
 impl ResponsesCancellation {
-    pub(super) fn new(current: Option<Cancellation>) -> Self {
-        Self(Arc::new(Mutex::new(State {
-            cancelled: false,
-            current,
-        })))
+    pub(super) fn new(current: Option<Cancellation>, cancelled: Arc<AtomicBool>) -> Self {
+        Self(Arc::new(Mutex::new(State { cancelled, current })))
     }
 
     fn lock(&self) -> MutexGuard<'_, State> {
@@ -114,8 +120,8 @@ impl ResponsesCancellation {
 
     /// 現在の要求を取り消し、更新中なら再送を止める。
     pub fn cancel(&self) {
-        let mut state = self.lock();
-        state.cancelled = true;
+        let state = self.lock();
+        state.cancelled.store(true, Ordering::Release);
         if let Some(current) = &state.current {
             current.cancel();
         }
@@ -123,13 +129,13 @@ impl ResponsesCancellation {
 
     /// 明示的な取り消しが要求されたか。
     pub fn is_cancelled(&self) -> bool {
-        self.lock().cancelled
+        self.lock().cancelled.load(Ordering::Acquire)
     }
 
     pub(super) fn replace(&self, current: Cancellation) {
         let mut state = self.lock();
         // 差し替えと cancel を同じ錠で守り、古い接続だけを止める競合を避ける。
-        if state.cancelled {
+        if state.cancelled.load(Ordering::Acquire) {
             current.cancel();
         }
         state.current = Some(current);
