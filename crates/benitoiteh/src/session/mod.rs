@@ -11,6 +11,7 @@ mod replay;
 mod resume;
 mod scan;
 mod storage;
+mod temporary;
 pub(crate) mod text;
 mod tree;
 
@@ -141,6 +142,7 @@ struct SessionState {
     available: AtomicU64,
     limit_notified: AtomicBool,
     resume: Mutex<Option<ResumeState>>,
+    notices: Vec<String>,
 }
 
 impl Session {
@@ -173,14 +175,8 @@ impl Session {
             Err(error) => return Err(error.into()),
         }
         let objects = open_directory_at(&directory, "objects")?;
-        let temporary = paths.temporary_root.join(format!("benitoiteh-{id}"));
-        match fs::symlink_metadata(&temporary) {
-            Ok(metadata) if private_metadata(&metadata, true) => remove::directory(&temporary)?,
-            Ok(_) => return Err(SessionError::Invalid(text::UNSAFE_PATH)),
-            Err(error) if error.kind() == io::ErrorKind::NotFound => {}
-            Err(error) => return Err(error.into()),
-        }
-        DirBuilder::new().mode(0o700).create(&temporary)?;
+        // 子プロセスが権限や印を変えた残りでも再開を止めない（設計書 01-05「一時ディレクトリ」）。
+        let (temporary, notices) = temporary::prepare(&paths.temporary_root, id)?;
         let metadata = fs::symlink_metadata(&temporary)?;
         if !private_metadata(&metadata, true) {
             return Err(SessionError::Invalid(text::UNSAFE_PATH));
@@ -199,8 +195,14 @@ impl Session {
                 available: AtomicU64::new(quota::SESSION_LIMIT),
                 limit_notified: AtomicBool::new(false),
                 resume: Mutex::new(Some(resume)),
+                notices,
             }),
         })
+    }
+
+    /// 開いたときの知らせ（残った一時ディレクトリを消せなかった、など）。
+    pub fn startup_notices(&self) -> &[String] {
+        &self.inner.notices
     }
 
     /// 開くときに一度解析した復元状態を、起動処理へ移す。
@@ -247,6 +249,7 @@ impl Session {
                     available: AtomicU64::new(quota::SESSION_LIMIT),
                     limit_notified: AtomicBool::new(false),
                     resume: Mutex::new(None),
+                    notices: Vec::new(),
                 }),
             })
         })();
@@ -291,7 +294,7 @@ impl Drop for SessionState {
         {
             // 一時領域の中のリンクの先は消さない。ロックはこの後に解放される。
             // （設計書 01-05「一時ディレクトリ」）。失敗時は次の起動の掃除で再試行する。
-            let _cleanup = remove::directory(&self.temporary);
+            let _cleanup = remove::temporary(&self.temporary);
         }
     }
 }
@@ -301,7 +304,20 @@ impl Drop for SessionState {
 pub struct CleanupReport {
     pub temporary_removed: u64,
     pub sessions_removed: u64,
+    /// 0700 でなくなっていたのを消した一時ディレクトリ（設計書 01-05「一時ディレクトリ」）。
+    pub temporary_unsafe_removed: Vec<PathBuf>,
     pub failures: Vec<CleanupFailure>,
+}
+
+impl CleanupReport {
+    /// 起動のときに示す知らせ（消した権限の変わった一時ディレクトリと、失敗）。
+    pub fn diagnostics(&self) -> Vec<String> {
+        self.temporary_unsafe_removed
+            .iter()
+            .map(|path| text::temporary_unsafe_removed(path))
+            .chain(self.failures.iter().map(CleanupFailure::diagnostic))
+            .collect()
+    }
 }
 
 /// 一項目の掃除の失敗。誤りの文にファイルのパスは含めない。
@@ -336,6 +352,8 @@ pub fn cleanup(
     let mut report = CleanupReport::default();
     let retention = Duration::from_secs(retention_days.saturating_mul(86400));
     let mut roots = Vec::new();
+    // 開けなければ一覧も読めず、その失敗は下で報告する。
+    let temporary_root = temporary::open_root(&paths.temporary_root).ok();
     match fs::read_dir(&paths.temporary_root) {
         Ok(entries) => roots.push((true, false, entries)),
         Err(error) => report.failures.push(CleanupFailure {
@@ -410,31 +428,97 @@ pub fn cleanup(
                 }
             };
             let name = entry.file_name();
-            let Some(id) = name.to_str().and_then(|name| {
-                let name = if temporary && !askpass {
-                    name.strip_prefix("benitoiteh-")?
-                } else {
-                    name
-                };
-                name.parse::<SessionId>().ok().or_else(|| {
-                    askpass
-                        .then(|| helper_ids.get(name).cloned().flatten())
-                        .flatten()
-                })
-            }) else {
+            let Some(name_text) = name.to_str() else {
                 continue;
             };
+            if !temporary && let Some(id) = temporary::parse_session_tombstone(name_text) {
+                // 墓標は期間によらず、錠を取れれば消す（設計書 01-05「記録を残す期間」）。
+                // 同じセッションを二度数えないよう、sessions_removed には数えない。
+                match remove_session_tombstone(
+                    paths,
+                    &sessions,
+                    temporary_root.as_ref(),
+                    &id,
+                    name_text,
+                ) {
+                    Ok(count) => {
+                        report.temporary_removed = report.temporary_removed.saturating_add(count);
+                    }
+                    Err(error) => report
+                        .failures
+                        .push(cleanup_failure(Some(id), false, error)),
+                }
+                continue;
+            }
+            let ordinary = temporary && !askpass;
+            let parsed = if ordinary {
+                temporary::parse(name_text)
+            } else {
+                name_text
+                    .parse::<SessionId>()
+                    .ok()
+                    .or_else(|| {
+                        askpass
+                            .then(|| helper_ids.get(name_text).cloned().flatten())
+                            .flatten()
+                    })
+                    .map(|id| (id, temporary::Kind::Primary))
+            };
+            let Some((id, kind)) = parsed else {
+                continue;
+            };
+            let mut side_removed = 0_u64;
             let result = (|| -> Result<bool, SessionError> {
                 let metadata = match fs::symlink_metadata(entry.path()) {
                     Ok(metadata) => metadata,
                     Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(false),
                     Err(error) => return Err(error.into()),
                 };
+                if ordinary {
+                    // 記録があり錠を取れたものだけを、権限によらず消す。ほかのデータの
+                    // 置き場所のセッションの一時ディレクトリは記録がないので残る
+                    // （設計書 01-05「一時ディレクトリ」）。
+                    if !metadata.is_dir() || metadata.uid() != rustix::process::geteuid().as_raw() {
+                        return Ok(false);
+                    }
+                    let lock = match inactive_lock(&sessions, &id)? {
+                        Inactive::Locked(lock) => Some(lock),
+                        Inactive::Busy => return Ok(false),
+                        // 記録が墓標の名前に替わっていれば、その錠で確かめる。
+                        Inactive::Missing => match lock_tombstone_of(paths, &sessions, &id)? {
+                            Some(lock) => lock,
+                            None => return Ok(false),
+                        },
+                    };
+                    let root = temporary_root
+                        .as_ref()
+                        .ok_or_else(|| io::Error::from(io::ErrorKind::NotFound))?;
+                    if kind == temporary::Kind::Tombstone {
+                        remove::directory_at(root, &name, remove::Target::Temporary)?;
+                    } else {
+                        match temporary::discard(root, name_text, &id)? {
+                            temporary::Discard::Absent => return Ok(false),
+                            temporary::Discard::Removed => {}
+                            temporary::Discard::Pinned(error)
+                            | temporary::Discard::Failed { error, .. } => {
+                                return Err(error.into());
+                            }
+                        }
+                        if !private_metadata(&metadata, true) {
+                            report.temporary_unsafe_removed.push(entry.path());
+                        }
+                    }
+                    drop(lock);
+                    return Ok(true);
+                }
                 if !private_metadata(&metadata, true) {
                     return Ok(false);
                 }
                 if !temporary {
-                    let directory = open_directory_at(&sessions, id.as_str())?;
+                    // 同時に掃除するほかの起動が墓標に替えたものは、消すものがない。
+                    let Some(directory) = open_if_present(&sessions, id.as_str())? else {
+                        return Ok(false);
+                    };
                     if !expired(&directory, retention, now)? {
                         return Ok(false);
                     }
@@ -469,12 +553,35 @@ pub fn cleanup(
                     }
                     remove::directory(&entry.path())?;
                 } else if let Inactive::Locked(_guard) = &lock {
-                    let directory = open_directory_at(&sessions, id.as_str())?;
+                    let Some(directory) = open_if_present(&sessions, id.as_str())? else {
+                        return Ok(false);
+                    };
                     // 候補の判定後に再開され更新された記録は消さない（設計書 01-05「記録を残す期間」）。
                     if !expired(&directory, retention, now)? {
                         return Ok(false);
                     }
-                    remove::directory_at(&sessions, name.as_os_str(), true)?;
+                    drop(directory);
+                    // 錠を持ったまま墓標の名前へ替え、その後に一時ディレクトリ、墓標の順に
+                    // 消す。途中で失敗しても半端なセッションを ID で開かせない
+                    // （設計書 01-05「記録を残す期間」）。
+                    let tombstone = temporary::session_tombstone(&id)?;
+                    match rustix::fs::renameat(
+                        &sessions,
+                        name.as_os_str(),
+                        &sessions,
+                        tombstone.as_str(),
+                    ) {
+                        Ok(()) => {}
+                        Err(rustix::io::Errno::NOENT) => return Ok(false),
+                        Err(error) => return Err(error.into()),
+                    }
+                    side_removed = finish_session_tombstone(
+                        paths,
+                        &sessions,
+                        temporary_root.as_ref(),
+                        &id,
+                        &tombstone,
+                    )?;
                 } else {
                     return Ok(false);
                 }
@@ -482,29 +589,154 @@ pub fn cleanup(
                 drop(lock);
                 Ok(true)
             })();
+            report.temporary_removed = report.temporary_removed.saturating_add(side_removed);
             match result {
                 Ok(true) if temporary => {
                     report.temporary_removed = report.temporary_removed.saturating_add(1)
                 }
                 Ok(true) => report.sessions_removed = report.sessions_removed.saturating_add(1),
                 Ok(false) => {}
-                Err(error) => report.failures.push(CleanupFailure {
-                    id: Some(id),
-                    temporary,
-                    reason: match error {
-                        SessionError::Io(error) => error.to_string(),
-                        other @ (SessionError::SafeFs(_)
-                        | SessionError::Json(_)
-                        | SessionError::Random(_)
-                        | SessionError::Invalid(_)
-                        | SessionError::Locked
-                        | SessionError::ForkCleanup { .. }) => other.to_string(),
-                    },
-                }),
+                Err(error) => report
+                    .failures
+                    .push(cleanup_failure(Some(id), temporary, error)),
             }
         }
     }
     Ok(report)
+}
+
+fn cleanup_failure(id: Option<SessionId>, temporary: bool, error: SessionError) -> CleanupFailure {
+    CleanupFailure {
+        id,
+        temporary,
+        reason: match error {
+            SessionError::Io(error) => error.to_string(),
+            other @ (SessionError::SafeFs(_)
+            | SessionError::Json(_)
+            | SessionError::Random(_)
+            | SessionError::Invalid(_)
+            | SessionError::Locked
+            | SessionError::ForkCleanup { .. }) => other.to_string(),
+        },
+    }
+}
+
+/// 消すものがなければ `None` を返して開く（同時に掃除する起動との競合を失敗にしない）。
+fn open_if_present(parent: &File, name: &str) -> Result<Option<File>, SessionError> {
+    match open_directory_at(parent, name) {
+        Ok(directory) => Ok(Some(directory)),
+        Err(SessionError::Io(error)) if error.kind() == io::ErrorKind::NotFound => Ok(None),
+        Err(error) => Err(error),
+    }
+}
+
+/// セッションの墓標を、中の錠を取れれば片付け、消した一時ディレクトリの数を返す。
+/// 錠のないものは動くセッションがないので片付ける。
+fn remove_session_tombstone(
+    paths: &DataPaths,
+    sessions: &File,
+    temporary_root: Option<&File>,
+    id: &SessionId,
+    name: &str,
+) -> Result<u64, SessionError> {
+    let Some(_lock) = lock_session_tombstone(sessions, name)? else {
+        return Ok(0);
+    };
+    finish_session_tombstone(paths, sessions, temporary_root, id, name)
+}
+
+/// 墓標の錠を持ったまま、先にそのセッションの一時ディレクトリ（墓標の名前のものを含む）を
+/// 消し、消せたら墓標を消す。消せなければ墓標を錠のファイルだけにして残し、失敗を返す。
+/// 墓標を先に消すと、残った一時ディレクトリを記録と錠で確かめて消す者がいなくなる
+/// （設計書 01-05「記録を残す期間」）。
+fn finish_session_tombstone(
+    paths: &DataPaths,
+    sessions: &File,
+    temporary_root: Option<&File>,
+    id: &SessionId,
+    name: &str,
+) -> Result<u64, SessionError> {
+    let removed = match temporary_root {
+        Some(root) => temporary::remove_all(root, &paths.temporary_root, id),
+        None => Ok(0),
+    };
+    let tombstone = std::ffi::OsStr::new(name);
+    match removed {
+        Ok(count) => {
+            remove::directory_at(sessions, tombstone, remove::Target::Session)?;
+            Ok(count)
+        }
+        Err(error) => {
+            let reason = cleanup_failure(None, true, error).reason;
+            let contents =
+                remove::directory_at(sessions, tombstone, remove::Target::SessionContents)
+                    .err()
+                    .map(|error| error.to_string());
+            Err(io::Error::other(text::session_kept(&reason, contents.as_deref())).into())
+        }
+    }
+}
+
+/// 同じ ID のセッションの墓標の錠を取る。一時ディレクトリを消す前のセッションの削除が
+/// 止まったときに、残った一時ディレクトリの墓標を消すために使う。
+fn lock_tombstone_of(
+    paths: &DataPaths,
+    sessions: &File,
+    id: &SessionId,
+) -> Result<Option<Option<File>>, SessionError> {
+    for entry in fs::read_dir(&paths.sessions_dir)? {
+        let Ok(entry) = entry else {
+            continue;
+        };
+        let name = entry.file_name();
+        let Some(name) = name.to_str() else {
+            continue;
+        };
+        if temporary::parse_session_tombstone(name).as_ref() == Some(id)
+            && let Some(lock) = lock_session_tombstone(sessions, name)?
+        {
+            return Ok(Some(lock));
+        }
+    }
+    Ok(None)
+}
+
+/// 墓標の錠を取る。`None` は消してはならない（錠を取れない、不正な要素）。
+/// `Some(None)` は錠のない墓標で、中で動くセッションはない。
+fn lock_session_tombstone(
+    sessions: &File,
+    name: &str,
+) -> Result<Option<Option<File>>, SessionError> {
+    let directory = match open_directory_at(sessions, name) {
+        Ok(directory) => directory,
+        Err(SessionError::Io(error)) if error.kind() == io::ErrorKind::NotFound => {
+            return Ok(None);
+        }
+        Err(SessionError::Invalid(_)) => return Ok(None),
+        Err(error) => return Err(error),
+    };
+    Ok(Some(
+        match openat(
+            &directory,
+            "lock",
+            OFlags::RDWR | OFlags::NOFOLLOW | OFlags::NONBLOCK | OFlags::CLOEXEC,
+            Mode::empty(),
+        ) {
+            Ok(lock) => {
+                let lock = File::from(lock);
+                if !private_metadata(&lock.metadata()?, false) {
+                    return Ok(None);
+                }
+                match try_lock(&lock) {
+                    Ok(()) => Some(lock),
+                    Err(SessionError::Locked) => return Ok(None),
+                    Err(error) => return Err(error),
+                }
+            }
+            Err(rustix::io::Errno::NOENT) => None,
+            Err(error) => return Err(error.into()),
+        },
+    ))
 }
 
 fn expired(directory: &File, retention: Duration, now: SystemTime) -> Result<bool, SessionError> {

@@ -21,6 +21,8 @@ pub enum WritableRule {
     Executable,
     /// 作成先が守る名前の中にある。
     ProtectedName,
+    /// 足した場所が一時ディレクトリの根か、その祖先である。
+    TemporaryRoot,
 }
 
 /// 実パスへの変換の失敗、または拒否した規則と場所。
@@ -48,8 +50,13 @@ impl fmt::Display for WritableError {
                     WritableRule::ProjectTemporary => text::PROJECT_TEMP,
                     WritableRule::Executable => text::WRITABLE_EXECUTABLE,
                     WritableRule::ProtectedName => text::WRITABLE_PROTECTED_NAME,
+                    WritableRule::TemporaryRoot => text::WRITABLE_TEMPORARY_ROOT,
                 };
-                write!(f, "{message}: {} ({})", path.display(), other.display())
+                write!(f, "{message}: {} ({})", path.display(), other.display())?;
+                if *rule == WritableRule::TemporaryRoot {
+                    write!(f, ". {}", text::writable_temporary_root_hint(other))?;
+                }
+                Ok(())
             }
         }
     }
@@ -171,6 +178,19 @@ fn validate_locations(
             return Err(reject(WritableRule::Executable, path, executable));
         }
     }
+    // 根に書けると、同じ根のほかのセッションの一時ディレクトリを書き換えられ、根の差し替えで
+    // 削除を根の外へ向けられる（設計書 03-02「書ける場所の検査」）。doctor は試しのディレクトリを
+    // 渡すので、locations.temporary の親ではなく paths.temporary_root と比べる。
+    if !locations.additional.is_empty() {
+        let temporary_root = real_future(&paths.temporary_root)?;
+        if let Some(path) = locations
+            .additional
+            .iter()
+            .find(|additional| temporary_root.starts_with(additional))
+        {
+            return Err(reject(WritableRule::TemporaryRoot, path, &temporary_root));
+        }
+    }
     if overlaps(&locations.project, &locations.temporary) {
         return Err(reject(
             WritableRule::ProjectTemporary,
@@ -253,5 +273,66 @@ fn real_future(path: &Path) -> Result<PathBuf, WritableError> {
                 });
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::fs;
+
+    struct Fixture(PathBuf);
+    impl Drop for Fixture {
+        fn drop(&mut self) {
+            let _removed = fs::remove_dir_all(&self.0);
+        }
+    }
+
+    // 関門: 足した場所が一時ディレクトリの根か祖先なら断り、根の下は通す。根を
+    // locations.temporary の親で比べる退行（doctor の試しのディレクトリで素通りする）や、
+    // 祖先を見落とす退行を、実のパスの表で捕まえる。macOS の /var の別名は実のパスに直す。
+    #[test]
+    fn additional_roots_must_not_contain_the_temporary_root()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let mut nonce = [0; 8];
+        getrandom::fill(&mut nonce).map_err(io::Error::other)?;
+        let root = std::env::temp_dir().join(format!("bh-w-{:016x}", u64::from_ne_bytes(nonce)));
+        fs::create_dir(&root)?;
+        let fixture = Fixture(fs::canonicalize(&root)?);
+        let base = &fixture.0;
+        for directory in ["home", "project", "tmp/T/build", "bin"] {
+            fs::create_dir_all(base.join(directory))?;
+        }
+        fs::write(base.join("bin/benitoiteh"), b"")?;
+        let paths = DataPaths::from_values(
+            Some(&base.join("home")),
+            Some(&base.join("config")),
+            Some(&base.join("state")),
+            Some(&base.join("tmp/T")),
+        )
+        .map_err(|error| io::Error::other(error.to_string()))?;
+        // doctor と同じく、根の下の別のディレクトリを一時ディレクトリとして渡す。
+        let temporary = base.join("tmp/T/benitoiteh-doctor-0/write");
+        for (additional, rejected) in [("tmp/T", true), ("tmp", true), ("tmp/T/build", false)] {
+            let result = validate_writable_with_executable(
+                &paths,
+                &base.join("project"),
+                &temporary,
+                &[base.join(additional)],
+                &base.join("bin/benitoiteh"),
+            );
+            match result {
+                Err(WritableError::Rejected { rule, path, other }) if rejected => {
+                    assert_eq!(rule, WritableRule::TemporaryRoot, "{additional}");
+                    assert_eq!(path, base.join(additional));
+                    assert_eq!(other, base.join("tmp/T"));
+                }
+                Ok(locations) if !rejected => {
+                    assert_eq!(locations.additional, vec![base.join(additional)]);
+                }
+                other => return Err(format!("{additional}: {other:?}").into()),
+            }
+        }
+        Ok(())
     }
 }

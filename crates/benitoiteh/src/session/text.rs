@@ -59,6 +59,88 @@ pub fn fork_cleanup(
     format!("{error} Could not remove incomplete fork {id}: {cleanup}")
 }
 
+/// 再開のときに残った一時ディレクトリを消せなかった知らせ（設計書 01-05「一時ディレクトリ」）。
+pub fn temporary_not_removed(path: &std::path::Path, reason: &str) -> String {
+    let path = crate::benitoite::display::one_line(&path.to_string_lossy());
+    let reason = crate::benitoite::display::one_line(reason);
+    format!("Could not remove the previous temporary directory {path}: {reason}")
+}
+
+/// 名前を替えられない一時ディレクトリの知らせ。macOS では印と ACL を外すコマンドを、
+/// シェルの引用を付けたパスで添える（設計書 01-05「一時ディレクトリ」）。
+pub fn temporary_pinned(path: &std::path::Path, reason: &str) -> String {
+    let notice = temporary_not_removed(path, reason);
+    if cfg!(target_os = "macos") {
+        let path = shell_quote(&crate::benitoite::display::one_line(
+            &path.to_string_lossy(),
+        ));
+        format!("{notice} Run chflags -R nouchg {path} and chmod -R -N {path}, then retry.")
+    } else {
+        notice
+    }
+}
+
+/// 一重引用符で囲む。中の一重引用符は `'\''` にする。
+fn shell_quote(value: &str) -> String {
+    format!("'{}'", value.replace('\'', "'\\''"))
+}
+
+/// 一時ディレクトリを消せず、期間を過ぎたセッションの墓標を錠だけにして残した理由。
+/// 墓標の中身も消せなければ、その理由を添える。
+pub fn session_kept(reason: &str, contents: Option<&str>) -> String {
+    match contents {
+        None => format!(
+            "{reason}; the session record was removed and its lock is kept until its temporary directory is removed."
+        ),
+        Some(contents) => format!(
+            "{reason}; the session lock is kept until its temporary directory is removed, and the rest of the session could not be removed: {contents}"
+        ),
+    }
+}
+
+/// 残した守る名前の項目のうち、パスを示す件数の上限。
+pub const PROTECTED_SHOWN: usize = 20;
+
+/// 一件のパスを示す字数の上限。長いパスは末尾（守る名前の側）を残す。
+const PROTECTED_PATH_CHARS: usize = 240;
+
+/// 一時ディレクトリの削除で守る名前の項目を残した理由（パスは一時の根からの相対）。
+/// `shown` は最初の高々 20 件、`total` は残した総数。総数を先頭に置き、知らせが
+/// 切られるときはパスの並びの側が切られるようにする。
+pub fn protected_kept(shown: &[std::path::PathBuf], total: usize) -> String {
+    let paths = shown
+        .iter()
+        .take(PROTECTED_SHOWN)
+        .map(|path| tail_of(&path.to_string_lossy()))
+        .collect::<Vec<_>>()
+        .join(", ");
+    let rest = total.saturating_sub(shown.len().min(PROTECTED_SHOWN));
+    if rest == 0 {
+        format!("kept protected entries: {total} total; {paths}")
+    } else {
+        format!("kept protected entries: {total} total ({rest} not shown); {paths}")
+    }
+}
+
+/// 長いパスの先頭の側を `…` で略し、末尾を残す。
+fn tail_of(path: &str) -> String {
+    let count = path.chars().count();
+    if count <= PROTECTED_PATH_CHARS {
+        return crate::benitoite::display::one_line(path);
+    }
+    let tail = path
+        .chars()
+        .skip(count.saturating_sub(PROTECTED_PATH_CHARS))
+        .collect::<String>();
+    format!("…{}", crate::benitoite::display::one_line(&tail))
+}
+
+/// 権限を変えられた一時ディレクトリを掃除で消した知らせ。
+pub fn temporary_unsafe_removed(path: &std::path::Path) -> String {
+    let path = crate::benitoite::display::one_line(&path.to_string_lossy());
+    format!("Removed temporary directory {path} whose permissions had been changed.")
+}
+
 /// 後始末の省略は、進行中の秘密の仲介を止めた診断と区別する。
 pub const NOT_PRIVATE_DIRECTORY: &str = "not a private directory owned by you.";
 pub fn cleanup_skipped(path: &std::path::Path, reason: &str) -> String {
