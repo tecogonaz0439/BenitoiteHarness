@@ -1,0 +1,71 @@
+{
+  "kind": "normal",
+  "category": "tests",
+  "artifacts": [
+    "manifest.py"
+  ],
+  "writable_files": [
+    "manifest.py"
+  ],
+  "allowed_generated": [
+    "__pycache__/",
+    "tests/__pycache__/"
+  ],
+  "verify": [
+    "python3",
+    "-m",
+    "unittest",
+    "discover",
+    "-s",
+    "tests"
+  ],
+  "judge": [
+    "python3",
+    "-I",
+    "judge/verify.py"
+  ],
+  "required_tools": [
+    "python3",
+    "/bin/sh"
+  ],
+  "self_test": {
+    "initial_case": "parent",
+    "fixed_output": "def validate_manifest(manifest):\n    return []\n",
+    "controls": [
+      {
+        "source": "negative/allow_duplicates.py",
+        "cases": [
+          "duplicate"
+        ]
+      },
+      {
+        "source": "negative/normpath.py",
+        "cases": [
+          "leading_parent",
+          "parent_only",
+          "dot_only"
+        ]
+      }
+    ],
+    "fixed_output_cases": [
+      "detached_inputs",
+      "nested",
+      "duplicate",
+      "absolute",
+      "parent",
+      "empty_path",
+      "array_type",
+      "null_array",
+      "missing",
+      "root_type",
+      "element_type",
+      "trailing_separator",
+      "dot_component",
+      "backslash",
+      "nul",
+      "leading_parent",
+      "parent_only",
+      "dot_only"
+    ]
+  }
+}

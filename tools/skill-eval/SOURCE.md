@@ -413,3 +413,64 @@ workspace の snapshot も、ディレクトリの記述子から `O_NOFOLLOW`�
 ポートの規則 `localhost:PORT` は、IPv4 の `127.0.0.1` に加え、IPv6 の `::1` の同じポートへの外向きの接続も許す。これは TCP だけに限定する規則ではない。HTTP の模擬は `127.0.0.1` で待ち受ける。ほかの宛先の拒否のテストは、127.0.0.2 の別名や待ち受けを作らず、外での接続の結果と内での PermissionDenied を対にする。
 
 既知の限界として、`trusted/` は書けないが、成果物の子からも読める。同じサンドボックスで検査の親と子を動かすため、子が期待値を読んで出力を合わせる不正を防ぎきれない。設計書 07-02 の「完全な保証ではない」という範囲であり、この修正では分離の方式を変えていない。
+
+### P5-35 通常モードの 10 課題
+
+P5-35 の追加の 8 課題も、本リポジトリの自作の課題である。入力のソース、公開テスト、
+正しい解、追加の判定と不完全な修正の対照を作成した。従来の 11 課題と、取り込み元の
+タグ・コミットは変えていない。通常モードは bugfix 4 個・feature 4 個・tests 2 個とし、
+Benitoite の課題と成績を混ぜない。
+
+| 課題 | 課題固有の条件 | 未修正が落ちるケース | 不完全な修正 → 落ちるケース |
+|---|---|---|---|
+| `normal_csv_totals` | 金額の正確な集計、負数、名前順、空の入力（P5-34 のまま） | `fractional` | 固定の空出力 → `fractional`・`negative`・`repeated` |
+| `normal_path_filter` | 直下の通常ファイル、空白、隠しファイル、リンクの除外（P5-34 のまま） | `spaces` | 固定の空出力 → `spaces`・`hidden`・`nested`・`links` |
+| `normal_config_merge` | 辞書の再帰、配列などの置換、false・0・空文字・null、入力を変えず可変の値を共有しない | `nested` | `negative/drop_falsy.py` → `falsy`・`replace` |
+| `normal_cli_exit` | 引数は greet と名前の二つ、成功は stdout と 0、誤りは定型の stderr と 2 | `missing` | `negative/accept_extra.sh` → `extra` |
+| `normal_jsonl_filter` | 有限の数値の score を閾値以上で選び、順序を保つ。不正な行では行番号と 2、stdout は空 | `equality` | `negative/strict_threshold.py` → `equality`・`zero_and_types`・`negative` |
+| `normal_text_replace` | dry-run は出力だけ、通常は更新だけ。リテラルの全置換、UTF-8、LF・CRLF・末尾の改行を保持 | `preview` | `negative/break_normal.py` → `normal`・`no_match`・`normal_crlf`・`replacement_backslashes` |
+| `normal_stable_unique` | casefold で比較して最初の表記を保つ。既定は区別あり、空行も値とし、出力は各行に LF | `casefold` | `negative/break_default.py` → `default` |
+| `normal_report_sort` | 数値または文字列を昇順・降順に安定ソート。キー欠落は定型の stderr と 2 | `descending_ties` | `negative/reverse_ties.py` → `descending_ties` |
+| `normal_test_ranges` | 整数の半開区間。接触・空は非重複、包含・等しい非空は重複。どちらの逆順も ValueError | `touching` | `negative/no_validation.py` → `reversed_with_empty`・`reverse_a`・`reverse_b` |
+| `normal_test_manifest` | files は相対 POSIX パスの配列。重複・絶対パス・空・ドットの要素・型違いを拒む。入力は変更しない | `parent` | `negative/allow_duplicates.py` → `duplicate`。`negative/normpath.py` → `leading_parent`・`parent_only`・`dot_only` |
+
+CLI の引数、誤りの文、順序と改行の契約は、各 `task.md` と原本の公開テストに記した。
+配列や JSON の期待値も手で定め、解から作らない。公開テストと追加判定は、Python 3.9.6 の
+標準ライブラリだけで動く書き方とし、成果物の import と実行はケースごとの子で行う。
+信頼する親は、終了状態・出力の値・変更したファイルを比べる。stderr の一致は、契約で文言を
+定めた CLI の誤りなどに限る。絶対パス、利用者の HOME、外部のパッケージ、通信、時計、乱数を
+課題の解と期待値に使わない。一時ディレクトリの名前は判定の入出力の期待値に含めない。
+公開テストを workspace で走らせた際の `__pycache__/` と `tests/__pycache__/` は生成を許す。
+判定の Python と子には `-B` を付け、公開の verify には `-I` を付けない。
+区間と manifest の子は、正常な戻り値と送出した ValueError を別の JSON の欄に記録し、
+文字列を返しただけの実装を例外の送出として採らない。
+
+self-test のケース名と固定の出力のコードは、課題名の分岐から各 `task.json` の `self_test` へ
+移した。全 10 課題で未修正の指定ケースの失敗・解の全ケースの成功を確かめる。固定の出力には
+`fixed_output_cases`、不完全な修正には `cases` として失敗するケースの集合を記し、実際の集合との
+完全な一致と、少なくとも 1 ケースの成功を求める。固定の空出力などが空の入力では通る形にして、
+構文の誤りで全ケースが落ちる壊れた対照を拒む。不完全な修正の失敗には振る舞いの相違も求める。
+機能追加で既定の動作を壊す修正と、降順で同値の入力順を逆転させる修正を含めた。公開テストの削除・変更を
+拒むことと、原本を新しい判定へ戻すことは P5-34 の共通の境界のテストに任せ、課題ごとに
+同じ検査を増やさない。通常の準備で解・判定・対照を workspace に置かない規則は引き継ぐ。
+
+2026-10-21 のレビューへの対応では、manifest の先頭の `..`・単独の `..`・単独の `.` と
+normpath だけを使う対照、置換の NEW の逆斜線、greet の名前の逆斜線と二引数の未知の命令、
+キーが重なるマージの後の両入力の保持を追加した。NEW を文字どおりに挿入することと、設定の
+CLI の引数がファイルのパスであることも依頼に明記した。壊れたソースの対照と固定の出力の
+双方を self-test が拒むことを、道具の退行テストで確かめる。
+
+`scripts/check.sh` は normal が 10 課題であることを確かめ、外の macOS では全 10 課題の
+self-test・dry-run・4 番の模擬（read・write・bash と最終応答）を走らせる。模擬の提供者と
+ハーネスの設定は P5-34 のものをそのまま使う。Codex 内ではこれらと `requires_sandbox` を
+走らせず、通常の検査ではサンドボックスを外した代替の通しも行わない。
+レビュー後の設計者の指示による判定と対照の再現は、既知の解と変種に限ってサンドボックスなしで
+行う。これは OS の拒否や本物の走行の検証には使わない。
+
+有料の条件は DeepSeek-V4.1-Flash、effort high、50 番・200 万トークン、通信を拒む
+workspace-write、利用者の Skill とプラグインを読まない設定、完了の促しなしである。
+試しは `normal_csv_totals`・`normal_path_filter` を各 1 回の計 2 回、本体は全 10 課題を
+各 3 回の計 30 回とする。設計書 07-02 の見込みは 1 試行 $0.03〜0.08、計 32 回で
+$0.96〜2.56・32〜96 分、試しと本体の累計の停止額 $3 である。別の起動には既に使った額を
+差し引いた残額を渡す。オーケストレータはそれぞれの前に残る回数・見込みの費用と時間・停止額を
+設計者に示す。本作業で本物の LLM は呼ばず、外部のハーネスとの比較も行わない。

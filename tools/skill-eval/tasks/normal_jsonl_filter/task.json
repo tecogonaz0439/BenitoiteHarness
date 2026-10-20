@@ -1,0 +1,52 @@
+{
+  "kind": "normal",
+  "category": "feature",
+  "artifacts": [
+    "filter.py"
+  ],
+  "writable_files": [
+    "filter.py"
+  ],
+  "allowed_generated": [
+    "__pycache__/",
+    "tests/__pycache__/"
+  ],
+  "verify": [
+    "python3",
+    "-m",
+    "unittest",
+    "discover",
+    "-s",
+    "tests"
+  ],
+  "judge": [
+    "python3",
+    "-I",
+    "judge/verify.py"
+  ],
+  "required_tools": [
+    "python3",
+    "/bin/sh"
+  ],
+  "self_test": {
+    "initial_case": "equality",
+    "fixed_output": "pass\n",
+    "controls": [
+      {
+        "source": "negative/strict_threshold.py",
+        "cases": [
+          "equality",
+          "zero_and_types",
+          "negative"
+        ]
+      }
+    ],
+    "fixed_output_cases": [
+      "equality",
+      "zero_and_types",
+      "negative",
+      "invalid_line",
+      "blank_line"
+    ]
+  }
+}
