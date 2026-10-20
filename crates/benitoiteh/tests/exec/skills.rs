@@ -107,7 +107,8 @@ fn exec_sends_displays_records_and_rereads_user_and_project_skills() -> TestResu
                 .get("plugin_notices")
                 .and_then(Value::as_array)
                 .map(Vec::len),
-            Some(2)
+            // P5-24 で期待を変えた: 一つのプラグインの通知（知らない欄と mcp.json）を一行にまとめる。
+            Some(1)
         );
         assert_eq!(
             start
@@ -350,7 +351,15 @@ fn many_bad_or_shadowed_plugin_skill_candidates_keep_output_and_records_small() 
             // 合わせて 1,100 個で、段の 1,000 個の上限を少し超える。
             for k in 0..11 {
                 let skill = format!("s{k:02}");
-                if shadowed {
+                if n == 99 && k == 10 {
+                    // 上限の後ろの、名前の重ならない有効な Skill。開けば読まれる。
+                    let unique = skills.join("t-unique");
+                    fs::create_dir_all(&unique)?;
+                    fs::write(
+                        unique.join("SKILL.md"),
+                        "---\nname: t-unique\ndescription: Beyond the limit\n---\n",
+                    )?;
+                } else if shadowed {
                     fs::create_dir_all(skills.join(&skill))?;
                     fs::write(
                         skills.join(&skill).join("SKILL.md"),
@@ -389,6 +398,30 @@ fn many_bad_or_shadowed_plugin_skill_candidates_keep_output_and_records_small() 
             .ok_or("skipped skills")?;
         // 一件ずつの 100 件と、数をまとめた行（候補の上限と、示さなかった数）。
         assert!(skipped.len() <= 102, "{}", skipped.len());
+        // 候補の上限: 1,000 個目は p090 の s09 で、超えた 100 個を開かずに数える。
+        let limit = skipped
+            .iter()
+            .find(|item| {
+                item.get("reason").and_then(Value::as_str) == Some(
+                    "Skipped 100 plugin skill entries beyond the first 1000 for this source without opening them.",
+                )
+            })
+            .ok_or("candidate limit line")?;
+        assert!(
+            limit
+                .get("path")
+                .and_then(Value::as_str)
+                .is_some_and(|path| path.ends_with("project/.agents/plugins/p090/skills")),
+            "{limit}"
+        );
+        assert!(
+            !start
+                .get("skills")
+                .and_then(Value::as_array)
+                .into_iter()
+                .flatten()
+                .any(|skill| skill.get("name") == Some(&json!("t-unique")))
+        );
         let paths = benitoiteh::config::paths::DataPaths::from_values(
             Some(&f.root.join("home")),
             Some(&f.root.join("config")),
@@ -408,5 +441,148 @@ fn many_bad_or_shadowed_plugin_skill_candidates_keep_output_and_records_small() 
         }
         server.shutdown()?;
     }
+    Ok(())
+}
+
+// 関門: 長いパスのプラグインの通知と飛ばした項目が件数の枠の中で並び、画面と開始の記録を
+// 膨らませる退行を、入口から防ぐ（設計書 01-04 の「長さと数の上限」の 64 KiB の枠）。
+#[test]
+fn long_plugin_paths_keep_listed_notices_and_skips_within_64_kib_per_stage() -> TestResult {
+    let mut server = MockProvider::start(vec![ResponseScript::sse(
+        Protocol::Chat.response(None, "Done.", false),
+    )])?;
+    let f = Fixture::new(Protocol::Chat, &server)?;
+    let mut fields = serde_json::Map::new();
+    fields.insert(
+        "$schema".into(),
+        json!("https://agent-plugins.org/schemas/1.0.0/plugin.schema.json"),
+    );
+    fields.insert("version".into(), json!("9".repeat(65)));
+    for n in 0..10 {
+        fields.insert(format!("{n}{}", "u".repeat(63)), json!(true));
+    }
+    for (stage, letter) in [("home", 'u'), ("project", 'p')] {
+        // macOS の PATH_MAX（1023 バイト）に収まるよう、プラグインの根の実のパスを 920 バイトに
+        // 揃え、要素を 200 バイト以下に分ける。
+        let base = f.root.join(stage).join("long");
+        let mut left = 920usize
+            .checked_sub(base.as_os_str().len() + "/p000".len())
+            .ok_or("temporary root too long")?;
+        let mut long = base;
+        while left > 0 {
+            let mut part = left.min(200);
+            if left - part == 1 {
+                part -= 1;
+            }
+            long.push("d".repeat(part - 1));
+            left -= part;
+        }
+        let links = f.root.join(stage).join(".agents/plugins");
+        fs::create_dir_all(&links)?;
+        for n in 0..100 {
+            let name = format!("{letter}{n:03}");
+            if n == 99 {
+                // 枠を越えた後ろの、短いパスの小さな項目。越えた後に詰めて示せば出てしまう。
+                fs::create_dir_all(links.join(&name))?;
+                fs::write(links.join(&name).join("plugin.json"), "{")?;
+                continue;
+            }
+            let root = long.join(&name);
+            assert_eq!(root.as_os_str().len(), 920);
+            fs::create_dir_all(root.join("skills/bad"))?;
+            fields.insert("name".into(), json!(name));
+            fs::write(root.join("plugin.json"), serde_json::to_vec(&fields)?)?;
+            fs::write(root.join("mcp.json"), "{}")?;
+            fs::write(root.join("skills/bad/SKILL.md"), "invalid")?;
+            // 範囲の中へのリンクは相対のパスで置く（絶対のパスのリンクは読まない）。
+            let target = std::path::Path::new("../..").join(root.strip_prefix(f.root.join(stage))?);
+            std::os::unix::fs::symlink(target, links.join(&name))?;
+        }
+    }
+    // 標準エラー出力はパイプの容量を超えるので、終わりを待たずに読み続ける。
+    let output = f
+        .command("First request.")
+        .args(["--sandbox", "danger-full-access"])
+        .output()?;
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(output.stderr.len() <= 512 * 1024, "{}", output.stderr.len());
+    let (directory, records) = f.records()?;
+    let contents = fs::read(directory.join("session.jsonl"))?;
+    assert!(
+        contents
+            .split(|byte| *byte == b'\n')
+            .all(|line| line.len() <= 512 * 1024)
+    );
+    // 開始の記録は分けて置かれず、示した項目を本体に持つ。
+    let start = records
+        .iter()
+        .find(|record| record.get("type") == Some(&json!("session_start")))
+        .ok_or("start")?;
+    let plugins = start
+        .get("plugins")
+        .and_then(Value::as_array)
+        .ok_or_else(|| format!("plugins: {start}"))?;
+    assert_eq!(plugins.len(), 198, "{:?}", start.get("skipped_plugins"));
+    let items = ["plugin_notices", "skipped_plugins", "skipped_skills"]
+        .into_iter()
+        .filter_map(|key| start.get(key).and_then(Value::as_array))
+        .flatten()
+        .filter_map(|item| Some((item.get("path")?.as_str()?, item.get("reason")?.as_str()?)))
+        .collect::<Vec<_>>();
+    let notice = items
+        .iter()
+        .find(|(_, reason)| reason.starts_with("Ignored plugin.json version"))
+        .ok_or("merged notice")?;
+    let unknown = notice
+        .1
+        .split_once(" mcp.json is present; MCP servers from this plugin are not used. ")
+        .map(|(_, unknown)| unknown)
+        .ok_or("mcp notice")?;
+    assert!(unknown.starts_with("Ignored unknown plugin.json fields: 0uuu"));
+    assert!(notice.1.len() > 800, "{}", notice.1.len());
+    for stage in ["home", "project"] {
+        let prefix = f.root.join(stage);
+        let prefix = prefix.to_str().ok_or("prefix")?;
+        let (hidden, listed): (Vec<_>, Vec<_>) = items
+            .iter()
+            .filter(|(path, _)| path.starts_with(prefix))
+            .partition(|(_, reason)| reason.contains("for this source are not listed"));
+        let bytes = listed
+            .iter()
+            .map(|(path, reason)| path.len() + reason.len())
+            .sum::<usize>();
+        assert!(bytes <= 64 * 1024, "{stage}: {bytes}");
+        // 下限: 枠を越えたのは、一件の最大の大きさより少ない残りに達してからである。
+        let largest = listed
+            .iter()
+            .map(|(path, reason)| path.len() + reason.len())
+            .max()
+            .ok_or("listed items")?;
+        assert!(bytes > 64 * 1024 - largest, "{stage}: {bytes} {largest}");
+        assert!(listed.len() < 100, "{stage}: {}", listed.len());
+        // 越えた後ろの小さな項目は、収まる大きさでも示さない。
+        let small = f.root.join(stage).join(".agents/plugins");
+        let small = small.to_str().ok_or("small")?;
+        assert!(
+            !listed
+                .iter()
+                .any(|(path, _)| path.starts_with(small) && path.ends_with("099")),
+            "{stage}"
+        );
+        let [(_, hidden)] = hidden.as_slice() else {
+            return Err(format!("{stage}: {hidden:?}").into());
+        };
+        assert!(
+            hidden.contains(" plugin notices ") && !hidden.contains(" and 0 plugin notices "),
+            "{hidden}"
+        );
+        eprintln!("P5-24 example hidden line ({stage}): {hidden}");
+    }
+    eprintln!("P5-24 example merged notice: {} {}", notice.0, notice.1);
+    server.shutdown()?;
     Ok(())
 }

@@ -641,12 +641,51 @@ fn user_skills_take_count_and_byte_budgets_before_project_skills() -> TestResult
 // 覆させる退行を守る（Collector::precut。設計書 01-04 の「長さと数の上限」）。
 #[test]
 fn a_user_skill_cut_without_opening_still_shadows_a_project_skill() -> TestResult {
+    // P5-24 で強化した: 根のパスの長さによらず、15 個がちょうど入って残りが 526 バイトになる
+    // 説明の長さにし、対照（利用者の z019 がない）でプロジェクトの z019 が入ることを先に確かめる。
     let f = Fixture::new()?;
-    let large = "d".repeat(1000);
-    for n in 0..20 {
+    let large = "d".repeat(
+        986usize
+            .checked_sub(f.root.as_os_str().len())
+            .ok_or("temporary root too long")?,
+    );
+    let entry = |name: &str, path: &Path, description: &str| {
+        format!(
+            "<skill name=\"{name}\" path=\"{}\">{description}</skill>\n",
+            path.display()
+        )
+        .len()
+    };
+    let user_entry = entry(
+        "z000",
+        &f.root.join("home/.agents/skills/z000/SKILL.md"),
+        &large,
+    );
+    let remaining = 16 * 1024 - "<skills>\n</skills>".len() - 15 * user_entry;
+    assert_eq!((user_entry, remaining), (1056, 526));
+    let project_path = f.project.join(".agents/skills/z019/SKILL.md");
+    assert!(entry("z019", &project_path, "small") <= remaining);
+    for n in 0..19 {
         f.skill("home/.agents/skills", &format!("z{n:03}"), &large)?;
     }
     let project = f.skill("repo/sub/project/.agents/skills", "z019", "small")?;
+    let (skills, roots) = f.collect(&UserSkillsConfig::default());
+    let user_loaded = skills
+        .loaded
+        .iter()
+        .filter(|skill| skill.source == SkillSource::User)
+        .count();
+    assert_eq!(user_loaded, 15);
+    assert!(
+        skills
+            .loaded
+            .iter()
+            .any(|skill| skill.name == "z019" && skill.source == SkillSource::Project),
+        "{:?}",
+        skills.skipped
+    );
+    drop(roots);
+    f.skill("home/.agents/skills", "z019", &large)?;
     let (skills, _roots) = f.collect(&UserSkillsConfig::default());
     let user_cut = f.root.join("home/.agents/skills/z019/SKILL.md");
     assert!(skills.skipped.iter().any(|skill| skill.path == user_cut));

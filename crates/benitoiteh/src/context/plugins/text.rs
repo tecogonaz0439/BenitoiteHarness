@@ -18,6 +18,8 @@ pub fn invalid_type(field: &str) -> String {
 pub const VERSION: &str = "Ignored plugin.json version because it is not 1 to 64 ASCII letters, digits, dots, plus signs, underscores, or hyphens.";
 pub const UNREADABLE: &str = "Could not open or read this plugin.";
 pub const OUTSIDE_SCOPE: &str = "Plugin path is outside the search scope.";
+pub const ABSOLUTE_LINK: &str =
+    "Plugin path is an absolute symbolic link; use a relative link inside the search scope.";
 pub const BROAD_DIRECTORY: &str =
     "Plugin directory is the project, search root, home, or an ancestor of one of them.";
 pub const NOT_REGULAR: &str = "plugin.json is not a regular file.";
