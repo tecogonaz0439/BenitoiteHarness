@@ -3,7 +3,6 @@
 """判定の方針と、実際の OS が拒む境界（P5-32）。"""
 import json
 import os
-import re
 import signal
 import socket
 import socketserver
@@ -35,76 +34,56 @@ end function
 '''
 
 
-def policy_forms(source):
-    # 方針の構文だけを読む。許可・拒否の効力は下の本物の OS のテストで確かめる。
-    tokens = iter(re.findall(r'"(?:\\.|[^"\\])*"|[()]|[^\s()]+', source))
-    def form(token):
-        if token != '(':
-            return json.loads(token) if token.startswith('"') else token
-        result = []
-        for token in tokens:
-            if token == ')':
-                return result
-            result.append(form(token))
-        raise ValueError('unclosed form')
-    return [form(token) for token in tokens]
-
-
 class PolicyTests(unittest.TestCase):
     # 関門: 許可の境界が広がる組み立ての退行と、パスからの方針の注入を捕まえる。
     # ユーザーが求めた Codex 内の検査であり、OS の拒否の代用にはしない。
-    def test_writes_programs_and_network_are_scoped_and_paths_are_quoted(self):
-        with tempfile.TemporaryDirectory(prefix='judge-') as root:
-            directory = os.path.join(root, 'space "quote" \\ path')
-            os.mkdir(directory)
-            alias = os.path.join(root, 'alias')
-            os.symlink(directory, alias)
-            for name, helpers, remote in (
-                ('json_convert', [], None), ('write_tests', [], None),
-                ('process_run', ['/usr/bin/sort'], None),
-                ('process_shell', ['/bin/sh', '/bin/bash', '/usr/bin/grep', '/usr/bin/cut', '/usr/bin/sort'], None),
-                ('http_client', [], 'localhost:43123'),
-            ):
-                with self.subTest(task=name):
-                    forms = policy_forms(evaluation.judge_policy(evaluation.Task(name), '/opt/benitoite', alias,
-                                         {'Process.Run', 'Http.Connect'}, 'http://127.0.0.1:43123'))
-                    self.assertIn(['deny', 'default'], forms)
-                    self.assertNotIn(['allow', 'default'], forms)
-                    writes = [rule for rule in forms if rule[:2] == ['allow', 'file-write*']]
-                    self.assertEqual(writes, [['allow', 'file-write*', ['subpath', os.path.realpath(directory)]]])
-                    self.assertIn(['allow', 'file-write-data', ['literal', '/dev/null'],
-                                   ['vnode-type', 'CHARACTER-DEVICE']], forms)
-                    programs = [rule[2] for rule in forms if rule[:2] == ['allow', 'process-exec']]
-                    self.assertEqual(programs, [['literal', '/opt/benitoite']]
-                                     + [['literal', os.path.realpath(path)] for path in helpers])
-                    network = [rule for rule in forms if len(rule) > 1 and rule[1].startswith('network')]
-                    self.assertEqual(network, [] if remote is None else
-                                     [['allow', 'network-outbound', ['remote', 'ip', remote]]])
-            for endpoint in ('http://localhost:1', 'http://127.0.0.1:0', 'http://127.0.0.1:65536',
-                             'http://127.0.0.1:1/path', 'http://127.0.0.1:1") (allow default)'):
-                with self.subTest(endpoint=endpoint), self.assertRaises(ValueError):
-                    evaluation.judge_policy(evaluation.Task('http_client'), '/opt/benitoite', alias,
-                                             {'Http.Connect'}, endpoint)
-            with self.assertRaises(ValueError):
-                evaluation.judge_policy(evaluation.Task('json_convert'), '/opt/benitoite', root+'\n', set(), None)
+    def test_judge_passes_only_the_task_programs_and_http_port_to_the_runner(self):
+        # 関門: 旧 SBPL の文字列の検査を、実行器へ渡す境界の契約へ移す。
+        report = dict(exit_code=0, stdout='', stderr='', timed_out=False,
+                      stdout_truncated=False, stderr_truncated=False, signal=None)
+        for name, effects, helpers, port in (
+            ('json_convert', set(), [], None), ('write_tests', set(), [], None),
+            ('process_run', {'Process.Run'}, ['/usr/bin/sort'], None),
+            ('process_run', set(), [], None),
+            ('process_shell', {'Process.Run'}, ['/bin/sh', '/bin/bash', '/usr/bin/grep', '/usr/bin/cut', '/usr/bin/sort'], None),
+            ('process_shell', set(), [], None),
+            ('http_client', {'Http.Connect'}, [], 43123),
+            ('http_client', set(), [], None),
+        ):
+            with self.subTest(task=name), mock.patch.object(evaluation, 'runner_execute', return_value=report) as run:
+                evaluation.judge_execute(evaluation.Task(name), '/opt/benitoite', '/case',
+                                         {evaluation.http_server.BASE_VARIABLE: 'http://127.0.0.1:43123'},
+                                         effects, ['run'])
+                self.assertEqual(run.call_args[0][2], [os.path.realpath(path) for path in ['/opt/benitoite'] + helpers])
+                self.assertEqual(run.call_args[1]['port'], port)
+        for endpoint in ('http://localhost:1', 'http://127.0.0.1:0', 'http://127.0.0.1:65536',
+                         'http://127.0.0.1:1/path', 'http://127.0.0.1:1") (allow default)'):
+            with self.subTest(endpoint=endpoint), self.assertRaises(ValueError):
+                evaluation.loopback_port(evaluation.Task('http_client'), {'Http.Connect'}, endpoint)
 
-    def test_home_data_denial_precedes_only_the_required_read_exceptions(self):
-        # 関門: 親 HOME の秘密と判定の専用 HOME を混同する退行を、方針の境界で捕まえる。
-        with tempfile.TemporaryDirectory(prefix='jh-', dir='/tmp') as home:
-            alias = os.path.join(home, 'alias')
-            os.symlink(home, alias)
-            directory = os.path.join(home, 'judge')
-            os.mkdir(directory)
-            processor = os.path.join(home, 'bin', 'benitoite')
-            with mock.patch.dict(os.environ, HOME=alias):
-                forms = policy_forms(evaluation.judge_policy(evaluation.Task('process_run'), processor,
-                                                            directory, {'Process.Run'}, None))
-            self.assertEqual(forms[-4:], [
-                ['deny', 'file-read-data', ['subpath', os.path.realpath(home)]],
-                ['allow', 'file-read-data', ['literal', os.path.realpath(processor)]],
-                ['allow', 'file-read-data', ['literal', os.path.realpath('/usr/bin/sort')]],
-                ['allow', 'file-read-data', ['subpath', os.path.realpath(directory)]],
-            ])
+    def test_runner_scopes_roots_denies_sources_and_closes_descriptors(self):
+        # 関門: 実行器の引数の列で、親 HOME の許可と原本の拒否の脱落を捕まえる。
+        report = dict(schema_version=1, success=True, exit_code=0, signal=None, end='exited', timed_out=False,
+                      possibly_remaining=False, stop_required=False, stdout='', stderr='',
+                      stdout_truncated=False, stderr_truncated=False, error=None)
+        with tempfile.TemporaryDirectory(prefix='ra-', dir='/tmp') as root:
+            home, repository, workspace, case = [os.path.join(root, name) for name in ('home', 'repo', 'workspace', 'case')]
+            for path in (home, repository, workspace, case):
+                os.mkdir(path)
+            result = subprocess.CompletedProcess([], 0, json.dumps(report).encode(), b'')
+            with mock.patch.dict(os.environ, HOME=home), mock.patch.object(evaluation, 'REPO', repository), \
+                    mock.patch.object(evaluation, 'find_judge_runner', return_value='/outside/examples/skill_eval_judge'), \
+                    mock.patch.object(evaluation.subprocess, 'run', return_value=result) as run:
+                evaluation.runner_execute(['/usr/bin/true'], case, ['/usr/bin/true'], workspace=workspace)
+            args = run.call_args[0][0]
+            roots = [args[index + 1] for index, value in enumerate(args) if value == '--read-root']
+            self.assertTrue(roots)
+            self.assertTrue(all(os.path.commonpath([os.path.realpath(home), path]) != path for path in roots))
+            denied = [args[index + 1] for index, value in enumerate(args) if value == '--deny-read']
+            self.assertEqual(set(denied), {os.path.realpath(repository), os.path.realpath(workspace)})
+            self.assertNotIn('--allow-loopback-port', args)
+            self.assertTrue(run.call_args[1]['close_fds'])
+            self.assertEqual(run.call_args[1]['env']['HOME'], home)
 
     def test_test_output_excerpt_is_short_and_escapes_controls(self):
         # 関門: 失敗した判定の公開の理由から、長大な出力と端末制御の混入を防ぐ。

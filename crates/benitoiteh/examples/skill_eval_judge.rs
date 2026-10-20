@@ -83,6 +83,7 @@ mod macos {
     use std::fmt;
     use std::fs;
     use std::io::{self, Write};
+    use std::num::NonZeroU16;
     use std::os::unix::ffi::{OsStrExt, OsStringExt};
     use std::os::unix::process::ExitStatusExt;
     use std::path::{Component, Path, PathBuf};
@@ -95,7 +96,8 @@ mod macos {
     use benitoiteh::sandbox::run::{Leftovers, RunEnd, RunLimits, run};
     use benitoiteh::sandbox::session::ResourceLimits;
     use benitoiteh::sandbox::{
-        PolicyConfig, SandboxCommand, SandboxError, SandboxPolicy, SandboxStdin,
+        PolicyConfig, ProgramAccess, ReadAccess, SandboxCommand, SandboxError, SandboxPolicy,
+        SandboxStdin,
     };
 
     use super::{Report, text};
@@ -143,6 +145,9 @@ mod macos {
         temporary: PathBuf,
         timeout: Duration,
         denied_read: Vec<PathBuf>,
+        loopback_port: Option<NonZeroU16>,
+        read_roots: Vec<PathBuf>,
+        programs: Vec<PathBuf>,
         program: PathBuf,
         args: Vec<OsString>,
     }
@@ -199,6 +204,9 @@ mod macos {
             let mut temporary = None;
             let mut timeout = None;
             let mut denied_read = Vec::new();
+            let mut loopback_port = None;
+            let mut read_roots = Vec::new();
+            let mut programs = Vec::new();
             let mut args = std::env::args_os().skip(1);
             while let Some(option) = args.next() {
                 if option == "--" {
@@ -209,6 +217,9 @@ mod macos {
                         temporary: temporary.ok_or(JudgeError::Arguments)?,
                         timeout: timeout.ok_or(JudgeError::Arguments)?,
                         denied_read,
+                        loopback_port,
+                        read_roots,
+                        programs,
                         program,
                         args: args.collect(),
                     });
@@ -221,6 +232,16 @@ mod macos {
                         temporary = Some(writable_path(value)?)
                     }
                     Some("--deny-read") => denied_read.push(real_path(value)?),
+                    Some("--read-root") => read_roots.push(real_path(value)?),
+                    Some("--allow-program") => programs.push(real_path(value)?),
+                    Some("--allow-loopback-port") if loopback_port.is_none() => {
+                        loopback_port = Some(
+                            value
+                                .to_str()
+                                .and_then(|value| value.parse::<NonZeroU16>().ok())
+                                .ok_or(JudgeError::Arguments)?,
+                        );
+                    }
                     Some("--timeout") if timeout.is_none() => {
                         let seconds = value
                             .to_str()
@@ -246,7 +267,7 @@ mod macos {
         let mut env = BTreeMap::new();
         env.insert(RUN_MARKER.into(), marker.into());
         for (name, value) in [
-            ("PATH", "/usr/bin:/bin:/usr/sbin:/sbin"),
+            ("PATH", "/usr/bin:/bin"),
             ("LC_ALL", "C"),
             ("PYTHONNOUSERSITE", "1"),
             ("PYTHONDONTWRITEBYTECODE", "1"),
@@ -310,9 +331,32 @@ mod macos {
         if arguments.helper != real_path(expected_helper.into_os_string())? {
             return Err(JudgeError::Rejected(text::HELPER));
         }
+        if !arguments.programs.is_empty() && arguments.read_roots.is_empty() {
+            return Err(JudgeError::Rejected(text::PROGRAM_ROOTS));
+        }
+        if arguments
+            .read_roots
+            .iter()
+            .any(|root| home.starts_with(root))
+        {
+            return Err(JudgeError::Rejected(text::READ_ROOT));
+        }
         let mut config =
             PolicyConfig::new(vec![arguments.cwd.clone(), arguments.temporary.clone()]);
         config.allow_ip = false;
+        config.allow_loopback_port = arguments.loopback_port;
+        // 評価側は OS の場所と判定用の場所を列挙し、HOME 全体の読み取りを許さない。
+        // 引数がない既存の呼び出しでは読み取りと起動の既定値を変えない（実装プラン P5-34）。
+        if !arguments.read_roots.is_empty() {
+            config.readable = ReadAccess::Roots(arguments.read_roots.clone());
+            config.readable_files = arguments.programs.clone();
+            // 起動時に必要な根自身の読み取りだけを許す。配下へは広げない
+            // （設計書 03-02、実装プラン P5-34、レビュー H-1）。
+            config.readable_files.push(PathBuf::from("/"));
+        }
+        if !arguments.programs.is_empty() {
+            config.programs = ProgramAccess::Only(arguments.programs.clone());
+        }
         config.deny_exec_in_writable = false;
         config.denied_read = arguments.denied_read.clone();
         // cli::denied_candidates と同じ候補に Keychains を足す。内容は読まない
@@ -650,11 +694,19 @@ mod macos {
         let policy = prepare_policy(&arguments)?;
         let marker = new_run_marker()?;
         let roots = [arguments.cwd.clone(), arguments.temporary.clone()];
+        let mut env = environment(&arguments.cwd, &arguments.temporary, &marker)?;
+        if let Some(port) = arguments.loopback_port {
+            // 親の環境を引き継がず、検証した模擬の宛先だけを HTTP 課題へ知らせる。
+            env.insert(
+                "SKILL_EVAL_HTTP_BASE".into(),
+                format!("http://127.0.0.1:{port}").into(),
+            );
+        }
         let command = SandboxCommand {
             policy,
             program: arguments.program,
             args: arguments.args,
-            env: environment(&arguments.cwd, &arguments.temporary, &marker)?,
+            env,
             cwd: arguments.cwd,
             stdin: SandboxStdin::Null,
         }
@@ -735,7 +787,7 @@ mod text {
         "skill_eval_judge requires macOS sandbox-exec; this OS is unsupported.";
     pub const OUTPUT: &str = "Could not write the judge result:";
     #[cfg(target_os = "macos")]
-    pub const USAGE: &str = "Usage: skill_eval_judge --helper PATH --cwd DIR --temp DIR --timeout SECONDS [--deny-read PATH]... -- PROGRAM [ARG]...";
+    pub const USAGE: &str = "Usage: skill_eval_judge --helper PATH --cwd DIR --temp DIR --timeout SECONDS [--deny-read PATH]... [--read-root DIR]... [--allow-program PATH]... [--allow-loopback-port PORT] -- PROGRAM [ARG]...";
     #[cfg(target_os = "macos")]
     pub const PATH: &str =
         "Judge paths must be absolute paths to existing files or directories of the required kind.";
@@ -767,6 +819,10 @@ mod text {
     #[cfg(target_os = "macos")]
     pub const HELPER: &str =
         "The helper must be the benitoiteh executable beside the examples directory.";
+    #[cfg(target_os = "macos")]
+    pub const PROGRAM_ROOTS: &str = "--allow-program requires --read-root.";
+    #[cfg(target_os = "macos")]
+    pub const READ_ROOT: &str = "Read roots must not contain HOME or the filesystem root.";
     #[cfg(target_os = "macos")]
     pub const DESCRIPTORS: &str =
         "The judge inherited file descriptors other than standard input, output, and error.";

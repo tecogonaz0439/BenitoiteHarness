@@ -51,6 +51,7 @@ finish() {
         printf '  linux: container tests for %s\n' "${linux_targets[@]}"
         printf '  skill-eval: requires_sandbox tests (individual names above), test_judge_sandbox.RuntimeTests OS tests, all Benitoite/compaction self-test and dry-run passes (needs sandbox-exec outside Codex)\n'
         printf '  skill-eval: benitoiteh-mock, benitoiteh-mock-completion-check and benitoiteh-mock-compact passes (needs loopback and the benitoiteh sandbox outside Codex)\n'
+        printf '  skill-eval: --self-test --suite normal, --dry-run --suite normal, benitoiteh-mock-normal; NormalTests.test_self_test_and_dry_run_normal_tasks, NormalTests.test_mock_normal_read_write_bash_for_both_tasks (needs the macOS sandbox outside Codex)\n'
     fi
     if ((${#aarch64_skipped[@]} != 0)); then
         printf '\nNot run on aarch64-unknown-linux-musl:\n'
@@ -208,6 +209,27 @@ if (len(rows) != int(sys.argv[2]) or any(row.get('success') is not True or row.g
         or row.get('mock_summary_requests', 0) < row.get('compactions', 0)
         or row.get('cost_usd') != 0 for row in rows)):
     raise SystemExit('Expected successful three-stage mock trials with matching compaction records and zero cost.')
+EOF
+fi
+if ! "$inside_codex"; then
+    skill_eval_python tools/skill-eval/skill_eval.py --self-test --suite normal \
+        --benitoite "$BENITOITEH_TEST_BENITOITE"
+    skill_eval_python tools/skill-eval/skill_eval.py --dry-run --suite normal \
+        --benitoite "$BENITOITEH_TEST_BENITOITE" --work-root "$skill_eval_work/normal-dry"
+    skill_eval_python tools/skill-eval/skill_eval.py --suite normal --harness benitoiteh-mock-normal \
+        --benitoite "$BENITOITEH_TEST_BENITOITE" --benitoiteh "$target_dir/debug/benitoiteh" \
+        --work-root "$skill_eval_work/normal-mock" --record "$skill_eval_work/normal-record.md"
+    skill_eval_python - "$skill_eval_work/normal-record.jsonl" <<'EOF'
+import json
+import sys
+
+with open(sys.argv[1], encoding='utf-8') as f:
+    rows = [json.loads(line) for line in f if line.strip()]
+if len(rows) != 2 or any(row.get('success') is not True or row.get('artifact_success') is not True
+                        or row.get('verification_missing') is not False or row.get('bash_exit_codes') != [0]
+                        or row.get('turns') != 4 or row.get('attempts') is not None
+                        or row.get('cost_usd') != 0 for row in rows):
+    raise SystemExit('Expected two successful four-turn normal mock trials with local verification and zero cost.')
 EOF
 fi
 if ! "$inside_codex"; then

@@ -460,6 +460,24 @@ class ConfigTests(unittest.TestCase):
 
 
 class MockProviderTests(unittest.TestCase):
+    # 関門: 通常モードで既存のファイルを読む前に上書きする筋書きへの退行を捕まえる。
+    def test_normal_scenario_reads_writes_and_runs_the_public_check(self):
+        try:
+            server, _base = mock_provider.start('normal', 'collect.sh', 'fixed source', verify='python3 -m unittest discover -s tests')
+        except OSError as error:
+            self.skipTest('loopback listening is unavailable: %s' % error)
+        self.addCleanup(server.server_close)
+        self.addCleanup(server.shutdown)
+        for name in ('read', 'write', 'bash', None):
+            status, body = self.request(server)
+            self.assertEqual(status, 200, body)
+            events = [json.loads(line[6:]) for line in body.splitlines() if line.startswith('data: ')]
+            block = events[1]['content_block']
+            self.assertEqual(block.get('name'), name)
+            if name == 'bash':
+                self.assertEqual(block['input']['command'], 'python3 -m unittest discover -s tests')
+        self.assertEqual(server.problems, [])
+
     def start_server(self, kind, completion_check=False):
         try:
             server, base = mock_provider.start(kind, 'main.bnt', 'source text', completion_check=completion_check)
@@ -681,6 +699,7 @@ class RecordsAndCostTests(unittest.TestCase):
         os.chmod(executable, 0o755)
         # 本物の起動を差し替える。集計と記録は main から本物の処理を通す（P5-03 の継ぎ目）。
         with mock.patch.object(evaluation, 'run_trial', side_effect=trial), \
+                mock.patch.object(evaluation, 'find_judge_runner', return_value='/outside/examples/skill_eval_judge'), \
                 mock.patch.object(evaluation, 'RESULTS_DIR', os.path.join(directory, 'results')), \
                 contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()) as err:
             handlers = {sig: signal.getsignal(sig) for sig in (signal.SIGTERM, signal.SIGHUP)}
@@ -947,6 +966,7 @@ class RecordsAndCostTests(unittest.TestCase):
     @unittest.skipUnless(os.environ.get('BENITOITEH_TEST_BENITOITE'), 'BENITOITEH_TEST_BENITOITE is not set')
     @requires_sandbox
     def test_judged_script_cannot_read_parent_session_or_provider_key(self):
+        runner = evaluation.find_judge_runner()
         task = evaluation.Task('http_client')
         source = ('import Benitoite.Unofficial.IO.Console\nimport Benitoite.Unofficial.IO.Process\n'
                   'function main() -> Result[Unit, String] uses Process.Environment, Console.Write\n')
@@ -955,7 +975,8 @@ class RecordsAndCostTests(unittest.TestCase):
                        'f: lambda(error) return IOError.message(error) end lambda) or return\n'
                        '  Console.writeLine(Option.unwrapOr(o: value%d, fallback: "absent"))\n') % (number, name, number)
         source += '  return Result.Ok(())\nend function\n'
-        with mock.patch.dict(os.environ, CLAUDE_CODE_SESSION_ID='parent-session-secret',
+        with mock.patch.object(evaluation, 'JUDGE_RUNNER', runner), \
+                mock.patch.dict(os.environ, CLAUDE_CODE_SESSION_ID='parent-session-secret',
                              ANTHROPIC_API_KEY='parent-provider-secret'):
             verdict = evaluation.judge(task, source, os.environ['BENITOITEH_TEST_BENITOITE'], None)
         self.assertNotIn('parent-session-secret', verdict.reason)
@@ -3019,6 +3040,405 @@ class JudgmentReportTests(unittest.TestCase):
                     report['kind'] = kind
                     self.assertEqual(evaluation.declared_effects(0, json.dumps(report), expected),
                                      {'File.Read'} if kind == expected else None)
+
+
+class NormalTests(unittest.TestCase):
+    # 関門: lstat の後の置換で秘密を読み、FIFO や増え続けるファイルで止まる退行を捕まえる。
+    def test_snapshot_does_not_follow_entries_replaced_after_stat(self):
+        for kind in ('link', 'fifo'):
+            with self.subTest(kind=kind), tempfile.TemporaryDirectory(prefix='race-', dir='/tmp') as root:
+                workspace = os.path.join(root, 'workspace')
+                os.mkdir(workspace)
+                path = os.path.join(workspace, 'entry')
+                secret = os.path.join(root, 'secret')
+                with open(path, 'w') as stream:
+                    stream.write('original')
+                with open(secret, 'w') as stream:
+                    stream.write('private')
+                original_open = os.open
+                changed = []
+                def raced_open(name, flags, *args, **kwargs):
+                    if os.path.basename(name) == 'entry' and not changed:
+                        changed.append(True)
+                        os.unlink(path)
+                        os.symlink(secret, path) if kind == 'link' else os.mkfifo(path)
+                    return original_open(name, flags, *args, **kwargs)
+                with mock.patch.object(evaluation.os, 'open', side_effect=raced_open), self.assertRaises((OSError, ValueError)):
+                    evaluation.normal_snapshot(workspace)
+                self.assertTrue(changed)
+
+    def test_workspace_processes_stop_before_snapshot_and_judgment(self):
+        # 関門: cwd が workspace の子孫の残りを、成果物を読む前に止める。
+        with tempfile.TemporaryDirectory(prefix='cw-', dir='/tmp') as workspace:
+            for cwd, status, blocked in [(workspace, 0, True), (workspace + '/child', 0, True),
+                                         (workspace + '-other', 0, False), (workspace, 1, True)]:
+                record = ('p%d\nfcwd\nn%s\n' % (os.getpid() + 100000, os.path.realpath(cwd))).encode()
+                result = subprocess.CompletedProcess([], status, record, b'')
+                with self.subTest(cwd=cwd, status=status), mock.patch.object(evaluation.subprocess, 'run', return_value=result):
+                    problem = evaluation.check_process_cwds([workspace])
+                    self.assertEqual(problem is not None, blocked)
+                    if blocked:
+                        with mock.patch.object(evaluation, 'normal_changes') as snapshot, \
+                                mock.patch.object(evaluation, 'runner_execute') as run, self.assertRaises(evaluation.JudgeStopped):
+                            evaluation.judge_normal(evaluation.Task('normal_csv_totals'), workspace)
+                        snapshot.assert_not_called()
+                        run.assert_not_called()
+            # LC_ALL=C の表記と先頭の /tmp の別名も、実行器の検出と揃える。
+            escaped_root = workspace + '/日\nroot'
+            escaped = os.path.realpath(workspace) + '/\\xe6\\x97\\xa5\\nroot/child'
+            output = ('p%d\nfcwd\nn%s\n' % (os.getpid() + 100000, escaped)).encode('ascii')
+            with mock.patch.object(evaluation.subprocess, 'run', return_value=subprocess.CompletedProcess([], 0, output, b'')):
+                self.assertIn('may remain', evaluation.check_process_cwds([escaped_root]))
+            for output in (b'', b'p100\n', b'n/no-pid\n', b'p100\nnrelative\n', b'p100\nn/\np200\n'):
+                with self.subTest(output=output), mock.patch.object(evaluation.subprocess, 'run',
+                        return_value=subprocess.CompletedProcess([], 0, output, b'')):
+                    self.assertIn('could not inspect', evaluation.check_process_cwds([workspace]))
+
+    def test_required_tools_use_the_judgment_path(self):
+        # 関門: 利用者の PATH の別の sort/find を、判定で動く道具として記録しない。
+        which = shutil.which
+        searches = []
+        def locate(tool, **options):
+            searches.append((tool, options.get('path')))
+            return which(tool, **options)
+        with mock.patch.dict(os.environ, PATH='/unrelated-user-bin'), \
+                mock.patch.object(evaluation.shutil, 'which', side_effect=locate), \
+                mock.patch.object(evaluation, 'runner_execute', return_value=dict(success=True, stdout='ready\n')):
+            tools = evaluation.prepare_normal_tools([evaluation.Task('normal_path_filter')])
+        self.assertTrue(searches)
+        self.assertTrue(all(path == '/usr/bin:/bin' for _name, path in searches))
+        for name in ('find', 'sort'):
+            path = os.path.realpath(which(name, path='/usr/bin:/bin'))
+            self.assertEqual(tools[name]['path'], path)
+            with open(path, 'rb') as stream:
+                self.assertEqual(tools[name]['sha256'], hashlib.sha256(stream.read()).hexdigest())
+
+    def test_framework_python_records_and_allows_only_its_app_executable(self):
+        # 関門: macOS の Python の shim が起動する実体の欠落と、許可の広げすぎを捕まえる。
+        with tempfile.TemporaryDirectory(prefix='py-', dir='/tmp') as root:
+            version = os.path.join(root, 'Python3.framework', 'Versions', '3.9')
+            launcher = os.path.join(version, 'bin', 'python3.9')
+            app = os.path.join(version, 'Resources', 'Python.app', 'Contents', 'MacOS', 'Python')
+            other = os.path.join(root, 'unrelated-python')
+            for path, contents in [(launcher, b'launcher'), (app, b'python app'), (other, b'other')]:
+                os.makedirs(os.path.dirname(path), exist_ok=True)
+                with open(path, 'wb') as stream:
+                    stream.write(contents)
+                os.chmod(path, 0o700)
+            launcher, app = os.path.realpath(launcher), os.path.realpath(app)
+            resolved = subprocess.CompletedProcess([], 0, (launcher + '\n').encode(), b'')
+            with mock.patch.object(evaluation.subprocess, 'run', return_value=resolved), \
+                    mock.patch.object(evaluation, 'version_of', return_value='Python test'), \
+                    mock.patch.object(evaluation, 'runner_execute', return_value=dict(success=True, stdout='ready\n')) as run:
+                tools = evaluation.prepare_normal_tools([evaluation.Task('normal_csv_totals')])
+                self.assertEqual(set(run.call_args.args[2]), {launcher, app})
+                self.assertEqual(tools['python3']['path'], launcher)
+                self.assertEqual(tools['python3.app'], dict(path=app, sha256=hashlib.sha256(b'python app').hexdigest()))
+                # 同じ見かけの場所から別の実行ファイルへ逃がすリンクは許可に加えない。
+                os.unlink(app)
+                os.symlink(other, app)
+                run.reset_mock()
+                with self.assertRaisesRegex(ValueError, 'framework'):
+                    evaluation.prepare_normal_tools([evaluation.Task('normal_csv_totals')])
+                run.assert_not_called()
+
+    # 関門: 課題の組の混同で、制限モードの提供者を呼んでから失敗する退行を防ぐ。
+    def test_suite_and_mode_are_checked_before_preparing_or_launching(self):
+        self.assertEqual(len(evaluation.load_tasks([])), 11)
+        self.assertEqual({task.name for task in evaluation.load_tasks([], 'normal')},
+                         {'normal_csv_totals', 'normal_path_filter'})
+        with mock.patch.object(evaluation, 'prepare_judgment') as prepare, \
+                mock.patch.object(evaluation, 'run_harness') as launch, self.assertRaises(SystemExit) as caught:
+            evaluation.main(['--suite', 'normal', '--harness', 'benitoiteh-deepseek', '--allow-unverified',
+                             '--benitoite', '/unused', '--benitoiteh', '/unused'])
+        self.assertIn('normal tasks require a normal benitoiteh harness', str(caught.exception))
+        prepare.assert_not_called()
+        launch.assert_not_called()
+        for entry in [dict(kind='benitoiteh', mode='other'), dict(kind='benitoiteh', mode=None), dict(mode='normal')]:
+            with self.subTest(entry=entry), tempfile.TemporaryDirectory(prefix='mode-', dir='/tmp') as root:
+                path = os.path.join(root, 'harnesses.json')
+                with open(path, 'w') as stream:
+                    json.dump(dict(test=entry), stream)
+                with mock.patch.object(evaluation, 'HARNESSES_FILE', path), self.assertRaisesRegex(ValueError, 'mode requires'):
+                    evaluation.load_harnesses()
+
+    # 関門: workspace の書き換えを信頼したテストへ持ち込む退行を、Python の所有する境界で捕まえる。
+    def workspace(self, task):
+        # ここではファイルの取り扱いを検査する。cwd の検出は上の境界のテストが持つ。
+        processes = mock.patch.object(evaluation, 'check_process_cwds', return_value=None)
+        processes.start()
+        self.addCleanup(processes.stop)
+        temporary = tempfile.TemporaryDirectory(prefix='nt-', dir='/tmp')
+        self.addCleanup(temporary.cleanup)
+        evaluation.prepare_inputs(task, temporary.name)
+        shutil.copyfile(task.path('task.md'), os.path.join(temporary.name, 'task.md'))
+        return temporary.name
+
+    def report(self, **updates):
+        report = dict(schema_version=1, success=True, exit_code=0, signal=None, end='exited',
+                      timed_out=False, possibly_remaining=False, stop_required=False, stdout='', stderr='',
+                      stdout_truncated=False, stderr_truncated=False, error=None)
+        report.update(updates)
+        return report
+
+    def test_judgment_paths_are_canonical_before_runner_and_spawn(self):
+        # 関門: /tmp の別名を command に残し、実の read-root と食い違う退行を捕まえる。
+        # 明示したリンクも使い、/tmp がリンクでない OS でも同じ契約を検査する。
+        original_temporary = tempfile.TemporaryDirectory
+        original_execute, original_run = evaluation.runner_execute, subprocess.run
+        runner = '/outside/examples/skill_eval_judge'
+        observed = []
+        def canonical(paths):
+            for path in paths:
+                self.assertEqual(path, os.path.realpath(path))
+                if os.path.realpath('/tmp') != '/tmp':
+                    self.assertFalse(path.startswith('/tmp/'), path)
+        def execute(command, directory, programs, read_roots=None, **options):
+            canonical([directory] + programs + (read_roots or [])
+                      + [part for part in command if os.path.isabs(part)]
+                      + ([options['workspace']] if options.get('workspace') else []))
+            return original_execute(command, directory, programs, read_roots, **options)
+        def spawn(args, **options):
+            if args[0] != runner:
+                return original_run(args, **options)
+            command = args[args.index('--') + 1:]
+            paths = [args[index + 1] for index, value in enumerate(args)
+                     if value in ('--helper', '--cwd', '--temp', '--read-root', '--allow-program', '--deny-read')]
+            canonical(paths + [part for part in command if os.path.isabs(part)])
+            observed.append(command)
+            if '-c' in command:
+                stdout = 'ready\n'
+            elif command[-1].endswith('/judge/verify.py'):
+                stdout = json.dumps(dict(cases=[dict(name='boundary', success=True, reason='ok')]))
+            else:
+                stdout = ''
+            if '-m' in command or command[-1].endswith('/judge/verify.py') or '-c' in command:
+                self.assertIn('-B', command)
+            return subprocess.CompletedProcess(args, 0, json.dumps(self.report(stdout=stdout)).encode(), b'')
+        with original_temporary(prefix='rp-', dir='/tmp') as root:
+            target, alias = os.path.join(root, 'real'), os.path.join(root, 'alias')
+            os.mkdir(target)
+            os.symlink(target, alias)
+            workspace = os.path.join(alias, 'workspace')
+            task = evaluation.Task('normal_csv_totals')
+            evaluation.prepare_inputs(task, workspace)
+            shutil.copyfile(task.path('task.md'), os.path.join(workspace, 'task.md'))
+            def temporary(**options):
+                return original_temporary(prefix=options['prefix'], dir=alias)
+            with mock.patch.object(evaluation, 'check_process_cwds', return_value=None), \
+                    mock.patch.object(evaluation, 'find_judge_runner', return_value=runner), \
+                    mock.patch.object(evaluation.tempfile, 'TemporaryDirectory', side_effect=temporary), \
+                    mock.patch.object(evaluation, 'runner_execute', side_effect=execute), \
+                    mock.patch.object(evaluation.subprocess, 'run', side_effect=spawn), \
+                    mock.patch.object(evaluation.sys, 'platform', 'darwin'):
+                self.assertTrue(evaluation.judge_normal(task, workspace)['artifact_success'])
+                evaluation.prepare_normal_tools([task])
+                evaluation.judge_execute(evaluation.Task('process_run'), sys.executable, workspace,
+                                         {}, {'Process.Run'}, ['run'])
+        self.assertEqual(len(observed), 4)
+
+    def test_original_tests_and_only_artifacts_reach_fresh_judgments(self):
+        task = evaluation.Task('normal_csv_totals')
+        workspace = self.workspace(task)
+        artifact = os.path.join(workspace, 'totals.py')
+        with open(artifact, 'w') as stream:
+            stream.write('candidate artifact\n')
+        snapshots = []
+        def run(command, directory, programs, roots, **options):
+            self.assertEqual(options['workspace'], os.path.realpath(workspace))
+            self.assertNotEqual(directory, workspace)
+            self.assertFalse(os.path.exists(os.path.join(directory, 'reference')))
+            self.assertFalse(os.path.exists(os.path.join(directory, 'judge')))
+            with open(os.path.join(directory, 'totals.py')) as stream:
+                self.assertEqual(stream.read(), 'candidate artifact\n')
+            self.assertTrue(all(not path.startswith(directory + '/') for path in roots))
+            self.assertTrue(os.path.exists(os.path.join(roots[0], 'tests/test_totals.py')))
+            snapshots.append(directory)
+            with open(os.path.join(directory, 'tests/test_totals.py'), 'w') as stream:
+                stream.write('corrupted by earlier child')
+            return self.report(stdout=json.dumps(dict(cases=[dict(name='boundary', success=True, reason='ok')]))
+                               if len(snapshots) == 2 else '')
+        with mock.patch.object(evaluation, 'runner_execute', side_effect=run):
+            result = evaluation.judge_normal(task, workspace)
+        self.assertTrue(result['artifact_success'])
+        self.assertNotEqual(snapshots[0], snapshots[1])
+        self.assertEqual(result['changed_files'], ['totals.py'])
+        self.assertFalse(os.path.exists(os.path.join(workspace, 'judge')))
+
+    def test_unpermitted_changes_and_nonregular_artifacts_fail_before_execution(self):
+        task = evaluation.Task('normal_csv_totals')
+        for mutation, expected in [('delete_test', 'missing'), ('new_file', 'unapproved.txt'),
+                                   ('link', 'non-regular'), ('fifo', 'non-regular')]:
+            with self.subTest(mutation=mutation):
+                workspace = self.workspace(task)
+                if mutation == 'delete_test':
+                    os.remove(os.path.join(workspace, 'tests/test_totals.py'))
+                elif mutation == 'new_file':
+                    with open(os.path.join(workspace, 'unapproved.txt'), 'w'):
+                        pass
+                else:
+                    os.remove(os.path.join(workspace, 'totals.py'))
+                    if mutation == 'link':
+                        os.symlink(task.path('reference/totals.py'), os.path.join(workspace, 'totals.py'))
+                    else:
+                        os.mkfifo(os.path.join(workspace, 'totals.py'))
+                with mock.patch.object(evaluation, 'runner_execute') as run:
+                    result = evaluation.judge_normal(task, workspace)
+                self.assertFalse(result['artifact_success'])
+                self.assertIn(expected, result['reason'])
+                run.assert_not_called()
+        workspace = self.workspace(task)
+        os.mkdir(os.path.join(workspace, '__pycache__'))
+        os.mkdir(os.path.join(workspace, 'tests/__pycache__'))
+        with open(os.path.join(workspace, '__pycache__/totals.pyc'), 'w') as stream:
+            stream.write('cache')
+        with open(os.path.join(workspace, 'tests/__pycache__/test_totals.pyc'), 'w') as stream:
+            stream.write('test cache')
+        self.assertEqual(evaluation.normal_changes(task, workspace)[1], [])
+
+    def test_manifest_paths_reject_escape_duplicates_links_and_special_files(self):
+        for kind in ('absolute', 'parent', 'duplicate', 'link', 'fifo', 'input_link'):
+            with self.subTest(kind=kind), tempfile.TemporaryDirectory(prefix='nm-', dir='/tmp') as root:
+                target = os.path.join(root, 'normal_test')
+                shutil.copytree(evaluation.Task('normal_csv_totals').dir, target)
+                manifest = os.path.join(target, 'task.json')
+                with open(manifest) as stream:
+                    config = json.load(stream)
+                if kind in ('absolute', 'parent', 'duplicate'):
+                    config['artifacts'] = ['/outside'] if kind == 'absolute' else ['../outside'] if kind == 'parent' else ['totals.py'] * 2
+                    with open(manifest, 'w') as stream:
+                        json.dump(config, stream)
+                else:
+                    path = os.path.join(target, 'input' if kind == 'input_link' else 'reference', 'totals.py')
+                    os.remove(path)
+                    if kind == 'fifo':
+                        os.mkfifo(path)
+                    else:
+                        os.symlink('/outside-task-root', path)
+                with mock.patch.object(evaluation, 'TASKS_DIR', root), self.assertRaises(ValueError):
+                    evaluation.Task('normal_test')
+
+        # 組の分類も manifest を検証してから開き、リンクや FIFO を覗かない。
+        for kind in ('link', 'fifo'):
+            with self.subTest(manifest=kind), tempfile.TemporaryDirectory(prefix='nm-', dir='/tmp') as root:
+                directory = os.path.join(root, 'normal_test')
+                os.mkdir(directory)
+                path = os.path.join(directory, 'task.json')
+                if kind == 'link':
+                    os.symlink('/outside-task-root', path)
+                else:
+                    os.mkfifo(path)
+                with mock.patch.object(evaluation, 'TASKS_DIR', root), \
+                        mock.patch('builtins.open', side_effect=AssertionError('must validate before opening')), \
+                        self.assertRaisesRegex(ValueError, 'invalid task manifest'):
+                    evaluation.load_tasks(['normal_test'], 'normal')
+
+    def test_normal_trial_launch_evidence_limits_and_cost_are_separate_from_artifacts(self):
+        task = evaluation.Task('normal_csv_totals')
+        harness = evaluation.load_harnesses()['benitoiteh-deepseek-normal']
+        for statuses, outcome, reason, success in [([0, 1], 'completed', 'ok', True),
+                                                   ([], 'completed', 'ok', False),
+                                                   ([0], 'stopped', evaluation.TURN_LIMIT, False),
+                                                   ([0], 'stopped', evaluation.TOKEN_LIMIT, False)]:
+            with self.subTest(statuses=statuses, reason=reason), tempfile.TemporaryDirectory(prefix='nr-', dir='/tmp') as root:
+                processor = os.path.join(root, 'original')
+                with open(processor, 'w') as stream:
+                    stream.write('processor')
+                trial = os.path.join(root, 'trial')
+                os.mkdir(trial)
+                def launch(command, cwd, env, timeout, stdout, stderr):
+                    self.assertEqual(command[command.index('--mode') + 1], 'normal')
+                    self.assertEqual(command[command.index('--approval') + 1], 'never')
+                    self.assertEqual(command[-1], evaluation.NORMAL_PROMPT)
+                    self.assertNotIn('--allow', command)
+                    self.assertEqual(env['HOME'], os.environ['HOME'])
+                    self.assertEqual(env['PWD'], cwd)
+                    self.assertNotIn('OLDPWD', env)
+                    self.assertFalse(os.path.exists(os.path.join(cwd, '.agents')))
+                    self.assertFalse(any(key.startswith('SKILL_EVAL_') for key in env))
+                    with open(os.path.join(env['XDG_CONFIG_HOME'], 'benitoiteh/config.toml')) as stream:
+                        config = stream.read()
+                    for setting in ('sandbox = "workspace-write"', 'network = false', 'writable_roots = []',
+                                    'completion_check = false'):
+                        self.assertIn(setting, config)
+                    events = [dict(type='tool_result', name='bash', screen='denied'),
+                              dict(type='tool_call', name='bash', screen='exit 0')]
+                    events += [dict(type='tool_result', name='bash', screen='exit %d' % status) for status in statuses]
+                    with open(stdout, 'w') as stream:
+                        stream.write('\n'.join(json.dumps(event) for event in events) + '\n'
+                                     + event_output(reason, outcome, calls={'bash': 8}))
+                    with open(stderr, 'w'):
+                        pass
+                    return 0, False, 0.5
+                verdict = dict(artifact_success=True, changed_files=['totals.py'], integrity_errors=[],
+                               judge_results=[], reason='ok')
+                with mock.patch.object(evaluation, 'run_harness', side_effect=launch), \
+                        mock.patch.object(evaluation, 'judge_normal', return_value=verdict):
+                    row = evaluation.run_trial(task, trial, processor, 'normal', harness, 'mock-model', None, False, '/bh')
+                self.assertEqual(row['success'], success)
+                self.assertTrue(row['artifact_success'])
+                self.assertEqual(row['verification_missing'], not statuses)
+                self.assertEqual(row['bash_calls'], len(statuses))
+                self.assertEqual(row['bash_exit_codes'], statuses)
+                self.assertIsNone(row['attempts'])
+                self.assertIsNone(row['checks'])
+                self.assertIsNone(row['fixes'])
+                self.assertAlmostEqual(row['cost_usd'], .0009036)
+
+    def test_incomplete_runner_reports_fail_and_fatal_reports_stop(self):
+        task = evaluation.Task('normal_csv_totals')
+        workspace = self.workspace(task)
+        for update in [dict(timed_out=True), dict(stdout_truncated=True), dict(stderr_truncated=True),
+                       dict(signal=24), dict(stdout='not JSON')]:
+            with self.subTest(update=update), mock.patch.object(evaluation, 'runner_execute', return_value=self.report(**update)):
+                result = evaluation.judge_normal(task, workspace)
+                self.assertFalse(result['artifact_success'])
+        for update in [dict(stop_required=True), dict(possibly_remaining=True), None, 'signal']:
+            report = self.report(**update) if isinstance(update, dict) else {}
+            completed = subprocess.CompletedProcess([], -9 if update == 'signal' else 0, json.dumps(report).encode(), b'')
+            with self.subTest(update=update), mock.patch.object(evaluation, 'find_judge_runner', return_value='/outside/examples/skill_eval_judge'), \
+                    mock.patch.object(evaluation.subprocess, 'run', return_value=completed) as run, \
+                    self.assertRaises(evaluation.JudgeStopped):
+                evaluation.runner_execute(['/usr/bin/true'], workspace, ['/usr/bin/true'])
+            self.assertTrue(run.call_args[1]['close_fds'])
+
+    @requires_sandbox
+    def test_self_test_and_dry_run_normal_tasks(self):
+        tasks = evaluation.load_tasks([], 'normal')
+        old = evaluation.NORMAL_TOOLS
+        self.addCleanup(setattr, evaluation, 'NORMAL_TOOLS', old)
+        evaluation.NORMAL_TOOLS = evaluation.prepare_normal_tools(tasks)
+        self.assertEqual(evaluation.self_test(tasks, os.environ['BENITOITEH_TEST_BENITOITE']), 0)
+        for task in tasks:
+            with tempfile.TemporaryDirectory(prefix='nd-', dir='/tmp') as root:
+                row = evaluation.run_trial(task, root, os.environ['BENITOITEH_TEST_BENITOITE'], 'normal-dry',
+                                           evaluation.load_harnesses()['benitoiteh-mock-normal'], 'mock', None, True)
+                self.assertTrue(row['success'], row['reason'])
+                self.assertFalse(row['verification_missing'])
+
+    @requires_sandbox
+    def test_mock_normal_read_write_bash_for_both_tasks(self):
+        try:
+            server, _base = mock_provider.start('normal', 'file', 'text', verify='true')
+        except OSError as error:
+            self.skipTest('loopback listening is unavailable: %s' % error)
+        server.shutdown()
+        server.server_close()
+        executable = os.environ.get('BENITOITEH_SKILL_EVAL_BINARY', os.path.join(evaluation.REPO, 'target/debug/benitoiteh'))
+        tasks = evaluation.load_tasks([], 'normal')
+        old = evaluation.NORMAL_TOOLS
+        self.addCleanup(setattr, evaluation, 'NORMAL_TOOLS', old)
+        evaluation.NORMAL_TOOLS = evaluation.prepare_normal_tools(tasks)
+        for task in tasks:
+            # normal_policy が /tmp 全体に書けるため、ハーネスと記録は共有の tmp の外に置く。
+            with tempfile.TemporaryDirectory(prefix='normal-e2e-') as root:
+                row = evaluation.run_trial(task, root, os.environ['BENITOITEH_TEST_BENITOITE'], 'benitoiteh-mock-normal',
+                                           evaluation.load_harnesses()['benitoiteh-mock-normal'], 'mock', None, False, executable)
+                self.assertTrue(row['success'], row['reason'])
+                self.assertEqual(row['bash_exit_codes'], [0])
+                self.assertEqual(row['turns'], 4)
+                self.assertEqual(row['tool_calls'], {'read': 1, 'write': 1, 'bash': 1})
+                self.assertEqual(row['cost_usd'], 0)
 
 
 class ProcessorTests(unittest.TestCase):

@@ -777,5 +777,86 @@
       }
     },
     "mock_input_tokens": 1000
+  },
+  "benitoiteh-deepseek-normal": {
+    "kind": "benitoiteh",
+    "agent": "codex",
+    "skill_parent": ".agents/skills",
+    "model": "deepseek-flash",
+    "effort": "high",
+    "provider": {
+      "kind": "anthropic-messages",
+      "api_key": {
+        "command": [
+          "/usr/bin/security",
+          "find-generic-password",
+          "-s",
+          "benitoiteh-deepseek",
+          "-w"
+        ]
+      },
+      "capabilities": {
+        "cache_control": false,
+        "strict_tools": false,
+        "eager_input_streaming": false,
+        "reasoning_replay": "same-destination"
+      },
+      "base_url": "https://api.deepseek.com/anthropic"
+    },
+    "options": {
+      "max_turns": 50,
+      "max_run_tokens": 2000000
+    },
+    "price": {
+      "input": 0.3,
+      "cache_read": 0.006,
+      "cache_write": 0.3,
+      "output": 1.2
+    },
+    "billing": "deepseek",
+    "verified": false,
+    "default": false,
+    "mode": "normal",
+    "config": {
+      "agent": {
+        "completion_check": false
+      }
+    }
+  },
+  "benitoiteh-mock-normal": {
+    "kind": "benitoiteh",
+    "agent": "codex",
+    "skill_parent": ".agents/skills",
+    "model": "mock",
+    "effort": "high",
+    "provider": {
+      "kind": "anthropic-messages",
+      "base_url": "http://127.0.0.1:{mock_port}",
+      "api_key": {
+        "env": "SKILL_EVAL_MOCK_KEY"
+      },
+      "capabilities": {}
+    },
+    "options": {
+      "max_turns": 50,
+      "max_run_tokens": 2000000,
+      "harness_timeout": 120
+    },
+    "mock": true,
+    "verified": true,
+    "default": false,
+    "price": {
+      "input": 0,
+      "cache_read": 0,
+      "cache_write": 0,
+      "output": 0
+    },
+    "billing": "none",
+    "config": {
+      "agent": {
+        "completion_check": false
+      }
+    },
+    "mode": "normal"
   }
 }

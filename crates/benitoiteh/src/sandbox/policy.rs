@@ -1,6 +1,7 @@
 //! 検証した方針だけを生成し、JSON の読み戻しにも同じ検査を掛ける（設計書 03-02「方針の要素」）。
 
 use std::fs;
+use std::num::NonZeroU16;
 use std::path::{Component, Path, PathBuf};
 
 use serde::{Deserialize, Deserializer, Serialize};
@@ -57,6 +58,10 @@ pub struct PolicyConfig {
     pub protected_names: Vec<String>,
     /// IP の通信を許すか。外部の Unix IPC は常に拒む。
     pub allow_ip: bool,
+    /// 評価の実行器だけが使う、localhost の指定ポートへの外向きの接続の例外。
+    /// 製品の経路は None のまま使う（実装プラン P5-34、2026-10-21 の決定）。
+    #[serde(default)]
+    pub allow_loopback_port: Option<NonZeroU16>,
     /// 起動を許すプログラム。
     pub programs: ProgramAccess,
     /// 書ける場所での実行と実行可能なマッピングを拒むか。省略時も拒む。
@@ -97,6 +102,7 @@ impl PolicyConfig {
             allow_fork: true,
             protected_names: PROTECTED_NAMES.iter().map(|&name| name.into()).collect(),
             allow_ip: false,
+            allow_loopback_port: None,
             programs: ProgramAccess::Unrestricted,
             deny_exec_in_writable: default_deny_exec_in_writable(),
         }
@@ -123,6 +129,8 @@ impl SandboxPolicy {
 
     pub(super) fn validate(&self) -> Result<(), SandboxError> {
         let config = self.config();
+        #[cfg(target_os = "linux")]
+        reject_loopback_port(config)?;
         if config.require_writable == config.writable.is_empty() {
             return Err(SandboxError::InvalidPolicy(text::EMPTY_WRITABLE));
         }
@@ -188,6 +196,15 @@ impl SandboxPolicy {
         }
         Ok(())
     }
+}
+
+/// Linux で表せない例外を、通信の許可にも拒否にも黙って置き換えない。
+#[cfg(target_os = "linux")]
+pub(super) fn reject_loopback_port(config: &PolicyConfig) -> Result<(), SandboxError> {
+    if config.allow_loopback_port.is_some() {
+        return Err(SandboxError::InvalidPolicy(text::LOOPBACK_UNSUPPORTED));
+    }
+    Ok(())
 }
 
 impl<'de> Deserialize<'de> for SandboxPolicy {

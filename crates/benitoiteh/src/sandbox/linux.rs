@@ -101,8 +101,7 @@ fn prepare_and_run(
     check_capabilities()?;
     rustix::thread::set_no_new_privs(true).map_err(|e| failure(text::NO_NEW_PRIVS, e))?;
     filesystem::restrict(&policy, required)?;
-    let filter =
-        filter::compile(policy.config().allow_ip).map_err(|e| failure(text::SECCOMP, e))?;
+    let filter = filter::compile_policy(policy.config()).map_err(|e| failure(text::SECCOMP, e))?;
     seccompiler::apply_filter(&filter).map_err(|e| failure(text::SECCOMP, e))?;
     rustix::process::set_dumpable_behavior(rustix::process::DumpableBehavior::NotDumpable)
         .map_err(|e| failure(text::DUMPABLE, e))?;

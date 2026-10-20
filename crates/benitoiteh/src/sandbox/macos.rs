@@ -52,8 +52,13 @@ impl SandboxPolicy {
                  ; 拒否すると guard page の確保に失敗して SIGABRT になる。\n\
                  ; 2026-10-17 に、オーケストレータがこの sysctl だけで起動できることを確認した。\n\
                  (allow sysctl-read (sysctl-name \"hw.pagesize_compat\"))\n\
+                 ; 2026-10-21 に、オーケストレータが sandbox-exec と /usr/bin/sort で実測した。\n\
+                 ; 物理メモリの量とページの大きさは秘密を含まず、標準の道具の起動に必要。\n\
+                 ; 両方を許したときだけ sort が警告なしで通り、各一名だけでは足りなかった。\n\
+                 (allow sysctl-read (sysctl-name \"hw.memsize\"))\n\
+                 (allow sysctl-read (sysctl-name \"hw.pagesize\"))\n\
                  (allow signal (target pgrp))\n\
-                 ; mach-lookup と、それ以外の sysctl-read は必要性を実測できるまで許さない。\n",
+                 ; mach-lookup と、上記三名以外の sysctl-read は必要性を実測できるまで許さない。\n",
             ),
             parameters: Vec::new(),
         };
@@ -142,6 +147,13 @@ impl SandboxPolicy {
                  (allow network-inbound (local ip \"*:*\"))\n\
                  (allow network-bind (local ip \"*:*\"))\n",
             );
+        }
+        if let Some(port) = config.allow_loopback_port {
+            // SBPL は localhost とポートで外向きの接続だけを絞る。
+            // bind・inbound・Unix IPC は既定の拒否を保つ（実装プラン P5-34）。
+            profile.source.push_str(&format!(
+                "(allow network-outbound (remote ip \"localhost:{port}\"))\n"
+            ));
         }
         profile
     }

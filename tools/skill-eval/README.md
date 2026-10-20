@@ -1,5 +1,91 @@
 # Skill の評価の道具
 
+通常モードの評価は `--suite normal` で選ぶ。現時点では次の 2 課題を実行できる。
+残りの 8 課題は P5-35 で加える。既定と `--suite benitoite` は従来の 11 課題である。
+
+| 課題 | 種別 | 編集する成果物 | 判定する振る舞い |
+|---|---|---|---|
+| `normal_csv_totals` | bugfix | `totals.py` | CSV の正確な金額の集計、負数、順序、空の入力 |
+| `normal_path_filter` | bugfix | `collect.sh` | 直下の通常の `.txt` ファイル、空白、隠しファイル、順序、空のディレクトリ |
+
+各課題は `task.md`、`task.json`、`input/`、`reference/`、`judge/` を持つ。モデルに見せる
+workspace には `input/` と `task.md` だけを写す。`task.json` の `artifacts` は判定へ写す
+ファイル、`writable_files` は変更を許す入力、`allowed_generated` は生成を許すファイルや
+末尾 `/` のディレクトリである。絶対パス・`..`・重複・リンク・特殊ファイルを拒む。
+`verify` は原本の公開の unittest、`judge` は別の入力を使う信頼する判定の親を起動する。
+成果物はケースごとに子プロセスで動かし、親に import しない。
+
+通常モードは macOS と、ビルド済みの `benitoiteh`・判定の example、v0.0.7 の処理系を必要とする。
+Python は `/usr/bin/python3` から実際の処理系のパスを求める。`python3`・`/bin/sh`、sh の
+課題の `find`・`sort` が必要である。準備時に実のパスと SHA-256、Python と sh の版を記録し、macOS の sh の起動先の `/bin/bash` も記録する。
+Python が判定のサンドボックス内で起動できることも確かめる。道具がなければ停止し、導入や更新は行わない。
+
+```sh
+CARGO_NET_OFFLINE=true cargo build -p benitoiteh --bin benitoiteh --example skill_eval_judge
+# 以下の判定と模擬の通しは Codex の外の macOS で行う。
+/usr/bin/python3 -I tools/skill-eval/skill_eval.py --self-test --suite normal \
+  --benitoite <v0.0.7の処理系>
+/usr/bin/python3 -I tools/skill-eval/skill_eval.py --dry-run --suite normal \
+  --benitoite <v0.0.7の処理系> --work-root <リポジトリと共有のtmpの外の作業場所>
+/usr/bin/python3 -I tools/skill-eval/skill_eval.py --suite normal --harness benitoiteh-mock-normal \
+  --benitoite <v0.0.7の処理系> --benitoiteh target/debug/benitoiteh \
+  --work-root <リポジトリと共有のtmpの外の作業場所> --record <記録.md>
+```
+
+`--judge-runner <path>` で実行器を指定できる。省略時は `CARGO_TARGET_DIR`（既定 `target`）の
+debug、release の順に `examples/skill_eval_judge` を探す。通常モードだけでなく、従来の
+Benitoite と圧縮の self-test・dry-run・本物の走行にも必要である。macOS 以外では停止する。
+実行器の `--allow-loopback-port` は `http_client` の判定でだけ模擬のポートを渡す。
+ほかのポート・宛先・待ち受け・Unix ソケットを許さず、製品の起動経路には例外を設定しない。
+
+判定のコマンドには、毎回新しいディレクトリと空の一時の場所を用意する。原本の公開のテストと
+期待する値は書ける場所の外に置く。実行器へリポジトリと workspace の読み取りの拒否を渡し、
+OS・判定・信頼する検査に必要な読み取りを列挙する。Benitoite の課題は起動先も列挙し、
+通常モードの課題は実行器の既定の起動の方針でインストール済みの道具を使う。親 HOME 全体の読み取りを
+許さない。コマンドは各 60 秒、保存する出力は各ストリーム 1 MiB までとし、時間切れ・打ち切り・
+不正な判定 JSON を失敗にする。実行器の合図による終了・読めない結果・`stop_required` は後続を
+止める。Python は `close_fds=True` で実行器を起動する。`possibly_remaining: false` を全子孫の
+終了の保証とせず、workspace を読む前に、その場所か配下を cwd とする残りを lsof で調べ、検出や検査の失敗で止める。評価の終わりにも判定用の場所を同じ形で調べる。
+印が見えず cwd も外へ移した子孫は検出できない。保存した出力を端末へ直接表示しない。
+
+ハーネス自身は親の HOME を保ち、`XDG_CONFIG_HOME`・`XDG_STATE_HOME`・`TMPDIR` を試行内に
+向ける。normal では `PWD` を workspace とし、`OLDPWD`・`SKILL_EVAL_*`・包みの PATH と
+リポジトリの場所を含む環境変数を渡さない。模擬の認証の変数だけは、その試行のために設定する。
+`skills.user=false`・`plugins.user=false`、`normal.sandbox="workspace-write"`・`normal.network=false`・
+`normal.writable_roots=[]`・`agent.completion_check=false` を明示し、
+`exec --mode normal --approval never` で起動する。Benitoite の Skill と包みのコマンドは配置しない。
+処理系の写しは設定し、通常モードでも Benitoite の道具は使える。
+
+通常モードの行には `suite`・`category`・`artifact_success`・`verification_missing`・`bash_calls`・
+`bash_exit_codes`・`changed_files`・`judge_results`・`tool_identities` を残す。例えば、成果物が
+合格しても bash が実際に起動していなければ、`artifact_success: true`、`bash_calls: 0`、
+`verification_missing: true`、`success: false` とする。実行した証拠は stdout の bash の
+`tool_result.screen` が `exit <整数>` であることとし、拒否や要求だけを数えない。
+Benitoite の `attempts`・`checks`・`fixes`・`after_write_checks` は `null` とする。
+番、道具ごとの要求数、トークン、時間、上限、費用も従来どおり記録し、種別ごとの成績を示す。
+dry-run は `dry_run: true` で区別し、本物の成績に混ぜない。
+
+本物の LLM の走行は、先に設計者へ提供者・モデル・回数・見込みの費用と時間・停止額を示し、
+了承を得てから行う。DeepSeek-V4.1-Flash、effort high、50 番・200 万トークンの上限を使う。
+試しは上の 2 課題を各 1 回、計 2 回、見込みは $0.06〜0.16・2〜6 分である。
+本体の 10 課題 × 3 回 = 30 回は P5-35 の後に行う。
+[設計書 07-02](../../docs/design/07-quality/07-02-evaluation.md#m-の段の残りの規模と費用) の
+試しと本体の計 32 回の見込みは $0.96〜2.56・32〜96 分、停止額は $3 である。
+別の起動には、使った費用を差し引いた残額を渡す。
+
+```sh
+# 試し。実行前に設計者の了承を得る。
+/usr/bin/python3 -I tools/skill-eval/skill_eval.py --suite normal \
+  --harness benitoiteh-deepseek-normal --allow-unverified --trials 1 --stop-cost 3 \
+  --benitoite <v0.0.7の処理系> --benitoiteh <共通の実行ファイル> \
+  --work-root <リポジトリと共有のtmpの外の作業場所>
+# 本体。P5-35 の後に、残額と回数を示して改めて了承を得る。
+/usr/bin/python3 -I tools/skill-eval/skill_eval.py --suite normal \
+  --harness benitoiteh-deepseek-normal --allow-unverified --trials 3 --stop-cost <残額> \
+  --benitoite <v0.0.7の処理系> --benitoiteh <共通の実行ファイル> \
+  --work-root <リポジトリと共有のtmpの外の作業場所>
+```
+
 同梱の Agent Skill（`crates/benitoite/skill/`）だけを与えたコーディングエージェントが、課題のスクリプトを書き、検査と修正を繰り返して期待する出力を得られるかを測る道具である（設計書 06-06「Skill の評価」）。
 
 圧縮の組は `compact_json_summary` と `compact_dir_walk` の二課題である。資料の再生成・一致の検査と、組の準備・判定は次のように確かめる。LLM とキーを使わない。self-test と dry-run の判定は macOS の `sandbox-exec` を要するため、Codex の外で走らせる。
@@ -102,7 +188,7 @@ python3 tools/skill-eval/skill_eval.py --harness default --trials 3 --allow-unve
    - 実行の課題: `benitoite check` が通り、`benitoite run` の終了状態が期待（既定 0）と等しく、標準出力が `expected.stdout` と等しく、`expected.files/` の各ファイルが書かれていること。`.json` のファイルは値として比べ、ほかはバイト列で比べる。
    - テストを書く課題: `benitoite test --diagnostics=json` の集計の行（`testSummary`）で、失敗が 0 で成功の数が `min_tests` 以上であり、スクリプトが `require_text` の文字列（`handle` など）を含むこと。テストのファイルには `check` を使わない（06-06「同梱の Agent Skill の構成」）。
 
-判定の実行前に、`benitoite check --report=json`（テストの課題では `test --check --report=json`）の宣言したエフェクトが、正しい解から求めた `task_allow` の部分集合であることを確認する。不完全な報告と許可外のエフェクトは失敗として実行しない。判定の環境は親から引き継がず、HOME・XDG・TMPDIR は判定のディレクトリ内、PATH は `/usr/bin:/bin` とする。HTTP の課題の模擬の接続先だけは明示して渡す。判定の `run`・`test` は macOS の `/usr/bin/sandbox-exec` で実行する。書き込みは判定のディレクトリと `/dev/null`、起動は本物の処理系と課題が要するプログラムに限る。`process_run` は `/usr/bin/sort`、`process_shell` は `/bin/sh`・`/bin/bash`・`/usr/bin/grep`・`/usr/bin/cut`・`/usr/bin/sort` を許す。通信は拒み、`http_client` だけは模擬の `127.0.0.1` の指定したポートへの接続を許す。macOS 以外と、サンドボックスを掛けられない場合は判定を失敗にする。実行時にも `--allow-effects=<task_allow>` を渡す。check の報告の種別を検証し、診断のコードと失敗の理由を記録する。親の HOME の実パスの下では `file-read-data` を拒み、その後で実の処理系、課題に許した補助プログラムの各実行ファイル、判定のディレクトリだけを許し直す。判定用の HOME と親の HOME は区別する。親の HOME の外の読み取りは、処理系と OS の動作のために従来の許可を保つ。
+判定の実行前に、`benitoite check --report=json`（テストの課題では `test --check --report=json`）の宣言したエフェクトが、正しい解から求めた `task_allow` の部分集合であることを確認する。不完全な報告と許可外のエフェクトは失敗として実行しない。判定の環境は親から引き継がず、HOME・XDG は実行器の専用の一時の場所の下、TMPDIR はその専用の場所、PATH は `/usr/bin:/bin` とする。HTTP の課題の模擬の接続先だけは明示して渡す。判定の `run`・`test` は `skill_eval_judge` が macOS の `/usr/bin/sandbox-exec` で実行する。書き込みは判定のディレクトリ、専用の一時の場所と `/dev/null`、起動は本物の処理系と課題が要するプログラムに限る。`process_run` は `/usr/bin/sort`、`process_shell` は `/bin/sh`・`/bin/bash`・`/usr/bin/grep`・`/usr/bin/cut`・`/usr/bin/sort` を許す。通信は拒み、`http_client` だけは模擬の `127.0.0.1` の指定したポートへの接続を許す。macOS 以外と、サンドボックスを掛けられない場合は判定を失敗にする。実行時にも `--allow-effects=<task_allow>` を渡す。check の報告の種別を検証し、診断のコードと失敗の理由を記録する。P5-34 の判定の実行器では、OS の場所、判定と専用の一時の場所、信頼する検査を読み取りの根に列挙し、必要な実行ファイルと根 `/` 自身だけを literal の読み取りに加える。`/` や親 HOME を包含する読み取りの根を拒み、`--allow-program` には `--read-root` を必須にする。判定用の HOME・XDG は専用の一時の場所の下に作り、TMPDIR はその専用の場所とする。親 HOME 全体の読み取りは許さない。
 
 判定の理由に含める stdout の相違と誤りの文の抜粋は、制御文字などを ASCII のエスケープにし、抜粋ごとに120文字以下に切る。これは任意の秘密を伏せる処理ではなく、秘密の読み取りは OS の方針で拒む。
 

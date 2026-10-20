@@ -10,6 +10,79 @@ use super::{PolicyConfig, ProgramAccess, ReadAccess, SandboxPolicy};
 
 type TestResult = Result<(), Box<dyn Error>>;
 
+// 関門: 実測した三名の欠落と、sysctl 全体・接頭辞・未確認の名前への許可の拡大を捕まえる。
+// OS での sort の動作は sandbox_macos の通常モードの正負の対照が確かめる。
+#[test]
+fn seatbelt_allows_only_the_three_measured_sysctl_names() -> TestResult {
+    let profile = SandboxPolicy::new(PolicyConfig::without_writable())?.seatbelt_profile();
+    let mut rules: Vec<_> = profile
+        .source
+        .lines()
+        .filter(|line| !line.trim_start().starts_with(';') && line.contains("sysctl-read"))
+        .collect();
+    rules.sort_unstable();
+    assert_eq!(
+        rules,
+        [
+            "(allow sysctl-read (sysctl-name \"hw.memsize\"))",
+            "(allow sysctl-read (sysctl-name \"hw.pagesize\"))",
+            "(allow sysctl-read (sysctl-name \"hw.pagesize_compat\"))",
+        ],
+        "{}",
+        profile.source
+    );
+    Ok(())
+}
+
+// 関門: 古い JSON と製品の既定値を変えず、0 や桁あふれを通信の例外にしない。
+#[test]
+fn loopback_port_defaults_and_json_validation() -> TestResult {
+    let config = PolicyConfig::without_writable();
+    assert_eq!(config.allow_loopback_port, None);
+    let mut json = serde_json::to_value(&config)?;
+    json.as_object_mut()
+        .ok_or("object")?
+        .remove("allow_loopback_port");
+    assert_eq!(
+        serde_json::from_value::<PolicyConfig>(json.clone())?.allow_loopback_port,
+        None
+    );
+    for invalid in [0, -1, 65536] {
+        json.as_object_mut()
+            .ok_or("object")?
+            .insert("allow_loopback_port".into(), invalid.into());
+        assert!(serde_json::from_value::<PolicyConfig>(json.clone()).is_err());
+    }
+    for port in [1, 65535] {
+        json.as_object_mut()
+            .ok_or("object")?
+            .insert("allow_loopback_port".into(), port.into());
+        let parsed = serde_json::from_value::<PolicyConfig>(json.clone())?;
+        assert_eq!(
+            parsed.allow_loopback_port.map(std::num::NonZeroU16::get),
+            Some(port)
+        );
+        #[cfg(target_os = "linux")]
+        assert!(SandboxPolicy::new(parsed).is_err());
+        #[cfg(target_os = "macos")]
+        {
+            let profile = SandboxPolicy::new(parsed)?.seatbelt_profile();
+            let rules: Vec<_> = profile
+                .source
+                .lines()
+                .filter(|line| line.contains("network-"))
+                .collect();
+            assert_eq!(
+                rules,
+                vec![format!(
+                    "(allow network-outbound (remote ip \"localhost:{port}\"))"
+                )]
+            );
+        }
+    }
+    Ok(())
+}
+
 struct Fixture(PathBuf);
 
 impl Fixture {

@@ -22,12 +22,13 @@ use std::os::unix::fs::MetadataExt;
 use std::os::unix::net::{UnixDatagram, UnixListener};
 use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
-use std::process::{Command, Output};
+use std::process::{Command, Output, Stdio};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
+use benitoiteh::config::{Sandbox, writable::WritableLocations};
 use benitoiteh::sandbox::{
-    PolicyConfig, ProgramAccess, SandboxCommand, SandboxPolicy, SandboxStdin,
+    PolicyConfig, ProgramAccess, SandboxCommand, SandboxPolicy, SandboxStdin, normal_policy,
 };
 
 type TestResult = Result<(), Box<dyn Error>>;
@@ -180,6 +181,83 @@ fn check(output: &Output, expected: i32) {
         output.status,
         String::from_utf8_lossy(&output.stderr)
     );
+}
+
+// 関門: 判定だけを直して製品の通常モードの sort が警告を出す退行を捕まえる。
+// 対照は同じ方針から実測した二名の行だけを除き、別の SBPL を手で書かない。
+#[test]
+fn normal_sort_is_warning_free_with_the_measured_sysctls() -> TestResult {
+    let sort = fs::canonicalize("/usr/bin/sort")?;
+    let helper = Path::new(env!("CARGO_BIN_EXE_benitoiteh"));
+    for (input, expected) in [("", ""), ("z.txt\na space.txt\n", "a space.txt\nz.txt\n")] {
+        let f = Fixture::new(true)?;
+        let temporary = f.root.join("temporary");
+        fs::create_dir(&temporary)?;
+        let mut env = BTreeMap::new();
+        for (name, child) in [
+            ("HOME", "home"),
+            ("XDG_CONFIG_HOME", "config"),
+            ("XDG_STATE_HOME", "state"),
+        ] {
+            let path = f.root.join(child);
+            fs::create_dir(&path)?;
+            env.insert(OsString::from(name), path.into_os_string());
+        }
+        env.insert("TMPDIR".into(), temporary.as_os_str().to_owned());
+        env.insert("PATH".into(), "/usr/bin:/bin".into());
+        env.insert("LC_ALL".into(), "C".into());
+        let locations = WritableLocations {
+            project: f.writable.clone(),
+            temporary,
+            additional: Vec::new(),
+        };
+        let policy = normal_policy(Sandbox::WorkspaceWrite, &locations, false, &[])?
+            .ok_or("Missing normal sandbox policy")?;
+        let input_path = f.writable.join("input.txt");
+        fs::write(&input_path, input)?;
+        let sandbox = SandboxCommand {
+            policy,
+            program: sort.clone(),
+            args: vec![input_path.into_os_string()],
+            cwd: f.writable.clone(),
+            env,
+            stdin: SandboxStdin::Null,
+        };
+        let output = sandbox.to_command(helper)?.output()?;
+        assert_eq!(output.status.code(), Some(0), "{output:?}");
+        assert_eq!(output.stdout, expected.as_bytes(), "{output:?}");
+        assert!(output.stderr.is_empty(), "{output:?}");
+
+        let mut profile = sandbox.policy.seatbelt_profile();
+        for rule in [
+            "(allow sysctl-read (sysctl-name \"hw.memsize\"))\n",
+            "(allow sysctl-read (sysctl-name \"hw.pagesize\"))\n",
+        ] {
+            assert!(profile.source.contains(rule), "{}", profile.source);
+            profile.source = profile.source.replace(rule, "");
+        }
+        let mut control =
+            benitoiteh::sandbox::session::command(helper, Path::new("/usr/bin/sandbox-exec"));
+        control.arg("-p").arg(profile.source);
+        for (name, value) in profile.parameters {
+            let mut argument = OsString::from(format!("-D{name}="));
+            argument.push(value);
+            control.arg(argument);
+        }
+        let control = control
+            .arg("--")
+            .arg(&sandbox.program)
+            .args(&sandbox.args)
+            .current_dir(&sandbox.cwd)
+            .env_clear()
+            .envs(&sandbox.env)
+            .stdin(Stdio::null())
+            .output()?;
+        let stderr = String::from_utf8_lossy(&control.stderr);
+        assert!(stderr.contains("sysconf pages"), "{control:?}");
+        assert!(stderr.contains("Operation not permitted"), "{control:?}");
+    }
+    Ok(())
 }
 
 // 関門: file-read の制限とは別の sysctl 経由の環境漏れを、本物の囮と自己の正の対照で守る。

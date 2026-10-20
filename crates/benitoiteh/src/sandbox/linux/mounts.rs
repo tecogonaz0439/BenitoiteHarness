@@ -66,6 +66,7 @@ pub(super) fn build(
     placeholders: &Path,
 ) -> Result<MountPlan, SandboxError> {
     let config = policy.config();
+    policy::reject_loopback_port(config)?;
     let store = if config.writable.is_empty() {
         None
     } else {

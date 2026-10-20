@@ -10,7 +10,7 @@ from typing import List, Optional, Tuple
 
 class MockServer(ThreadingHTTPServer):
     def __init__(self, kind: str, script: str, content: str, completion_check: bool,
-                 stages: Optional[List[dict]], input_tokens: int) -> None:
+                 stages: Optional[List[dict]], input_tokens: int, verify: Optional[str] = None) -> None:
         super().__init__(('127.0.0.1', 0), Handler)
         self.completion_check = completion_check
         self.kind = kind
@@ -24,6 +24,7 @@ class MockServer(ThreadingHTTPServer):
         self.step = 0
         self.after_summary = False
         self.input_tokens = input_tokens
+        self.verify = verify
         prompt = os.path.join(os.path.dirname(__file__), '../../crates/benitoiteh/prompts/compaction.md')
         with open(prompt, encoding='utf-8') as f:
             self.summary_prompt = f.read().strip()
@@ -50,7 +51,7 @@ class Handler(BaseHTTPRequestHandler):
         with server.request_lock:
             server.requests += 1
             number = server.requests
-        if not server.stages and number > (5 if server.completion_check else 3):
+        if not server.stages and number > (4 if server.kind == 'normal' else 5 if server.completion_check else 3):
             self.problem(500, 'unexpected request %d after the scenario ended' % number)
             return
         if self.path != '/v1/messages':
@@ -71,6 +72,25 @@ class Handler(BaseHTTPRequestHandler):
         messages = request.get('messages') if isinstance(request, dict) else None
         if server.stages:
             self.staged_response(messages, number)
+            return
+        if server.kind == 'normal':
+            if number > 1:
+                last = messages[-1] if isinstance(messages, list) and messages else {}
+                blocks = last.get('content', []) if isinstance(last, dict) else []
+                if not isinstance(blocks, list) or not any(
+                        isinstance(block, dict) and block.get('type') == 'tool_result' for block in blocks):
+                    self.problem(400, 'normal request has no final tool_result')
+                    return
+            blocks = [
+                {'type': 'tool_use', 'name': 'read', 'input': {'path': server.script}},
+                {'type': 'tool_use', 'name': 'write', 'input': {'path': server.script, 'content': server.content}},
+                {'type': 'tool_use', 'name': 'bash', 'input': {'command': server.verify}},
+                {'type': 'text', 'text': 'Done.'},
+            ]
+            block = blocks[number - 1]
+            if block['type'] == 'tool_use':
+                block['id'] = 'mock-normal-%d' % number
+            self.respond(block, number, 1000)
             return
         if number > 1 and number != 4:
             last = messages[-1] if isinstance(messages, list) and messages else {}
@@ -169,13 +189,16 @@ class Handler(BaseHTTPRequestHandler):
 
 
 def start(kind: str, script: str, content: str, completion_check: bool = False,
-          stages: Optional[List[dict]] = None, input_tokens: int = 1000) -> Tuple[MockServer, str]:
+          stages: Optional[List[dict]] = None, input_tokens: int = 1000,
+          verify: Optional[str] = None) -> Tuple[MockServer, str]:
     """試行ごとの筋書きで起動する。呼び出し側が shutdown と server_close を行う。"""
-    if kind not in ('run', 'test', 'staged'):
+    if kind not in ('run', 'test', 'staged', 'normal'):
         raise ValueError('unknown task kind: %s' % kind)
     if kind == 'staged' and (not stages or completion_check):
         raise ValueError('staged mock requires stages and completion_check false')
-    server = MockServer(kind, script, content, completion_check, stages, input_tokens)
+    if kind == 'normal' and (not verify or completion_check or stages):
+        raise ValueError('normal mock requires verify, no stages and completion_check false')
+    server = MockServer(kind, script, content, completion_check, stages, input_tokens, verify)
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
     return server, 'http://127.0.0.1:%d' % server.server_address[1]
