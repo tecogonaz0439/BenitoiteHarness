@@ -201,13 +201,62 @@ python3 -I tools/skill-eval/skill_eval.py \
 
 ## 写した後に変えた点
 
-写した直後のコミットからの変更を、作業ごとに書く。課題（`tasks/`）と判定は変えない。
+写した直後のコミットからの変更を、作業ごとに書く。従来の 11 課題（`tasks/`）の入力と期待する出力は変えない。
+
+### P5-32 圧縮の組と段の実行器
+
+既定の組 `--suite benitoite` は従来の 11 課題だけとする。`--suite compaction` は `kind: staged` の課題だけを選び、`--task` もその組の中で検証する。`kind: normal` は後続の組のために予約する。元の 11 課題の入力と期待する出力、写した元のタグとコミットは変えていない。具体的な圧縮の 2 課題、出典・生成の引数とハッシュは P5-33 で追加する。
+
+`config.compaction` には `reserve_tokens` と `keep_tokens` だけを許す。真偽を除く 0〜2**64−1 の整数とし、提供者の `context_window` と `max_output_tokens` は同じ範囲の正の整数とする。これらは項目の読み取り時に検証するので dry-run でも誤りを拒む。文脈の窓は指定があるときにその値を使い、省略時だけ 200,000 とする。
+
+`benitoiteh-deepseek-compact-base`・`reserve`・`keep` を、`benitoiteh-deepseek` から作った。すべて未検証・既定の対象外で、effort `high`、文脈の窓 65,536、出力の上限 8,192、完了の促しなしとする。予備・残す量は順に (16,384, 20,000)、(8,192, 20,000)、(16,384, 8,000) であり、閾値は 40,960・49,152・40,960、残す量の実効の上限は 16,384・16,384・8,000 となる。
+
+段の課題の `task.json` は次の形を使う。パスは課題のディレクトリからの相対パスで、通常のファイル・ディレクトリだけを許し、途中のリンク、`..`、絶対パス、特殊ファイルを拒む。`script` は作業ディレクトリ直下の `.bnt` のファイル名とする。
+
+```json
+{
+  "kind": "staged", "result_kind": "run", "script": "main.bnt",
+  "attempt_limit": 10, "http": false,
+  "stages": ["stage1.md", "stage2.md", "stage3.md"],
+  "judge_cases": [{
+    "name": "early-rule", "input": "cases/early-rule/input",
+    "args": ["alternate.json"],
+    "expected_stdout": "cases/early-rule/expected.stdout",
+    "expected_files": "cases/early-rule/expected.files"
+  }],
+  "self_test_failures": [{"script": "negative/forget.bnt", "case": "early-rule"}]
+}
+```
+
+`expected_files` は期待する生成ファイルを置くディレクトリで、ケースごとに空のディレクトリも指定できる。ケースの 3 種のパスは `cases/<name>/` の中に限る。`args` は文字列の配列で、そのまま処理系へ渡す。判定はケースごとに新しいディレクトリを作り、原本の `input/` にケースの入力を重ね、最終のスクリプトだけを置く。JSON の生成ファイルは値で比べる。失敗はケース名付きで記録する。self-test は正しい解が全ケースを通ることと、否定の対照が検査を通り、指定のケースで出力か生成ファイルの違いによって落ちることを両方確かめる。検査や実行時の誤り、別のケースだけの失敗は成功にしない。段の課題は `task.md` の存在を検証し、最上位の `expected.stdout`・`expected.files/` を拒む。期待はケースだけに置き、引数なしの確認も `args: []` のケースで表す。
+
+資料は課題の `materials/1/`・`2/`・`3/` に置く。`input/` の下に `materials/` を置くことは禁止し、段 N の直前にだけその段の資料を workspace へ写す。第 1 段の本文は既存の `PROMPT`、空行、段の本文の順とし、第 2・3 段は段の本文だけを渡す。dry-run だけは全段の準備の後に正しい解を置いて判定する。
+
+設定ファイル、workspace、環境、模擬の待ち受けは試行で一つずつ作る。第 1 段の最初の `session_start` の ID を取り、次の段に `exec --resume <ID>` を使う。`--project` は付けない。送り先、モデル、モード、プロンプトと道具のハッシュ、圧縮と促しの設定が段をまたいで変わらず、再開の印が正しいことを照合する。50 番、200 万トークン、1,800 秒を全段で共有し、より小さい項目の上限があればそちらを使う。正常に終わらない段の後に依頼を送らない。
+
+段の使用量は各段の標準出力の最後の `summary` を足す。入力にはキャッシュ分が既に入るため、トークンの上限は input＋output の和とする。セッションの `summary` は累積するので集計に使わず、`benitoiteh_results` は全段の後に一度だけ呼ぶ。費用は段ごとにも計算し、既に終わった試行の累計＋今の試行の途中の費用を、累計を変えずに判定する。行を最後に一度だけ費用の累計へ加える。残額がないか有料の費用が不明なら、後の段と試行を止める。停止額を超える最後の段の費用は発生しうる。
+
+試行の `.jsonl` は 1 行で総計を持ち、`stages` に段別の使用量・費用・時間・終了状態・渡した上限・`session_start` を残す。`exec_launches` はその試行の起動数、`compactions` は成功した圧縮の回数である。`compaction_events` は理由、段、番、見積もりの前後、要約・保持した項目の数、`kept_estimate` と `usage` を持つ。`compaction_records` と全件を順に照合し、`compaction_records_match` に回数と内容の一致を残す。超過はまだ終わっていない番へ、閾値と再開は次の番へ対応させる。次の番がなければ `turn: null` と理由を残す。
+
+2026-10-20 のオーケストレータの決定に従い、要約の要求の総数の欄は設けない。失敗・取り消し・上限で止まった圧縮の使用量は、段の `summary` の合計には入るが、圧縮の記録とイベントには残らない。成功した圧縮の `usage` も既に `summary` に入っているため、費用や使用量に足し直さない。フォークした記録は元の圧縮の `usage` も写すので、記録の使用量を足す方法は使わない。模擬だけは、受けた要約の要求数を `mock_summary_requests` に残す。
+
+成果物の合否は `artifact_success` と判定の理由に残し、比較の成立は `comparison_valid` と `comparison_reasons` に分ける。圧縮なし、現行値と残す量を減らす条件で段をまたいだ圧縮の保持した項目・量が 0、予備の 2 条件が同じ実効値になる場合、記録の不一致、段の未完了、dry-run は比較不成立とする。予備だけを減らす条件には保持量を求めず、圧縮の時点を比べる。成立の印だけで条件間の差が証明されたとは扱わず、有料の試しで保持した量と圧縮の時点の差を確かめる。
+
+再開直後の判定は提供者の固定の使用量でなく、システムプロンプト・道具・会話のバイト数からの見積もりを使う。したがって、模擬の大きい `input_tokens` だけで段の境の圧縮を起こせるとは限らない。P5-33 では資料を読む結果の量からも長さを選ぶ。`kept_estimate` は再構築前の選んだ範囲の量であり、推論を除いた後の実際の送信量とは違う。
+
+`benitoiteh-mock-compact` は各段で資料を読み、解を書き、実行し、完了する筋書きを使う。通常の応答の固定の入力は 45,000、出力は 50、要約は入力 1,000・出力 50 とする。要約の依頼はリポジトリの `prompts/compaction.md` と照合し、段の筋書きを進めずに応答する。これは再開と集計の配線を確かめる模擬であり、本物の LLM の課題の達成率や圧縮の効果を表さない。
+
+P5-32 のレビュー後に、判定前の宣言したエフェクトの検査を全 Benitoite 課題へ加えた。生成したコードの `check --report=json`（テストでは `test --check --report=json`）の完全な `aggregateEffects.expanded` が、正しい解の `task_allow` の部分集合であるときだけ実行する。判定の環境は親から引き継がず、HOME・XDG・TMPDIR を判定のディレクトリへ向け、PATH を `/usr/bin:/bin` に限る。HTTP の課題の模擬の接続先だけは明示して渡す。P5-32 の再レビュー後に、既存の実行・テストと段の課題の判定を、macOS の `/usr/bin/sandbox-exec` で囲んだ。既定は拒否とし、読み取りと実行可能なページのマップ、起動に必要な `hw.pagesize_compat` の読み取り、fork と同じプロセス群への signal を許す。これらは `crates/benitoiteh/src/sandbox/macos.rs` の既存の方針に合わせた。書き込みは判定のディレクトリと `/dev/null` のデータ、起動は実の処理系のパスと課題の固定したプログラムだけを許す。`process_run` は `/usr/bin/sort`、`process_shell` は `/bin/sh`・`/bin/bash`・`/usr/bin/grep`・`/usr/bin/cut`・`/usr/bin/sort` を許す。通信は `http_client` の模擬の `127.0.0.1` のポートへの outbound だけを例外とし、ほかは拒む。macOS 以外とサンドボックスの準備の失敗は判定の失敗にする。読み取り先のパス全体は制限していない。
+
+`benitoiteh` の起動と版の問い合わせでは、`PWD`・`OLDPWD` と、値に評価元のリポジトリのパス（実のパスと macOS の別名）を含む変数を除く。除いた名前は `environment_removed_paths` に残す。セッションの記録と退避した出力に、リポジトリのパスまたは `tools/skill-eval/tasks` があれば、`WARNING` と `repository_path_seen: true`・`comparison_excluded: true` を残す。成果物の判定は保ち、圧縮の比較は不成立とする。場所の推測などによる読み取りを完全に防ぐ仕組みではない。XDG を変更しても普段の秘密を読ませないよう、`benitoiteh` の拒否の候補にも HOME の既定の設定・状態のディレクトリを加えた。
+
+課題は kind の分類と選択の後に検証する。分類できない JSON の未選択の課題は警告して除き、明示した課題なら誤りにする。段の実行器の誤りや起動の失敗は、費用が不明でも `end: error` と理由を保ち、費用の停止を `budget_stop` に分ける。起動の失敗の理由には段の標準エラー出力を使う。
 
 ### P5-01 評価の道具を本リポジトリで動かす
 
 - `skill_eval.py` の `--self-test` は、`acceptance` の元のファイルがなければ比較を飛ばし、課題の行に元のパスを示す。
 - `skill_eval.py` の `warning_codes()` は、処理系のコードの定義が読めなければ `warning-codes.txt` を使う。
-- `scripts/check.sh` の `skill-eval` の段で、手元の処理系による `--self-test` と `--dry-run`、記録の警告の行が5件あることを確かめ、一時ディレクトリは終了時に消す。`--inside-codex` では `http_client` を除き、除いたことを示す。
+- `scripts/check.sh` の `skill-eval` の段で、手元の処理系による `--self-test` と `--dry-run`、記録の警告の行が5件あることを確かめ、一時ディレクトリは終了時に消す。`--inside-codex` では当初 `http_client` を除いていた。P5-32 の再レビュー後は判定のサンドボックスが入れ子にできないため、全組の self-test・dry-run を外の macOS で走らせる。
 - `.gitignore` に `__pycache__/` を加える。
 
 ### P5-02 `benitoiteh` と模擬の提供者を加える
@@ -278,3 +327,9 @@ python3 -I tools/skill-eval/skill_eval.py \
 - `--interleave` を加え、（課題, 反復）の組の通し番号で条件の順を回し、中断した試行を含む全体の起動順・組の中の位置と、条件をまたぐ費用を記録する。
 - `benitoiteh` の起動と版の問い合わせは、読ませない場所と資格情報の探索を変えないため、親の `HOME` を保持する。`scripts/check.sh` の評価の検査では、Python の処理全体のホーム・設定・状態・一時領域を分ける。
 - 既存の模擬の 11 課題に加え、促しのある 1 課題を別に検査する。
+
+P5-32 の再レビューの低-A・低-C に従い、check の JSON の診断から `final_codes` と失敗の理由を残し、`checkReport`／`testCheckReport` の種別も検証する。run・test には `--allow-effects=<task_allow>` を渡す。通常モードの bash でも XDG を移した後の HOME の既定の設定・状態を読めないテストを加えた。
+
+原本のパスの印には、worktree の `.git` と `commondir` から求めた元の checkout も含め、HOME を別に連結する既知の綴りも検出する。任意の文字列の分割・符号化、後の段の内容を手掛かりにした検出は実装していない。内容の検出には段ごとに識別できる文を具体的な課題から選ぶ必要があり、共通する仕様の文だけで除外すると比較を誤る。P5-33 で課題を作るときの検討事項として残す。
+
+外の macOS の検査で判定の HTTP とシェルの方針が失敗したため、接続先と起動先を修正した。Seatbelt の `remote ip` のホストは `localhost` または `*` に限られ、`127.0.0.1` の表記は拒まれる（オーケストレータの検査出力、2026-10-20）。模擬の URL は従来どおり `http://127.0.0.1:<番号>` と検証し、方針では同じポートの `localhost:<番号>` と書く。起動先は、手元の `/bin/sh` の文字列と `/private/var/select/sh -> /bin/bash` を照合し、sh が起動し直す `/bin/bash` が許可から抜けていると確認した。`process_shell` だけに `/bin/bash` を加え、`process_run` の許可は `/usr/bin/sort` のままとする。別の sh の選択への対応は確認していない。

@@ -422,7 +422,9 @@
           "-w"
         ]
       },
-      "capabilities": {"reasoning_effort": true},
+      "capabilities": {
+        "reasoning_effort": true
+      },
       "base_url": "https://generativelanguage.googleapis.com/v1beta/openai"
     },
     "options": {
@@ -595,5 +597,185 @@
         "completion_check": true
       }
     }
+  },
+  "benitoiteh-deepseek-compact-base": {
+    "kind": "benitoiteh",
+    "agent": "codex",
+    "skill_parent": ".agents/skills",
+    "model": "deepseek-flash",
+    "effort": "high",
+    "provider": {
+      "kind": "anthropic-messages",
+      "api_key": {
+        "command": [
+          "/usr/bin/security",
+          "find-generic-password",
+          "-s",
+          "benitoiteh-deepseek",
+          "-w"
+        ]
+      },
+      "capabilities": {
+        "cache_control": false,
+        "strict_tools": false,
+        "eager_input_streaming": false,
+        "reasoning_replay": "same-destination"
+      },
+      "base_url": "https://api.deepseek.com/anthropic",
+      "context_window": 65536,
+      "max_output_tokens": 8192
+    },
+    "options": {
+      "max_turns": 50,
+      "max_run_tokens": 2000000
+    },
+    "price": {
+      "input": 0.3,
+      "cache_read": 0.006,
+      "cache_write": 0.3,
+      "output": 1.2
+    },
+    "billing": "deepseek",
+    "verified": false,
+    "default": false,
+    "config": {
+      "compaction": {
+        "reserve_tokens": 16384,
+        "keep_tokens": 20000
+      }
+    }
+  },
+  "benitoiteh-deepseek-compact-reserve": {
+    "kind": "benitoiteh",
+    "agent": "codex",
+    "skill_parent": ".agents/skills",
+    "model": "deepseek-flash",
+    "effort": "high",
+    "provider": {
+      "kind": "anthropic-messages",
+      "api_key": {
+        "command": [
+          "/usr/bin/security",
+          "find-generic-password",
+          "-s",
+          "benitoiteh-deepseek",
+          "-w"
+        ]
+      },
+      "capabilities": {
+        "cache_control": false,
+        "strict_tools": false,
+        "eager_input_streaming": false,
+        "reasoning_replay": "same-destination"
+      },
+      "base_url": "https://api.deepseek.com/anthropic",
+      "context_window": 65536,
+      "max_output_tokens": 8192
+    },
+    "options": {
+      "max_turns": 50,
+      "max_run_tokens": 2000000
+    },
+    "price": {
+      "input": 0.3,
+      "cache_read": 0.006,
+      "cache_write": 0.3,
+      "output": 1.2
+    },
+    "billing": "deepseek",
+    "verified": false,
+    "default": false,
+    "config": {
+      "compaction": {
+        "reserve_tokens": 8192,
+        "keep_tokens": 20000
+      }
+    }
+  },
+  "benitoiteh-deepseek-compact-keep": {
+    "kind": "benitoiteh",
+    "agent": "codex",
+    "skill_parent": ".agents/skills",
+    "model": "deepseek-flash",
+    "effort": "high",
+    "provider": {
+      "kind": "anthropic-messages",
+      "api_key": {
+        "command": [
+          "/usr/bin/security",
+          "find-generic-password",
+          "-s",
+          "benitoiteh-deepseek",
+          "-w"
+        ]
+      },
+      "capabilities": {
+        "cache_control": false,
+        "strict_tools": false,
+        "eager_input_streaming": false,
+        "reasoning_replay": "same-destination"
+      },
+      "base_url": "https://api.deepseek.com/anthropic",
+      "context_window": 65536,
+      "max_output_tokens": 8192
+    },
+    "options": {
+      "max_turns": 50,
+      "max_run_tokens": 2000000
+    },
+    "price": {
+      "input": 0.3,
+      "cache_read": 0.006,
+      "cache_write": 0.3,
+      "output": 1.2
+    },
+    "billing": "deepseek",
+    "verified": false,
+    "default": false,
+    "config": {
+      "compaction": {
+        "reserve_tokens": 16384,
+        "keep_tokens": 8000
+      }
+    }
+  },
+  "benitoiteh-mock-compact": {
+    "kind": "benitoiteh",
+    "agent": "codex",
+    "skill_parent": ".agents/skills",
+    "model": "mock",
+    "effort": "high",
+    "provider": {
+      "kind": "anthropic-messages",
+      "base_url": "http://127.0.0.1:{mock_port}",
+      "api_key": {
+        "env": "SKILL_EVAL_MOCK_KEY"
+      },
+      "capabilities": {},
+      "context_window": 65536,
+      "max_output_tokens": 8192
+    },
+    "options": {
+      "max_turns": 50,
+      "max_run_tokens": 2000000,
+      "harness_timeout": 1800
+    },
+    "mock": true,
+    "verified": true,
+    "default": false,
+    "price": {
+      "input": 0,
+      "cache_read": 0,
+      "cache_write": 0,
+      "output": 0
+    },
+    "billing": "none",
+    "config": {
+      "compaction": {
+        "reserve_tokens": 16384,
+        "keep_tokens": 20000
+      }
+    },
+    "mock_input_tokens": 45000
   }
 }

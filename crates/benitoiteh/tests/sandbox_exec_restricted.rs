@@ -16,6 +16,149 @@ use std::os::unix::fs::symlink;
 mod shared;
 use shared::*;
 
+// 関門: XDG を評価用に移したときも、HOME に残る普段の設定・セッション・認証を
+// OS が拒む契約を守る。許可内の File.Read と、読める対照のファイルで別の失敗を除く。
+#[test]
+fn redirected_xdg_keeps_default_home_configuration_and_state_unreadable() -> TestResult {
+    let protocol = Protocol::Chat;
+    let mut server = MockProvider::start(vec![
+        ResponseScript::sse(protocol.response(
+            Some(("read-source", "read", json!({"path":"main.bnt"}))),
+            "",
+            false,
+        )),
+        ResponseScript::sse(protocol.response(
+            Some(("run-source", "benitoite_run", json!({"path":"main.bnt"}))),
+            "",
+            false,
+        )),
+        ResponseScript::sse(protocol.response(None, "Done", false)),
+    ])?;
+    let f = Fixture::restricted(protocol, &server)?;
+    let mut source = String::from(
+        "import Benitoite.Unofficial.IO.File\nimport Benitoite.Unofficial.IO.Console\nfunction main() -> Unit uses File.Read, Console.Write\n",
+    );
+    for (index, relative) in [
+        ".config/benitoiteh/config.toml",
+        ".local/state/benitoiteh/sessions/fake/session.jsonl",
+        ".local/state/benitoiteh/auth/token.json",
+    ]
+    .iter()
+    .enumerate()
+    {
+        let path = f.root.join("home").join(relative);
+        fs::create_dir_all(path.parent().ok_or("secret parent")?)?;
+        fs::write(&path, format!("FAKE-SECRET-{index}"))?;
+        source.push_str(&format!(
+            " match File.readText({}) with\n case Result.Ok(text) -> Console.writeLine(text)\n case Result.Error(error) -> Console.writeLine(\"denied-{index}\")\n end match\n",
+            serde_json::to_string(&path)?,
+        ));
+    }
+    let control = f.root.join("public-control.txt");
+    fs::write(&control, "PUBLIC-CONTROL")?;
+    source.push_str(&format!(
+        " match File.readText({}) with\n case Result.Ok(text) -> Console.writeLine(text)\n case Result.Error(error) -> Console.writeLine(\"control-failed\")\n end match\nend function\n",
+        serde_json::to_string(&control)?,
+    ));
+    fs::write(f.root.join("project/main.bnt"), source)?;
+    let output = Running::start(f.command("Read and run main.bnt").args([
+        "--allow",
+        "Console.Write,File.Read",
+        "--json",
+    ]))?
+    .finish()?;
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let (_, records) = f.records()?;
+    let result = records
+        .iter()
+        .find(|record| {
+            record.get("type") == Some(&json!("tool_result"))
+                && record.get("name") == Some(&json!("benitoite_run"))
+        })
+        .ok_or("missing run result")?;
+    let text = result
+        .pointer("/result/text")
+        .and_then(Value::as_str)
+        .ok_or("run text")?;
+    for index in 0..3 {
+        assert!(text.contains(&format!("denied-{index}")), "{text}");
+    }
+    assert!(text.contains("PUBLIC-CONTROL"), "{text}");
+    assert!(!text.contains("FAKE-SECRET"), "{text}");
+    server.shutdown()?;
+    Ok(())
+}
+
+// 関門: 通常モードの bash も同じ HOME の秘密を読めず、公開の読み取りと
+// プロジェクトへの書き込みは続けられることを、OS と exec の境界で確かめる。
+#[test]
+fn redirected_xdg_keeps_default_home_paths_unreadable_from_normal_bash() -> TestResult {
+    let protocol = Protocol::Chat;
+    let command = r#"for path in "$HOME/.config/benitoiteh/config.toml" "$HOME/.local/state/benitoiteh/auth/token.json" "$HOME/.local/state/benitoiteh/sessions/fake/session.jsonl"; do
+if cat "$path" 2>/dev/null; then printf 'UNEXPECTED-READ\n'; else printf 'denied\n'; fi
+done
+cat "$HOME/public-control.txt"
+printf 'allowed' > output.txt"#;
+    let mut server = MockProvider::start(vec![
+        ResponseScript::sse(protocol.response(
+            Some(("read-home", "bash", json!({"command":command}))),
+            "",
+            false,
+        )),
+        ResponseScript::sse(protocol.response(None, "Done", false)),
+    ])?;
+    let f = Fixture::restricted(protocol, &server)?;
+    for relative in [
+        ".config/benitoiteh/config.toml",
+        ".local/state/benitoiteh/auth/token.json",
+        ".local/state/benitoiteh/sessions/fake/session.jsonl",
+    ] {
+        let path = f.root.join("home").join(relative);
+        fs::create_dir_all(path.parent().ok_or("secret parent")?)?;
+        fs::write(path, "FAKE-SECRET")?;
+    }
+    fs::write(f.root.join("home/public-control.txt"), "PUBLIC-CONTROL\n")?;
+    let output = Running::start(f.command("Read the files").args([
+        "--mode",
+        "normal",
+        "--sandbox",
+        "workspace-write",
+        "--approval",
+        "never",
+        "--json",
+    ]))?
+    .finish()?;
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let (_, records) = f.records()?;
+    let text = records
+        .iter()
+        .find(|record| {
+            record.get("type") == Some(&json!("tool_result"))
+                && record.get("name") == Some(&json!("bash"))
+        })
+        .and_then(|record| record.pointer("/result/text"))
+        .and_then(Value::as_str)
+        .ok_or("bash result")?;
+    assert_eq!(text.matches("denied").count(), 3, "{text}");
+    assert!(text.contains("PUBLIC-CONTROL"), "{text}");
+    assert!(!text.contains("FAKE-SECRET"), "{text}");
+    assert!(!text.contains("UNEXPECTED-READ"), "{text}");
+    assert_eq!(
+        fs::read_to_string(f.root.join("project/output.txt"))?,
+        "allowed"
+    );
+    server.shutdown()?;
+    Ok(())
+}
+
 // 関門: 形の検査だけでは、exec が誤りを無視して依頼の記録や API への要求へ進む退行を捕まえない。
 // 本物の処理系と同じ場所の条件を用意し、拒否の理由まで入口で確かめる（設計書 03-02）。
 #[test]

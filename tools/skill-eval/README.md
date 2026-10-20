@@ -2,6 +2,28 @@
 
 同梱の Agent Skill（`crates/benitoite/skill/`）だけを与えたコーディングエージェントが、課題のスクリプトを書き、検査と修正を繰り返して期待する出力を得られるかを測る道具である（設計書 06-06「Skill の評価」）。
 
+圧縮の組の準備・判定は、P5-33 の課題が加わった後に次のように確かめる。どちらも LLM とキーを使わない。
+
+```sh
+python3 -I tools/skill-eval/skill_eval.py --self-test --suite compaction --benitoite <v0.0.7の処理系>
+python3 -I tools/skill-eval/skill_eval.py --dry-run --suite compaction --benitoite <v0.0.7の処理系> \
+  --work-root <リポジトリと共有のtmpの外の作業場所>
+```
+
+本物の提供者を使う実行例は次のとおりである。先に設計者へ回数と費用を提示して了承を得る。試しは同じ 1 課題で各条件 1 回の計 3 試行、本体は 2 課題・3 条件・各 3 回の計 18 試行とする。見込みの費用・時間と停止額 $5 は、[設計書 07-02「M の段の残りの規模と費用」](../../docs/design/07-quality/07-02-evaluation.md#m-の段の残りの規模と費用)を参照する。別の起動では、使った費用を差し引いた残額を渡す。
+
+```sh
+python3 -I tools/skill-eval/skill_eval.py --suite compaction \
+  --harness benitoiteh-deepseek-compact-base,benitoiteh-deepseek-compact-reserve,benitoiteh-deepseek-compact-keep \
+  --allow-unverified --interleave --trials 3 --stop-cost <残額> \
+  --benitoite <v0.0.7の処理系> --benitoiteh <全条件で共通の実行ファイル> \
+  --work-root <リポジトリと共有のtmpの外の作業場所>
+```
+
+1 試行は、同じセッションの `exec` と 2 回の `exec --resume` を含む。50 番・200 万トークン・1,800 秒を全段の合計に掛け、各段には残りを渡す。費用も段の後に判定し、残額がないか有料の費用が不明なら後続を止める。`--interleave` は 3 段を終えてから次の条件へ進む。段ごとの出力は `stage-N.stdout`・`stage-N.stderr`、総計と段の内訳は試行ごとに 1 行の `.jsonl`、比較の成立と段の表は Markdown に残る。dry-run は解を置いて判定し、`comparison_valid: false` として本物の成績と区別する。
+
+模擬の通しには `--harness benitoiteh-mock-compact --suite compaction` を使い、同じ `--benitoite`・`--benitoiteh` と、`--record <一時の記録.md>` を指定する。本物の提供者を呼ばずに再開と圧縮の記録まで確かめるものであり、圧縮の効果の評価には使わない。Codex の中では、待ち受けと入れ子のサンドボックスを要するこの通しを走らせない。
+
 既定の評価の対象（`--harness default`）は、設計者の決定（2026-10-08）により次の三つの組とする。OpenCode は設計者が解約したので、項目を `harnesses.json` に残すが既定の対象から外す。`antigravity-gpt-oss`（Antigravity の CLI、`gpt-oss-120b-medium`、effort medium）も、項目を残すが評価の対象に含めない。
 
 | 項目の名前 | ハーネス | モデルと推論の度合い |
@@ -49,7 +71,8 @@ python3 tools/skill-eval/skill_eval.py --harness default --trials 3 --allow-unve
 |---|---|
 | `--harness <名前>` | `harnesses.json` の項目の名前（コンマで区切って複数を書ける）か、既定の対象を表す `default`。複数のときは `<work-root>/<項目>/` に分け、項目ごとに記録を書く |
 | `--trials <n>` | 課題ごとの試行の回数（既定 1） |
-| `--task <課題>` | 課題を選ぶ（繰り返せる。既定はすべて） |
+| `--task <課題>` | 選んだ組の中から課題を選ぶ（繰り返せる。既定はその組のすべて）。組の外の名前は起動前に拒む |
+| `--suite benitoite\|compaction` | 課題の組。省略時は従来の 11 課題だけ。圧縮の 2 課題は `compaction` で選ぶ |
 | `--model <モデル>` | ハーネスに渡すモデル（既定は `harnesses.json` の値） |
 | `--skill-dir <dir>` | `benitoite skill install` の代わりに、このディレクトリを Skill として写す。構文の案ごとの Skill を差し替えて評価するときに使う（docs/todo の TODO-017） |
 | `--work-root <dir>` | 作業ディレクトリと生の記録の置き場所。リポジトリの中は指定できない（既定は新しい一時ディレクトリ）。同じディレクトリで再び実行すると、空いた番号の試行のディレクトリを使う |
@@ -65,6 +88,10 @@ python3 tools/skill-eval/skill_eval.py --harness default --trials 3 --allow-unve
    - 実行の課題: `benitoite check` が通り、`benitoite run` の終了状態が期待（既定 0）と等しく、標準出力が `expected.stdout` と等しく、`expected.files/` の各ファイルが書かれていること。`.json` のファイルは値として比べ、ほかはバイト列で比べる。
    - テストを書く課題: `benitoite test --diagnostics=json` の集計の行（`testSummary`）で、失敗が 0 で成功の数が `min_tests` 以上であり、スクリプトが `require_text` の文字列（`handle` など）を含むこと。テストのファイルには `check` を使わない（06-06「同梱の Agent Skill の構成」）。
 
+判定の実行前に、`benitoite check --report=json`（テストの課題では `test --check --report=json`）の宣言したエフェクトが、正しい解から求めた `task_allow` の部分集合であることを確認する。不完全な報告と許可外のエフェクトは失敗として実行しない。判定の環境は親から引き継がず、HOME・XDG・TMPDIR は判定のディレクトリ内、PATH は `/usr/bin:/bin` とする。HTTP の課題の模擬の接続先だけは明示して渡す。判定の `run`・`test` は macOS の `/usr/bin/sandbox-exec` で実行する。書き込みは判定のディレクトリと `/dev/null`、起動は本物の処理系と課題が要するプログラムに限る。`process_run` は `/usr/bin/sort`、`process_shell` は `/bin/sh`・`/bin/bash`・`/usr/bin/grep`・`/usr/bin/cut`・`/usr/bin/sort` を許す。通信は拒み、`http_client` だけは模擬の `127.0.0.1` の指定したポートへの接続を許す。macOS 以外と、サンドボックスを掛けられない場合は判定を失敗にする。実行時にも `--allow-effects=<task_allow>` を渡す。check の報告の種別を検証し、診断のコードと失敗の理由を記録する。読み取り先のパス全体は、この方針では制限しない。
+
+`benitoiteh` の起動では、`PWD`・`OLDPWD` とリポジトリのパスを含む環境変数を除く。セッション記録（退避した出力を含む）にリポジトリのパスや `tools/skill-eval/tasks` が現れた試行は、成果物の合否を保ち、`WARNING` と `repository_path_seen: true`・`comparison_excluded: true` を残す。圧縮の `comparison_valid` も `false` にする。場所の推測などによる原本の読み取りを、完全に防ぐものではない。
+
 ### 包みのコマンドの記録
 
 `bin/benitoite` は、起動のたびに `SKILL_EVAL_LOG` に一行を加え、本物の処理系の終了状態をそのまま返す。行はタブで区切る。
@@ -76,6 +103,8 @@ python3 tools/skill-eval/skill_eval.py --harness default --trials 3 --allow-unve
 診断のコードは、本物の処理系が標準エラー出力に書いた診断のコード（`error[E0405]`・`warning[W0401]`・`runtime error[R0101]` と、`--diagnostics=json` の `"code":"E0405"`）を、出た順にコンマで区切ったものである。標準エラー出力は `tee` で写しを取るだけで、エージェントに見える出力は変えない（`--diagnostics=json` を足さない）。引数の中のタブと改行は空白に置き換える。回数には、`-` で始まらない最初の引数が `check`・`run`・`test` の起動と、それが `.bnt` で終わる起動（サブコマンドのない実行）を数える。サブコマンドの前の選択肢（`benitoite --diagnostics=json check x.bnt`）は飛ばして見る。`benitoite --version` などの起動も記録するが、回数には数えない。
 
 ## 課題
+
+`kind: staged` の課題は圧縮の組に属する。`kind: normal` は後続の通常モードの組のために予約し、それ以外を既定の Benitoite の組とする。圧縮の具体的な 2 課題は P5-33 で追加する。追加前の `--suite compaction` は「課題未作成」の誤りとなり、`scripts/check.sh` も組の self-test・dry-run・模擬の通しをその理由で除く。一時的な段の課題を使う Python のテストは、追加前にも走らせる。
 
 | 課題 | 題材 | 種類 |
 |---|---|---|
@@ -110,7 +139,7 @@ HTTP の課題の接続先は `SKILL_EVAL_HTTP_BASE`（例 `http://127.0.0.1:543
 
 | ハーネス | Skill の置き場所 | インターネットを使わせない設定 | 確かめられていない点 |
 |---|---|---|---|
-| `codex` | `.agents/skills`（`--agent codex`） | `--sandbox workspace-write`（既定でネットワークを使わない）と `-c tools.web_search=false` | サンドボックスの中で `.agents/skills` の Skill を読むか。`-c tools.web_search=false` の鍵の名前。サンドボックスが 127.0.0.1 への接続も止めるか（止めるなら、`http_client` でエージェントは自分のスクリプトを実行できない。判定は道具がサンドボックスの外で行うので影響しない）。サンドボックスの中のシェルに `PATH` が引き継がれるか |
+| `codex` | `.agents/skills`（`--agent codex`） | `--sandbox workspace-write`（既定でネットワークを使わない）と `-c tools.web_search=false` | サンドボックスの中で `.agents/skills` の Skill を読むか。`-c tools.web_search=false` の鍵の名前。サンドボックスが 127.0.0.1 への接続も止めるか（止めるなら、`http_client` でエージェントは自分のスクリプトを実行できない。判定は道具が別のサンドボックスで模擬のポートだけを許すので影響しない）。サンドボックスの中のシェルに `PATH` が引き継がれるか |
 | `opencode`（既定の対象外） | `.agents/skills`（`--agent opencode`） | 作業ディレクトリの `opencode.json` の `permission` で `webfetch`・`websearch` を `deny` にする | `permission` の鍵の名前と、`.agents/skills` の Skill を読むか |
 | `claude-code` | `.claude/skills`（`--agent claude-code`） | `--disallowedTools WebFetch WebSearch` と、`--allowedTools` で Bash を `benitoite` に限る | `tools/syntax-measure/` に型板がない。`--effort`（low・medium・high・xhigh・max）と `--model` は `claude --help` で確かめたが、選択肢の組み合わせ全体は起動して確かめていない。`Bash(benitoite:*)` の許可で包みのコマンドが呼ばれるか |
 | `antigravity-gemini`・`antigravity-gpt-oss` | `.agents/skills`（Antigravity の文書 `~/.gemini/antigravity-cli/builtin/skills/agy-customizations/docs/skills.md` が、作業ディレクトリの `.agents/skills/` を Skill の置き場所とする。`--agent codex` と同じ場所なので、`skill install --agent codex` で置く） | 作業ディレクトリの `.agents/hooks.json` の `PreToolUse` で、`search_web`・`read_url.*`・`browser_.*` の道具を拒否する（同じ文書の `hooks.md`）。`--sandbox` は使わない（包みのコマンドの起動と記録の書き込みを止め、`--dangerously-skip-permissions` のもとではエージェントが迂回する） | 2026-10-08 の短い試行で、Skill を読むこと、包みのコマンドが記録されること、フックが検索の道具を拒否することを確かめた。`--disable-slash-commands` は Skill を読めなくするおそれがあるので外した。利用者の設定（`~/.gemini/config/`）を除く方法は確かめていない（開発機では Skill・MCP のサーバ・大域の規則の設定がない）。ウェブの道具の呼び出しの有無は、試行の後に `~/.gemini/antigravity-cli/brain/<対話>/.system_generated/logs/transcript.jsonl` でも確かめる |
@@ -156,3 +185,9 @@ LLM を呼ぶ評価の見込みは次のとおりである（実測ではない�
 生の対話の記録（`harness.stdout` など）と作業ディレクトリは、`--work-root`（リポジトリの外）に残し、リポジトリに入れない（`tools/syntax-measure/` と同じ扱い）。
 
 JSON の集計の課題（`json_summary`）は、各ハーネスで試行の過半数が成功したときに、初回リリース版の完了条件を満たしたとする（06-06）。ほかの課題の成功率は、Skill を改める材料として記録し、合格の基準を設けない。
+
+判定に OS のサンドボックスを使うため、`scripts/check.sh --inside-codex` は `requires_sandbox` の Python テストと `test_judge_sandbox.RuntimeTests` の OS テスト、全組の self-test・dry-run を除く。除いたテスト名は検査の出力に示す。方針の組み立て、否定用のスクリプトの構文とエフェクト、診断の記録、段の実行器の再開・上限・使用量のテストは Codex 内でも走る。外の macOS では、正しい解と対にして外への書き込み・未許可の起動・通信の拒否を確かめる。
+
+原本の検出は、worktree と元の checkout のパス、HOME と分けた既知の綴りを印にする。任意に分割して組み立てたパスや、後の段の内容そのものを検出する仕組みはない。後の段の依頼や資料の内容で照合すると、前の段と共通する仕様の文を誤って漏れとするおそれがあるため、P5-33 の具体的な課題で識別に使う内容を決める必要がある。原本のアクセスをすべて防ぐ保証として、この印を扱わない。
+
+判定の HTTP の URL は `http://127.0.0.1:<番号>` に限り、Seatbelt の方針ではそのポートを `localhost:<番号>` と表す。`process_shell` の許可に含む `/bin/bash` は、macOS の `/bin/sh` が `/private/var/select/sh` の選択に従って起動し直すために必要である。評価用の macOS では、この選択が `/bin/bash` であることを確認する。

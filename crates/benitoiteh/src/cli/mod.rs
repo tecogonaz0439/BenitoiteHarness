@@ -124,9 +124,20 @@ fn run(
     Ok(0)
 }
 
-// exec と doctor が同じ秘密の場所を方針から除く（設計書 03-02「通常モードの方針」）。
+// XDG の付け替えでも普段の秘密を公開せず、exec と doctor で共有する（設計書 03-02「方針の要素」）。
 fn denied_candidates(paths: &crate::config::paths::DataPaths) -> Vec<std::path::PathBuf> {
     let mut candidates = vec![paths.config_dir.clone(), paths.data_dir.clone()];
-    candidates.extend([".ssh", ".gnupg", ".aws"].map(|name| paths.home.join(name)));
+    candidates.extend(
+        [
+            ".config/benitoiteh",
+            ".local/state/benitoiteh",
+            ".ssh",
+            ".gnupg",
+            ".aws",
+        ]
+        .map(|name| paths.home.join(name)),
+    );
+    candidates.sort();
+    candidates.dedup();
     candidates
 }

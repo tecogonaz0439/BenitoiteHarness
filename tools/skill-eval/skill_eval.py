@@ -12,6 +12,7 @@
 """
 import argparse
 import datetime
+import functools
 import hashlib
 import json
 import os
@@ -89,6 +90,25 @@ PROMPT = (
 )
 
 
+def task_path(root: str, relative: str, directory: bool = False) -> str:
+    """課題の宣言したパスだけを辿り、途中のリンクと特殊ファイルも拒む（P5-32）。"""
+    if (not isinstance(relative, str) or not relative or os.path.isabs(relative)
+            or any(part in ('', '.', '..') for part in relative.split('/'))):
+        raise ValueError('invalid task path: %r' % relative)
+    path = root
+    parts = relative.split('/')
+    for index, part in enumerate(parts):
+        path = os.path.join(path, part)
+        mode = os.lstat(path).st_mode
+        want_dir = index < len(parts) - 1 or directory
+        if not (stat.S_ISDIR(mode) if want_dir else stat.S_ISREG(mode)):
+            raise ValueError('task path must contain only regular files and directories: %s' % relative)
+    if directory:
+        for entry in os.scandir(path):
+            task_path(root, relative + '/' + entry.name, entry.is_dir(follow_symlinks=False))
+    return path
+
+
 class Task(object):
     def __init__(self, name: str) -> None:
         self.name = name
@@ -96,6 +116,8 @@ class Task(object):
         with open(os.path.join(self.dir, 'task.json'), encoding='utf-8') as f:
             config = json.load(f)
         self.kind = config.get('kind', 'run')  # type: str
+        self.result_kind = config.get('result_kind', 'run') if self.kind == 'staged' else self.kind
+        self.suite = {'staged': 'compaction', 'normal': 'normal'}.get(self.kind, 'benitoite')
         self.script = config.get('script', 'main.bnt')  # type: str
         self.attempt_limit = int(config.get('attempt_limit', 10))
         self.http = bool(config.get('http', False))
@@ -103,17 +125,86 @@ class Task(object):
         self.min_tests = int(config.get('min_tests', 0))
         self.require_text = list(config.get('require_text', []))  # type: List[str]
         self.acceptance = dict(config.get('acceptance', {}))  # type: Dict[str, str]
+        self.stages = config.get('stages', [])
+        self.judge_cases = config.get('judge_cases', [])
+        self.self_test_failures = config.get('self_test_failures', [])
+        if self.kind == 'staged':
+            task_path(self.dir, 'task.md')
+            for path in ('expected.stdout', 'expected.files'):
+                if os.path.lexists(self.path(path)):
+                    raise ValueError('staged expectations belong in judge_cases, not ' + path)
+            if (self.result_kind != 'run' or config.get('http') is not False
+                    or type(config.get('attempt_limit')) is not int or self.attempt_limit <= 0
+                    or not isinstance(self.stages, list) or len(self.stages) != 3):
+                raise ValueError('staged tasks require result_kind run, http false, a positive attempt_limit and 3 stages')
+            if (not isinstance(self.script, str) or not self.script.endswith('.bnt')
+                    or '/' in self.script or self.script in ('.', '..')):
+                raise ValueError('staged script must be a .bnt filename')
+            for path in self.stages:
+                task_path(self.dir, path)
+                if not path.endswith('.md'):
+                    raise ValueError('stages must be Markdown files')
+            for number in range(1, 4):
+                task_path(self.dir, 'materials/%d' % number, directory=True)
+            if os.path.lexists(self.path('input')):
+                task_path(self.dir, 'input', directory=True)
+                if os.path.lexists(self.path('input', 'materials')):
+                    raise ValueError('staged materials must be outside input/')
+            self.validate_cases()
+
+    def validate_cases(self) -> None:
+        if not isinstance(self.judge_cases, list) or not self.judge_cases:
+            raise ValueError('staged tasks require judge_cases')
+        names = set()
+        for case in self.judge_cases:
+            if (not isinstance(case, dict) or not isinstance(case.get('name'), str)
+                    or not re.fullmatch(r'[A-Za-z0-9_-]+', case['name']) or case['name'] in names
+                    or not isinstance(case.get('args'), list)
+                    or not all(isinstance(arg, str) for arg in case['args'])):
+                raise ValueError('invalid or duplicate judge case')
+            names.add(case['name'])
+            prefix = 'cases/%s/' % case['name']
+            for key, directory in (('input', True), ('expected_stdout', False), ('expected_files', True)):
+                path = case.get(key)
+                if not isinstance(path, str) or not path.startswith(prefix):
+                    raise ValueError('judge case paths must be under ' + prefix)
+                task_path(self.dir, path, directory)
+        if not isinstance(self.self_test_failures, list):
+            raise ValueError('self_test_failures must be a list')
+        for failure in self.self_test_failures:
+            if (not isinstance(failure, dict) or not isinstance(failure.get('case'), str)
+                    or failure['case'] not in names):
+                raise ValueError('self-test failure must name a judge case')
+            task_path(self.dir, failure.get('script'))
 
     def path(self, *parts: str) -> str:
         return os.path.join(self.dir, *parts)
 
 
-def load_tasks(names: List[str]) -> List[Task]:
+def load_tasks(names: List[str], suite: str = 'benitoite') -> List[Task]:
     available = sorted(n for n in os.listdir(TASKS_DIR) if os.path.isfile(os.path.join(TASKS_DIR, n, 'task.json')))
-    chosen = names or available
+    selected = []
+    for name in available:
+        try:
+            with open(os.path.join(TASKS_DIR, name, 'task.json'), encoding='utf-8') as f:
+                kind = json.load(f).get('kind', 'run')
+            task_suite = {'staged': 'compaction', 'normal': 'normal'}.get(kind, 'benitoite')
+        except (OSError, ValueError, AttributeError, TypeError) as error:
+            if name in names:
+                raise ValueError('invalid task manifest: %s' % name) from error
+            print('WARNING: cannot classify unselected task %s: %s' % (name, type(error).__name__), file=sys.stderr)
+            continue
+        if task_suite == suite:
+            selected.append(name)
+    chosen = names or sorted(selected)
     unknown = [n for n in chosen if n not in available]
     if unknown:
         raise SystemExit('unknown task: %s (available: %s)' % (', '.join(unknown), ', '.join(available)))
+    mismatch = [n for n in chosen if n not in selected]
+    if mismatch:
+        raise SystemExit('tasks outside suite %s: %s' % (suite, ', '.join(mismatch)))
+    if not chosen:
+        raise SystemExit('no tasks in suite %s (tasks not created yet)' % suite)
     return [Task(n) for n in chosen]
 
 
@@ -177,7 +268,8 @@ def benitoiteh_config(harness: Dict[str, object], model: str, processor: str,
         raise ValueError('api_key must reference an env name or a command; literal keys are not allowed')
     if mock_port is not None:
         provider['base_url'] = str(provider['base_url']).replace('{mock_port}', str(mock_port))
-    provider.update(model=model, effort=harness['effort'], context_window=200000)
+    provider.update(model=model, effort=harness['effort'])
+    provider.setdefault('context_window', 200000)
     # 一度全体を検証し、途中まで書かれた設定を起動に使わない。
     toml_value(provider)
     lines = ['default_mode = "restricted"', 'default_provider = "eval"', '', '[providers.eval]']
@@ -187,7 +279,7 @@ def benitoiteh_config(harness: Dict[str, object], model: str, processor: str,
     config = harness.get('config', {})
     lines += ['%s = %s' % (key, toml_value(value))
               for key, value in sorted(config.get('restricted', {}).items())]
-    for table in ('read', 'agent'):
+    for table in ('read', 'agent', 'compaction'):
         if table in config:
             lines += ['', '[%s]' % table]
             lines += ['%s = %s' % (key, toml_value(value))
@@ -200,8 +292,16 @@ def task_allow(task: Task, benitoite: str) -> str:
     """解の報告が確定しているときだけ、非対話の許可の集合を取り出す。"""
     with tempfile.TemporaryDirectory(prefix='skill-eval-effects-') as directory:
         shutil.copyfile(task.path('reference.bnt'), os.path.join(directory, task.script))
-        command = [benitoite, 'test', '--check'] if task.kind == 'test' else [benitoite, 'check']
-        code, out, err = run_command(command + ['--report=json', task.script], directory, dict(os.environ))
+        command = [benitoite, 'test', '--check'] if task.result_kind == 'test' else [benitoite, 'check']
+        code, out, err = run_command(command + ['--report=json', task.script], directory, judge_environment(directory))
+    expanded = declared_effects(code, out, 'testCheckReport' if task.result_kind == 'test' else 'checkReport')
+    if expanded is not None:
+        return ','.join(sorted(expanded))
+    raise ValueError('cannot determine --allow for %s (exit %d): %s' % (task.name, code, first_line(err)))
+
+
+def declared_effects(code: int, out: str, kind: str = 'checkReport') -> Optional[set]:
+    """不完全な報告を許可の空集合と取り違えない。"""
     try:
         report = json.loads(out)
     except ValueError:
@@ -209,12 +309,12 @@ def task_allow(task: Task, benitoite: str) -> str:
     if isinstance(report, dict):
         aggregate = report.get('aggregateEffects')
         if (code == 0 and type(report.get('schemaVersion')) is int and report['schemaVersion'] == 1
-                and report.get('status') == 'ok' and report.get('complete') is True
+                and report.get('kind') == kind and report.get('status') == 'ok' and report.get('complete') is True
                 and isinstance(aggregate, dict) and aggregate.get('basis') == 'declaredUpperBound'):
             expanded = aggregate.get('expanded')
             if isinstance(expanded, list) and all(isinstance(effect, str) and effect for effect in expanded):
-                return ','.join(sorted(expanded))
-    raise ValueError('cannot determine --allow for %s (exit %d): %s' % (task.name, code, first_line(err or out)))
+                return set(expanded)
+    return None
 
 
 def json_object(line: str) -> Optional[Dict[str, object]]:
@@ -270,6 +370,7 @@ def benitoiteh_output(out: str, harness_exit: int) -> Tuple[Dict[str, object], s
         raise ValueError('invalid token counts')
     input_tokens, output_tokens = tokens.get('input', 0), tokens.get('output', 0)
     fields.update(turns=last.get('turns'), tool_calls=calls,
+                  compactions=last.get('compactions', 0),
                   attempts=sum(calls.get(name, 0) for name in PROCESS_TOOLS),
                   after_write_checks=last.get('after_write_checks'), checks=last.get('checks'), fixes=last.get('fixes'),
                   policy_denied=last.get('approvals', {}).get('policy_denied', 0),
@@ -541,6 +642,7 @@ def benitoiteh_results(directory: str, metrics: Optional[Dict[str, object]] = No
     """記録の結果を既存の診断の集計に渡す。退避した出力は安全の検査だけに使う。"""
     if metrics is not None:
         metrics.update(completion_prompts=0, edits_after_prompt=0,
+                       repository_path_seen=False,
                        verification_calls_before=dict.fromkeys(PROCESS_TOOLS, 0),
                        verification_calls_after=dict.fromkeys(PROCESS_TOOLS, 0))
     prompt = completion_check_prompt()
@@ -565,6 +667,11 @@ def benitoiteh_results(directory: str, metrics: Optional[Dict[str, object]] = No
                 value = json_object(restored.decode('utf-8', 'replace'))
             if value is None:
                 raise TypeError('restored session record must be an object')
+            if metrics is not None and repository_path_seen(value):
+                metrics['repository_path_seen'] = True
+            if value.get('type') == 'compaction' and metrics is not None and 'compaction_records' in metrics:
+                metrics['compaction_records'].append({key: value.get(key) for key in
+                    ('reason', 'summarized_items', 'kept_items', 'kept_estimate', 'usage')})
             if value.get('type') == 'user' and value.get('kind') == 'environment':
                 message = value.get('message')
                 if not isinstance(message, dict) or not isinstance(message.get('parts'), list):
@@ -600,18 +707,21 @@ def benitoiteh_results(directory: str, metrics: Optional[Dict[str, object]] = No
             if not isinstance(result, dict):
                 raise TypeError('invalid tool result')
             text = result['text']
+            for key in ('spill', 'stderr_spill'):
+                spill = value.get(key)
+                if spill is not None:
+                    if not isinstance(spill, dict):
+                        raise TypeError('invalid spill')
+                    saved = session_file(directory, spill['path']).decode('utf-8', 'replace')
+                    if metrics is not None and repository_path_seen(saved):
+                        metrics['repository_path_seen'] = True
+                    if name in PROCESS_TOOLS:
+                        shell_seen = bool(SHELL_OUTPUT.search(saved)) or shell_seen
             if name in PROCESS_TOOLS:
                 arguments = calls.get(result['id'], {})
                 entries.append(['', '', '', ','.join(codes_in(text)), PROCESS_TOOLS[name],
                                 arguments.get('path', '')])
                 shell_seen = shell_seen or bool(SHELL_OUTPUT.search(text))
-                for key in ('spill', 'stderr_spill'):
-                    spill = value.get(key)
-                    if spill is not None:
-                        if not isinstance(spill, dict):
-                            raise TypeError('invalid spill')
-                        saved = session_file(directory, spill['path']).decode('utf-8', 'replace')
-                        shell_seen = bool(SHELL_OUTPUT.search(saved)) or shell_seen
             elif name in ('write', 'edit'):
                 check = re.search(r'(?m)^Check of (.+) after this change:\n', text)
                 if check:
@@ -663,6 +773,53 @@ def harness_environment() -> Tuple[Dict[str, str], List[str]]:
     removed = sorted(name for name in os.environ if name != 'CLAUDE_CONFIG_DIR'
                      and (name.startswith(('CLAUDE', 'ANTHROPIC')) or name in keys))
     return {name: value for name, value in os.environ.items() if name not in removed}, removed
+
+
+@functools.lru_cache(maxsize=32)
+def repository_markers(root: str, home: str) -> List[str]:
+    """worktree と元の checkout を印にし、HOME と分けた綴りも検出する。"""
+    roots = [os.path.realpath(root)]
+    try:
+        with open(os.path.join(root, '.git'), encoding='utf-8') as f:
+            pointer = f.read().strip()
+        if pointer.startswith('gitdir: '):
+            gitdir = os.path.join(root, pointer[len('gitdir: '):])
+            with open(os.path.join(gitdir, 'commondir'), encoding='utf-8') as f:
+                common = os.path.realpath(os.path.join(gitdir, f.read().strip()))
+            if os.path.basename(common) == '.git':
+                roots.append(os.path.dirname(common))
+    except (OSError, UnicodeError):
+        pass
+    markers = ['tools/skill-eval/tasks']
+    for path in roots:
+        markers.extend(path_prefixes(path))
+        if home:
+            relative = os.path.relpath(path, os.path.realpath(home))
+            if relative != '.' and relative != '..' and not relative.startswith('../'):
+                markers.append('/' + relative)
+    return markers
+
+
+def repository_path_seen(value: object) -> bool:
+    """JSON のエスケープを戻した文字列から、評価の原本への参照を検出する。"""
+    markers = repository_markers(REPO, os.environ.get('HOME', ''))
+    pending = [value]
+    while pending:
+        item = pending.pop()
+        if isinstance(item, str) and any(path in item for path in markers):
+            return True
+        if isinstance(item, dict):
+            pending.extend(item.keys())
+            pending.extend(item.values())
+        elif isinstance(item, list):
+            pending.extend(item)
+    return False
+
+
+def benitoiteh_environment(env: Dict[str, str]) -> Tuple[Dict[str, str], List[str]]:
+    removed = sorted(name for name, value in env.items()
+                     if name in ('PWD', 'OLDPWD') or repository_path_seen(value))
+    return {name: value for name, value in env.items() if name not in removed}, removed
 
 
 def dsh_environment() -> Tuple[Dict[str, str], List[str]]:
@@ -1251,15 +1408,22 @@ class CostBudget(object):
         self.totals = {}  # type: Dict[str, float]
         self.message = ''
 
-    def add(self, row: Dict[str, object]) -> bool:
+    def check(self, row: Dict[str, object]) -> str:
+        """試行の途中の費用を、累計を書き換えずに判定する。"""
         billing = str(row.get('billing', 'none'))
         cost = row.get('cost_usd')
         if self.limit is not None and billing != 'none' and cost is None:
-            self.message = 'stopped: cost unknown for %s' % billing
+            return 'stopped: cost unknown for %s' % billing
+        if (self.limit is not None and billing != 'none' and cost is not None
+                and self.totals.get(billing, 0) + cost >= self.limit):
+            return 'stopped: estimated cost reached %g USD for %s' % (self.limit, billing)
+        return ''
+
+    def add(self, row: Dict[str, object]) -> bool:
+        self.message = self.check(row) or self.message
+        billing, cost = str(row.get('billing', 'none')), row.get('cost_usd')
         if billing != 'none' and cost is not None:
             self.totals[billing] = self.totals.get(billing, 0) + cost
-            if self.limit is not None and self.totals[billing] >= self.limit:
-                self.message = 'stopped: estimated cost reached %g USD for %s' % (self.limit, billing)
         return bool(self.message)
 
 
@@ -1280,10 +1444,12 @@ def same_file(expected: str, actual: str) -> bool:
 
 
 class Verdict(object):
-    def __init__(self, success: bool, reason: str, tests_passed: Optional[int] = None) -> None:
+    def __init__(self, success: bool, reason: str, tests_passed: Optional[int] = None,
+                 failure_kind: Optional[str] = None) -> None:
         self.success = success
         self.reason = reason
         self.tests_passed = tests_passed
+        self.failure_kind = failure_kind
         # 判定のときに最後のスクリプトの check（テストの課題では test）が出した診断のコード
         self.final_codes = []  # type: List[str]
 
@@ -1310,31 +1476,132 @@ def warning_codes() -> List[str]:
     return sorted(set(re.findall(r'^\s+(W[0-9]{4})\s', text, re.MULTILINE)))
 
 
-def judge(task: Task, script_text: str, benitoite: str, http_base: Optional[str]) -> Verdict:
+def judge_environment(directory: str, http_base: Optional[str] = None) -> Dict[str, str]:
+    """判定用の場所だけを設定し、親の環境や資格情報を引き継がない。"""
+    env = {'PATH': '/usr/bin:/bin', 'PWD': directory}
+    for variable, name in (('HOME', 'home'), ('XDG_CONFIG_HOME', 'config'), ('XDG_STATE_HOME', 'state'),
+                           ('XDG_CACHE_HOME', 'cache'), ('XDG_DATA_HOME', 'data'), ('TMPDIR', 'tmp')):
+        env[variable] = os.path.join(directory, '.skill-eval-env', name)
+        os.makedirs(env[variable], exist_ok=True)
+    if http_base is not None:
+        env[http_server.BASE_VARIABLE] = http_base
+    return env
+
+
+def judge_policy(task: Task, benitoite: str, directory: str, allowed: set,
+                 http_base: Optional[str]) -> str:
+    """判定の実行に掛ける Seatbelt の方針（設計書 07-02「M の段の圧縮」）。"""
+    def literal(path: str) -> str:
+        if any(ord(char) < 32 or ord(char) == 127 for char in path):
+            raise ValueError('control character in sandbox path')
+        return json.dumps(os.path.realpath(path), ensure_ascii=False)
+
+    # 実行するプログラムは課題の仕様から固定する。解の文字列から許可を作らない。
+    # この macOS の /bin/sh は /private/var/select/sh が指す /bin/bash を起動し直す。
+    # 課題の sh とその起動先をともに許すが、process_run の許可は広げない。
+    helpers = {'process_run': ['/usr/bin/sort'],
+               'process_shell': ['/bin/sh', '/bin/bash', '/usr/bin/grep', '/usr/bin/cut', '/usr/bin/sort']}
+    programs = [benitoite] + (helpers.get(task.name, []) if 'Process.Run' in allowed else [])
+    lines = ['(version 1)', '(deny default)', '(allow file-read* file-map-executable)',
+             '(allow sysctl-read (sysctl-name "hw.pagesize_compat"))',
+             '(allow process-fork)', '(allow signal (target pgrp))',
+             '(allow file-write* (subpath %s))' % literal(directory),
+             '(allow file-write-data (literal "/dev/null") (vnode-type CHARACTER-DEVICE))']
+    lines += ['(allow process-exec (literal %s))' % literal(path) for path in programs]
+    if task.name == 'http_client' and 'Http.Connect' in allowed and http_base is not None:
+        match = re.fullmatch(r'http://127\.0\.0\.1:([0-9]{1,5})', http_base)
+        if match is None or not 1 <= int(match.group(1)) <= 65535:
+            raise ValueError('invalid judgment HTTP endpoint')
+        # Seatbelt のホストの書式は localhost または * に限られる。
+        # URL は上で 127.0.0.1 と検証し、方針にも同じポートだけを渡す。
+        lines.append('(allow network-outbound (remote ip "localhost:%d"))' % int(match.group(1)))
+    return '\n'.join(lines) + '\n'
+
+
+def judge_execute(task: Task, benitoite: str, directory: str, env: Dict[str, str],
+                  allowed: set, command: List[str], arguments: Optional[List[str]] = None) -> Tuple[int, str, str]:
+    """OS の保護が掛からなければ、解を実行しない。検査と実行の間も処理系に検証させる。"""
+    if sys.platform != 'darwin':
+        raise ValueError('judgment requires the macOS sandbox')
+    policy = judge_policy(task, benitoite, directory, allowed, env.get(http_server.BASE_VARIABLE))
+    return run_command(['/usr/bin/sandbox-exec', '-p', policy, os.path.realpath(benitoite)] + command
+                       + ['--allow-effects=' + ','.join(sorted(allowed)), task.script] + (arguments or []), directory, env)
+
+
+def judge_check(task: Task, benitoite: str, directory: str, env: Dict[str, str], allowed: set) -> Verdict:
+    command = [benitoite, 'test', '--check'] if task.result_kind == 'test' else [benitoite, 'check']
+    code, out, err = run_command(command + ['--report=json', task.script], directory, env)
+    report = json_object(out) or {}
+    diagnostics = report.get('diagnostics', [])
+    if not isinstance(diagnostics, list):
+        diagnostics = []
+    codes = [item['code'] for item in diagnostics if isinstance(item, dict)
+             and isinstance(item.get('code'), str)]
+    messages = [item for item in diagnostics if isinstance(item, dict) and isinstance(item.get('message'), str)]
+    errors = [item for item in messages if item.get('severity') == 'error']
+    reason = (errors or messages)[0]['message'] if (errors or messages) else first_line(err)
+    effects = declared_effects(code, out, 'testCheckReport' if task.result_kind == 'test' else 'checkReport')
+    if code != 0:
+        return with_codes(Verdict(False, 'check failed (exit %d): %s' % (code, reason),
+                                  failure_kind='check'), codes)
+    if effects is None:
+        return with_codes(Verdict(False, 'invalid declared effects report', failure_kind='check'), codes)
+    extra = effects - allowed
+    if extra:
+        return with_codes(Verdict(False, 'effects outside task allow: ' + ','.join(sorted(extra)),
+                                  failure_kind='effects'), codes)
+    return with_codes(Verdict(True, 'ok'), codes)
+
+
+def judge(task: Task, script_text: str, benitoite: str, http_base: Optional[str],
+          case_name: Optional[str] = None) -> Verdict:
     """書かれたスクリプトを、入力を写し直した新しいディレクトリで検査・実行し、期待と比べる。
 
     エージェントが作業ディレクトリの入力を書き換えていても判定が変わらないよう、作業ディレクトリでは実行しない。
     判定のための起動は包みのコマンドを通さないので、検査と修正の回数に数えない。
     """
-    env, _removed = harness_environment()
-    if http_base is not None:
-        env[http_server.BASE_VARIABLE] = http_base
     for text in task.require_text:
         if text not in script_text:
             return Verdict(False, 'the script does not contain `%s`' % text)
+    try:
+        allowed = set(filter(None, task_allow(task, benitoite).split(',')))
+    except (OSError, ValueError) as error:
+        return Verdict(False, 'task allow unavailable: %s' % error, failure_kind='effects')
+    if task.kind == 'staged':
+        cases = [case for case in task.judge_cases if case_name is None or case['name'] == case_name]
+        if not cases:
+            raise ValueError('unknown judge case: %s' % case_name)
+        failures, codes, failure_kind = [], [], None
+        for case in cases:
+            with tempfile.TemporaryDirectory(prefix='skill-eval-case-') as directory:
+                prepare_inputs(task, directory)
+                copy_tree(task_path(task.dir, case['input'], True), directory)
+                with open(os.path.join(directory, task.script), 'w', encoding='utf-8') as f:
+                    f.write(script_text)
+                env = judge_environment(directory, http_base)
+                verdict = judge_check(task, benitoite, directory, env, allowed)
+                codes.extend(verdict.final_codes)
+                if verdict.success:
+                    verdict = judge_run(task, benitoite, directory, env, allowed, case)
+                if not verdict.success:
+                    failures.append('%s: %s' % (case['name'], verdict.reason))
+                    failure_kind = verdict.failure_kind
+        return with_codes(Verdict(not failures, '; '.join(failures) if failures else 'ok',
+                                  failure_kind=failure_kind), codes)
     directory = tempfile.mkdtemp(prefix='skill-eval-judge-')
     try:
         prepare_inputs(task, directory)
         with open(os.path.join(directory, task.script), 'w', encoding='utf-8') as f:
             f.write(script_text)
-        if task.kind == 'test':
-            return judge_test(task, benitoite, directory, env)
-        code, _out, err = run_command([benitoite, 'check', task.script], directory, env)
-        final_codes = codes_in(err)
-        if code != 0:
-            return with_codes(Verdict(False, 'check failed (exit %d): %s' % (code, first_line(err))), final_codes)
-        verdict = judge_run(task, benitoite, directory, env)
-        return with_codes(verdict, final_codes)
+        env = judge_environment(directory, http_base)
+        checked = judge_check(task, benitoite, directory, env, allowed)
+        if not checked.success:
+            return checked
+        if task.result_kind == 'test':
+            verdict = judge_test(task, benitoite, directory, env, allowed)
+            return with_codes(verdict, sorted(set(checked.final_codes + verdict.final_codes)))
+        verdict = judge_run(task, benitoite, directory, env, allowed)
+        return with_codes(verdict, checked.final_codes)
     finally:
         shutil.rmtree(directory, ignore_errors=True)
 
@@ -1344,28 +1611,38 @@ def with_codes(verdict: Verdict, codes: List[str]) -> Verdict:
     return verdict
 
 
-def judge_run(task: Task, benitoite: str, directory: str, env: Dict[str, str]) -> Verdict:
-    code, out, err = run_command([benitoite, 'run', task.script], directory, env)
+def judge_run(task: Task, benitoite: str, directory: str, env: Dict[str, str], allowed: set,
+              case: Optional[Dict[str, object]] = None) -> Verdict:
+    try:
+        code, out, err = judge_execute(task, benitoite, directory, env, allowed, ['run'],
+                                      case['args'] if case else [])
+    except (OSError, ValueError) as error:
+        return Verdict(False, 'judgment sandbox unavailable: %s' % error, failure_kind='sandbox')
     if code != task.exit_code:
-        return Verdict(False, 'run exited with %d, expected %d: %s' % (code, task.exit_code, first_line(err)))
-    with open(task.path('expected.stdout'), encoding='utf-8') as f:
+        return Verdict(False, 'run exited with %d, expected %d: %s' % (code, task.exit_code, first_line(err)),
+                       failure_kind='run')
+    stdout = task_path(task.dir, case['expected_stdout']) if case else task.path('expected.stdout')
+    with open(stdout, encoding='utf-8') as f:
         expected = f.read()
     if out != expected:
-        return Verdict(False, 'standard output differs: %s' % first_difference(expected, out))
-    expected_files = task.path('expected.files')
+        return Verdict(False, 'standard output differs: %s' % first_difference(expected, out), failure_kind='stdout')
+    expected_files = task_path(task.dir, case['expected_files'], True) if case else task.path('expected.files')
     if os.path.isdir(expected_files):
         for root, _dirs, files in os.walk(expected_files):
             for name in sorted(files):
                 want = os.path.join(root, name)
                 relative = os.path.relpath(want, expected_files)
                 if not same_file(want, os.path.join(directory, relative)):
-                    return Verdict(False, 'file %s differs or is missing' % relative)
+                    return Verdict(False, 'file %s differs or is missing' % relative, failure_kind='files')
     return Verdict(True, 'ok')
 
 
-def judge_test(task: Task, benitoite: str, directory: str, env: Dict[str, str]) -> Verdict:
+def judge_test(task: Task, benitoite: str, directory: str, env: Dict[str, str], allowed: set) -> Verdict:
     """テストを書く課題の判定。`benitoite test --diagnostics=json` の集計の行（06-04「結果の報告」）を読む。"""
-    code, out, err = run_command([benitoite, 'test', '--diagnostics=json', task.script], directory, env)
+    try:
+        code, out, err = judge_execute(task, benitoite, directory, env, allowed, ['test', '--diagnostics=json'])
+    except (OSError, ValueError) as error:
+        return Verdict(False, 'judgment sandbox unavailable: %s' % error, failure_kind='sandbox')
     final_codes = codes_in(err)
     return with_codes(judge_test_output(task, code, out, err), final_codes)
 
@@ -1504,6 +1781,10 @@ def install_skill(benitoite: str, harness: Dict[str, object], workspace: str, sk
     return target
 
 
+def valid_u64(value: object, positive: bool = False) -> bool:
+    return type(value) is int and (1 if positive else 0) <= value <= 2**64 - 1
+
+
 def load_harnesses() -> Dict[str, Dict[str, object]]:
     with open(HARNESSES_FILE, encoding='utf-8') as f:
         data = json.load(f)
@@ -1512,15 +1793,21 @@ def load_harnesses() -> Dict[str, Dict[str, object]]:
         if 'config' in harness:
             config = harness['config']
             allowed = {'restricted': {'after_write_check'}, 'read': {'line_numbers'},
-                       'agent': {'completion_check'}}
+                       'agent': {'completion_check'}, 'compaction': {'reserve_tokens', 'keep_tokens'}}
             if harness.get('kind') != 'benitoiteh' or not isinstance(config, dict):
                 raise ValueError('harness %s config requires a benitoiteh table dictionary' % name)
             for table, values in config.items():
                 if table not in allowed or not isinstance(values, dict):
                     raise ValueError('harness %s has an invalid config table' % name)
-                if any(key not in allowed[table] or type(value) is not bool
+                if any(key not in allowed[table] or (not valid_u64(value) if table == 'compaction'
+                                                     else type(value) is not bool)
                        for key, value in values.items()):
-                    raise ValueError('harness %s has an invalid config key or non-boolean value' % name)
+                    raise ValueError('harness %s has an invalid config key or value' % name)
+        if harness.get('kind') == 'benitoiteh':
+            provider = harness.get('provider', {})
+            for key in ('context_window', 'max_output_tokens'):
+                if key in provider and not valid_u64(provider[key], positive=True):
+                    raise ValueError('harness %s provider.%s must be a positive u64' % (name, key))
         if ('price' in harness or (harness.get('kind') == 'benitoiteh' and not harness.get('mock'))):
             if not harness.get('billing'):
                 raise ValueError('harness %s requires billing' % name)
@@ -1558,10 +1845,228 @@ def judge_trial_script(task: Task, script_path: str, benitoite: str, http_base: 
         return judge(task, f.read(), benitoite, http_base)
 
 
+def prepare_stage_prompt(task: Task, number: int) -> str:
+    with open(task_path(task.dir, task.stages[number - 1]), encoding='utf-8') as f:
+        return f.read()
+
+
+def stage_materials(task: Task, number: int) -> List[str]:
+    relative = 'materials/%d' % number
+    directory = task_path(task.dir, relative, True)
+    return sorted(os.path.relpath(os.path.join(root, name), task.dir)
+                  for root, _dirs, files in os.walk(directory) for name in files)
+
+
+def prepare_stage(task: Task, workspace: str, number: int) -> str:
+    """後の段の資料は、前の段を終えてから写す。"""
+    relative = 'materials/%d' % number
+    task_path(task.dir, relative, True)
+    target = workspace
+    for part in relative.split('/'):
+        target = os.path.join(target, part)
+        os.makedirs(target, exist_ok=True)
+        if not stat.S_ISDIR(os.lstat(target).st_mode):
+            raise ValueError('workspace materials path is not a regular directory')
+    for path in stage_materials(task, number):
+        destination = os.path.join(workspace, path)
+        parent = os.path.dirname(path)
+        target = workspace
+        for part in parent.split('/'):
+            target = os.path.join(target, part)
+            os.makedirs(target, exist_ok=True)
+            if not stat.S_ISDIR(os.lstat(target).st_mode):
+                raise ValueError('workspace materials path is not a regular directory')
+        if os.path.lexists(destination) and not stat.S_ISREG(os.lstat(destination).st_mode):
+            raise ValueError('workspace material is not a regular file')
+        shutil.copyfile(task_path(task.dir, path), destination)
+    body = prepare_stage_prompt(task, number)
+    return (PROMPT.format(limit=task.attempt_limit) + '\n\n' if number == 1 else '') + body
+
+
+def compaction_events(events: List[Dict[str, object]], stage: int) -> List[Dict[str, object]]:
+    """超過は実行中の番、閾値・再開は次の番へ対応させる（P5-32 補足）。"""
+    records, pending = [], []
+    active = None
+    for event in events:
+        kind = event.get('type')
+        if kind == 'turn_start':
+            active = event.get('turn')
+            for record in pending:
+                record.update(turn=active, turn_reason=None)
+            pending = []
+        elif kind == 'turn_end':
+            active = None
+        elif kind == 'compaction':
+            record = {key: event.get(key) for key in ('reason', 'summarized_items', 'kept_items',
+                'kept_estimate', 'usage', 'estimate_before', 'estimate_after')}
+            record.update(stage=stage, turn=None, turn_reason='no subsequent turn started')
+            if record['reason'] == 'overflow':
+                record.update(turn=active, turn_reason=None if active is not None else 'no active turn')
+            else:
+                pending.append(record)
+            records.append(record)
+    return records
+
+
+def compaction_comparison(fields: Dict[str, object], harness: Dict[str, object], dry_run: bool) -> None:
+    provider = harness.get('provider', {})
+    window = provider.get('context_window', 200000)
+    output = provider.get('max_output_tokens', 32000)
+    config = harness.get('config', {}).get('compaction', {})
+    reserve, keep = config.get('reserve_tokens', 16384), config.get('keep_tokens', 20000)
+    effective = min(output + reserve, window // 2)
+    fields.update(effective_reserve=effective, compaction_threshold=window - effective,
+                  effective_keep=min(keep, window // 4))
+    reasons = []
+    events = fields['compaction_events']
+    records = fields['compaction_records']
+    keys = ('reason', 'summarized_items', 'kept_items', 'kept_estimate', 'usage')
+    matches = [{key: event.get(key) for key in keys} for event in events] == records
+    fields['compaction_records_match'] = matches and len(events) == fields.get('compactions')
+    if dry_run:
+        reasons.append('dry-run; no harness execution')
+    if not fields['compaction_records_match']:
+        reasons.append('compaction summary, events and session records differ')
+    if not events:
+        reasons.append('no compaction occurred')
+    if reserve == 16384 and not any((event.get('kept_estimate') or 0) > 0 and (event.get('kept_items') or 0) > 0
+               and event.get('stage', 0) > 1 for event in events):
+        reasons.append('no nonzero retained range across requests')
+    if min(output + 16384, window // 2) == min(output + 8192, window // 2):
+        reasons.append('reserve settings produce the same effective reserve')
+    if len(fields['stages']) != 3 or fields.get('end') != 'completed':
+        reasons.append('three stages did not complete normally')
+    if fields.get('repository_path_seen'):
+        reasons.append('repository path seen in session')
+    fields.update(comparison_valid=not reasons, comparison_reasons=reasons)
+
+
+def run_stages(task: Task, trial_dir: str, workspace: str, executable: str,
+               env: Dict[str, str], allow: str, harness: Dict[str, object],
+               model: str, budget: Optional[CostBudget]) -> Tuple[Dict[str, object], str, str, int, bool, float]:
+    """一つの試行を途中で切らず、同じ設定とセッションで三段を実行する。"""
+    fields = dict.fromkeys(BH_FIELDS)
+    counters = ('turns', 'attempts', 'after_write_checks', 'checks', 'fixes', 'policy_denied', 'compactions')
+    fields.update({key: 0 for key in counters + TOKEN_FIELDS})
+    fields.update(kind='benitoiteh', allow=allow, tool_calls={}, stages=[], exec_launches=0,
+                  compaction_events=[], compaction_records=[], end='error', shell_output_seen=False)
+    elapsed, final, reason, code, timed_out, identity = 0.0, '', '', 0, False, None
+    # 実行器がより小さい上限を指定した場合も、試行全体に適用する。
+    options = harness.get('options', {})
+    max_turns = min(50, options.get('max_turns', 50))
+    max_tokens = min(2000000, options.get('max_run_tokens', 2000000))
+    max_time = min(1800, options.get('harness_timeout', 1800))
+    identity_keys = ('session_id', 'provider', 'base_url', 'model', 'mode',
+                     'system_prompt_sha256', 'tools_sha256', 'compaction', 'completion_check')
+    config = harness.get('config', {})
+    expected_compaction = dict(reserve_tokens=16384, keep_tokens=20000)
+    expected_compaction.update(config.get('compaction', {}))
+    budget = budget or CostBudget(None)
+    for number in range(1, 4):
+        cost = estimate_cost(fields, harness)
+        billing = harness.get('billing', 'none')
+        stop = budget.check(dict(fields, cost_usd=cost, billing=billing))
+        if stop:
+            fields.update(budget_stop=stop, end='cost_limit')
+            reason = stop
+            break
+        turns, tokens, seconds = max_turns - fields['turns'], max_tokens - (fields['total_tokens'] or 0), max_time - elapsed
+        if turns <= 0 or tokens <= 0 or seconds <= 0:
+            fields['end'] = 'max_turns' if turns <= 0 else 'max_tokens' if tokens <= 0 else 'timeout'
+            timed_out = seconds <= 0
+            reason = 'trial limit reached before stage %d' % number
+            break
+        try:
+            prompt = prepare_stage(task, workspace, number)
+        except (OSError, ValueError) as error:
+            fields['end'], reason = 'error', 'stage materials unavailable: %s' % type(error).__name__
+            break
+        command = [executable, 'exec']
+        if number > 1:
+            command += ['--resume', fields['session_id']]
+        command += ['--mode', 'restricted', '--provider', 'eval']
+        if allow:
+            command += ['--allow', allow]
+        command += ['--max-turns', str(turns), '--max-run-tokens', str(tokens), '--json', prompt]
+        stdout = os.path.join(trial_dir, 'stage-%d.stdout' % number)
+        stderr = os.path.join(trial_dir, 'stage-%d.stderr' % number)
+        code, timed_out, wall = run_harness(command, workspace, env, seconds, stdout, stderr)
+        elapsed += wall
+        fields['exec_launches'] += 1
+        with open(stdout, encoding='utf-8', errors='replace') as f:
+            out = f.read()
+        with open(stderr, encoding='utf-8', errors='replace') as f:
+            stderr_first = first_line(f.read())
+        try:
+            stage, reason, final = benitoiteh_output(out, code)
+        except (ValueError, TypeError, KeyError) as error:
+            stage = dict.fromkeys(BH_FIELDS)
+            stage.update(end='error', attempts=0, tool_calls={})
+            reason, final = 'unreadable stage summary: %s' % type(error).__name__, ''
+        stage.update(stage=number, harness_exit=code, timed_out=timed_out, wall_seconds=wall,
+                     reason=reason,
+                     limits=dict(turns=turns, tokens=tokens, seconds=seconds),
+                     cost_usd=estimate_cost(stage, harness), stdout=os.path.basename(stdout), stderr=os.path.basename(stderr))
+        fields['stages'].append(stage)
+        events = [json_object(line) for line in out.splitlines() if line.strip()]
+        valid_events = [event for event in events if event is not None]
+        fields['compaction_events'].extend(compaction_events(valid_events, number))
+        for key in counters + TOKEN_FIELDS:
+            value = stage.get(key)
+            if not valid_u64(value):
+                fields[key] = None
+            elif fields.get(key) is not None:
+                fields[key] += value
+        for key, count in (stage.get('tool_calls') or {}).items():
+            fields['tool_calls'][key] = fields['tool_calls'].get(key, 0) + count
+        fields['end'] = 'timeout' if timed_out else stage['end']
+        starts = [event for event in valid_events if event.get('type') == 'session_start']
+        current = {key: starts[0].get(key) for key in identity_keys} if starts else None
+        stage['session_start'] = current
+        if identity is None and current is not None:
+            identity = current
+            for key in ('session_id', 'benitoiteh_version', 'system_prompt_sha256', 'tools_sha256'):
+                fields[key] = stage.get(key)
+        problem = ''
+        if code == -2:
+            problem = stderr_first or 'harness could not be started'
+        elif not starts or len(starts) != 1 or any(event is None for event in events):
+            problem = 'invalid stage event stream or session_start'
+        elif (not isinstance(current['session_id'], str)
+              or not re.fullmatch(r'[A-Za-z0-9_-]+', current['session_id'])
+              or starts[0].get('resumed', False) is not (number > 1) or current != identity):
+            problem = 'session identity or resume mismatch'
+        elif (current['provider'] != 'eval' or current['mode'] != 'restricted' or current['model'] != model
+              or not all(isinstance(current[key], str) and current[key]
+                         for key in ('system_prompt_sha256', 'tools_sha256'))):
+            problem = 'unexpected destination, mode or missing prompt hashes'
+        elif (current['compaction'] != expected_compaction
+              or current['completion_check'] is not config.get('agent', {}).get('completion_check', False)):
+            problem = 'effective compaction or completion-check settings differ'
+        elif any(not valid_u64(stage.get(key)) for key in ('turns', 'total_tokens', 'compactions')):
+            problem = 'stage summary has unknown limits'
+        cost = estimate_cost(fields, harness)
+        stop = ('stopped: cost unknown for %s' % billing if billing != 'none' and cost is None
+                else budget.check(dict(fields, cost_usd=cost, billing=billing)))
+        if stop:
+            fields['budget_stop'] = stop
+        stage.update(runner_error=problem or None, budget_stop=stop or None)
+        if problem:
+            fields['end'], reason = 'error', problem
+        if problem or code != 0 or timed_out or fields['end'] != 'completed' or fields.get('budget_stop'):
+            if code != 0 and fields['end'] == 'completed':
+                fields['end'], reason = 'error', 'stage exited with %d' % code
+            if fields.get('budget_stop') and fields['end'] == 'completed':
+                fields['end'] = 'cost_limit'
+                reason = fields['budget_stop']
+            break
+    return fields, reason, final, code, timed_out, elapsed
+
+
 def run_trial(task: Task, trial_dir: str, benitoite: str, harness_name: str, harness: Dict[str, object],
               model: str, skill_dir: Optional[str], dry_run: bool,
               benitoiteh: Optional[str] = None, dsh_key: Optional[str] = None,
-              work_root: Optional[str] = None) -> Dict[str, object]:
+              work_root: Optional[str] = None, budget: Optional[CostBudget] = None) -> Dict[str, object]:
     """一回の試行。作業ディレクトリ（workspace）と、エージェントに見せない記録（benitoite.log など）を分けて置く。"""
     workspace = os.path.join(trial_dir, 'workspace')
     log = os.path.join(trial_dir, 'benitoite.log')
@@ -1616,9 +2121,13 @@ def run_trial(task: Task, trial_dir: str, benitoite: str, harness_name: str, har
     env['SKILL_EVAL_LOG'] = log
     env['SKILL_EVAL_REAL_BENITOITE'] = benitoite
     is_benitoiteh = harness.get('kind') == 'benitoiteh' and not dry_run
+    staged = task.kind == 'staged'
+    if staged and not dry_run and not is_benitoiteh:
+        raise ValueError('staged tasks require a benitoiteh harness')
     fields = dict.fromkeys(BH_FIELDS)
     allow = task_allow(task, benitoite) if is_benitoiteh else None
     if is_benitoiteh:
+        env, removed_paths = benitoiteh_environment(env)
         fields.update(kind='benitoiteh', allow=allow)
     server = None
     mock = None
@@ -1638,7 +2147,11 @@ def run_trial(task: Task, trial_dir: str, benitoite: str, harness_name: str, har
                 with open(task.path('reference.bnt'), encoding='utf-8') as f:
                     mock, _base = mock_provider.start(
                         task.kind, task.script, f.read(),
-                        completion_check=harness.get('config', {}).get('agent', {}).get('completion_check', False))
+                        completion_check=harness.get('config', {}).get('agent', {}).get('completion_check', False),
+                        stages=[{'prompt': prepare_stage_prompt(task, number),
+                                 'materials': stage_materials(task, number)} for number in range(1, 4)]
+                        if staged else None,
+                        input_tokens=harness.get('mock_input_tokens', 1000))
                 port = mock.server_address[1]
                 env['SKILL_EVAL_MOCK_KEY'] = 'skill-eval-synthetic-key'
             config = benitoiteh_config(harness, model, benitoite, port)
@@ -1647,13 +2160,20 @@ def run_trial(task: Task, trial_dir: str, benitoite: str, harness_name: str, har
             with open(os.path.join(config_dir, 'config.toml'), 'w', encoding='utf-8') as f:
                 f.write(config)
         if dry_run:
+            if staged:
+                for number in range(1, 4):
+                    prepare_stage(task, workspace, number)
             # ハーネスの代わりに解のスクリプトを置き、エージェントと同じく包みのコマンドで一度検査する
             shutil.copyfile(task.path('reference.bnt'), os.path.join(workspace, task.script))
-            command = ['benitoite', 'test' if task.kind == 'test' else 'check', task.script]
+            command = ['benitoite', 'test' if task.result_kind == 'test' else 'check', task.script]
             run_command(command, workspace, env)
             harness_exit = 0
             err = ''
             timed_out, wall_seconds = False, None
+        elif staged:
+            fields, end_reason, final, harness_exit, timed_out, wall_seconds = run_stages(
+                task, trial_dir, workspace, benitoiteh or find_benitoiteh(None), env, allow, harness, model, budget)
+            err = fields['stages'][-1].get('runner_error') or '' if fields['stages'] else ''
         else:
             if is_benitoiteh:
                 options = harness['options']
@@ -1696,18 +2216,21 @@ def run_trial(task: Task, trial_dir: str, benitoite: str, harness_name: str, har
                 del env['DEEPSEEK_API_KEY']
         entries = read_log(log)
         attempts = count_attempts(entries)
-        end_reason = ''
+        if not staged or dry_run:
+            end_reason = ''
         no_summary = False
         unreadable = ''
-        final = None
+        if not staged or dry_run:
+            final = None
         try:
-            if not dry_run:
+            if not dry_run and not staged:
                 with open(stdout_path, encoding='utf-8', errors='replace') as f:
                     out = f.read()
                 with open(stderr_path, encoding='utf-8', errors='replace') as f:
                     err = f.read()
             if is_benitoiteh:
-                fields, end_reason, final = benitoiteh_output(out, harness_exit)
+                if not staged:
+                    fields, end_reason, final = benitoiteh_output(out, harness_exit)
                 fields['allow'] = allow
                 attempts = fields['attempts']
                 no_summary = end_reason.startswith('benitoiteh produced no summary ')
@@ -1734,6 +2257,14 @@ def run_trial(task: Task, trial_dir: str, benitoite: str, harness_name: str, har
                 f.write(final)
         if timed_out:
             fields['end'] = 'timeout'
+        if is_benitoiteh:
+            fields['comparison_excluded'] = bool(fields.get('repository_path_seen'))
+        if staged:
+            if dry_run:
+                fields.update(stages=[], exec_launches=0, compactions=0, compaction_events=[], compaction_records=[])
+            compaction_comparison(fields, harness, dry_run)
+            if mock is not None:
+                fields['mock_summary_requests'] = mock.summary_requests
         script_path = os.path.join(workspace, task.script)
         try:
             processor_modified = file_sha256(real_copy) != original_digest
@@ -1752,6 +2283,12 @@ def run_trial(task: Task, trial_dir: str, benitoite: str, harness_name: str, har
             verdict = Verdict(False, 'WARNING: no counted benitoite command in the wrapper log')
         else:
             verdict = judge_trial_script(task, script_path, original_benitoite, http_base, attempts)
+        if staged:
+            fields['artifact_success'] = verdict.success
+            if not dry_run and (len(fields['stages']) != 3 or fields['end'] != 'completed'
+                                or unreadable or not fields['compaction_records_match']):
+                verdict.success = False
+                verdict.reason += '; staged trial incomplete or records inconsistent'
         if is_benitoiteh and not unreadable and not no_summary and fields['end'] != 'completed':
             verdict.reason += '; %s: %s' % (fields['end'], end_reason)
         if output:
@@ -1810,6 +2347,10 @@ def run_trial(task: Task, trial_dir: str, benitoite: str, harness_name: str, har
             verdict.reason = redact_secrets(verdict.reason)
         if fields['shell_output_seen']:
             verdict.reason = 'SAFETY: shell output seen; ' + verdict.reason
+        if fields.get('repository_path_seen'):
+            verdict.reason = 'WARNING: repository path seen in session; ' + verdict.reason
+        if is_benitoiteh:
+            fields['environment_removed_paths'] = removed_paths
         if user_skill_state() != user_skills_before:
             verdict.reason = 'SAFETY: user skill directory changed; ' + verdict.reason
         if is_agy:
@@ -1874,6 +2415,13 @@ def self_test(tasks: List[Task], benitoite: str) -> int:
                 server.server_close()
         if not verdict.success:
             problems.append(verdict.reason)
+        for failure in task.self_test_failures:
+            with open(task_path(task.dir, failure['script']), encoding='utf-8') as f:
+                negative = judge(task, f.read(), benitoite, http_base, failure['case'])
+            if negative.success:
+                problems.append('%s unexpectedly passed case %s' % (failure['script'], failure['case']))
+            elif negative.failure_kind not in ('stdout', 'files'):
+                problems.append('%s is not a valid negative control: %s' % (failure['script'], negative.reason))
         failures += 1 if problems else 0
         result = 'ok' if not problems else 'FAILED: ' + '; '.join(problems)
         if skipped:
@@ -2084,6 +2632,26 @@ def write_record(path: str, header: Dict[str, object], rows: List[Dict[str, obje
                  record_value(row.get('turns')), attempts, tokens, record_value(row.get('wall_seconds'), '%.1f'),
                  record_value(row.get('end')), record_value(row.get('cost_usd'), '%.6f'), row['reason']]
         lines.append('| ' + ' | '.join(str(cell).replace('|', '\\|').replace('\n', ' ') for cell in cells) + ' |')
+    staged_rows = [row for row in rows if 'stages' in row]
+    if staged_rows:
+        lines += ['', '## 圧縮の比較', '',
+                  'exec の起動の合計: %d' % sum(row['exec_launches'] for row in staged_rows), '',
+                  '| 課題 | 試行 | 成果物の合格 | 成功した圧縮 | 記録との一致 | 比較の成立 | 理由 |',
+                  '|---|---|---|---|---|---|---|']
+        for row in staged_rows:
+            cells = [row['task'], os.path.basename(str(row['trial_dir'])), row.get('artifact_success'),
+                     row.get('compactions'), row.get('compaction_records_match'), row.get('comparison_valid'),
+                     '; '.join(row.get('comparison_reasons', []))]
+            lines.append('| ' + ' | '.join(str(cell).replace('|', '\\|') for cell in cells) + ' |')
+        lines += ['', '| 課題 | 試行 | 段 | 番 | トークン | 時間 (秒) | 費用 (USD) | 終わり方 |',
+                  '|---|---|---|---|---|---|---|---|']
+        for row in staged_rows:
+            for stage in row['stages']:
+                cells = [row['task'], os.path.basename(str(row['trial_dir'])), stage['stage'],
+                         record_value(stage.get('turns')), record_value(stage.get('total_tokens')),
+                         record_value(stage.get('wall_seconds'), '%.1f'), record_value(stage.get('cost_usd'), '%.6f'),
+                         stage.get('end')]
+                lines.append('| ' + ' | '.join(str(cell).replace('|', '\\|') for cell in cells) + ' |')
     lines += diagnostics_section(rows)
     os.makedirs(os.path.dirname(os.path.abspath(path)), exist_ok=True)
     with open(path, 'w', encoding='utf-8') as f:
@@ -2117,6 +2685,8 @@ def evaluate_main(argv: Optional[List[str]] = None) -> int:
     mode.add_argument('--harness', help='harness names in harnesses.json, comma-separated, or `default` '
                       'for the default set (calls an LLM)')
     parser.add_argument('--task', action='append', default=[], help='task name (repeatable; default: all)')
+    parser.add_argument('--suite', choices=('benitoite', 'compaction'), default='benitoite',
+                        help='task suite (default: the original 11 Benitoite tasks)')
     parser.add_argument('--interleave', action='store_true',
                         help='run all conditions per task/trial, rotating their order each trial')
     parser.add_argument('--trials', type=int, default=1, help='trials per task')
@@ -2136,7 +2706,10 @@ def evaluate_main(argv: Optional[List[str]] = None) -> int:
     ALL_ROWS.clear()
     RECORD_SECRETS.clear()
 
-    tasks = load_tasks(args.task)
+    try:
+        tasks = load_tasks(args.task, args.suite)
+    except (OSError, ValueError) as error:
+        raise SystemExit('invalid task: %s' % error) from None
     benitoite = find_benitoite(args.benitoite)
     if args.self_test:
         return self_test(tasks, benitoite)
@@ -2157,6 +2730,8 @@ def evaluate_main(argv: Optional[List[str]] = None) -> int:
         if args.harness and not harnesses[name].get('verified', False) and not args.allow_unverified:
             raise SystemExit('the settings of harness %s are not verified; check tools/skill-eval/'
                              'SOURCE.md with the designer and pass --allow-unverified' % name)
+        if args.suite == 'compaction' and not args.dry_run and harnesses[name].get('kind') != 'benitoiteh':
+            raise SystemExit('compaction suite requires benitoiteh harnesses')
     if len(names) > 1 and (args.record or args.model):
         raise SystemExit('--record and --model need a single harness')
     if args.interleave and len(names) < 2:
@@ -2204,6 +2779,8 @@ def evaluation_header(args: argparse.Namespace, benitoite: str, harness_name: st
     if args.dry_run:
         harness_version = 'not started (dry-run)'
     elif harness.get('kind') == 'benitoiteh':
+        version_env, removed_paths = benitoiteh_environment(version_env)
+        removed = sorted(set(removed + removed_paths))
         version_env.update(XDG_CONFIG_HOME=os.path.join(first_trial, 'bh/config'),
                            XDG_STATE_HOME=os.path.join(first_trial, 'bh/state'),
                            TMPDIR=os.path.join(first_trial, 'tmp'))
@@ -2296,6 +2873,8 @@ def evaluate(args: argparse.Namespace, tasks: List[Task], benitoite: str, names:
                 extra = {'dsh_key': dsh_key} if dsh_key is not None else {}
                 if harness.get('prepare') == 'agy':
                     extra['work_root'] = work_root
+                if task.kind == 'staged':
+                    extra['budget'] = budget
                 row = run_trial(task, trial_dir, benitoite, harness_name, harness, model, skill_dir, args.dry_run,
                                 args.benitoiteh, **extra)
             except ValueError as error:
@@ -2311,6 +2890,8 @@ def evaluate(args: argparse.Namespace, tasks: List[Task], benitoite: str, names:
                 harness_name, task.name, trial, 'success' if row['success'] else 'failure', row['attempts'],
                 row['reason']), flush=True)
             budget.add(row)
+            if row.get('budget_stop'):
+                budget.message = row['budget_stop']
             if harness.get('prepare') == 'agy' and not args.dry_run:
                 stops = []
                 if row['agy_settings_changed']:

@@ -2,13 +2,15 @@
 # -*- coding: utf-8 -*-
 """評価の配線を、本物の LLM を呼ばずに確かめる Messages API の模擬（実装プラン P5-02）。"""
 import json
+import os
 import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from typing import List, Tuple
+from typing import List, Optional, Tuple
 
 
 class MockServer(ThreadingHTTPServer):
-    def __init__(self, kind: str, script: str, content: str, completion_check: bool) -> None:
+    def __init__(self, kind: str, script: str, content: str, completion_check: bool,
+                 stages: Optional[List[dict]], input_tokens: int) -> None:
         super().__init__(('127.0.0.1', 0), Handler)
         self.completion_check = completion_check
         self.kind = kind
@@ -16,6 +18,15 @@ class MockServer(ThreadingHTTPServer):
         self.content = content
         self.problems = []  # type: List[str]
         self.requests = 0
+        self.summary_requests = 0
+        self.stages = stages
+        self.stage = 0
+        self.step = 0
+        self.after_summary = False
+        self.input_tokens = input_tokens
+        prompt = os.path.join(os.path.dirname(__file__), '../../crates/benitoiteh/prompts/compaction.md')
+        with open(prompt, encoding='utf-8') as f:
+            self.summary_prompt = f.read().strip()
         self.request_lock = threading.Lock()
         self.daemon_threads = True
 
@@ -39,7 +50,7 @@ class Handler(BaseHTTPRequestHandler):
         with server.request_lock:
             server.requests += 1
             number = server.requests
-        if number > (5 if server.completion_check else 3):
+        if not server.stages and number > (5 if server.completion_check else 3):
             self.problem(500, 'unexpected request %d after the scenario ended' % number)
             return
         if self.path != '/v1/messages':
@@ -58,6 +69,9 @@ class Handler(BaseHTTPRequestHandler):
             self.problem(400, 'request is not JSON')
             return
         messages = request.get('messages') if isinstance(request, dict) else None
+        if server.stages:
+            self.staged_response(messages, number)
+            return
         if number > 1 and number != 4:
             last = messages[-1] if isinstance(messages, list) and messages else {}
             blocks = last.get('content') if isinstance(last, dict) else None
@@ -83,14 +97,66 @@ class Handler(BaseHTTPRequestHandler):
                      'input': {'paths': [server.script]} if server.kind == 'test' else {'path': server.script}}
         else:
             block = {'type': 'text', 'text': 'Done.'}
+        self.respond(block, number, 1000)
+
+    def staged_response(self, messages: object, number: int) -> None:
+        server = self.server
+        last = messages[-1] if isinstance(messages, list) and messages else {}
+        blocks = last.get('content', []) if isinstance(last, dict) else []
+        if isinstance(blocks, str):
+            blocks = [{'type': 'text', 'text': blocks}]
+        texts = [block.get('text', '') for block in blocks if isinstance(block, dict) and block.get('type') == 'text']
+        if any(server.summary_prompt in text for text in texts):
+            server.summary_requests += 1
+            server.after_summary = True
+            self.respond({'type': 'text', 'text': '## Goal\nContinue the staged task.\n'
+                          '## Constraints & Preferences\nKeep all prior requirements.\n'
+                          '## Progress\n### Done\nRead the supplied materials.\n'
+                          '### In Progress\nUpdate the script.\n### Blocked\nNone.\n'
+                          '## Key Decisions\nUse Benitoite.\n## Errors and Fixes\nNone.\n'
+                          '## Next Steps\nFinish the current request.\n## Critical Context\n'
+                          'The script is %s.\n' % server.script}, number, 1000)
+            return
+        if server.stage >= len(server.stages):
+            self.problem(500, 'unexpected request after all stages ended')
+            return
+        stage = server.stages[server.stage]
+        if server.step == 0:
+            if not any(text.endswith(stage['prompt']) for text in texts):
+                self.problem(400, 'stage %d has no expected request' % (server.stage + 1))
+                return
+        elif not server.after_summary and not any(
+                isinstance(block, dict) and block.get('type') == 'tool_result' for block in blocks):
+            self.problem(400, 'stage request has no final tool_result')
+            return
+        server.after_summary = False
+        # 再開では読んだ版を戻さないため、既存のスクリプトを置換する前に読み直す。
+        paths = stage['materials'] + ([server.script] if server.stage > 0 else [])
+        if server.step < len(paths):
+            block = {'type': 'tool_use', 'name': 'read', 'input': {'path': paths[server.step]}}
+        elif server.step == len(paths):
+            block = {'type': 'tool_use', 'name': 'write', 'input': {'path': server.script, 'content': server.content}}
+        elif server.step == len(paths) + 1:
+            block = {'type': 'tool_use', 'name': 'benitoite_run', 'input': {'path': server.script}}
+        else:
+            block = {'type': 'text', 'text': 'Done with stage %d.' % (server.stage + 1)}
+        if block['type'] == 'tool_use':
+            block['id'] = 'mock-stage-%d-step-%d' % (server.stage + 1, server.step)
+        server.step += 1
+        if block['type'] == 'text':
+            server.stage += 1
+            server.step = 0
+        self.respond(block, number, server.input_tokens)
+
+    def respond(self, block: dict, number: int, input_tokens: int) -> None:
         # tests/support/exec_fixture.rs の Protocol::Anthropic と同じく、input 全体を start に入れる。
         events = [
             {'type': 'message_start', 'message': {'id': 'mock-%d' % number, 'usage': {
-                'input_tokens': 1000, 'cache_read_input_tokens': 0, 'cache_creation_input_tokens': 0,
+                'input_tokens': input_tokens, 'cache_read_input_tokens': 0, 'cache_creation_input_tokens': 0,
                 'output_tokens': 0}}},
             {'type': 'content_block_start', 'index': 0, 'content_block': block},
             {'type': 'content_block_stop', 'index': 0},
-            {'type': 'message_delta', 'delta': {'stop_reason': 'end_turn' if number in (3, 5) else 'tool_use'},
+            {'type': 'message_delta', 'delta': {'stop_reason': 'end_turn' if block['type'] == 'text' else 'tool_use'},
              'usage': {'output_tokens': 50}},
             {'type': 'message_stop'},
         ]
@@ -102,11 +168,14 @@ class Handler(BaseHTTPRequestHandler):
         pass
 
 
-def start(kind: str, script: str, content: str, completion_check: bool = False) -> Tuple[MockServer, str]:
+def start(kind: str, script: str, content: str, completion_check: bool = False,
+          stages: Optional[List[dict]] = None, input_tokens: int = 1000) -> Tuple[MockServer, str]:
     """試行ごとの筋書きで起動する。呼び出し側が shutdown と server_close を行う。"""
-    if kind not in ('run', 'test'):
+    if kind not in ('run', 'test', 'staged'):
         raise ValueError('unknown task kind: %s' % kind)
-    server = MockServer(kind, script, content, completion_check)
+    if kind == 'staged' and (not stages or completion_check):
+        raise ValueError('staged mock requires stages and completion_check false')
+    server = MockServer(kind, script, content, completion_check, stages, input_tokens)
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
     return server, 'http://127.0.0.1:%d' % server.server_address[1]

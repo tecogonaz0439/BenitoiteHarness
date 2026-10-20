@@ -13,7 +13,7 @@ BH-014 の比較に使う `compact_json_summary`・`compact_dir_walk` を作る�
 
 ## 作るもの
 
-- `tasks/compact_json_summary/`・`tasks/compact_dir_walk/` を新設する。`task.json` は `kind: staged`、`result_kind: run`、`script`、`attempt_limit`、`stages`（相対の Markdown のパス 3 個の配列）、`http: false` を持つ。最終の `reference.bnt`・`expected.stdout`・`expected.files/` は既存の実行の課題と同じ使い方にする。段のパスは課題の中の通常のファイルに限り、リンクと `..`、絶対パスは拒む。
+- `tasks/compact_json_summary/`・`tasks/compact_dir_walk/` を新設する。`task.json` は `kind: staged`、`result_kind: run`、`script`、`attempt_limit`、`stages`（相対の Markdown のパス 3 個の配列）、`http: false` を持つ。最終の正しい解は `reference.bnt` に置き、期待する出力と生成ファイルは `judge_cases` の各ケースだけに置く。最上位の `expected.stdout`・`expected.files/` は置かない（P5-32 は誤りとして拒む）。原本の入力で引数なしに走らせる場合も判定するなら、`args: []` のケースを明示する。段のパスは課題の中の通常のファイルに限り、リンクと `..`、絶対パスは拒む。
 - 元の `json_summary` などを読むが、11 課題の原本は変えない。新しい 2 課題の内容は次のとおりとする。
 
   | 課題 | 第 1 段で与える条件 | 第 2 段で加える条件 | 第 3 段で求める変更と最終判定 |
@@ -26,7 +26,7 @@ BH-014 の比較に使う `compact_json_summary`・`compact_dir_walk` を作る�
 - 初めは資料の総量を 24・48・64 KiB の候補から選んで作り、生成の引数とハッシュを記録する。資料が足りなければ同じ 12 KiB 以下の単位で増やす。模擬の使用量と複数の実際の読み取りの結果で、次の依頼の前に圧縮し、直近の複数の項目が残ることを確かめる。有料の試しでは、設計書 07-02 の圧縮と残す量の条件を満たすかを確認する。本体の前に全条件で共通の長さと段を固定し、足りなければ追加の試しを設計者へ示す。課題ごとの固定値を `task.json` の `generation` に残す。
 - 最終の成果物は原本の入力を置き直した判定用のディレクトリで検査する。`task.json` に `judge_cases`（`name`・`input`・`args`・`expected_stdout`・`expected_files` の配列）を加え、課題の中の `cases/<名前>/` に入力と期待する出力を置く。すべてのパスに段のパスと同じ検査を掛ける。ケースごとに新しい判定のディレクトリを作り、原本の入力とケースの入力を重ね、最終のスクリプトだけを写し、`benitoite run <script> <args>...` の形で検査する（取り込んだ [v0.0.7 の Skill](../../../assets/benitoite/v0.0.7/skill/SKILL.md) の実行の形に従う）。JSON の生成ファイルは値で比べる。初めの条件の欠落もケースの名前で理由に残す。最終の reference の宣言したエフェクトが、各段の解に要るエフェクトをすべて含むようにし、既存の `task_allow` の規則で全段に同じ `--allow` を渡す。
 
-- 各課題の `task.json` に `self_test_failures: [{"script": "negative/<名前>.bnt", "case": "<judge_cases の名前>"}]` を置く。最初の条件を一つだけ外した解と、その条件を調べるケースを対応させる。
+- 各課題の `task.json` に `self_test_failures: [{"script": "negative/<名前>.bnt", "case": "<judge_cases の名前>"}]` を置く。最初の条件を一つだけ外した解と、その条件を調べるケースを対応させる。否定の対照は検査を通り、指定のケースで標準出力か生成ファイルの違いによって落ちるものにする。構文の誤り、許可外のエフェクト、実行時の誤りで落ちるものは使わない。
 - 段の実行と上限・費用の合計、`--suite compaction` と `--interleave`、集計の仕組みは P5-32 を使う。必要な変更があれば、この 2 課題をつなぐ範囲に限る。
 - `SOURCE.md` に元の課題と変えた点、生成の引数・ハッシュ、再開直後のバイト数による見積もりの注意を残す。`README.md` に LLM を呼ばない準備・検査と有料の走行の使い方を書く。試し 3 回、本体 18 回、停止額 $5 の条件は設計書 07-02 を参照する。
 
@@ -80,3 +80,5 @@ BH-014 の比較に使う `compact_json_summary`・`compact_dir_walk` を作る�
 - Python 3.9 の標準ライブラリだけで生成する。生成の引数と出力のハッシュを `generation` に残す。
 - `kept_estimate` は再構築前に選んだ範囲の見積もりである。推論を除いた後の送信量より多くなる場合がある。
 - 課題は P5-32 の後に接続を確かめる。内容の下書きは P5-30 と並べて進められるが、完了には評価の道具による判定が要る。
+
+P5-32 の再レビューの申し送り: 原本のパスの印だけでは、任意に分割して組み立てた参照を検出できない。後の段の依頼・資料の内容から漏れを検出する場合は、前の段と共通する仕様の文を避け、段を識別できる内容をこの作業の具体的な課題から選ぶ。識別できない試行を、検出がないことだけで漏れなしと断定しない。

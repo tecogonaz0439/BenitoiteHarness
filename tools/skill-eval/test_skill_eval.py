@@ -19,6 +19,7 @@ from unittest import mock
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import mock_provider
+from test_judge_sandbox import requires_sandbox
 import skill_eval as evaluation
 
 
@@ -283,6 +284,7 @@ class SessionTests(unittest.TestCase):
                 metrics = {}
                 evaluation.benitoiteh_results(directory, metrics)
                 self.assertEqual(metrics, dict(completion_prompts=int(present), edits_after_prompt=2 if present else 0,
+                    repository_path_seen=False,
                     verification_calls_before={'benitoite_check': 1, 'benitoite_run': 1,
                                                'benitoite_test': 0 if present else 1, 'benitoite_scratch': 0 if present else 1},
                     verification_calls_after={'benitoite_check': 0, 'benitoite_run': 0,
@@ -328,6 +330,14 @@ class ConfigTests(unittest.TestCase):
                 self.assertEqual(harness, dict(base, verified=False, default=False, **difference))
                 text = evaluation.benitoiteh_config(harness, harness['model'], '/processor')
                 self.assertIn('effort = "%s"' % harness['effort'], text)
+        for suffix, reserve, keep in (('base', 16384, 20000), ('reserve', 8192, 20000), ('keep', 16384, 8000)):
+            harness = harnesses['benitoiteh-deepseek-compact-' + suffix]
+            provider = dict(base['provider'], context_window=65536, max_output_tokens=8192)
+            self.assertEqual(harness, dict(base, provider=provider, verified=False, default=False,
+                                          config={'compaction': {'reserve_tokens': reserve, 'keep_tokens': keep}}))
+            text = evaluation.benitoiteh_config(harness, harness['model'], '/processor')
+            self.assertIn('context_window = 65536\n', text)
+            self.assertIn('max_output_tokens = 8192\n', text)
         harness = copy.deepcopy(base)
         completion = evaluation.benitoiteh_config(
             harnesses['benitoiteh-deepseek-completion-check'], base['model'], '/processor')
@@ -372,12 +382,43 @@ class ConfigTests(unittest.TestCase):
                 ('benitoiteh', {'read': {'line_numbers': 1}}),
                 ('benitoiteh', {'read': {'line_numbers': 'false'}}),
                 ('benitoiteh', {'restricted': {'after_write_check': None}}),
+                *[('benitoiteh', {'compaction': {key: value}})
+                  for key in ('reserve_tokens', 'keep_tokens')
+                  for value in (True, False, -1, 2**64, 1.5, '1', None)],
+                ('benitoiteh', {'compaction': {'reserve': 1}}),
             ):
                 with self.subTest(kind=kind, config=config):
                     with open(path, 'w', encoding='utf-8') as f:
                         json.dump({'test': {'kind': kind, 'mock': True, 'config': config}}, f)
                     with mock.patch.object(evaluation, 'HARNESSES_FILE', path), self.assertRaises(ValueError):
                         evaluation.load_harnesses()
+
+    def test_compaction_and_provider_integer_bounds_are_validated_before_dry_run(self):
+        base = evaluation.load_harnesses()['benitoiteh-deepseek']
+        with tempfile.TemporaryDirectory(prefix='sc-') as directory:
+            path = os.path.join(directory, 'harnesses.json')
+            for key, values in (('context_window', (0, True, -1, 2**64, 1.5, '3', None)),
+                                ('max_output_tokens', (0, False, -1, 2**64, None))):
+                for value in values:
+                    harness = copy.deepcopy(base)
+                    harness['provider'][key] = value
+                    with open(path, 'w') as f:
+                        json.dump({'test': harness}, f)
+                    with self.subTest(key=key, value=value), mock.patch.object(evaluation, 'HARNESSES_FILE', path), \
+                            self.assertRaises(ValueError):
+                        evaluation.load_harnesses()
+            for value in (0, 2**64 - 1):
+                harness = copy.deepcopy(base)
+                harness['provider'].update(context_window=65536, max_output_tokens=8192)
+                harness['config'] = {'compaction': {'reserve_tokens': value, 'keep_tokens': value}}
+                with open(path, 'w') as f:
+                    json.dump({'test': harness}, f)
+                with mock.patch.object(evaluation, 'HARNESSES_FILE', path):
+                    loaded = evaluation.load_harnesses()['test']
+                text = evaluation.benitoiteh_config(loaded, 'model', '/processor')
+                self.assertIn('context_window = 65536\n', text)
+                self.assertIn('max_output_tokens = 8192\n', text)
+                self.assertIn('[compaction]\nkeep_tokens = %d\nreserve_tokens = %d\n' % (value, value), text)
 
     def test_config_and_rejected_values(self):
         harness = evaluation.load_harnesses()['benitoiteh-mock']
@@ -441,6 +482,41 @@ class MockProviderTests(unittest.TestCase):
             return response.status, data.decode('utf-8')
         finally:
             connection.close()
+
+    def test_staged_summary_keeps_the_scenario_position_and_reports_fixed_usage(self):
+        # 要約の応答が段の筋書きを消費すると、実際の再開の前に模擬が終わってしまう。
+        try:
+            server, _base = mock_provider.start('staged', 'main.bnt', 'source text',
+                stages=[dict(prompt='Stage %d' % n, materials=['materials/%d/example.md' % n])
+                        for n in range(1, 4)], input_tokens=45000)
+        except OSError as error:
+            self.skipTest('loopback listening is unavailable: %s' % error)
+        self.addCleanup(server.server_close)
+        self.addCleanup(server.shutdown)
+        def block(prompt=None):
+            status, text = self.request(server, prompt=prompt)
+            self.assertEqual(status, 200, text)
+            events = [json.loads(line[6:]) for line in text.splitlines() if line.startswith('data: ')]
+            return events[1]['content_block'], events[0]['message']['usage']['input_tokens']
+        for n in range(1, 4):
+            response, tokens = block('Stage %d' % n)
+            self.assertEqual(response['input'], {'path': 'materials/%d/example.md' % n})
+            self.assertEqual(tokens, 45000)
+            response, tokens = block(server.summary_prompt)
+            self.assertEqual(response['type'], 'text')
+            self.assertEqual(tokens, 1000)
+            if n > 1:
+                response, _tokens = block()
+                self.assertEqual(response['name'], 'read')
+                self.assertEqual(response['input']['path'], 'main.bnt')
+            response, _tokens = block()
+            self.assertEqual(response['name'], 'write')
+            response, _tokens = block()
+            self.assertEqual(response['name'], 'benitoite_run')
+            response, _tokens = block()
+            self.assertEqual(response['text'], 'Done with stage %d.' % n)
+        self.assertEqual(server.summary_requests, 3)
+        self.assertEqual(server.problems, [])
 
     def test_three_responses_and_unexpected_fourth(self):
         for kind in ('run', 'test'):
@@ -867,6 +943,7 @@ class RecordsAndCostTests(unittest.TestCase):
                                 pass
 
     @unittest.skipUnless(os.environ.get('BENITOITEH_TEST_BENITOITE'), 'BENITOITEH_TEST_BENITOITE is not set')
+    @requires_sandbox
     def test_judged_script_cannot_read_parent_session_or_provider_key(self):
         task = evaluation.Task('http_client')
         source = ('import Benitoite.Unofficial.IO.Console\nimport Benitoite.Unofficial.IO.Process\n'
@@ -910,6 +987,7 @@ class RecordsAndCostTests(unittest.TestCase):
             self.assertEqual(code, -signal.SIGKILL)
 
     @unittest.skipUnless(os.environ.get('BENITOITEH_TEST_BENITOITE'), 'BENITOITEH_TEST_BENITOITE is not set')
+    @requires_sandbox
     def test_unreadable_session_fails_only_one_trial_and_retains_cost(self):
         cases = [({'type': 'tool_result', 'name': 'benitoite_run',
                    'result': {'id': 'id', 'text': 'ok'}, 'spill': {'path': 'spill/missing'}}, 'FileNotFoundError'),
@@ -975,6 +1053,7 @@ class RecordsAndCostTests(unittest.TestCase):
     # 関門: HOME の書き換えで秘密の拒否と資格情報の探索を変える退行を、
     # 実際の子プロセスの環境で捕まえる。本物のホーム・提供者・キーチェーンは使わない。
     @unittest.skipUnless(os.environ.get('BENITOITEH_TEST_BENITOITE'), 'BENITOITEH_TEST_BENITOITE is not set')
+    @requires_sandbox
     def test_benitoiteh_preserves_parent_home_for_execution_and_version_queries(self):
         with tempfile.TemporaryDirectory(prefix='skill-eval-home-') as directory:
             home = os.path.join(directory, 'parent-home')
@@ -1193,6 +1272,7 @@ class ExternalTrialTests(unittest.TestCase):
             jsonl = f.read()
         return status, [json.loads(line) for line in jsonl.splitlines()], markdown, jsonl, stdout.getvalue(), stderr.getvalue()
 
+    @requires_sandbox
     def test_dsh_preparation_key_once_cost_and_records(self):
         events = [v for v in dsh_events() if v.get('tool') != 'subagent_spawn']
         with mock.patch.dict(os.environ, NODE_TLS_REJECT_UNAUTHORIZED='0',
@@ -1231,6 +1311,7 @@ class ExternalTrialTests(unittest.TestCase):
         for text in (markdown, jsonl, stdout, stderr):
             self.assertNotIn(self.key, text)
 
+    @requires_sandbox
     def test_dsh_missing_usage_stops_cost_budget_without_changing_verdict(self):
         events = [v for v in dsh_events(missing=True) if v.get('tool') != 'subagent_spawn']
         status, rows, markdown, _, _, stderr = self.run_external(
@@ -1243,6 +1324,7 @@ class ExternalTrialTests(unittest.TestCase):
         self.assertIn('cost unknown: 1 trials', markdown)
         self.assertIn('stopped: cost unknown for deepseek', stderr)
 
+    @requires_sandbox
     def test_subagent_and_workflow_cost_is_unknown_and_stops_budget(self):
         for tool in ('subagent_spawn', 'workflow_run'):
             with self.subTest(tool=tool):
@@ -1261,6 +1343,7 @@ class ExternalTrialTests(unittest.TestCase):
                 self.assertIn('cost unknown: 1 trials', markdown)
                 self.assertIn('stopped: cost unknown for deepseek', stderr)
 
+    @requires_sandbox
     def test_leak_scan_covers_tmp_and_agents_home_without_following_links(self):
         for relative in ('tmp/dsh-spill-large-result', 'agents-home/output'):
             with self.subTest(relative=relative):
@@ -1276,6 +1359,7 @@ class ExternalTrialTests(unittest.TestCase):
                     self.assertNotIn(self.key, value)
 
     @unittest.skipIf(hasattr(os, 'geteuid') and os.geteuid() == 0, 'root can read chmod 000 files')
+    @requires_sandbox
     def test_unscannable_file_does_not_discard_trial(self):
         status, rows, markdown, jsonl, _, _ = self.run_external(
             'dsh-ndjson', '\n'.join(json.dumps(v) for v in dsh_events()), trials=2,
@@ -1288,6 +1372,7 @@ class ExternalTrialTests(unittest.TestCase):
         self.assertIn('SAFETY: unscannable dsh-home/unreadable', markdown)
         self.assertIn('SAFETY: unscannable dsh-home/unreadable', jsonl)
 
+    @requires_sandbox
     def test_modified_processor_copy_is_rejected_and_judgment_uses_original(self):
         text = '\n'.join(json.dumps(v) for v in dsh_events())
         with self.subTest(unchanged=True):
@@ -1307,6 +1392,7 @@ class ExternalTrialTests(unittest.TestCase):
         self.assertIn('SAFETY: the processor copy was modified', markdown)
         self.assertFalse(os.path.exists(marker))
 
+    @requires_sandbox
     def test_claude_cost_is_separate_and_synced_names_are_recorded(self):
         bundle = os.path.join(self.home, '.claude/skills/synced/standard')
         os.makedirs(bundle)
@@ -1326,6 +1412,7 @@ class ExternalTrialTests(unittest.TestCase):
         self.assertNotIn('private description', markdown + jsonl)
         self.assertFalse(os.path.exists(self.counter))
 
+    @requires_sandbox
     def test_unreadable_summary_keeps_wrapper_verdict_and_continues(self):
         status, rows, _, _, _, _ = self.run_external('dsh-ndjson', 'not a summary')
         self.assertEqual(status, 0)
@@ -1336,6 +1423,7 @@ class ExternalTrialTests(unittest.TestCase):
             self.assertIsNone(row['total_tokens'])
             self.assertIn('; harness summary unreadable', row['reason'])
 
+    @requires_sandbox
     def test_timeout_overrides_completed_output_and_zero_exit(self):
         status, rows, _, _, _, _ = self.run_external(
             'dsh-ndjson', '\n'.join(json.dumps(v) for v in dsh_events()), trials=1, timed=True)
@@ -1346,6 +1434,7 @@ class ExternalTrialTests(unittest.TestCase):
         self.assertEqual(rows[0]['end'], 'timeout')
         self.assertIn('; timeout:', rows[0]['reason'])
 
+    @requires_sandbox
     def test_key_leak_is_flagged_without_publishing_value(self):
         events = dsh_events(reason={'kind': 'error', 'error': {'code': 'FAKE', 'message': self.key}})
         events[-1]['text'] = self.key
@@ -1366,6 +1455,7 @@ class ExternalTrialTests(unittest.TestCase):
             with open(os.path.join(self.directory, name)) as f:
                 self.assertNotIn(self.key, f.read())
 
+    @requires_sandbox
     def test_key_command_failures_hide_output_and_dry_run_skips_preflight(self):
         harness = evaluation.load_harnesses()['deepseek-harness']
         for source, code in (('import sys\nprint(%r)\nsys.exit(7)\n' % self.key, 7), ('print("")\n', 0)):
@@ -1857,6 +1947,7 @@ class AgyTests(unittest.TestCase):
                                     harness, str(harness['model']), None, False, benitoiteh=executable)
 
     @unittest.skipUnless(os.environ.get('BENITOITEH_TEST_BENITOITE'), 'BENITOITEH_TEST_BENITOITE is not set')
+    @requires_sandbox
     def test_security_trial_metadata_and_protected_workspace_changes(self):
         for harness_name, user_parent in (('antigravity-gemini', '.agents'), ('antigravity-gemini', '.claude'),
                                           ('claude-code', '.agents'), ('benitoiteh-deepseek', '.agents')):
@@ -1971,6 +2062,7 @@ class AgyTests(unittest.TestCase):
                 shutil.rmtree(agents)
 
     @unittest.skipUnless(os.environ.get('BENITOITEH_TEST_BENITOITE'), 'BENITOITEH_TEST_BENITOITE is not set')
+    @requires_sandbox
     def test_security_permission_failure_keeps_trial_result(self):
         real_stat = os.stat
         removed = []
@@ -1991,6 +2083,7 @@ class AgyTests(unittest.TestCase):
         self.assertTrue(any(item['path'] == '.agents/vanish' and item['stage'] == 'restore' for item in errors))
 
     @unittest.skipUnless(os.environ.get('BENITOITEH_TEST_BENITOITE'), 'BENITOITEH_TEST_BENITOITE is not set')
+    @requires_sandbox
     def test_security_wrapper_requires_command_allow_and_created_names_are_private(self):
         for mutation, warned in (('read-gate-no-transcript', True), ('deny-gate-no-transcript', True),
                                   ('command-gate-no-transcript', False)):
@@ -2134,6 +2227,7 @@ class AgyTests(unittest.TestCase):
         return task, fake
 
     @unittest.skipUnless(os.environ.get('BENITOITEH_TEST_BENITOITE'), 'BENITOITEH_TEST_BENITOITE is not set')
+    @requires_sandbox
     def test_gate_coverage_compares_tool_counts_and_requires_transcript(self):
         harness = evaluation.load_harnesses()['antigravity-gemini']
         cases = [('matching', None), ('extra', None), ('no-calls', None),
@@ -2157,6 +2251,7 @@ class AgyTests(unittest.TestCase):
                     self.assertNotIn('SAFETY:', row['reason'])
 
     @unittest.skipUnless(os.environ.get('BENITOITEH_TEST_BENITOITE'), 'BENITOITEH_TEST_BENITOITE is not set')
+    @requires_sandbox
     def test_agy_settings_and_versions_stop_evaluation_and_preserve_records(self):
         # 設定の保存や自動更新を見落とすと、次の試行を違う条件で走らせてしまう。
         cases = [(path, False, False) for path in (
@@ -2224,6 +2319,7 @@ class AgyTests(unittest.TestCase):
                 self.assertEqual(len(os.listdir(records)), 4 if stopped else 2)
 
     @unittest.skipUnless(os.environ.get('BENITOITEH_TEST_BENITOITE'), 'BENITOITEH_TEST_BENITOITE is not set')
+    @requires_sandbox
     def test_fake_agy_trial_hooks_integrity_records_and_environment(self):
         task, fake = self.fake_agy()
         cases = [(mutation, 'completed') for mutation in (
@@ -2287,7 +2383,524 @@ class AgyTests(unittest.TestCase):
         self.assertNotIn('agy_config_checked', row)
 
 @unittest.skipUnless(os.environ.get('BENITOITEH_TEST_BENITOITE'), 'BENITOITEH_TEST_BENITOITE is not set')
+class StagedTests(unittest.TestCase):
+    # 関門: 段の実行器の境界で、再開・資料の公開順・全段の集計を守る。
+    # 既存の単発の課題では届かない契約であり、偽の exec も本物の子として起動する。
+    SOURCE = '''import Benitoite.Unofficial.IO.Console
+import Benitoite.Unofficial.IO.File
+import Benitoite.Unofficial.IO.Process
+function main() -> Result[Unit, String] uses File.Read, File.Write, Console.Write, Process.Environment
+  bind path <- Option.unwrapOr(o: List.head(Process.arguments()), fallback: "data.txt")
+  bind value <- try File.readText(path) |> Result.mapError(r: _, f: lambda(error) return IOError.message(error) end lambda) or return
+  Console.writeLine(String.trim(value))
+  bind _ <- try File.writeText(path: "report.json", text: "{\\"ok\\":true}") |> Result.mapError(r: _, f: lambda(error) return IOError.message(error) end lambda) or return
+  return Result.Ok(())
+end function
+'''
+
+    def setUp(self):
+        # 通しで使う Unix ソケットのパスを短くする。CLI の work-root の検証とは別の準備である。
+        temporary = tempfile.TemporaryDirectory(prefix='sc-', dir='/tmp')
+        self.addCleanup(temporary.cleanup)
+        self.root = temporary.name
+        self.tasks = os.path.join(self.root, 'tasks')
+        self.task_dir = os.path.join(self.tasks, 'staged')
+        os.makedirs(self.task_dir)
+        self.patch = mock.patch.object(evaluation, 'TASKS_DIR', self.tasks)
+        self.patch.start()
+        self.addCleanup(self.patch.stop)
+        self.write('task.md', 'Complete three requests in order.\n')
+        self.write('reference.bnt', self.SOURCE)
+        self.write('negative/forget.bnt', self.SOURCE.replace('String.trim(value)',
+                   'if String.trim(value) = "early" then "wrong" else String.trim(value) end if'))
+        self.write('input/data.txt', 'original\n')
+        for n in range(1, 4):
+            self.write('stage%d.md' % n, 'Request %d.\n' % n)
+            self.write('materials/%d/example.md' % n, 'Example %d\n' % n)
+        self.config = dict(kind='staged', result_kind='run', script='main.bnt', attempt_limit=10,
+                           http=False, stages=['stage1.md', 'stage2.md', 'stage3.md'], judge_cases=[],
+                           self_test_failures=[dict(script='negative/forget.bnt', case='early')])
+        for name in ('early', 'late'):
+            self.write('cases/%s/input/alternate.txt' % name, name + '\n')
+            self.write('cases/%s/expected.stdout' % name, name + '\n')
+            self.write('cases/%s/expected.files/report.json' % name, '{ "ok": true }\n')
+            self.config['judge_cases'].append(dict(name=name, input='cases/%s/input' % name,
+                args=['alternate.txt'], expected_stdout='cases/%s/expected.stdout' % name,
+                expected_files='cases/%s/expected.files' % name))
+        self.save_config()
+        self.processor = os.environ['BENITOITEH_TEST_BENITOITE']
+        self.harness = copy.deepcopy(evaluation.load_harnesses()['benitoiteh-mock-compact'])
+        self.harness.pop('mock')
+
+    def write(self, relative, text):
+        path = os.path.join(self.task_dir, relative)
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, 'w', encoding='utf-8') as f:
+            f.write(text)
+
+    def save_config(self):
+        self.write('task.json', json.dumps(self.config))
+
+    def fake_exec(self, mode='ok'):
+        executable = os.path.join(self.root, 'fake-exec')
+        # 公開のイベントと記録を手で用意する。summary の使用量には既に要約分が入っている。
+        source = '''#!{python}
+import hashlib, json, os, sys
+from pathlib import Path
+trial = Path.cwd().parent
+log = trial / 'invocations.jsonl'
+number = len(log.read_text().splitlines()) + 1 if log.exists() else 1
+args = sys.argv[1:]
+assert '--project' not in args
+assert os.environ['HOME'] == {home!r}
+config = Path(os.environ['XDG_CONFIG_HOME']) / 'benitoiteh/config.toml'
+with log.open('a') as f:
+    f.write(json.dumps(dict(args=args, materials=sorted(str(p) for p in Path('materials').rglob('*.md')),
+                           config_hash=hashlib.sha256(config.read_bytes()).hexdigest(),
+                           env=[os.environ[k] for k in ('XDG_CONFIG_HOME','XDG_STATE_HOME','TMPDIR')],
+                           parent_environment={{k:v for k,v in os.environ.items() if k in ('PWD','OLDPWD') or k.startswith('EVAL_')}})) + '\\n')
+Path('main.bnt').write_text({source!r})
+session = Path(os.environ['XDG_STATE_HOME']) / 'benitoiteh/sessions/test-session'
+session.mkdir(parents=True, exist_ok=True)
+events = [dict(type='session_start', session_id='test-session', resumed=number>1,
+               provider='eval', base_url='http://example.invalid', model='mock', mode='restricted',
+               benitoiteh_version='test', system_prompt_sha256='prompt', tools_sha256='tools',
+               compaction=dict(reserve_tokens=16384, keep_tokens=20000), completion_check=False)]
+mode = {mode!r}
+if number == 2 and mode == 'identity': events[0]['model'] = 'changed'
+if mode == 'reserve-zero-kept': events[0]['compaction']['reserve_tokens'] = 8192
+turn = number * 2 - 1
+compact = dict(type='compaction', reason='threshold', summarized_items=5, kept_items=2, kept_estimate=500,
+               usage=dict(input_tokens=100, output_tokens=10), estimate_before=45000, estimate_after=15000)
+if number == 1: events.append(compact)
+if mode in ('zero-kept', 'reserve-zero-kept'):
+    compact['kept_items'], compact['kept_estimate'] = 0, 0
+if number == 2: events.append(dict(compact, reason='resume'))
+events.append(dict(type='turn_start', turn=turn))
+events.append(dict(type='turn_end', turn=turn))
+events.append(dict(type='turn_start', turn=turn+1))
+if number == 1: events.append(dict(compact, reason='overflow'))
+events.append(dict(type='text_delta', turn=turn+1, text='Done ' + str(number)))
+events.append(dict(type='turn_end', turn=turn+1))
+if number == 1: events.append(compact)
+if mode == 'no-compaction': events = [event for event in events if event['type'] != 'compaction']
+records = [{{k:v for k,v in event.items() if k not in ('estimate_before','estimate_after')}} for event in events if event['type']=='compaction']
+if mode == 'records' and number == 1: records = []
+if mode.startswith('repo-'):
+    leak = dict(type='tool_call', call=dict(id='leak', name='read', arguments=dict(path={repo!r}+'/tools/skill-eval/tasks/reference.bnt')))
+    if mode == 'repo-spill':
+        (session / 'spill.txt').write_text('read '+{repo!r})
+        leak = dict(type='tool_result', name='benitoite_run', result=dict(id='leak', text='ok'), spill=dict(path='spill.txt'))
+    records.append(leak)
+records += [dict(type='tool_call', call=dict(id='call'+str(number), name='benitoite_run', arguments=dict(path='main.bnt'))),
+            dict(type='tool_result', name='benitoite_run', result=dict(id='call'+str(number), text='ok')),
+            dict(type='summary', summary=dict(turns=9999, tokens=dict(input=999999999, output=999999999)))]
+with (session / 'session.jsonl').open('a') as f:
+    for record in records: f.write(json.dumps(record)+'\\n')
+events.append(dict(type='session_end', outcome='cancelled' if mode=='cancelled' else 'completed'))
+turns = 50 if mode=='turns' else 2
+tokens = 2000000 if mode=='tokens' else 3000
+events.append(dict(type='summary', turns=turns, compactions=sum(e['type']=='compaction' for e in events),
+                   reason='done', tool_calls=dict(benitoite_run=1), after_write_checks=0, checks=1, fixes=0,
+                   approvals=dict(policy_denied=0), tokens=dict(input=None if mode.startswith('unknown') else tokens,
+                   output=150, cache_read=None if mode=='cache-unknown' else 600, cache_write=300)))
+for event in events: print(json.dumps(event))
+if mode=='exit': sys.exit(1)
+'''.format(python=sys.executable, source=self.SOURCE, home=os.environ['HOME'], mode=mode, repo=evaluation.REPO)
+        with open(executable, 'w') as f:
+            f.write(source)
+        os.chmod(executable, 0o755)
+        return executable
+
+    def run_trial(self, mode='ok', budget=None):
+        return evaluation.run_trial(evaluation.Task('staged'), os.path.join(self.root, 'trial-' + mode),
+            self.processor, 'fake', self.harness, 'mock', None, False, self.fake_exec(mode), budget=budget)
+
+    def test_stage_runner_resume_limits_and_costs_without_judgment(self):
+        # 関門: 判定のサンドボックスを要しない実行器の境界で、資料の順・再開・上限・費用を守る。
+        # 成果物の合否とセッションの照合は外の run_trial のテストが受け持つ。
+        for mode, launches, end in (('ok', 3, 'completed'), ('turns', 1, 'max_turns'),
+                                   ('tokens', 1, 'max_tokens'), ('identity', 2, 'error'),
+                                   ('exit', 1, 'error'), ('cache-unknown', 1, 'cost_limit'),
+                                   ('already-spent', 0, 'cost_limit'), ('cost', 2, 'cost_limit'),
+                                   ('missing', 1, 'error'), ('unknown', 1, 'error')):
+            with self.subTest(mode=mode):
+                trial = os.path.join(self.root, 'runner-' + mode)
+                workspace = os.path.join(trial, 'workspace')
+                os.makedirs(workspace)
+                env = dict(os.environ)
+                for key in ('XDG_CONFIG_HOME', 'XDG_STATE_HOME', 'TMPDIR'):
+                    env[key] = os.path.join(trial, key)
+                    os.mkdir(env[key])
+                config = os.path.join(env['XDG_CONFIG_HOME'], 'benitoiteh')
+                os.mkdir(config)
+                with open(os.path.join(config, 'config.toml'), 'w') as f:
+                    f.write('test config')
+                harness = copy.deepcopy(self.harness)
+                budget = evaluation.CostBudget(1)
+                if mode in ('cache-unknown', 'already-spent', 'cost', 'missing', 'unknown'):
+                    harness.update(price=dict(input=1, cache_read=1, cache_write=1, output=1), billing='paid')
+                if mode == 'cost':
+                    budget = evaluation.CostBudget(.005)
+                if mode == 'already-spent':
+                    budget.totals['paid'] = 1
+                executable = self.root + '/missing' if mode == 'missing' else self.fake_exec(mode)
+                fields, reason, final, code, _timeout, _wall = evaluation.run_stages(
+                    evaluation.Task('staged'), trial, workspace, executable, env,
+                    'Console.Write,File.Read,File.Write,Process.Environment', harness, 'mock', budget)
+                self.assertEqual(fields['exec_launches'], launches, reason)
+                self.assertEqual(fields['end'], end, reason)
+                self.assertEqual(budget.totals, {'paid': 1} if mode == 'already-spent' else {})
+                if mode == 'cost':
+                    self.assertAlmostEqual(sum(stage['cost_usd'] for stage in fields['stages']), .0063)
+                if mode == 'missing':
+                    self.assertIn('cannot start', reason)
+                    self.assertIn('cost unknown', fields['budget_stop'])
+                if mode == 'ok':
+                    self.assertEqual((fields['turns'], fields['total_tokens'], fields['compactions']), (6, 9450, 4))
+                    self.assertEqual((code, final), (0, 'Done 3'))
+                    self.assertEqual([stage['limits']['turns'] for stage in fields['stages']], [50, 48, 46])
+                    self.assertEqual([stage['limits']['tokens'] for stage in fields['stages']],
+                                     [2000000, 1996850, 1993700])
+                    with open(os.path.join(trial, 'invocations.jsonl')) as f:
+                        invocations = [json.loads(line) for line in f]
+                    self.assertEqual([row['materials'] for row in invocations],
+                                     [['materials/%d/example.md' % n for n in range(1, stage+1)]
+                                      for stage in range(1, 4)])
+                    for row in invocations[1:]:
+                        self.assertEqual(row['args'][1:3], ['--resume', 'test-session'])
+                        self.assertEqual(row['env'], invocations[0]['env'])
+                        self.assertEqual(row['config_hash'], invocations[0]['config_hash'])
+
+    def test_suite_selection_and_unsafe_declared_paths(self):
+        original = os.path.join(evaluation.HERE, 'tasks')
+        for entry in os.listdir(original):
+            if os.path.isfile(os.path.join(original, entry, 'task.json')):
+                shutil.copytree(os.path.join(original, entry), os.path.join(self.tasks, entry))
+        self.assertEqual(len(evaluation.load_tasks([])), 11)
+        self.assertEqual([task.name for task in evaluation.load_tasks([], 'compaction')], ['staged'])
+        with self.assertRaisesRegex(SystemExit, 'outside suite'):
+            evaluation.load_tasks(['staged'])
+        with self.assertRaisesRegex(SystemExit, 'outside suite'):
+            evaluation.main(['--dry-run', '--suite', 'compaction', '--task', 'json_summary'])
+        os.symlink('stage1.md', os.path.join(self.task_dir, 'link.md'))
+        os.symlink('materials/1', os.path.join(self.task_dir, 'linked'))
+        os.mkfifo(os.path.join(self.task_dir, 'pipe.md'))
+        for path in ('../stage.md', '/stage.md', 'link.md', 'linked/example.md', 'pipe.md'):
+            with self.subTest(path=path):
+                self.config['stages'][0] = path
+                self.save_config()
+                with self.assertRaises((ValueError, OSError)):
+                    evaluation.Task('staged')
+        self.config['stages'][0] = 'stage1.md'
+        self.config['judge_cases'][0]['input'] = 'cases/early/input/../input'
+        self.save_config()
+        with self.assertRaises(ValueError):
+            evaluation.Task('staged')
+
+    @requires_sandbox
+    def test_cases_arguments_json_and_named_negative_controls_and_dry_run(self):
+        task = evaluation.Task('staged')
+        with contextlib.redirect_stdout(io.StringIO()):
+            self.assertEqual(evaluation.self_test([task], self.processor), 0)
+        self.config['self_test_failures'][0]['case'] = 'late'
+        self.save_config()
+        with contextlib.redirect_stdout(io.StringIO()):
+            self.assertEqual(evaluation.self_test([evaluation.Task('staged')], self.processor), 1)
+        row = evaluation.run_trial(task, os.path.join(self.root, 'dry'), self.processor,
+                                   'mock', self.harness, 'mock', None, True)
+        self.assertTrue(row['success'], row['reason'])
+        self.assertTrue(row['artifact_success'])
+        self.assertEqual(row['exec_launches'], 0)
+        self.assertFalse(row['comparison_valid'])
+        self.assertTrue(os.path.isfile(os.path.join(self.root, 'dry/workspace/materials/3/example.md')))
+        with tempfile.TemporaryDirectory(prefix='sc-cli-') as work, contextlib.redirect_stdout(io.StringIO()):
+            status = evaluation.main(['--dry-run', '--suite', 'compaction', '--agent', 'benitoiteh-mock-compact',
+                                      '--benitoite', self.processor, '--work-root', work])
+            self.assertEqual(status, 0)
+            self.assertEqual(len(evaluation.ALL_ROWS), 1)
+            with open(os.path.join(work, 'record.jsonl')) as f:
+                recorded = [json.loads(line) for line in f]
+            self.assertEqual(len(recorded), 1)
+            self.assertFalse(recorded[0]['comparison_valid'])
+        verdict = evaluation.judge(task, self.SOURCE.replace('String.trim(value)', '"wrong"'), self.processor, None)
+        self.assertIn('early: standard output differs', verdict.reason)
+        self.assertIn('late: standard output differs', verdict.reason)
+
+    @requires_sandbox
+    def test_resume_material_order_limits_single_record_and_event_turns(self):
+        real_run = evaluation.run_harness
+        def measured(*args, **kwargs):
+            code, timeout, _wall = real_run(*args, **kwargs)
+            return code, timeout, 2.5
+        with mock.patch.object(evaluation, 'run_harness', side_effect=measured):
+            row = self.run_trial()
+        self.assertTrue(row['success'], row['reason'])
+        self.assertEqual((row['turns'], row['attempts'], row['total_tokens'], row['compactions']), (6, 3, 9450, 4))
+        self.assertEqual(row['wall_seconds'], 7.5)
+        self.assertEqual(row['verification_calls_before']['benitoite_run'], 3)
+        self.assertEqual(row['exec_launches'], 3)
+        self.assertEqual([(c['stage'], c['turn']) for c in row['compaction_events']],
+                         [(1, 1), (1, 2), (1, None), (2, 3)])
+        self.assertEqual(row['compaction_events'][2]['turn_reason'], 'no subsequent turn started')
+        self.assertTrue(row['compaction_records_match'])
+        self.assertTrue(row['comparison_valid'])
+        self.assertEqual(row['compaction_threshold'], 40960)
+        with open(os.path.join(row['trial_dir'], 'invocations.jsonl')) as f:
+            invocations = [json.loads(line) for line in f]
+        for number, invocation in enumerate(invocations, 1):
+            args = invocation['args']
+            self.assertEqual(args[0], 'exec')
+            self.assertEqual(args[args.index('--max-turns')+1], str(50-2*(number-1)))
+            self.assertEqual(args[args.index('--max-run-tokens')+1], str(2000000-3150*(number-1)))
+            self.assertEqual(invocation['materials'], ['materials/%d/example.md' % n for n in range(1, number+1)])
+            self.assertEqual(invocation['env'], invocations[0]['env'])
+            self.assertEqual(invocation['config_hash'], invocations[0]['config_hash'])
+            if number > 1:
+                self.assertEqual(args[1:3], ['--resume', 'test-session'])
+                self.assertEqual(args[-1], 'Request %d.\n' % number)
+            else:
+                self.assertTrue(args[-1].startswith(evaluation.PROMPT.format(limit=10)+'\n\n'))
+        self.assertEqual([stage['limits']['seconds'] for stage in row['stages']], [1800, 1797.5, 1795])
+        path = os.path.join(self.root, 'result.md')
+        evaluation.write_record(path, {}, [row], [evaluation.Task('staged')])
+        with open(os.path.join(self.root, 'result.jsonl')) as f:
+            self.assertEqual(len(f.readlines()), 1)
+
+    @requires_sandbox
+    def test_stage_stops_and_partial_cost_never_double_counted(self):
+        for mode, count in (('turns', 1), ('tokens', 1), ('cancelled', 1), ('identity', 2), ('exit', 1)):
+            with self.subTest(mode=mode):
+                row = self.run_trial(mode)
+                self.assertEqual(row['exec_launches'], count)
+                self.assertFalse(row['success'])
+                self.assertFalse(row['comparison_valid'])
+                self.assertFalse(os.path.exists(os.path.join(row['trial_dir'], 'workspace/materials/3')))
+        self.harness.update(price=dict(input=1, cache_read=1, cache_write=1, output=1), billing='paid')
+        budget = evaluation.CostBudget(.01)
+        budget.totals['paid'] = .005
+        row = self.run_trial('cost', budget)
+        self.assertEqual(row['exec_launches'], 2)
+        self.assertAlmostEqual(row['cost_usd'], .0063)
+        self.assertEqual(budget.totals, {'paid': .005})
+        self.assertTrue(budget.add(row))
+        self.assertAlmostEqual(budget.totals['paid'], .0113)
+        row = self.run_trial('unknown', evaluation.CostBudget(1))
+        self.assertEqual(row['exec_launches'], 1)
+        self.assertIsNone(row['cost_usd'])
+        self.assertIn('cost unknown', row['budget_stop'])
+        row = self.run_trial('unknown-unbounded')
+        self.assertEqual(row['exec_launches'], 1)
+        self.assertIn('cost unknown', row['budget_stop'])
+        row = self.run_trial('records')
+        self.assertFalse(row['compaction_records_match'])
+        self.assertFalse(row['success'])
+
+    @requires_sandbox
+    def test_time_attempt_limits_and_comparison_failures_keep_artifact_verdict(self):
+        real_run = evaluation.run_harness
+        def elapsed(*args, **kwargs):
+            code, _timeout, _wall = real_run(*args, **kwargs)
+            return code, False, 1800
+        with mock.patch.object(evaluation, 'run_harness', side_effect=elapsed):
+            row = self.run_trial('time')
+        self.assertEqual((row['exec_launches'], row['end'], row['timed_out']), (1, 'timeout', True))
+        for mode, reason in (('no-compaction', 'no compaction occurred'),
+                             ('zero-kept', 'no nonzero retained range across requests')):
+            with self.subTest(mode=mode):
+                row = self.run_trial(mode)
+                self.assertTrue(row['success'], row['reason'])
+                self.assertTrue(row['artifact_success'])
+                self.assertFalse(row['comparison_valid'])
+                self.assertIn(reason, row['comparison_reasons'])
+        self.harness['provider']['context_window'] = 16384
+        row = self.run_trial('clamped')
+        self.assertIn('reserve settings produce the same effective reserve', row['comparison_reasons'])
+        self.config['attempt_limit'] = 2
+        self.save_config()
+        row = self.run_trial('attempts')
+        self.assertEqual(row['exec_launches'], 3)
+        self.assertFalse(row['success'])
+        self.assertIn('3 attempts exceed the limit 2', row['reason'])
+
+    # 関門: 許可を越えるコードの実行、親の秘密・評価の原本の漏れ、誤った否定の対照を、
+    # 判定と試行の公開の入口で捕まえる。期待値は処理系の出力から生成しない。
+    def test_judgment_rejects_extra_effects_before_running(self):
+        marker = os.path.join(self.root, 'must-not-exist')
+        malicious = self.SOURCE.replace('Process.Environment\n', 'Process.Environment, Process.Run\n')
+        malicious = malicious.replace('  bind path <-',
+            '  bind _ <- File.writeText(path: %s, text: "executed")\n  bind path <-' % json.dumps(marker))
+        cases = [(evaluation.Task('staged'), malicious)]
+        for name in ('json_summary', 'write_tests'):
+            shutil.copytree(os.path.join(evaluation.HERE, 'tasks', name), os.path.join(self.tasks, name))
+            task = evaluation.Task(name)
+            source = malicious
+            if task.result_kind == 'test':
+                with open(task.path('reference.bnt')) as f:
+                    source = f.read()
+                source += ('\n@test("forbidden write")\nfunction forbiddenWrite() -> Unit uses File.Write\n'
+                           ' bind _ <- File.writeText(path: %s, text: "executed")\nend function\n') % json.dumps(marker)
+            cases.append((task, source))
+        for task, source in cases:
+            with self.subTest(task=task.name):
+                verdict = evaluation.judge(task, source, self.processor, None)
+                self.assertFalse(verdict.success)
+                self.assertIn('effects outside task allow:', verdict.reason)
+                self.assertFalse(os.path.exists(marker))
+
+    @requires_sandbox
+    def test_judgment_does_not_inherit_parent_environment(self):
+        # Process.Environment はこの課題の許可内。親の無関係な変数も判定には渡さない。
+        environment = self.SOURCE.replace('  bind path <-', '''  bind secret <- Process.environmentVariable("EVAL_PARENT_SECRET")
+  Console.writeLine(Option.unwrapOr(o: Result.unwrapOr(r: secret, fallback: Option.None), fallback: "absent"))
+  bind path <-''')
+        for name in ('early', 'late'):
+            self.write('cases/%s/expected.stdout' % name, 'absent\n' + name + '\n')
+        with mock.patch.dict(os.environ, EVAL_PARENT_SECRET='must-not-inherit'):
+            verdict = evaluation.judge(evaluation.Task('staged'), environment, self.processor, None)
+        self.assertTrue(verdict.success, verdict.reason)
+
+    @requires_sandbox
+    def test_negative_controls_require_output_or_file_mismatch(self):
+        for source, kind in (('this is not Benitoite', 'check'),
+                             (self.SOURCE.replace('"data.txt"', '"missing.txt"')
+                              .replace('Process.arguments()', '[]'), 'run')):
+            with self.subTest(source=source[:25]), contextlib.redirect_stdout(io.StringIO()):
+                self.write('negative/forget.bnt', source)
+                self.assertEqual(evaluation.judge(evaluation.Task('staged'), source, self.processor, None,
+                                                 'early').failure_kind, kind)
+                self.assertEqual(evaluation.self_test([evaluation.Task('staged')], self.processor), 1)
+
+    def test_staged_manifest_validates_task_text_and_root_expectations(self):
+        self.write('expected.stdout', 'ignored expectation\n')
+        with self.assertRaisesRegex(ValueError, 'expected.stdout'):
+            evaluation.Task('staged')
+        os.unlink(self.task_dir + '/expected.stdout')
+        os.mkdir(self.task_dir + '/expected.files')
+        with self.assertRaisesRegex(ValueError, 'expected.files'):
+            evaluation.Task('staged')
+        os.rmdir(self.task_dir + '/expected.files')
+        os.unlink(self.task_dir + '/task.md')
+        with self.assertRaises((ValueError, OSError)):
+            evaluation.Task('staged')
+
+    def test_default_suite_ignores_invalid_unselected_staged_tasks(self):
+        self.config['stages'][0] = '../forbidden.md'
+        self.save_config()
+        shutil.copytree(os.path.join(evaluation.HERE, 'tasks/json_summary'), os.path.join(self.tasks, 'json_summary'))
+        self.assertEqual([task.name for task in evaluation.load_tasks([])], ['json_summary'])
+        self.write('task.json', '{bad json')
+        self.assertEqual([task.name for task in evaluation.load_tasks([])], ['json_summary'])
+        with self.assertRaises((ValueError, SystemExit)):
+            evaluation.load_tasks([], 'compaction')
+
+    @requires_sandbox
+    def test_budget_before_first_launch_and_cost_only_unknown_and_runner_failure(self):
+        self.harness.update(price=dict(input=1, cache_read=1, cache_write=1, output=1), billing='paid')
+        budget = evaluation.CostBudget(.5)
+        budget.totals['paid'] = .5
+        row = self.run_trial('already-spent', budget)
+        self.assertEqual(row['exec_launches'], 0)
+        self.assertFalse(os.path.exists(os.path.join(row['trial_dir'], 'workspace/materials')))
+        row = self.run_trial('cache-unknown', evaluation.CostBudget(1))
+        self.assertEqual(row['exec_launches'], 1)
+        self.assertEqual(row['total_tokens'], 3150)
+        self.assertIsNone(row['stages'][0]['runner_error'])
+        self.assertIsNone(row['cost_usd'])
+        self.assertEqual(row['end'], 'cost_limit')
+        with mock.patch.object(self, 'fake_exec', return_value=self.root + '/missing-executable'):
+            row = self.run_trial('missing')
+        self.assertEqual(row['end'], 'error')
+        self.assertIn('cannot start', row['reason'])
+        self.assertIn('missing-executable', row['reason'])
+        self.assertIn('cost unknown', row['budget_stop'])
+
+    @requires_sandbox
+    def test_reserve_comparison_does_not_require_retention(self):
+        self.harness['config']['compaction']['reserve_tokens'] = 8192
+        row = self.run_trial('reserve-zero-kept')
+        self.assertTrue(row['comparison_valid'], row['comparison_reasons'])
+
+    @requires_sandbox
+    def test_repo_paths_are_removed_from_harness_env_and_warn_on_session_evidence(self):
+        repo = evaluation.REPO
+        aliases = evaluation.path_prefixes(repo)
+        with mock.patch.dict(os.environ, PWD=repo, OLDPWD='/elsewhere', EVAL_REPO='prefix:' + aliases[-1],
+                             EVAL_IMPORT_PATH=repo + '/tools', EVAL_KEEP='ordinary-value'):
+            row = self.run_trial('environment')
+        self.assertTrue(row['success'], row['reason'])
+        with open(os.path.join(row['trial_dir'], 'invocations.jsonl')) as f:
+            invocation = json.loads(f.readline())
+        self.assertEqual(invocation['parent_environment'], {'EVAL_KEEP': 'ordinary-value'})
+        for mode in ('repo-call', 'repo-spill'):
+            with self.subTest(mode=mode):
+                row = self.run_trial(mode)
+            self.assertTrue(row['artifact_success'])
+            self.assertTrue(row['repository_path_seen'])
+            self.assertTrue(row['comparison_excluded'])
+            self.assertFalse(row['comparison_valid'])
+            self.assertIn('WARNING: repository path seen in session', row['reason'])
+
+    @unittest.skipUnless(os.environ.get('BENITOITEH_SKILL_EVAL_STAGED_E2E') == '1',
+                         'staged mock pass needs the benitoiteh sandbox outside Codex')
+    @requires_sandbox
+    def test_real_resume_compaction_and_session_records(self):
+        # この層固有の契約は、実際の exec の再開と圧縮の記録までの接続である。
+        # 待ち受けに失敗する環境では、提供者の模擬の既存のテストと同じく除外する。
+        start = mock_provider.start
+        def available(*args, **kwargs):
+            try:
+                return start(*args, **kwargs)
+            except OSError as error:
+                self.skipTest('loopback listening is unavailable: %s' % error)
+        harness = evaluation.load_harnesses()['benitoiteh-mock-compact']
+        with mock.patch.object(mock_provider, 'start', side_effect=available):
+            row = evaluation.run_trial(evaluation.Task('staged'), os.path.join(self.root, 'real'), self.processor,
+                'mock-compact', harness, 'mock', None, False, os.environ['BENITOITEH_SKILL_EVAL_BINARY'])
+        self.assertTrue(row['success'], row['reason'])
+        self.assertEqual(row['exec_launches'], 3)
+        self.assertGreater(row['compactions'], 0)
+        self.assertTrue(row['compaction_records_match'])
+        self.assertGreaterEqual(row['mock_summary_requests'], row['compactions'])
+        self.assertEqual(row['total_tokens'], sum(stage['total_tokens'] for stage in row['stages']))
+        self.assertEqual(row['cost_usd'], 0)
+
+
+class JudgmentReportTests(unittest.TestCase):
+    # 関門: 実際の checkReport の診断を判定の公開の結果へ残す。
+    # 従来の失敗種別だけのテストでは、コードと理由の欠落は捕まらない。
+    def test_final_check_retains_warning_codes_and_syntax_reason(self):
+        task = evaluation.Task('json_summary')
+        for source, success, diagnostic in (
+            ('import Benitoite.Unofficial.IO.Console\nimport Benitoite.Unofficial.IO.File\n'
+             'function main() -> Unit uses IO.All\n  Console.writeLine("x")\nend function\n', True, 'W0501'),
+            ('this is invalid\n', False, 'E0201'),
+        ):
+            with self.subTest(diagnostic=diagnostic), tempfile.TemporaryDirectory() as directory:
+                with open(os.path.join(directory, task.script), 'w') as f:
+                    f.write(source)
+                verdict = evaluation.judge_check(task, os.environ['BENITOITEH_TEST_BENITOITE'], directory,
+                                                 evaluation.judge_environment(directory),
+                                                 set('Clock.Time Console.Read Console.Write File.Read File.Write '
+                                                     'Process.Environment Process.Exit Process.Run Random.Generate State'.split()))
+                self.assertEqual(verdict.success, success, verdict.reason)
+                self.assertIn(diagnostic, verdict.final_codes)
+                if not success:
+                    self.assertIn('expected a declaration', verdict.reason)
+
+    def test_effect_report_kind_must_match_command(self):
+        report = dict(schemaVersion=1, kind='checkReport', status='ok', complete=True,
+                      aggregateEffects=dict(basis='declaredUpperBound', expanded=['File.Read']))
+        for kind in ('checkReport', 'testCheckReport', 'other', None):
+            for expected in ('checkReport', 'testCheckReport'):
+                with self.subTest(kind=kind, expected=expected):
+                    report['kind'] = kind
+                    self.assertEqual(evaluation.declared_effects(0, json.dumps(report), expected),
+                                     {'File.Read'} if kind == expected else None)
+
+
 class ProcessorTests(unittest.TestCase):
+    @requires_sandbox
     def test_reference_effects_and_attempt_limit(self):
         processor = os.path.abspath(os.environ['BENITOITEH_TEST_BENITOITE'])
         expected = {
