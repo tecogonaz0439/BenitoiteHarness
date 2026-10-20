@@ -88,7 +88,7 @@ python3 -I tools/skill-eval/skill_eval.py \
 
 ### Antigravity の CLI
 
-Antigravity は、普段の Google アカウントのログインとプランの利用枠で走らせる。次のコマンドも、本物の LLM を呼ぶので、設計者の了承を得てから実行する。`--work-root` はリポジトリと `HOME` の外（例 `/Users/Shared/bh-eval/...`）に置く。祖先の `.agents/` を拒むため、`~/.agents/` があるホームの下では試行を始められない。
+Antigravity は、普段の Google アカウントのログインとプランの利用枠で走らせる。次のコマンドも、本物の LLM を呼ぶので、設計者の了承を得てから実行する。`--work-root` は `HOME` とリポジトリの外の、祖先に `.agents/` のないディレクトリに置く（`/tmp` の下は拒む）。祖先の `.agents/` を拒むため、`~/.agents/` があるホームの下では試行を始められない。
 
 ```sh
 python3 -I tools/skill-eval/skill_eval.py \
