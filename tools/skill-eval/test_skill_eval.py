@@ -3145,8 +3145,12 @@ class NormalTests(unittest.TestCase):
     # 関門: 課題の組の混同で、制限モードの提供者を呼んでから失敗する退行を防ぐ。
     def test_suite_and_mode_are_checked_before_preparing_or_launching(self):
         self.assertEqual(len(evaluation.load_tasks([])), 11)
-        self.assertEqual({task.name for task in evaluation.load_tasks([], 'normal')},
-                         {'normal_csv_totals', 'normal_path_filter'})
+        normal = evaluation.load_tasks([], 'normal')
+        self.assertEqual(len(normal), 10)
+        self.assertTrue(all(task.kind == 'normal' for task in normal))
+        self.assertEqual({category: sum(task.category == category for task in normal)
+                          for category in ('bugfix', 'feature', 'tests')},
+                         {'bugfix': 4, 'feature': 4, 'tests': 2})
         with mock.patch.object(evaluation, 'prepare_judgment') as prepare, \
                 mock.patch.object(evaluation, 'run_harness') as launch, self.assertRaises(SystemExit) as caught:
             evaluation.main(['--suite', 'normal', '--harness', 'benitoiteh-deepseek', '--allow-unverified',
@@ -3297,15 +3301,28 @@ class NormalTests(unittest.TestCase):
         self.assertEqual(evaluation.normal_changes(task, workspace)[1], [])
 
     def test_manifest_paths_reject_escape_duplicates_links_and_special_files(self):
-        for kind in ('absolute', 'parent', 'duplicate', 'link', 'fifo', 'input_link'):
+        for kind in ('absolute', 'parent', 'duplicate', 'link', 'fifo', 'input_link',
+                     'missing_self_test', 'bad_case', 'control_escape', 'empty_failures',
+                     'duplicate_failures', 'bad_failure_type'):
             with self.subTest(kind=kind), tempfile.TemporaryDirectory(prefix='nm-', dir='/tmp') as root:
                 target = os.path.join(root, 'normal_test')
                 shutil.copytree(evaluation.Task('normal_csv_totals').dir, target)
                 manifest = os.path.join(target, 'task.json')
                 with open(manifest) as stream:
                     config = json.load(stream)
-                if kind in ('absolute', 'parent', 'duplicate'):
-                    config['artifacts'] = ['/outside'] if kind == 'absolute' else ['../outside'] if kind == 'parent' else ['totals.py'] * 2
+                if kind in ('absolute', 'parent', 'duplicate', 'missing_self_test', 'bad_case', 'control_escape',
+                            'empty_failures', 'duplicate_failures', 'bad_failure_type'):
+                    if kind == 'missing_self_test':
+                        config.pop('self_test')
+                    elif kind == 'bad_case':
+                        config['self_test']['initial_case'] = []
+                    elif kind == 'control_escape':
+                        config['self_test']['controls'] = [dict(source='../outside.py', cases=['negative'])]
+                    elif kind in ('empty_failures', 'duplicate_failures', 'bad_failure_type'):
+                        config['self_test']['fixed_output_cases'] = ([] if kind == 'empty_failures' else
+                            ['negative', 'negative'] if kind == 'duplicate_failures' else 'negative')
+                    else:
+                        config['artifacts'] = ['/outside'] if kind == 'absolute' else ['../outside'] if kind == 'parent' else ['totals.py'] * 2
                     with open(manifest, 'w') as stream:
                         json.dump(config, stream)
                 else:
@@ -3409,6 +3426,11 @@ class NormalTests(unittest.TestCase):
         self.addCleanup(setattr, evaluation, 'NORMAL_TOOLS', old)
         evaluation.NORMAL_TOOLS = evaluation.prepare_normal_tools(tasks)
         self.assertEqual(evaluation.self_test(tasks, os.environ['BENITOITEH_TEST_BENITOITE']), 0)
+        # 関門: 対照が別のケースで落ちただけでは、指定した条件の検査の証拠にしない。
+        control_task = evaluation.Task('normal_report_sort')
+        control_task.normal_self_test['controls'][0]['cases'] = ['empty']
+        with contextlib.redirect_stdout(io.StringIO()):
+            self.assertEqual(evaluation.self_test([control_task], os.environ['BENITOITEH_TEST_BENITOITE']), 1)
         for task in tasks:
             with tempfile.TemporaryDirectory(prefix='nd-', dir='/tmp') as root:
                 row = evaluation.run_trial(task, root, os.environ['BENITOITEH_TEST_BENITOITE'], 'normal-dry',
@@ -3417,7 +3439,32 @@ class NormalTests(unittest.TestCase):
                 self.assertFalse(row['verification_missing'])
 
     @requires_sandbox
-    def test_mock_normal_read_write_bash_for_both_tasks(self):
+    def test_self_test_rejects_broken_controls(self):
+        # 関門: 子の構文エラーで全ケースが落ちる対照を、条件の退行として採る誤りを捕まえる。
+        original = evaluation.Task('normal_report_sort')
+        old = evaluation.NORMAL_TOOLS
+        self.addCleanup(setattr, evaluation, 'NORMAL_TOOLS', old)
+        evaluation.NORMAL_TOOLS = evaluation.prepare_normal_tools([original])
+        for kind in ('source', 'fixed_output'):
+            with self.subTest(kind=kind), tempfile.TemporaryDirectory(prefix='broken-', dir='/tmp') as root:
+                target = os.path.join(root, original.name)
+                shutil.copytree(original.dir, target)
+                with mock.patch.object(evaluation, 'TASKS_DIR', root):
+                    task = evaluation.Task(original.name)
+                with contextlib.redirect_stdout(io.StringIO()):
+                    self.assertEqual(evaluation.self_test_normal([task]), 0)
+                if kind == 'source':
+                    with open(os.path.join(target, task.normal_self_test['controls'][0]['source']), 'w') as stream:
+                        stream.write('def (\n')
+                else:
+                    task.normal_self_test['fixed_output'] = 'def (\n'
+                with contextlib.redirect_stdout(io.StringIO()) as output:
+                    self.assertEqual(evaluation.self_test_normal([task]), 1)
+                self.assertIn('failure cases', output.getvalue())
+                self.assertIn('did not pass any case', output.getvalue())
+
+    @requires_sandbox
+    def test_mock_normal_read_write_bash_for_all_tasks(self):
         try:
             server, _base = mock_provider.start('normal', 'file', 'text', verify='true')
         except OSError as error:

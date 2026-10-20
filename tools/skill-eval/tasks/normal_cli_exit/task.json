@@ -1,0 +1,51 @@
+{
+  "kind": "normal",
+  "category": "bugfix",
+  "artifacts": [
+    "tool.sh"
+  ],
+  "writable_files": [
+    "tool.sh"
+  ],
+  "allowed_generated": [
+    "__pycache__/",
+    "tests/__pycache__/"
+  ],
+  "verify": [
+    "python3",
+    "-m",
+    "unittest",
+    "discover",
+    "-s",
+    "tests"
+  ],
+  "judge": [
+    "python3",
+    "-I",
+    "judge/verify.py"
+  ],
+  "required_tools": [
+    "python3",
+    "/bin/sh"
+  ],
+  "self_test": {
+    "initial_case": "missing",
+    "fixed_output": "#!/bin/sh\nprintf \"%s\\n\" \"hello Lin Q\"\n",
+    "controls": [
+      {
+        "source": "negative/accept_extra.sh",
+        "cases": [
+          "extra"
+        ]
+      }
+    ],
+    "fixed_output_cases": [
+      "literal",
+      "empty_name",
+      "missing",
+      "missing_name",
+      "extra",
+      "unknown"
+    ]
+  }
+}

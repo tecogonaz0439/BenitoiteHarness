@@ -212,6 +212,28 @@ class Task(object):
                 or any(tool not in ('python3', '/bin/sh', 'find', 'sort', 'basename', 'sed', 'awk', 'cat', 'printf')
                        for tool in self.required_tools) or len(set(self.required_tools)) != len(self.required_tools)):
             raise ValueError('invalid required_tools')
+        self.normal_self_test = config.get('self_test')
+        if not isinstance(self.normal_self_test, dict):
+            raise ValueError('normal self_test must describe the intended failures')
+        case = self.normal_self_test.get('initial_case')
+        if not isinstance(case, str) or not re.fullmatch(r'[A-Za-z0-9_-]+', case):
+            raise ValueError('invalid normal self_test initial_case')
+        source = self.normal_self_test.get('fixed_output')
+        controls = self.normal_self_test.get('controls')
+        if not isinstance(source, str) or not source.strip() or not isinstance(controls, list):
+            raise ValueError('normal self_test requires fixed_output and controls')
+        for control in controls:
+            if not isinstance(control, dict):
+                raise ValueError('invalid normal self_test control')
+            task_path(self.dir, control.get('source'))
+        groups = [self.normal_self_test.get('fixed_output_cases')] + [control.get('cases') for control in controls]
+        for cases in groups:
+            if (not isinstance(cases, list) or not cases
+                    or any(not isinstance(case, str) or not re.fullmatch(r'[A-Za-z0-9_-]+', case) for case in cases)
+                    or len(set(cases)) != len(cases)):
+                raise ValueError('normal self_test requires nonempty distinct failure cases')
+        if len(self.artifacts) != 1:
+            raise ValueError('normal self_test requires one artifact')
         self.attempt_limit = None
 
     def validate_cases(self) -> None:
@@ -2966,7 +2988,7 @@ def self_test_normal(tasks: List[Task]) -> int:
             prepare_inputs(task, workspace)
             shutil.copyfile(task.path('task.md'), os.path.join(workspace, 'task.md'))
             initial = judge_normal(task, workspace)
-            target = 'fractional' if task.name == 'normal_csv_totals' else 'spaces'
+            target = task.normal_self_test['initial_case']
             cases = [case for result in initial['judge_results'] for case in (result['cases'] or [])]
             if initial['artifact_success'] or not any(case['name'] == target and not case['success'] for case in cases):
                 problems.append('initial input did not fail the intended case ' + target)
@@ -2975,16 +2997,26 @@ def self_test_normal(tasks: List[Task]) -> int:
             positive = judge_normal(task, workspace)
             if not positive['artifact_success']:
                 problems.append('reference failed: ' + positive['reason'])
-            # 例だけを返す解は、別の入力の判定で落ちることを確かめる。
             path = os.path.join(workspace, task.artifacts[0])
-            content = ('print("apple,0.30")\n' if path.endswith('.py') else '#!/bin/sh\nprintf "a.txt\\n"\n')
-            with open(path, 'w', encoding='utf-8') as stream:
-                stream.write(content)
-            negative = judge_normal(task, workspace)
-            cases = [case for result in negative['judge_results'] for case in (result['cases'] or [])]
-            target = 'negative' if task.name == 'normal_csv_totals' else 'hidden'
-            if not any(case['name'] == target and not case['success'] for case in cases):
-                problems.append('fixed-output control did not fail case ' + target)
+            controls = [('fixed-output', task.normal_self_test['fixed_output'],
+                         task.normal_self_test['fixed_output_cases'], False)]
+            for control in task.normal_self_test['controls']:
+                with open(task_path(task.dir, control['source']), encoding='utf-8') as stream:
+                    controls.append((control['source'], stream.read(), control['cases'], True))
+            for label, content, expected, require_mismatch in controls:
+                with open(path, 'w', encoding='utf-8') as stream:
+                    stream.write(content)
+                negative = judge_normal(task, workspace)
+                cases = [case for result in negative['judge_results'] for case in (result['cases'] or [])]
+                failed = {case['name'] for case in cases if not case['success']}
+                # 全ケースで落ちる実行不能な対照を、指定した条件の退行として採らない。
+                if failed != set(expected):
+                    problems.append('%s failure cases %s differ from %s' % (label, sorted(failed), sorted(expected)))
+                if not any(case['success'] for case in cases):
+                    problems.append(label + ' did not pass any case')
+                if require_mismatch and any(not case['success']
+                        and case['reason'] != 'output, file contents or exit status differs' for case in cases):
+                    problems.append(label + ' failed without a behavioral mismatch')
         failures += bool(problems)
         print('%-24s %s' % (task.name, 'FAILED: ' + '; '.join(problems) if problems else 'ok'))
     print('self-test: %d of %d failed' % (failures, len(tasks)))

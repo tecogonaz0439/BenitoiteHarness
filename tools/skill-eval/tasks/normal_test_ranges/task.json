@@ -1,0 +1,54 @@
+{
+  "kind": "normal",
+  "category": "tests",
+  "artifacts": [
+    "ranges.py"
+  ],
+  "writable_files": [
+    "ranges.py"
+  ],
+  "allowed_generated": [
+    "__pycache__/",
+    "tests/__pycache__/"
+  ],
+  "verify": [
+    "python3",
+    "-m",
+    "unittest",
+    "discover",
+    "-s",
+    "tests"
+  ],
+  "judge": [
+    "python3",
+    "-I",
+    "judge/verify.py"
+  ],
+  "required_tools": [
+    "python3",
+    "/bin/sh"
+  ],
+  "self_test": {
+    "initial_case": "touching",
+    "fixed_output": "def overlaps(start_a, end_a, start_b, end_b):\n    return False\n",
+    "controls": [
+      {
+        "source": "negative/no_validation.py",
+        "cases": [
+          "reversed_with_empty",
+          "reverse_a",
+          "reverse_b"
+        ]
+      }
+    ],
+    "fixed_output_cases": [
+      "reversed_with_empty",
+      "containment",
+      "negative",
+      "equal",
+      "symmetric",
+      "reverse_a",
+      "reverse_b"
+    ]
+  }
+}

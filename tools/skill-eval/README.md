@@ -1,12 +1,20 @@
 # Skill の評価の道具
 
-通常モードの評価は `--suite normal` で選ぶ。現時点では次の 2 課題を実行できる。
-残りの 8 課題は P5-35 で加える。既定と `--suite benitoite` は従来の 11 課題である。
+通常モードの評価は `--suite normal` で選ぶ。バグの修正 4 個、小さな機能の追加 4 個、
+テストを通す変更 2 個の計 10 課題である。既定と `--suite benitoite` は従来の 11 課題である。
 
 | 課題 | 種別 | 編集する成果物 | 判定する振る舞い |
 |---|---|---|---|
 | `normal_csv_totals` | bugfix | `totals.py` | CSV の正確な金額の集計、負数、順序、空の入力 |
 | `normal_path_filter` | bugfix | `collect.sh` | 直下の通常の `.txt` ファイル、空白、隠しファイル、順序、空のディレクトリ |
+| `normal_config_merge` | bugfix | `config.py` | 再帰的な JSON のマージ、偽値と欠落の区別、入力の独立性 |
+| `normal_cli_exit` | bugfix | `tool.sh` | greet の出力、空白を含む名前、引数の誤りの stderr と終了状態 2 |
+| `normal_jsonl_filter` | feature | `filter.py` | score の閾値と順序、欠落、不正な JSON の行番号と終了状態 2 |
+| `normal_text_replace` | feature | `replace.py` | dry-run の出力と元ファイルの保持、通常の更新、日本語と改行 |
+| `normal_stable_unique` | feature | `unique.py` | ignore-case、最初の表記と順序、空行、CRLF、末尾の改行なし |
+| `normal_report_sort` | feature | `report.py` | 安定した降順と既定の昇順、数値と文字列、欠落したキーの誤り |
+| `normal_test_ranges` | tests | `ranges.py` | 半開区間の重なり、接触と空の区間、逆順の ValueError |
+| `normal_test_manifest` | tests | `manifest.py` | 相対 POSIX パス、型、重複と不正な要素の拒否、正しい入れ子 |
 
 各課題は `task.md`、`task.json`、`input/`、`reference/`、`judge/` を持つ。モデルに見せる
 workspace には `input/` と `task.md` だけを写す。`task.json` の `artifacts` は判定へ写す
@@ -14,6 +22,15 @@ workspace には `input/` と `task.md` だけを写す。`task.json` の `artif
 末尾 `/` のディレクトリである。絶対パス・`..`・重複・リンク・特殊ファイルを拒む。
 `verify` は原本の公開の unittest、`judge` は別の入力を使う信頼する判定の親を起動する。
 成果物はケースごとに子プロセスで動かし、親に import しない。
+
+`task.json` の `self_test` は、未修正が落ちる `initial_case`、固定の出力のコード
+`fixed_output` と失敗するケースの集合 `fixed_output_cases`、不完全な修正の `controls`
+（`source` と失敗するケースの集合 `cases`）を持つ。解と各対照は workspace の成果物へ
+一つずつ写して判定する。全 10 課題で、各対照の失敗したケースの集合が指定とちょうど一致し、
+少なくとも 1 ケースは成功することを求める。構文の誤りなどで全ケースが落ちる対照は拒む。
+`controls` の失敗は、いずれも振る舞いの相違であることも求める。
+`negative/` も通常の準備では workspace へ写さない。期待値は固定し、解から計算しない。
+公開テストの削除や変更で判定を偽れない契約は、P5-34 の共通のテストで確かめる。
 
 通常モードは macOS と、ビルド済みの `benitoiteh`・判定の example、v0.0.7 の処理系を必要とする。
 Python は `/usr/bin/python3` から実際の処理系のパスを求める。`python3`・`/bin/sh`、sh の
@@ -67,8 +84,9 @@ dry-run は `dry_run: true` で区別し、本物の成績に混ぜない。
 
 本物の LLM の走行は、先に設計者へ提供者・モデル・回数・見込みの費用と時間・停止額を示し、
 了承を得てから行う。DeepSeek-V4.1-Flash、effort high、50 番・200 万トークンの上限を使う。
-試しは上の 2 課題を各 1 回、計 2 回、見込みは $0.06〜0.16・2〜6 分である。
-本体の 10 課題 × 3 回 = 30 回は P5-35 の後に行う。
+試しは `normal_csv_totals` と `normal_path_filter` を各 1 回、計 2 回、
+見込みは $0.06〜0.16・2〜6 分である。
+本体は上の全 10 課題を各 3 回、計 30 回とする。
 [設計書 07-02](../../docs/design/07-quality/07-02-evaluation.md#m-の段の残りの規模と費用) の
 試しと本体の計 32 回の見込みは $0.96〜2.56・32〜96 分、停止額は $3 である。
 別の起動には、使った費用を差し引いた残額を渡す。
@@ -77,9 +95,10 @@ dry-run は `dry_run: true` で区別し、本物の成績に混ぜない。
 # 試し。実行前に設計者の了承を得る。
 /usr/bin/python3 -I tools/skill-eval/skill_eval.py --suite normal \
   --harness benitoiteh-deepseek-normal --allow-unverified --trials 1 --stop-cost 3 \
+  --task normal_csv_totals --task normal_path_filter \
   --benitoite <v0.0.7の処理系> --benitoiteh <共通の実行ファイル> \
   --work-root <リポジトリと共有のtmpの外の作業場所>
-# 本体。P5-35 の後に、残額と回数を示して改めて了承を得る。
+# 本体。残額と回数を示して改めて了承を得る。
 /usr/bin/python3 -I tools/skill-eval/skill_eval.py --suite normal \
   --harness benitoiteh-deepseek-normal --allow-unverified --trials 3 --stop-cost <残額> \
   --benitoite <v0.0.7の処理系> --benitoiteh <共通の実行ファイル> \

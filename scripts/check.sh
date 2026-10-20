@@ -51,7 +51,7 @@ finish() {
         printf '  linux: container tests for %s\n' "${linux_targets[@]}"
         printf '  skill-eval: requires_sandbox tests (individual names above), test_judge_sandbox.RuntimeTests OS tests, all Benitoite/compaction self-test and dry-run passes (needs sandbox-exec outside Codex)\n'
         printf '  skill-eval: benitoiteh-mock, benitoiteh-mock-completion-check and benitoiteh-mock-compact passes (needs loopback and the benitoiteh sandbox outside Codex)\n'
-        printf '  skill-eval: --self-test --suite normal, --dry-run --suite normal, benitoiteh-mock-normal; NormalTests.test_self_test_and_dry_run_normal_tasks, NormalTests.test_mock_normal_read_write_bash_for_both_tasks (needs the macOS sandbox outside Codex)\n'
+        printf '  skill-eval: --self-test --suite normal, --dry-run --suite normal, benitoiteh-mock-normal; NormalTests.test_self_test_and_dry_run_normal_tasks, NormalTests.test_self_test_rejects_broken_controls, NormalTests.test_mock_normal_read_write_bash_for_all_tasks (needs the macOS sandbox outside Codex)\n'
     fi
     if ((${#aarch64_skipped[@]} != 0)); then
         printf '\nNot run on aarch64-unknown-linux-musl:\n'
@@ -164,13 +164,16 @@ else
 fi
 skill_eval_args=()
 compaction_tasks=0
+normal_tasks=0
 for task_file in tools/skill-eval/tasks/*/task.json; do
     task_name=${task_file%/task.json}
     task_name=${task_name##*/}
     kind=$(skill_eval_python -c 'import json,sys; print(json.load(open(sys.argv[1])).get("kind", "run"))' "$task_file")
     if [[ "$kind" == staged ]]; then
         compaction_tasks=$((compaction_tasks + 1))
-    elif [[ "$kind" != normal ]]; then
+    elif [[ "$kind" == normal ]]; then
+        normal_tasks=$((normal_tasks + 1))
+    else
         skill_eval_args+=(--task "$task_name")
     fi
 done
@@ -187,6 +190,10 @@ if ! "$inside_codex"; then
 fi
 if ((compaction_tasks != 2)); then
     printf 'Expected the two compaction tasks, found %s.\n' "$compaction_tasks" >&2
+    exit 1
+fi
+if ((normal_tasks != 10)); then
+    printf 'Expected ten normal tasks, found %s.\n' "$normal_tasks" >&2
     exit 1
 fi
 if ! "$inside_codex"; then
@@ -225,11 +232,12 @@ import sys
 
 with open(sys.argv[1], encoding='utf-8') as f:
     rows = [json.loads(line) for line in f if line.strip()]
-if len(rows) != 2 or any(row.get('success') is not True or row.get('artifact_success') is not True
+if len(rows) != 10 or len({row.get('task') for row in rows}) != 10 or any(row.get('suite') != 'normal'
+                        or row.get('success') is not True or row.get('artifact_success') is not True
                         or row.get('verification_missing') is not False or row.get('bash_exit_codes') != [0]
                         or row.get('turns') != 4 or row.get('attempts') is not None
                         or row.get('cost_usd') != 0 for row in rows):
-    raise SystemExit('Expected two successful four-turn normal mock trials with local verification and zero cost.')
+    raise SystemExit('Expected ten successful four-turn normal mock trials with local verification and zero cost.')
 EOF
 fi
 if ! "$inside_codex"; then

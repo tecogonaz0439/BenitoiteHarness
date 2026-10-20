@@ -1,0 +1,51 @@
+{
+  "kind": "normal",
+  "category": "bugfix",
+  "artifacts": [
+    "config.py"
+  ],
+  "writable_files": [
+    "config.py"
+  ],
+  "allowed_generated": [
+    "__pycache__/",
+    "tests/__pycache__/"
+  ],
+  "verify": [
+    "python3",
+    "-m",
+    "unittest",
+    "discover",
+    "-s",
+    "tests"
+  ],
+  "judge": [
+    "python3",
+    "-I",
+    "judge/verify.py"
+  ],
+  "required_tools": [
+    "python3",
+    "/bin/sh"
+  ],
+  "self_test": {
+    "initial_case": "nested",
+    "fixed_output": "def merge_config(defaults, overrides):\n    return {}\n\nif __name__ == \"__main__\":\n    print(\"{}\")\n",
+    "controls": [
+      {
+        "source": "negative/drop_falsy.py",
+        "cases": [
+          "falsy",
+          "replace"
+        ]
+      }
+    ],
+    "fixed_output_cases": [
+      "nested",
+      "falsy",
+      "replace",
+      "immutability",
+      "overlapping_inputs"
+    ]
+  }
+}
