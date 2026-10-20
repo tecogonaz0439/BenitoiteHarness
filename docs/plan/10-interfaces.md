@@ -17,13 +17,17 @@ crates/benitoiteh/            試作のクレート（ライブラリと実行�
   src/lib.rs                  モジュールの宣言
   src/<モジュール>/mod.rs、text.rs ほか
   prompts/                    LLM に見せる英文（P1 から）
+  examples/                   評価・測定・テスト資料の更新の道具（製品の実行ファイルと配布物には含めない）
   tests/                      統合テスト。OS のサンドボックスを要するものは tests/sandbox_*.rs
   tests/support/              統合テストが共有する補助（一時ディレクトリ、模擬の提供者など）
 crates/sandbox-probe/         サンドボックスのテストが起動する、決まった操作だけをする小さなプログラム（P0-04）
+tools/skill-eval/             評価の実行器、課題、結果の要約（LLM を呼ぶ走行は設計者の了承を要する）
 assets/benitoite/v0.0.7/      処理系の Skill の写し（手で直さない。埋め込まず、Skill は起動した処理系から得る。テストが比べる元）
 ```
 
 `crates/sandbox-probe` は配らない（`publish = false`）。設計書 06-01 の「ワークスペースとクレート」は試作のクレートを一つとするが、これはテストの道具であり、試作の実行ファイルには入らない。`cargo test` はほかのパッケージの実行ファイルを作らないので、`scripts/check.sh` がテストの前に `cargo build -p sandbox-probe` を、ホストと Linux の二つの対象で走らせる。テストの対象の外の操作（ファイルを読む、書く、ソケットにつなぐ、プログラムを起動する）を、引数で指示したとおりに一つ行い、結果を決まった終了状態で返す。
+
+`crates/benitoiteh/examples/` には、判定の実行器 `skill_eval_judge.rs`、大きさを測る `size_probe.rs`、テスト資料を更新する `update_context_expected.rs`、書いた後の検査を測る `bench_write_check.rs` を置く。いずれも製品の実行ファイルと配布物には含めない。
 
 ## モジュールの持ち主
 
@@ -152,6 +156,12 @@ P0-04 で作った型: 方針の入力 `PolicyConfig`（`readable: ReadAccess`�
 - `UserPartKind::Summary`、`AgentError::Compaction`（`kind` は `compaction`）。
 - `session::FileHistory { read, modified }`（`add_call`、`from_records`）。
 - 推論を除く処理は `agent/compaction/conversation.rs` にある（P4-02 で共有の関数に切り出す）。
+
+### 完了の前の確かめ（P5-29）
+
+- `config::AgentBehaviorConfig { completion_check: bool }`。既定は `false`。`UserConfig.agent`・`ResolvedExec.agent`・`AgentConfig.agent` で渡す。利用者の設定だけで受け付け、プロジェクトの設定の `[agent]` は拒む。
+- `Header.completion_check: Option<bool>`。最初の起動で有効なときだけ `Some(true)` を書く。再開・フォークでヘッダの設定を更新しない。段ごとの実効値は P5-30 の `SessionStart` に記録する。
+- 促しの文は `crates/benitoiteh/prompts/completion-check.md` に置き、実行ファイルに埋め込む。`<completion_check>` で囲み、環境の情報として会話の末尾に一度だけ加える。条件は[エージェントのループ](../design/01-agent/01-01-agent-loop.md)の「完了の前の確かめ」に従う。
 
 ### 圧縮の評価の設定と記録（P5-30）
 

@@ -1,5 +1,7 @@
 # Skill の評価の道具
 
+本リポジトリの評価の手順と条件は、[設計書 07-02](../../docs/design/07-quality/07-02-evaluation.md)と [SOURCE.md](SOURCE.md#本リポジトリでの使い方) による。本書には、Benitoite `v0.0.8` から写した README の記述も残す。写した元の設計書 06-06、docs/todo の TODO-017、スキル `skill-eval`、`crates/benitoite/`・`tools/syntax-measure/` のパスは、Benitoite 側の文書・ファイルを指す。本リポジトリにはこれらを含めない。
+
 通常モードの評価は `--suite normal` で選ぶ。バグの修正 4 個、小さな機能の追加 4 個、
 テストを通す変更 2 個の計 10 課題である。既定と `--suite benitoite` は従来の 11 課題である。
 
@@ -91,6 +93,8 @@ dry-run は `dry_run: true` で区別し、本物の成績に混ぜない。
 試しと本体の計 32 回の見込みは $0.96〜2.56・32〜96 分、停止額は $3 である。
 別の起動には、使った費用を差し引いた残額を渡す。
 
+2026-10-21 の本体は 30/30 が成功し、試しを含む費用の見積もりは $0.095 だった（[記録](results/2026-10-21-p5-normal-mode.md)）。外部のハーネスとは比べていない。
+
 ```sh
 # 試し。実行前に設計者の了承を得る。
 /usr/bin/python3 -I tools/skill-eval/skill_eval.py --suite normal \
@@ -105,7 +109,7 @@ dry-run は `dry_run: true` で区別し、本物の成績に混ぜない。
   --work-root <リポジトリと共有のtmpの外の作業場所>
 ```
 
-同梱の Agent Skill（`crates/benitoite/skill/`）だけを与えたコーディングエージェントが、課題のスクリプトを書き、検査と修正を繰り返して期待する出力を得られるかを測る道具である（設計書 06-06「Skill の評価」）。
+写した元の Benitoite `v0.0.8` の README は、この道具を次のように説明している。同梱の Agent Skill（Benitoite 側の `crates/benitoite/skill/`）だけを与えたコーディングエージェントが、課題のスクリプトを書き、検査と修正を繰り返して期待する出力を得られるかを測る道具である（設計書 06-06「Skill の評価」）。
 
 圧縮の組は `compact_json_summary` と `compact_dir_walk` の二課題である。資料の再生成・一致の検査と、組の準備・判定は次のように確かめる。LLM とキーを使わない。self-test と dry-run の判定は macOS の `sandbox-exec` を要するため、Codex の外で走らせる。
 
@@ -117,6 +121,8 @@ dry-run は `dry_run: true` で区別し、本物の成績に混ぜない。
 /usr/bin/python3 -I tools/skill-eval/skill_eval.py --dry-run --suite compaction --benitoite <v0.0.7の処理系> \
   --work-root <リポジトリと共有のtmpの外の作業場所>
 ```
+
+2026-10-21 の試しでは比較が成立せず、BH-014 は設計者の判断で後回し（2026-10-21）、P5-36 は保留となった（[記録](results/2026-10-21-p5-compaction-trial.md)、[P5-36 の調査](../../docs/plan/tasks/P5-36-compaction-boundaries.md)）。本体の 18 回は走らせていない。以下は再開後の手順の案であり、設計者が再開を決めるまで本体を走らせない。
 
 本物の提供者を使う実行例は次のとおりである。先に設計者へ回数と費用を提示して了承を得る。試しは同じ 1 課題で各条件 1 回の計 3 試行、本体は 2 課題・3 条件・各 3 回の計 18 試行とする。見込みの費用・時間と停止額 $5 は、[設計書 07-02「M の段の残りの規模と費用」](../../docs/design/07-quality/07-02-evaluation.md#m-の段の残りの規模と費用)を参照する。別の起動では、使った費用を差し引いた残額を渡す。
 
@@ -141,9 +147,11 @@ dry-run は `dry_run: true` で区別し、本物の成績に混ぜない。
 
 資料は各課題の `materials/1/`・`2/`・`3/` にあり、段の直前に対応するディレクトリだけを workspace に写す。依頼の本文は `stages/1.md`〜`3.md` で、一つ 4 KiB 以下、資料は一つ 12 KiB 以下である。原本に置く量は暫定の目標 268 KiB（各段約 90 KiB、各段 9 ファイル）とした。生成引数、実際のバイト数、各ファイルと全体の SHA-256 は `task.json` の `generation`、候補を選んだ理由は [SOURCE.md](SOURCE.md#p5-33-圧縮の二課題と資料) に残す。`--total-kib` は三段の合計の目標量で、完全な例まで書くため実量は少し増える。`--tasks-dir` で別の課題の置き場も指定できる。
 
-有料の試しでは、全条件の圧縮、現行値と残す量を減らす条件での依頼をまたぐ `kept_items > 0` と `kept_estimate` の差、予備を減らす条件での圧縮の時点を確認する。満たさなければ資料と段の区切りを全条件共通で調整し、追加の試しの回数と費用を設計者に示す。本体の前に長さと段を固定する。見込みは試し $0.18〜0.60、本体 $1.08〜3.60、合計 $1.26〜4.20、順次実行で 42〜126 分である。再開直後は模擬の固定使用量が判定に使われないため、模擬で成立した長さを本物でも成立すると扱わない。
+再開後の有料の試しでは、全条件の圧縮、現行値と残す量を減らす条件での依頼をまたぐ `kept_items > 0` と `kept_estimate` の差、予備を減らす条件での圧縮の時点を確認する。満たさなければ資料と段の区切りを全条件共通で調整し、追加の試しの回数と費用を設計者に示す。本体の前に長さと段を固定する。見込みは試し $0.18〜0.60、本体 $1.08〜3.60、合計 $1.26〜4.20、順次実行で 42〜126 分である。再開直後は模擬の固定使用量が判定に使われないため、模擬で成立した長さを本物でも成立すると扱わない。
 
-既定の評価の対象（`--harness default`）は、設計者の決定（2026-10-08）により次の三つの組とする。OpenCode は設計者が解約したので、項目を `harnesses.json` に残すが既定の対象から外す。`antigravity-gpt-oss`（Antigravity の CLI、`gpt-oss-120b-medium`、effort medium）も、項目を残すが評価の対象に含めない。
+以下の既定の対象、構文の評価、スキルの手順の記述は、Benitoite `v0.0.8` の README から写した当時のものである。本リポジトリの比較相手と手順は、前掲の設計書 07-02 と SOURCE.md による。
+
+写した元での既定の評価の対象（`--harness default`）は、Benitoite の設計者の決定（2026-10-08）により次の三つの組とする。OpenCode は設計者が解約したので、項目を `harnesses.json` に残すが既定の対象から外す。`antigravity-gpt-oss`（Antigravity の CLI、`gpt-oss-120b-medium`、effort medium）も、項目を残すが評価の対象に含めない。
 
 | 項目の名前 | ハーネス | モデルと推論の度合い |
 |---|---|---|
@@ -151,9 +159,9 @@ dry-run は `dry_run: true` で区別し、本物の成績に混ぜない。
 | `codex` | Codex CLI | `gpt-6-luna`、`model_reasoning_effort` max |
 | `antigravity-gemini` | Antigravity の CLI（`agy`） | `gemini-3.8-flash-high`、effort high |
 
-GPT-6-Luna の結果は、オープンウェイトのモデルでもうまく書けるかの目安として扱う。`antigravity-gpt-oss` はオープンウェイトのモデルで直接確かめるための組として用意したが、2026-10-08 の 3 回の短い試行がすべて失敗した（`results/` の 1555・1604・1641）ので、設計者の決定（2026-10-09）により評価の対象に含めない。同じ仕組みを、構文の測定の第二段階（構文の案ごとの評価。docs/todo の TODO-017）にも使う（`--skill-dir`）。
+GPT-6-Luna の結果は、オープンウェイトのモデルでもうまく書けるかの目安として扱う。`antigravity-gpt-oss` はオープンウェイトのモデルで直接確かめるための組として用意したが、2026-10-08 の 3 回の短い試行がすべて失敗した（`results/` の 1555・1604・1641）ので、設計者の決定（2026-10-09）により評価の対象に含めない。同じ仕組みを、構文の測定の第二段階（構文の案ごとの評価。Benitoite の docs/todo の TODO-017）にも使う（`--skill-dir`）。
 
-評価の手順（設計者の了承、ハーネスの選び方、試行の回数、記録の書き方）は、プロジェクトのスキル `skill-eval`（`.claude/skills/skill-eval/SKILL.md`）に書く。本書は道具の使い方と、課題と記録の形を書く。
+写した元では、評価の手順（設計者の了承、ハーネスの選び方、試行の回数、記録の書き方）は、Benitoite のスキル `skill-eval`（`.claude/skills/skill-eval/SKILL.md`）に書く。本書は道具の使い方と、課題と記録の形を書く。
 
 ## ファイル
 
@@ -191,11 +199,16 @@ python3 tools/skill-eval/skill_eval.py --harness default --trials 3 --allow-unve
 | `--harness <名前>` | `harnesses.json` の項目の名前（コンマで区切って複数を書ける）か、既定の対象を表す `default`。複数のときは `<work-root>/<項目>/` に分け、項目ごとに記録を書く |
 | `--trials <n>` | 課題ごとの試行の回数（既定 1） |
 | `--task <課題>` | 選んだ組の中から課題を選ぶ（繰り返せる。既定はその組のすべて）。組の外の名前は起動前に拒む |
-| `--suite benitoite\|compaction` | 課題の組。省略時は従来の 11 課題だけ。圧縮の 2 課題は `compaction` で選ぶ |
+| `--suite benitoite\|compaction\|normal` | 課題の組。省略時は従来の 11 課題だけ。圧縮の 2 課題は `compaction`、通常モードの 10 課題は `normal` で選ぶ |
 | `--model <モデル>` | ハーネスに渡すモデル（既定は `harnesses.json` の値） |
-| `--skill-dir <dir>` | `benitoite skill install` の代わりに、このディレクトリを Skill として写す。構文の案ごとの Skill を差し替えて評価するときに使う（docs/todo の TODO-017） |
-| `--work-root <dir>` | 作業ディレクトリと生の記録の置き場所。リポジトリの中は指定できない（既定は新しい一時ディレクトリ）。同じディレクトリで再び実行すると、空いた番号の試行のディレクトリを使う |
+| `--skill-dir <dir>` | `benitoite skill install` の代わりに、このディレクトリを Skill として写す。構文の案ごとの Skill を差し替えて評価するときに使う（Benitoite の docs/todo の TODO-017） |
+| `--work-root <dir>` | 作業ディレクトリと生の記録の置き場所。実のパスがリポジトリ内、`/tmp`・`/private/tmp` 自身かその下なら拒む（既定は新しい一時ディレクトリであり、TMPDIR が `/tmp` などを指す場合も拒む）。同じディレクトリで再び実行すると、空いた番号の試行のディレクトリを使う |
 | `--allow-unverified` | `harnesses.json` の `verified` が `false` のハーネスを起動する。付けなければ起動を断る |
+| `--interleave` | 複数の項目を課題・反復ごとに実行し、条件の先頭を順に替える。項目が一つなら拒む |
+| `--stop-cost <USD>` | 提供者ごとの費用の見積もりを累計し、額以上になった試行の後で止める。圧縮は段の後にも判定する。実行中の試行・段は止めないため、その分だけ超えうる |
+| `--benitoiteh <path>` | 試作の実行ファイル。省略時は target の release・debug のうち新しい方を探す |
+| `--judge-runner <path>` | ビルド済みの `skill_eval_judge`。省略時は target の debug、release の順に探す。判定は macOS のみ |
+| `--benitoite <path>` | Benitoite の処理系。省略時は target の release・debug のうち新しい方、PATH の順に探す。本リポジトリでは v0.0.7 を明示する |
 | `--record <file>` | 記録のファイル（既定 `results/<日時>-<ハーネス>.md`） |
 
 ### 一回の試行の流れ
@@ -227,11 +240,11 @@ python3 tools/skill-eval/skill_eval.py --harness default --trials 3 --allow-unve
 
 ## 課題
 
-`kind: staged` の課題は圧縮の組に属する。`kind: normal` は後続の通常モードの組のために予約し、それ以外を既定の Benitoite の組とする。`--suite compaction` で次の二課題を選ぶ。`scripts/check.sh` は二課題の存在と資料の再現性を必須にし、Codex の外では self-test・dry-run・模擬の通しを実行する。
+`kind: staged` の課題は圧縮の組に属する。`kind: normal` は P5-34 で実装した通常モードの組（`--suite normal`）に属する。`run` と `test` を既定の Benitoite の組とする。`--suite compaction` で次の二課題を選ぶ。`scripts/check.sh` は二課題の存在と資料の再現性を必須にし、Codex の外では self-test・dry-run・模擬の通しを実行する。
 
 | 課題 | 題材 | 種類 |
 |---|---|---|
-| `json_summary` | JSON の集計（ロードマップの完了条件）。入力と期待する出力は受け入れテスト `crates/benitoite/testdata/acceptance/json_summary` と同じで、`--self-test` が一致を確かめる | 実行 |
+| `json_summary` | JSON の集計（ロードマップの完了条件）。入力と期待する出力は Benitoite 側の受け入れテスト `crates/benitoite/testdata/acceptance/json_summary` から写したもの。本リポジトリには受け入れテストを含めず、`--self-test` は課題の正しい解と期待値を比べる | 実行 |
 | `file_process` | ファイルを読んで書く | 実行 |
 | `csv_report` | CSV を読んで集計し、CSV を書く | 実行 |
 | `json_convert` | CSV を JSON に変えて書く | 実行 |
@@ -250,7 +263,7 @@ python3 tools/skill-eval/skill_eval.py --harness default --trials 3 --allow-unve
 | ファイル | 内容 |
 |---|---|
 | `task.md` | エージェントに渡す指示の文（英語）。書くスクリプトの名前と、出力の形を書く |
-| `task.json` | `kind`（`run` か `test`）、`script`（書くファイルの名前）、`attempt_limit`（検査と修正の回数の上限、既定 10）、`http`、`exit_code`、`min_tests`、`require_text`、`acceptance`（受け入れテストと一致させるファイル） |
+| `task.json` | `kind`（`run`・`test`・`staged`・`normal`。通常モードの欄は冒頭、三段の課題の欄は後述）、`script`（書くファイルの名前）、`attempt_limit`（検査と修正の回数の上限、既定 10）、`http`、`exit_code`、`min_tests`、`require_text`、`acceptance`（受け入れテストと一致させるファイル） |
 | `input/` | 作業ディレクトリに写す入力 |
 | `expected.stdout` | 期待する標準出力（実行の課題） |
 | `expected.files/` | 期待する、スクリプトが書くファイル |
@@ -263,6 +276,8 @@ python3 tools/skill-eval/skill_eval.py --harness default --trials 3 --allow-unve
 HTTP の課題の接続先は `SKILL_EVAL_HTTP_BASE`（例 `http://127.0.0.1:54321`）で渡し、スクリプトは `Process.environmentVariable` で読む。`http_server.py` を単独で起動すると、接続先の URL を一行書いて応答し続ける。
 
 ## ハーネスの設定
+
+この節の外部のハーネスの検証状況と表は、Benitoite `v0.0.8` の README から写した当時の記録である。本リポジトリの現状は [SOURCE.md](SOURCE.md#本リポジトリでの使い方) と `harnesses.json` による。`antigravity-gemini` は、本リポジトリでは起動と門を変更し、`verified: false` としている。
 
 `harnesses.json` の型板の `{workspace}`・`{model}`・`{prompt}` と `options` の各キーは、道具が値で置き換える。呼び方は `tools/syntax-measure/bntmeasure/agents.py` に合わせた。2026-10-08 の短い試行で、`claude-code`・`codex`・`antigravity-gemini` を確かめた（`verified: true`）。`claude-code` には `--strict-mcp-config` を加えた。`antigravity-gpt-oss` は短い試行で検査が上限を超え、ウェブの検索を呼んだ（フックを入れる前）ので、既定の対象から外した。下の表の「確かめられていない点」は D23 の時点の記述を含む。
 
