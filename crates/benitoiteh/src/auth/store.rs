@@ -10,6 +10,8 @@ use std::fs::{DirBuilder, File};
 use std::io::{Read, Write};
 use std::os::unix::fs::{DirBuilderExt, MetadataExt};
 use std::path::Path;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::time::Duration;
 use zeroize::Zeroizing;
 
 const LIMIT: u64 = 64 * 1024;
@@ -122,6 +124,34 @@ impl Store {
     }
     /// 別の open による錠を取り、スレッド間でも排他する。
     pub fn lock(&self) -> Result<LockedStore<'_>, AuthError> {
+        let file = self.open_lock()?;
+        flock(&file, FlockOperation::LockExclusive)?;
+        self.locked(file)
+    }
+    /// 更新の送信前は、ほかのプロセスの錠を待つ間も取り消しを受ける
+    /// （設計書 02-01「更新」）。
+    pub(super) fn lock_cancellable(
+        &self,
+        cancelled: &AtomicBool,
+    ) -> Result<LockedStore<'_>, AuthError> {
+        let file = self.open_lock()?;
+        loop {
+            super::check_cancelled(cancelled)?;
+            match flock(&file, FlockOperation::NonBlockingLockExclusive) {
+                Ok(()) => break,
+                Err(rustix::io::Errno::WOULDBLOCK | rustix::io::Errno::INTR) => {
+                    std::thread::sleep(Duration::from_millis(20));
+                }
+                Err(error) => return Err(error.into()),
+            }
+        }
+        // 錠を得た直後の取り消しでも、掃除や読み直しを始めない。
+        if cancelled.load(Ordering::Acquire) {
+            return Err(AuthError::Cancelled);
+        }
+        self.locked(file)
+    }
+    fn open_lock(&self) -> Result<File, AuthError> {
         let file = File::from(openat(
             &self.directory,
             "chatgpt.lock",
@@ -129,7 +159,9 @@ impl Store {
             Mode::from_raw_mode(0o600),
         )?);
         check(&file, false)?;
-        flock(&file, FlockOperation::LockExclusive)?;
+        Ok(file)
+    }
+    fn locked(&self, file: File) -> Result<LockedStore<'_>, AuthError> {
         let locked = LockedStore {
             store: self,
             _lock: file,

@@ -6,6 +6,8 @@ mod request;
 mod text;
 
 use std::fmt;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use serde_json::Value;
@@ -98,6 +100,32 @@ impl OpenAiResponsesError {
         }
         self
     }
+    // 提供者の任意の文は、トークンの一部を含みうるため渡さない
+    // （設計書 02-01「誤り」）。分類はこの絞り込みより先に済ませる。
+    fn chatgpt_details(mut self) -> Self {
+        fn safe_code(value: &str) -> bool {
+            (1..=64).contains(&value.len())
+                && value.bytes().all(|b| {
+                    b.is_ascii_lowercase() || b.is_ascii_digit() || matches!(b, b'_' | b'.')
+                })
+        }
+        if let Self::Provider {
+            details,
+            retry_after,
+            ..
+        } = &mut self
+        {
+            if let Some(details) = details {
+                details.message = None;
+                details.code = details.code.take().filter(|value| safe_code(value));
+                details.error_type = details.error_type.take().filter(|value| safe_code(value));
+            }
+            *retry_after = retry_after
+                .take()
+                .filter(|value| !value.is_empty() && value.bytes().all(|b| b.is_ascii_digit()));
+        }
+        self
+    }
 }
 
 impl fmt::Debug for OpenAiResponsesError {
@@ -162,6 +190,7 @@ impl OpenAiResponsesAdapter {
         client: &HttpClient,
         request: &OpenAiResponsesRequest,
     ) -> Result<OpenAiResponsesStream, OpenAiResponsesError> {
+        let cancelled = Arc::new(AtomicBool::new(false));
         let (http, token, resend) = match &self.authentication {
             Authentication::ApiKey(key) => {
                 let http = client
@@ -173,9 +202,10 @@ impl OpenAiResponsesAdapter {
                 let mut request = request.clone();
                 request.headers.remove("authorization");
                 let worker_source = source.clone();
+                let worker_cancelled = Arc::clone(&cancelled);
                 // 錠や通信を待つ処理を、エージェントの取り消しの監視から分ける。
                 let refresh = std::thread::Builder::new()
-                    .spawn(move || worker_source.access_token())
+                    .spawn(move || worker_source.access_token(&worker_cancelled))
                     .map_err(|_| {
                         provider_error(ProviderError::Retryable {
                             retry_after_secs: None,
@@ -186,6 +216,7 @@ impl OpenAiResponsesAdapter {
                     None,
                     Some(Box::new(Resend {
                         source: source.clone(),
+                        cancelled: Arc::clone(&cancelled),
                         client: client.clone(),
                         request,
                         refreshed: false,
@@ -194,7 +225,8 @@ impl OpenAiResponsesAdapter {
                 )
             }
         };
-        let cancellation = ResponsesCancellation::new(http.as_ref().map(HttpStream::cancellation));
+        let cancellation =
+            ResponsesCancellation::new(http.as_ref().map(HttpStream::cancellation), cancelled);
         Ok(OpenAiResponsesStream {
             http,
             cancellation,
@@ -228,6 +260,7 @@ pub struct OpenAiResponsesStream {
 
 struct Resend {
     source: ChatGptTokens,
+    cancelled: Arc<AtomicBool>,
     client: HttpClient,
     request: OpenAiResponsesRequest,
     refreshed: bool,
@@ -236,6 +269,7 @@ struct Resend {
 
 impl Drop for Resend {
     fn drop(&mut self) {
+        self.cancelled.store(true, Ordering::Release);
         // 更新でローテーションしたトークンは保存まで終える必要がある。
         // 呼び出し側が取り消してストリームを捨てても、更新だけは回収する
         // （設計書 02-01「Sign in with ChatGPT」）。
@@ -319,7 +353,10 @@ impl OpenAiResponsesStream {
                 } else {
                     (rejected, current)
                 };
-                let error = error.redact(first).redact(second);
+                let mut error = error.redact(first).redact(second);
+                if self.resend.is_some() {
+                    error = error.chatgpt_details();
+                }
                 self.failed = Some(error.clone());
                 Err(error)
             }
@@ -432,9 +469,10 @@ impl OpenAiResponsesStream {
             .clone();
         self.rejected_token = Some(rejected.clone());
         // 更新待ちでも poll を返し、呼び出し側が取り消しを印に伝えられるようにする。
+        let cancelled = Arc::clone(&resend.cancelled);
         resend.refresh = Some(
             std::thread::Builder::new()
-                .spawn(move || source.refresh(&rejected))
+                .spawn(move || source.refresh(&rejected, &cancelled))
                 .map_err(|_| {
                     provider_error(ProviderError::NonRetryable {
                         reason: NonRetryableKind::Authentication,
@@ -472,7 +510,7 @@ impl OpenAiResponsesStream {
                 }
             })
         })?;
-        // 更新は取り消せないが、更新中の取り消しで新たな推論を送ってはならない
+        // 更新の送信後は保存まで待つが、取り消した要求の推論を送ってはならない
         // （設計書 02-01「Sign in with ChatGPT」、P5-22 の追加指示）。
         if self.cancellation.is_cancelled() {
             return Err(OpenAiResponsesError::Cancelled);

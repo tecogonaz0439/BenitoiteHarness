@@ -48,7 +48,7 @@ P0 で作るモジュールは `cli`（`--version`・`--help`・`__sandbox` の�
 | `rustls` | `=0.23.45` | P0-03 | 機能 `std`・`tls12`。Benitoite と同じ |
 | `rustls-graviola` | `=0.4.0` | P0-03 | Benitoite と同じ |
 | `graviola` | `=0.4.1` | P5-21 | `default-features = false`。ID トークンの RS256 の検証（設計書 02-01「Sign in with ChatGPT」）。`rustls-graviola` が既に引く版 |
-| `rustix` | `=1.1.5` | P0-02 ほか | 機能は要るものだけ（`fs`・`process`・`thread` など）。Benitoite と同じ |
+| `rustix` | `=1.1.5` | P0-02 ほか | 機能は要るものだけ（`fs`・`process`・`thread` など）。Benitoite と同じ。機能 `event`（P5-27）は、ログインの戻り先の待ち受けと接続を `poll` でまとめて待つために使う（設計書 02-01「ログイン」）。`event` の追加前・追加だけを行った後・P5-27 の実装後の release の実行ファイル（macOS aarch64）は、いずれも 5,689,936 バイト（差 0）。新しいクレートは加わらない |
 | `serde` | `=1.0.229` | P0-04 ほか | 機能 `std`・`derive` |
 | `serde_json` | `=1.0.151` | P0-04 ほか | Benitoite と同じ |
 | `getrandom` | `=0.4.3` | P1 | Benitoite と同じ |

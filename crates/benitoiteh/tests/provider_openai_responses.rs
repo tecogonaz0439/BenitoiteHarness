@@ -1258,7 +1258,7 @@ fn chatgpt_adapter(
 fn refreshed_token() -> io::Result<ResponseScript> {
     ResponseScript::json(
         200,
-        &json!({"access_token":chatgpt::NEW_ACCESS,"expires_in":3600}),
+        &json!({"access_token":chatgpt::NEW_ACCESS,"refresh_token":"rotated-refresh","expires_in":3600}),
     )
 }
 
@@ -1425,7 +1425,7 @@ fn chatgpt_refreshes_once_on_401_and_classifies_refresh_failures() -> TestResult
                     return Err("missing error details".into());
                 };
                 assert_eq!(*status, Some(401));
-                assert_eq!(details.message.as_deref(), Some("[redacted]"));
+                assert_eq!(details.message, None);
             }
             for token in [chatgpt::ACCESS, chatgpt::NEW_ACCESS, chatgpt::REFRESH] {
                 assert!(!format!("{error:?} {error}").contains(token));
@@ -1555,7 +1555,12 @@ fn chatgpt_cancellation_survives_resend_and_prevents_send_after_refresh() -> Tes
 fn chatgpt_resend_errors_redact_both_rejected_and_current_tokens() -> TestResult {
     for status in [Some(401), Some(400), None] {
         let fixture = ChatGptFixture::new()?;
-        let echoed = format!("{} | {}", chatgpt::ACCESS, chatgpt::NEW_ACCESS);
+        let echoed = format!(
+            "{} | {} | {}",
+            chatgpt::ACCESS,
+            chatgpt::NEW_ACCESS,
+            chatgpt::ACCESS.get(..10).ok_or("prefix")?
+        );
         let error = json!({"type":echoed,"code":echoed,"message":echoed});
         let response = if let Some(status) = status {
             let mut response = ResponseScript::json(status, &json!({"error":error}))?;
@@ -1584,12 +1589,9 @@ fn chatgpt_resend_errors_redact_both_rejected_and_current_tokens() -> TestResult
             return Err("missing error details".into());
         };
         for value in [&details.code, &details.error_type, &details.message] {
-            assert_eq!(value.as_deref(), Some("[redacted] | [redacted]"));
+            assert_eq!(value, &None);
         }
-        assert_eq!(
-            retry_after.as_deref(),
-            status.map(|_| "[redacted] | [redacted]")
-        );
+        assert_eq!(retry_after, &None);
         assert_eq!(
             server
                 .requests()?
@@ -1598,7 +1600,11 @@ fn chatgpt_resend_errors_redact_both_rejected_and_current_tokens() -> TestResult
                 .collect::<Vec<_>>(),
             ["/responses", "/token", "/responses"]
         );
-        for secret in [chatgpt::ACCESS, chatgpt::NEW_ACCESS] {
+        for secret in [
+            chatgpt::ACCESS,
+            chatgpt::NEW_ACCESS,
+            chatgpt::ACCESS.get(..10).ok_or("prefix")?,
+        ] {
             assert!(!format!("{error:?} {error} {details:?}").contains(secret));
         }
         server.shutdown()?;
@@ -1648,7 +1654,7 @@ fn chatgpt_initial_token_wait_can_be_cancelled_without_sending_inference() -> Te
         stream.poll(Duration::ZERO),
         Err(OpenAiResponsesError::Cancelled)
     ));
-    stream.join()?;
+    drop(stream);
     assert_eq!(
         server
             .requests()?
@@ -1660,14 +1666,108 @@ fn chatgpt_initial_token_wait_can_be_cancelled_without_sending_inference() -> Te
     let saved = benitoiteh::auth::Store::open(&fixture.0.join("state/benitoiteh/auth"))?
         .load()?
         .ok_or("saved authorization")?;
-    assert_eq!(
-        saved
-            .tokens
-            .ok_or("saved tokens")?
-            .access_token
-            .expose_secret(),
-        chatgpt::NEW_ACCESS
-    );
+    let tokens = saved.tokens.ok_or("saved tokens")?;
+    assert_eq!(tokens.access_token.expose_secret(), chatgpt::NEW_ACCESS);
+    assert_eq!(tokens.refresh_token.expose_secret(), "rotated-refresh");
     server.shutdown()?;
+    Ok(())
+}
+
+// 関門: 本物の flock を保持したまま捨て、錠の解放を待つ退行を検出する。
+#[test]
+fn chatgpt_cancels_lock_wait_before_drop_or_join() -> TestResult {
+    use std::sync::mpsc;
+    for explicit_cancel in [false, true] {
+        let fixture = ChatGptFixture::new()?;
+        let store = fixture.store(1)?;
+        let writer = benitoiteh::auth::Store::open(&fixture.0.join("state/benitoiteh/auth"))?;
+        let held = writer.lock()?;
+        let mut server = MockProvider::start(vec![refreshed_token()?])?;
+        let adapter = chatgpt_adapter(&server, store);
+        let request = adapter.build_request(
+            &conversation(),
+            "System",
+            &tools(),
+            RequestOptions::default(),
+        )?;
+        let mut stream = adapter.stream(&client(), &request)?;
+        // 古い実装のスレッドが錠を待ち始める時間を与える。
+        std::thread::sleep(Duration::from_millis(50));
+        let (completed, completion) = mpsc::channel();
+        let worker = std::thread::spawn(move || {
+            if explicit_cancel {
+                stream.cancellation().cancel();
+                assert!(matches!(
+                    stream.poll(Duration::ZERO),
+                    Err(OpenAiResponsesError::Cancelled)
+                ));
+                stream.join().map_err(|e| e.to_string())?;
+            }
+            drop(stream);
+            let _sent = completed.send(());
+            Ok::<_, String>(())
+        });
+        let promptly = completion.recv_timeout(Duration::from_secs(1));
+        // 退行時もテストのスレッドを残さず終える。
+        drop(held);
+        worker
+            .join()
+            .map_err(|_| "stream worker")?
+            .map_err(io::Error::other)?;
+        promptly?;
+        assert!(server.requests()?.is_empty());
+        server.shutdown()?;
+    }
+    Ok(())
+}
+
+// 関門: 誤りの詳細の許可条件を、最初の HTTP 応答の公開の境界で確かめる。
+#[test]
+fn chatgpt_errors_keep_only_safe_codes_types_and_numeric_retry_after() -> TestResult {
+    for (code, retry, expected_code, expected_retry) in [
+        ("safe_code.123".to_owned(), "007", true, true),
+        ("a".repeat(64), "7", true, true),
+        ("a".repeat(65), "+7", false, false),
+        (String::new(), "", false, false),
+        ("UPPER".to_owned(), "7 0", false, false),
+        (
+            "hyphen-code".to_owned(),
+            "Wed, 21 Oct 2015 07:28:00 GMT",
+            false,
+            false,
+        ),
+        ("非ASCII".to_owned(), "seven", false, false),
+    ] {
+        let fixture = ChatGptFixture::new()?;
+        let mut response = ResponseScript::json(
+            429,
+            &json!({"error":{"code":code,"type":code,"message":"provider text"}}),
+        )?;
+        response.headers.push(("Retry-After".into(), retry.into()));
+        let mut server = MockProvider::start(vec![response])?;
+        let adapter = chatgpt_adapter(&server, fixture.store(4_000_000_000)?);
+        let error = request(&adapter, &conversation(), RequestOptions::default())
+            .err()
+            .ok_or("expected rejection")?;
+        let OpenAiResponsesError::Provider {
+            details: Some(details),
+            retry_after,
+            ..
+        } = error
+        else {
+            return Err("error details".into());
+        };
+        assert_eq!(
+            details.code.as_deref(),
+            expected_code.then_some(code.as_str())
+        );
+        assert_eq!(
+            details.error_type.as_deref(),
+            expected_code.then_some(code.as_str())
+        );
+        assert_eq!(details.message, None);
+        assert_eq!(retry_after.as_deref(), expected_retry.then_some(retry));
+        server.shutdown()?;
+    }
     Ok(())
 }
