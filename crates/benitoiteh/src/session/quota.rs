@@ -45,6 +45,29 @@ pub fn storage_usage(
             }
         }
     }
+    // 消し損ねた墓標も場所を使うので合計に数える（設計書 01-05「記録を残す期間」）。
+    for entry in std::fs::read_dir(&paths.sessions_dir)? {
+        let Ok(entry) = entry else {
+            continue;
+        };
+        let name = entry.file_name();
+        let Some(name) = name
+            .to_str()
+            .filter(|name| super::temporary::parse_session_tombstone(name).is_some())
+        else {
+            continue;
+        };
+        if let Ok(directory) = openat(
+            &root,
+            name,
+            OFlags::RDONLY | OFlags::DIRECTORY | OFlags::NOFOLLOW | OFlags::CLOEXEC,
+            Mode::empty(),
+        ) {
+            usage.total = usage
+                .total
+                .saturating_add(count(&File::from(directory), true)?);
+        }
+    }
     Ok(usage)
 }
 

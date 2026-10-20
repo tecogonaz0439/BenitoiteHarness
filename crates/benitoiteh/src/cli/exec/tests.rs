@@ -110,10 +110,16 @@ fn startup_continues_with_a_diagnostic_when_session_cleanup_fails() -> Result<()
         eprintln!("Skipped cleanup startup check: root can read mode 000 directories.");
         return Ok(());
     }
+    // 消し損ねたセッションは墓標の名前に替わるので、sessions の下の項目ごとに戻す。
     struct Restore(PathBuf);
     impl Drop for Restore {
         fn drop(&mut self) {
-            let _restored = fs::set_permissions(&self.0, fs::Permissions::from_mode(0o700));
+            for entry in fs::read_dir(&self.0).into_iter().flatten().flatten() {
+                let _restored = fs::set_permissions(
+                    entry.path().join("blocked"),
+                    fs::Permissions::from_mode(0o700),
+                );
+            }
         }
     }
     let fixture = Fixture::new()?;
@@ -126,7 +132,7 @@ fn startup_continues_with_a_diagnostic_when_session_cleanup_fails() -> Result<()
     fs::create_dir(&blocked)?;
     fs::write(blocked.join("keep"), b"keep")?;
     fs::set_permissions(&blocked, fs::Permissions::from_mode(0o000))?;
-    let _restore = Restore(blocked);
+    let _restore = Restore(paths.sessions_dir.clone());
     drop(stale);
     let prepared = prepare(
         &fixture.args(&[])?,
@@ -144,7 +150,13 @@ fn startup_continues_with_a_diagnostic_when_session_cleanup_fails() -> Result<()
             .any(|message| message.contains("Could not clean up session")
                 && message.contains(id.as_str()))
     );
-    assert!(directory.join("lock").exists());
+    // 錠を持ったまま墓標の名前で残り、次の掃除で消せる（設計書 01-05「記録を残す期間」）。
+    assert!(!directory.exists());
+    let prefix = format!(".removing-{id}-");
+    assert!(fs::read_dir(&paths.sessions_dir)?.flatten().any(|entry| {
+        entry.file_name().to_string_lossy().starts_with(&prefix)
+            && entry.path().join("lock").exists()
+    }));
     Ok(())
 }
 

@@ -2,6 +2,8 @@
 
 #[path = "support/session.rs"]
 mod session_support;
+#[path = "support/temporary_cleanup.rs"]
+mod temporary_cleanup;
 
 use std::error::Error;
 use std::fs::{self, OpenOptions};
@@ -652,8 +654,8 @@ fn session_entries_are_private_exclusive_and_live_until_the_last_writer_drops() 
     Ok(())
 }
 
-// 作成時の関門: ロック中の一時領域・記録を消す、リンクの先を消す、ID の時刻を
-// 使って更新済みの記録も消す退行を、同じ掃除の公開 API で捕まえる。
+// 作成時の関門: ロック中の一時領域・記録を消す、記録のない一時領域を消す、リンクの先を
+// 消す、ID の時刻を使って更新済みの記録も消す退行を、同じ掃除の公開 API で捕まえる。
 #[test]
 fn cleanup_removes_only_inactive_matching_directories_and_expired_sessions() -> TestResult {
     let fixture = Fixture::new()?;
@@ -734,7 +736,9 @@ fn cleanup_removes_only_inactive_matching_directories_and_expired_sessions() -> 
         let _listener = std::os::unix::net::UnixListener::bind(path.join("sock"))?;
     }
     let report = cleanup(&fixture.paths, DEFAULT_RETENTION_DAYS, SystemTime::now())?;
-    assert_eq!(report.temporary_removed, 4);
+    // 記録のない orphan は、ほかのデータの置き場所のものでありうるので残す
+    // （設計書 01-05「一時ディレクトリ」）。
+    assert_eq!(report.temporary_removed, 3);
     assert!(!known.0.exists());
     assert!(unknown.0.join("sock").exists());
     assert!(active_askpass.join("sock").exists());
@@ -743,7 +747,7 @@ fn cleanup_removes_only_inactive_matching_directories_and_expired_sessions() -> 
     assert!(report.failures.is_empty());
     assert!(!stale_temp.exists());
     assert!(!stale_dir.exists());
-    assert!(!orphan.exists());
+    assert!(orphan.exists());
     assert!(active.temporary_dir().exists());
     assert!(active.directory().exists());
     assert!(recent_dir.exists());
@@ -978,11 +982,17 @@ fn cleanup_reports_failures_continues_and_retries_without_losing_locks() -> Test
         eprintln!("Skipped cleanup permission check: root can read mode 000 directories.");
         return Ok(());
     }
+    // 消し損ねた項目は墓標の名前に替わるので、根の下のすべての項目の blocked を戻す。
     struct Restore(Vec<PathBuf>);
     impl Drop for Restore {
         fn drop(&mut self) {
-            for path in &self.0 {
-                let _restored = fs::set_permissions(path, fs::Permissions::from_mode(0o700));
+            for root in &self.0 {
+                for entry in fs::read_dir(root).into_iter().flatten().flatten() {
+                    let _restored = fs::set_permissions(
+                        entry.path().join("blocked"),
+                        fs::Permissions::from_mode(0o700),
+                    );
+                }
             }
         }
     }
@@ -992,11 +1002,14 @@ fn cleanup_reports_failures_continues_and_retries_without_losing_locks() -> Test
     let directory = blocked.directory().to_owned();
     let temporary = blocked.temporary_dir().to_owned();
     fs::File::open(directory.join("session.jsonl"))?.set_modified(UNIX_EPOCH)?;
-    let restore = Restore(vec![directory.join("blocked"), temporary.join("blocked")]);
-    for path in &restore.0 {
-        fs::create_dir(path)?;
+    let restore = Restore(vec![
+        fixture.paths.sessions_dir.clone(),
+        fixture.paths.temporary_root.clone(),
+    ]);
+    for path in [directory.join("blocked"), temporary.join("blocked")] {
+        fs::create_dir(&path)?;
         fs::write(path.join("keep"), b"keep")?;
-        fs::set_permissions(path, fs::Permissions::from_mode(0o000))?;
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o000))?;
     }
     drop(blocked);
     let other = fixture.session()?;
@@ -1023,10 +1036,26 @@ fn cleanup_reports_failures_continues_and_retries_without_losing_locks() -> Test
     assert!(report.failures.iter().any(|failure| failure.temporary));
     assert!(report.failures.iter().any(|failure| !failure.temporary));
     assert!(!other_dir.exists());
-    assert!(directory.join("lock").is_file());
-    assert!(directory.join("session.jsonl").is_file());
+    // 消し損ねたセッションは、錠を持ったまま墓標の名前で残り、ID では開けない
+    // （設計書 01-05「記録を残す期間」）。中身は消せるものだけ消えるので、記録の有無は
+    // 列挙の順に依る。記録を消すことは期間切れの一時ディレクトリのテストで確かめる。
+    assert!(!directory.exists());
+    assert!(session_support::open_created_session(&fixture.paths, &id).is_err());
+    let tombstones = fs::read_dir(&fixture.paths.sessions_dir)?
+        .map(|entry| entry.map(|entry| entry.path()))
+        .collect::<Result<Vec<_>, _>>()?;
+    let [tombstone] = tombstones.as_slice() else {
+        return Err(format!("unexpected session entries: {tombstones:?}").into());
+    };
+    assert!(
+        tombstone
+            .file_name()
+            .and_then(|name| name.to_str())
+            .is_some_and(|name| name.starts_with(&format!(".removing-{id}-")))
+    );
+    assert!(tombstone.join("lock").is_file());
     // 見えるまま残ったファイルは、後始末の失敗後も保存量に含める。
-    fs::write(directory.join("remaining"), b"count me")?;
+    fs::write(tombstone.join("remaining"), b"count me")?;
     assert!(benitoiteh::session::storage_usage(&fixture.paths, None)?.total >= 8);
     let output = std::process::Command::new(env!("CARGO_BIN_EXE_benitoiteh"))
         .args(["sessions", "--json"])
@@ -1041,6 +1070,7 @@ fn cleanup_reports_failures_continues_and_retries_without_losing_locks() -> Test
         "{}",
         String::from_utf8_lossy(&output.stderr)
     );
+    assert!(!String::from_utf8(output.stdout)?.contains(id.as_str()));
     let diagnostics = String::from_utf8(output.stderr)?;
     assert_eq!(
         diagnostics
@@ -1054,13 +1084,16 @@ fn cleanup_reports_failures_continues_and_retries_without_losing_locks() -> Test
     drop(restore);
     let retry = cleanup(&fixture.paths, DEFAULT_RETENTION_DAYS, SystemTime::now())?;
     assert!(retry.failures.is_empty(), "{:?}", retry.failures);
-    assert_eq!((retry.sessions_removed, retry.temporary_removed), (1, 1));
-    assert!(!directory.exists() && !temporary.exists());
+    // 墓標は既に一度数えたセッションなので sessions_removed に数えない。
+    assert_eq!((retry.sessions_removed, retry.temporary_removed), (0, 1));
+    assert_eq!(fs::read_dir(&fixture.paths.sessions_dir)?.count(), 0);
+    assert_eq!(fs::read_dir(&fixture.paths.temporary_root)?.count(), 0);
     Ok(())
 }
 
-// 関門: 再帰によるスタックの枯渇は浅い掃除のテストで捕まらない。
-// 子の小さいスタックから、公開の cleanup と最後の Session の破棄を通す。
+// 関門: 再帰によるスタックの枯渇と、段ごとに記述子を開いたままにすることによる
+// EMFILE は浅い掃除のテストで捕まらない。子の小さいスタックと記述子の上限 64 から、
+// 公開の cleanup と最後の Session の破棄を通す。
 #[test]
 fn deep_cleanup_and_session_drop_do_not_depend_on_thread_stack_depth() -> TestResult {
     use rustix::fs::{Mode as FsMode, OFlags, mkdirat, open, openat};
@@ -1117,22 +1150,13 @@ fn deep_cleanup_and_session_drop_do_not_depend_on_thread_stack_depth() -> TestRe
         move || -> Result<_, String> {
             let mut limited = limit;
             limited.current = Some(64);
+            // 開いたままの記述子を 32 段までにするので、上限 64 でも深さ 750 を
+            // 消し切る（設計書 01-05「一時ディレクトリ」）。
             setrlimit(Resource::Nofile, limited).map_err(|error| error.to_string())?;
-            let failed = cleanup(&paths, DEFAULT_RETENTION_DAYS, SystemTime::now())
-                .map_err(|error| error.to_string())?;
-            setrlimit(Resource::Nofile, limit).map_err(|error| error.to_string())?;
-            assert_eq!(failed.failures.len(), 2);
-            let descriptor_error =
-                format!("(os error {})", rustix::io::Errno::MFILE.raw_os_error());
-            assert!(
-                failed
-                    .failures
-                    .iter()
-                    .all(|failure| failure.reason.contains(&descriptor_error))
-            );
             let report = cleanup(&paths, DEFAULT_RETENTION_DAYS, SystemTime::now())
                 .map_err(|error| error.to_string())?;
             drop(live);
+            setrlimit(Resource::Nofile, limit).map_err(|error| error.to_string())?;
             Ok(report)
         },
     )?;
@@ -1143,6 +1167,305 @@ fn deep_cleanup_and_session_drop_do_not_depend_on_thread_stack_depth() -> TestRe
     assert!(report.failures.is_empty(), "{:?}", report.failures);
     assert_eq!((report.sessions_removed, report.temporary_removed), (1, 1));
     assert!(!directory.exists() && !temporary.exists() && !live_temp.exists());
+    Ok(())
+}
+
+// 関門: 子プロセスが権限を変えた一時ディレクトリで、再開が UNSAFE_PATH で止まる退行、
+// 掃除が 0700 でないものを黙って残し続ける退行、中を消せない残りで再開が止まる退行を、
+// 本物の権限と公開の Session::open・cleanup で捕まえる（設計書 01-05「一時ディレクトリ」）。
+#[test]
+fn changed_temporary_directories_do_not_stop_resume_or_cleanup() -> TestResult {
+    let fixture = Fixture::new()?;
+    let session = fixture.session()?;
+    session.writer()?.append(&header(&session))?;
+    let id = session.id().clone();
+    let temporary = session.temporary_dir().to_owned();
+    drop(session);
+    let leftover = |mode| -> io::Result<()> {
+        fs::create_dir(&temporary)?;
+        fs::write(temporary.join("left"), b"left")?;
+        fs::set_permissions(&temporary, fs::Permissions::from_mode(mode))
+    };
+
+    // 掃除: 止まったセッションの 0755 の一時ディレクトリを消し、そのことを示す。
+    leftover(0o755)?;
+    let report = cleanup(&fixture.paths, DEFAULT_RETENTION_DAYS, SystemTime::now())?;
+    assert!(report.failures.is_empty(), "{:?}", report.failures);
+    assert_eq!(report.temporary_removed, 1);
+    assert_eq!(report.temporary_unsafe_removed, vec![temporary.clone()]);
+    assert_eq!(
+        report.diagnostics(),
+        vec![format!(
+            "Removed temporary directory {} whose permissions had been changed.",
+            temporary.display()
+        )]
+    );
+    assert!(!temporary.exists());
+
+    // 再開: 0755 の残りを消し、新しい一時ディレクトリを 0700 で作る。
+    leftover(0o755)?;
+    let resumed = session_support::open_created_session(&fixture.paths, &id)?;
+    assert_eq!(resumed.temporary_dir(), temporary);
+    assert_eq!(
+        fs::symlink_metadata(&temporary)?.permissions().mode() & 0o7777,
+        0o700
+    );
+    assert_eq!(fs::read_dir(&temporary)?.count(), 0);
+    assert!(resumed.startup_notices().is_empty());
+    drop(resumed);
+
+    if rustix::process::geteuid().is_root() {
+        // root は権限 0000 のディレクトリも消せるので、消せない残りを作れない。
+        eprintln!("Skipped unremovable temporary check: root can remove mode 000 directories.");
+        return Ok(());
+    }
+    // 再開: 中に消せないディレクトリが残っても、墓標の名前に替えて続け、知らせる。
+    struct Restore(PathBuf);
+    impl Drop for Restore {
+        fn drop(&mut self) {
+            for entry in fs::read_dir(&self.0).into_iter().flatten().flatten() {
+                let _restored = fs::set_permissions(
+                    entry.path().join("blocked"),
+                    fs::Permissions::from_mode(0o700),
+                );
+            }
+        }
+    }
+    let restore = Restore(fixture.paths.temporary_root.clone());
+    leftover(0o700)?;
+    fs::create_dir(temporary.join("blocked"))?;
+    fs::write(temporary.join("blocked/keep"), b"keep")?;
+    fs::set_permissions(temporary.join("blocked"), fs::Permissions::from_mode(0o000))?;
+    let resumed = session_support::open_created_session(&fixture.paths, &id)?;
+    assert_eq!(resumed.temporary_dir(), temporary);
+    assert_eq!(fs::read_dir(&temporary)?.count(), 0);
+    let [notice] = resumed.startup_notices() else {
+        return Err(format!("unexpected notices: {:?}", resumed.startup_notices()).into());
+    };
+    let prefix = format!(
+        "Could not remove the previous temporary directory {}.removing-",
+        temporary.display()
+    );
+    assert!(notice.starts_with(&prefix), "{notice}");
+    let permission_error = format!("(os error {})", rustix::io::Errno::ACCESS.raw_os_error());
+    assert!(notice.contains(&permission_error), "{notice}");
+    drop(resumed);
+    // 錠を取れる間は、権限を戻した後の掃除が墓標を消す。
+    drop(restore);
+    let report = cleanup(&fixture.paths, DEFAULT_RETENTION_DAYS, SystemTime::now())?;
+    assert!(report.failures.is_empty(), "{:?}", report.failures);
+    assert_eq!(report.temporary_removed, 1);
+    temporary_cleanup::check_temporary_root(&fixture.paths.temporary_root)?;
+    Ok(())
+}
+
+// 関門: uchg の印や削除を拒む ACL で名前を替えられない残りで再開が止まる退行を、本物の
+// chflags と chmod +a で捕まえる。代わりの名前と、印と ACL を外すコマンドの知らせを確かめる
+// （設計書 01-05「一時ディレクトリ」）。
+#[cfg(target_os = "macos")]
+#[test]
+fn pinned_temporary_directory_uses_an_alternate_name_on_resume() -> TestResult {
+    struct Undo(&'static str, &'static [&'static str], PathBuf);
+    impl Drop for Undo {
+        fn drop(&mut self) {
+            let _status = std::process::Command::new(self.0)
+                .args(self.1)
+                .arg(&self.2)
+                .status();
+        }
+    }
+    let cases: [(&str, &[&str], &str, &[&str]); 2] = [
+        (
+            "/usr/bin/chflags",
+            &["uchg"],
+            "/usr/bin/chflags",
+            &["-R", "nouchg"],
+        ),
+        (
+            "/bin/chmod",
+            &["+a", "everyone deny delete"],
+            "/bin/chmod",
+            &["-N"],
+        ),
+    ];
+    for (program, args, undo_program, undo_args) in cases {
+        let fixture = Fixture::new()?;
+        let session = fixture.session()?;
+        session.writer()?.append(&header(&session))?;
+        let id = session.id().clone();
+        let temporary = session.temporary_dir().to_owned();
+        drop(session);
+        fs::create_dir(&temporary)?;
+        fs::set_permissions(&temporary, fs::Permissions::from_mode(0o700))?;
+        let undo = Undo(undo_program, undo_args, temporary.clone());
+        let status = std::process::Command::new(program)
+            .args(args)
+            .arg(&temporary)
+            .status()?;
+        assert!(status.success(), "{program} {args:?}");
+        let resumed = session_support::open_created_session(&fixture.paths, &id)?;
+        let alternate = PathBuf::from(format!("{}.1", temporary.display()));
+        assert_eq!(resumed.temporary_dir(), alternate, "{program} {args:?}");
+        assert_eq!(
+            fs::symlink_metadata(&alternate)?.permissions().mode() & 0o7777,
+            0o700
+        );
+        let [notice] = resumed.startup_notices() else {
+            return Err(format!("unexpected notices: {:?}", resumed.startup_notices()).into());
+        };
+        let path = temporary.display();
+        assert!(
+            notice.starts_with(&format!(
+                "Could not remove the previous temporary directory {path}: "
+            )),
+            "{notice}"
+        );
+        assert!(
+            notice.ends_with(&format!(
+                "Run chflags -R nouchg '{path}' and chmod -R -N '{path}', then retry."
+            )),
+            "{notice}"
+        );
+        drop(resumed);
+        assert!(!alternate.exists());
+        drop(undo);
+        let report = cleanup(&fixture.paths, DEFAULT_RETENTION_DAYS, SystemTime::now())?;
+        assert!(report.failures.is_empty(), "{:?}", report.failures);
+        assert_eq!(report.temporary_removed, 1);
+        temporary_cleanup::check_temporary_root(&fixture.paths.temporary_root)?;
+    }
+    Ok(())
+}
+
+// 関門: 期間切れのセッションの一時ディレクトリだけを消せないとき、セッションの墓標が先に
+// 消えて一時ディレクトリを誰も消さなくなる退行と、記録の中身を墓標に残し続ける退行を、
+// 本物の権限と公開の cleanup で捕まえる（設計書 01-05「記録を残す期間」）。
+#[test]
+fn expired_session_tombstone_outlives_its_unremovable_temporary_directory() -> TestResult {
+    if rustix::process::geteuid().is_root() {
+        // root は権限 0000 のディレクトリも消せるので、消せない一時ディレクトリを作れない。
+        eprintln!("Skipped unremovable temporary check: root can remove mode 000 directories.");
+        return Ok(());
+    }
+    struct Restore(PathBuf);
+    impl Drop for Restore {
+        fn drop(&mut self) {
+            for entry in fs::read_dir(&self.0).into_iter().flatten().flatten() {
+                let _restored = fs::set_permissions(
+                    entry.path().join("blocked"),
+                    fs::Permissions::from_mode(0o700),
+                );
+            }
+        }
+    }
+    let fixture = Fixture::new()?;
+    let session = fixture.session()?;
+    session.writer()?.append(&header(&session))?;
+    let id = session.id().clone();
+    let directory = session.directory().to_owned();
+    let temporary = session.temporary_dir().to_owned();
+    let restore = Restore(fixture.paths.temporary_root.clone());
+    fs::create_dir(temporary.join("blocked"))?;
+    fs::write(temporary.join("blocked/keep"), b"keep")?;
+    fs::set_permissions(temporary.join("blocked"), fs::Permissions::from_mode(0o000))?;
+    drop(session);
+    fs::File::open(directory.join("session.jsonl"))?.set_modified(UNIX_EPOCH)?;
+    let permission_error = format!("(os error {})", rustix::io::Errno::ACCESS.raw_os_error());
+    for run in 0..3 {
+        let report = cleanup(&fixture.paths, DEFAULT_RETENTION_DAYS, SystemTime::now())?;
+        assert_eq!(report.sessions_removed, 0, "run {run}");
+        assert!(
+            report.failures.iter().any(|failure| !failure.temporary
+                && failure.id.as_ref() == Some(&id)
+                && failure.reason.contains(&permission_error)
+                && failure.reason.contains("lock is kept")),
+            "run {run}: {:?}",
+            report.failures
+        );
+        let entries = fs::read_dir(&fixture.paths.sessions_dir)?
+            .map(|entry| entry.map(|entry| entry.path()))
+            .collect::<Result<Vec<_>, _>>()?;
+        let [tombstone] = entries.as_slice() else {
+            return Err(format!("run {run}: unexpected session entries: {entries:?}").into());
+        };
+        assert!(
+            tombstone
+                .file_name()
+                .and_then(|name| name.to_str())
+                .is_some_and(|name| name.starts_with(&format!(".removing-{id}-")))
+        );
+        let inside = fs::read_dir(tombstone)?
+            .map(|entry| entry.map(|entry| entry.file_name()))
+            .collect::<Result<Vec<_>, _>>()?;
+        assert_eq!(inside, vec![std::ffi::OsString::from("lock")], "run {run}");
+        assert!(session_support::open_created_session(&fixture.paths, &id).is_err());
+    }
+    drop(restore);
+    let report = cleanup(&fixture.paths, DEFAULT_RETENTION_DAYS, SystemTime::now())?;
+    assert!(report.failures.is_empty(), "{:?}", report.failures);
+    assert_eq!(fs::read_dir(&fixture.paths.sessions_dir)?.count(), 0);
+    temporary_cleanup::check_temporary_root(&fixture.paths.temporary_root)?;
+    Ok(())
+}
+
+// 関門: 子プロセスが一時ディレクトリへ移した入れ子のリポジトリの .git を、サンドボックスの
+// 外の掃除が消す退行を、公開の cleanup で捕まえる。守る名前の下を残し、ほかは消し、残した
+// パスを失敗に示す（設計書 01-05「一時ディレクトリ」）。
+#[test]
+fn temporary_cleanup_keeps_protected_entries_moved_into_it() -> TestResult {
+    let fixture = Fixture::new()?;
+    let session = fixture.session()?;
+    session.writer()?.append(&header(&session))?;
+    let id = session.id().clone();
+    let temporary = session.temporary_dir().to_owned();
+    drop(session);
+    // macOS のファイルシステムは大文字と小文字を区別しないことが多いので、.GIT も守る。
+    let names: &[&str] = if cfg!(target_os = "macos") {
+        &[".git", ".GIT"]
+    } else {
+        &[".git"]
+    };
+    for name in names {
+        fs::create_dir(&temporary)?;
+        fs::set_permissions(&temporary, fs::Permissions::from_mode(0o700))?;
+        fs::create_dir_all(temporary.join("sub").join(name))?;
+        fs::write(temporary.join("sub").join(name).join("HEAD"), b"ref")?;
+        fs::write(temporary.join("sub/other"), b"other")?;
+        let report = cleanup(&fixture.paths, DEFAULT_RETENTION_DAYS, SystemTime::now())?;
+        let [failure] = report.failures.as_slice() else {
+            return Err(format!("{name}: unexpected failures: {:?}", report.failures).into());
+        };
+        assert!(failure.temporary && failure.id.as_ref() == Some(&id));
+        assert!(
+            failure.reason.contains(&format!("sub/{name}")),
+            "{}",
+            failure.reason
+        );
+        let prefix = format!("benitoiteh-{id}.removing-");
+        let tombstones = fs::read_dir(&fixture.paths.temporary_root)?
+            .map(|entry| entry.map(|entry| entry.path()))
+            .collect::<Result<Vec<_>, _>>()?
+            .into_iter()
+            .filter(|path| {
+                path.file_name()
+                    .and_then(|name| name.to_str())
+                    .is_some_and(|name| name.starts_with(&prefix))
+            })
+            .collect::<Vec<_>>();
+        let [tombstone] = tombstones.as_slice() else {
+            return Err(format!("{name}: unexpected tombstones: {tombstones:?}").into());
+        };
+        assert_eq!(
+            fs::read(tombstone.join("sub").join(name).join("HEAD"))?,
+            b"ref"
+        );
+        assert!(!tombstone.join("sub/other").exists());
+        // 守る名前の項目を移し出せば、次の掃除で墓標が消える。
+        fs::remove_dir_all(tombstone.join("sub").join(name))?;
+        let report = cleanup(&fixture.paths, DEFAULT_RETENTION_DAYS, SystemTime::now())?;
+        assert!(report.failures.is_empty(), "{:?}", report.failures);
+        temporary_cleanup::check_temporary_root(&fixture.paths.temporary_root)?;
+    }
     Ok(())
 }
 
@@ -1989,9 +2312,10 @@ fn fork_origin_ids_are_checked_by_both_listing_and_opening() -> TestResult {
     Ok(())
 }
 
-// 関門: 一時の根が共有されても、別のデータの根の生きている補助や記録のない補助を消さない。
+// 関門: 一時の根が共有されても、別のデータの根の生きている補助と一時ディレクトリや、
+// 記録のない補助を消さない。
 #[test]
-fn shared_temporary_cleanup_preserves_foreign_live_helpers_and_unrecorded_helpers() -> TestResult {
+fn shared_temporary_cleanup_preserves_foreign_live_entries_and_unrecorded_helpers() -> TestResult {
     let first = Fixture::new()?;
     let second = Fixture::new()?;
     let mut second_paths = second.paths.clone();
@@ -2031,6 +2355,9 @@ fn shared_temporary_cleanup_preserves_foreign_live_helpers_and_unrecorded_helper
         assert_eq!(fs::read(path.join("keep"))?, b"keep");
     }
     assert!(foreign.directory().exists());
+    // ほかのデータの置き場所で動くセッションの一時ディレクトリは、この置き場所に記録が
+    // ないので消さない（設計書 01-05「一時ディレクトリ」）。
+    assert!(foreign.temporary_dir().exists());
     Ok(())
 }
 

@@ -152,7 +152,7 @@ P0-04 で作った型: 方針の入力 `PolicyConfig`（`readable: ReadAccess`�
 
 ### 再開とセッションの一覧（P4-02）
 
-- `Session::open(paths, id)`（錠を取り、失敗してもディレクトリに触れない）。切れた最後の行は最初の追記の直前に切り詰める。`session::ResumeState`（会話、補う結果、番の番号の最大、最後のモード・提供者・モデル・プロジェクト、推論の区間、`FileHistory`）。
+- `Session::open(paths, id)`（錠を取り、失敗してもディレクトリに触れない）。残った一時ディレクトリを消せなかったときの知らせは `Session::startup_notices(&self) -> &[String]` で返す（P5-25）。`CleanupReport.temporary_unsafe_removed` と `CleanupReport::diagnostics()`（P5-25）。切れた最後の行は最初の追記の直前に切り詰める。`session::ResumeState`（会話、補う結果、番の番号の最大、最後のモード・提供者・モデル・プロジェクト、推論の区間、`FileHistory`）。
 - `Agent::resume(...)`。`Record::SessionStart`・`AgentEvent::SessionStart` に `resumed`・`base_url`・ハッシュの欄。
 - 推論を除く共有の関数は `agent/reasoning.rs`。`CompactOptions` に `separate_request`、`CompactionReason::Resume`。
 - 書ける量: `Session::reserve(bytes) -> bool`・`release(bytes)`（`spill/` と `objects/` で共有）。`session::storage_usage`。

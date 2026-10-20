@@ -347,9 +347,14 @@ pub(super) fn prepare(
             Some(session) => session.id().clone(),
             None => SessionId::generate(now).map_err(StartupError::Session)?,
         };
-        let temporary = paths
-            .temporary_dir(id.as_str())
-            .map_err(StartupError::Config)?;
+        // 再開のときは、代わりの名前を含め、セッションが実際に使う一時ディレクトリを調べる
+        // （設計書 01-05「一時ディレクトリ」）。
+        let temporary = match &opened {
+            Some(session) => session.temporary_dir().to_path_buf(),
+            None => paths
+                .temporary_dir(id.as_str())
+                .map_err(StartupError::Config)?,
+        };
         let additional = if resolved.mode == Mode::Normal {
             user.normal.writable_roots.as_slice()
         } else {
@@ -402,14 +407,10 @@ pub(super) fn prepare(
         }
         let cleanup = session::cleanup(paths, user.sessions.retention_days, now)
             .map_err(StartupError::Session)?;
-        diagnostics.extend(
-            cleanup
-                .failures
-                .iter()
-                .map(session::CleanupFailure::diagnostic),
-        );
+        diagnostics.extend(cleanup.diagnostics());
         let session = match opened {
             Some(session) => {
+                diagnostics.extend(session.startup_notices().iter().cloned());
                 if let Some(source) = overrides.and_then(|fixed| fixed.forked_from.as_ref()) {
                     diagnostics.push(text::forked(source, session.id()));
                 } else {

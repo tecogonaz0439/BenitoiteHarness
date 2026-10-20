@@ -32,6 +32,16 @@ pub fn unknown_provider(name: &str) -> String {
 pub const EXEC_APPROVAL: &str = "exec only supports --approval never";
 pub const NORMAL_OPTIONS: &str = "--sandbox, --approval, and --no-sandbox require normal mode";
 pub const WRITABLE_EXECUTABLE: &str = "writable root contains the benitoiteh executable";
+pub const WRITABLE_TEMPORARY_ROOT: &str =
+    "writable root is the temporary directory root or its ancestor";
+/// 一時ディレクトリの根の下の場所を足す案（設計書 03-02「書ける場所の検査」）。
+pub fn writable_temporary_root_hint(root: &std::path::Path) -> String {
+    format!(
+        "Add a directory under {} instead, such as {}.",
+        root.display(),
+        root.join("build").display()
+    )
+}
 
 pub const RESUME_MODE: &str =
     "exec cannot resume a restricted session in normal mode; interactive confirmation is required.";

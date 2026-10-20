@@ -41,8 +41,8 @@ pub(super) fn run(args: impl Iterator<Item = OsString>) -> Result<u8, CliError> 
         std::time::SystemTime::now(),
     )
     .map_err(|error| CliError::Startup(StartupError::Session(error)))?;
-    for failure in cleanup.failures {
-        ExecOutput::diagnostic(&failure.diagnostic()).map_err(CliError::Output)?;
+    for diagnostic in cleanup.diagnostics() {
+        ExecOutput::diagnostic(&diagnostic).map_err(CliError::Output)?;
     }
     let usage = session::storage_usage(&paths, None)
         .map_err(|error| CliError::Startup(StartupError::Session(error)))?;

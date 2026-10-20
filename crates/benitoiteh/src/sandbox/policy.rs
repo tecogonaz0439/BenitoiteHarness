@@ -7,6 +7,10 @@ use serde::{Deserialize, Deserializer, Serialize};
 
 use super::{SandboxError, text};
 
+/// 既定の守る名前。一時ディレクトリの削除もこの名前の項目を残す
+/// （設計書 01-05「一時ディレクトリ」）。
+pub const PROTECTED_NAMES: [&str; 2] = [".git", ".benitoiteh"];
+
 /// 読み取りを許す範囲。どちらも `denied_read` を除く。
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ReadAccess {
@@ -80,6 +84,7 @@ impl PolicyConfig {
     }
 
     /// 全体を読め、指定した場所にだけ書け、IP 通信と書ける場所での実行を拒む入力を作る。
+    /// 守る名前は [`PROTECTED_NAMES`] とする。
     pub fn new(writable: Vec<PathBuf>) -> Self {
         Self {
             readable: ReadAccess::All,
@@ -90,7 +95,7 @@ impl PolicyConfig {
             writable,
             require_writable: true,
             allow_fork: true,
-            protected_names: vec![".git".into(), ".benitoiteh".into()],
+            protected_names: PROTECTED_NAMES.iter().map(|&name| name.into()).collect(),
             allow_ip: false,
             programs: ProgramAccess::Unrestricted,
             deny_exec_in_writable: default_deny_exec_in_writable(),
