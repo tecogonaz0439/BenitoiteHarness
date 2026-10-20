@@ -49,8 +49,8 @@ finish() {
             printf '  %s\n' "${skipped_tests[@]}"
         fi
         printf '  linux: container tests for %s\n' "${linux_targets[@]}"
-        printf '  skill-eval: http_client (loopback listening is blocked in the Codex sandbox)\n'
-        printf '  skill-eval: benitoiteh-mock and benitoiteh-mock-completion-check passes (needs loopback and the benitoiteh sandbox outside Codex)\n'
+        printf '  skill-eval: requires_sandbox tests (individual names above), test_judge_sandbox.RuntimeTests OS tests, all Benitoite/compaction self-test and dry-run passes (needs sandbox-exec outside Codex)\n'
+        printf '  skill-eval: benitoiteh-mock, benitoiteh-mock-completion-check and benitoiteh-mock-compact passes (needs loopback and the benitoiteh sandbox outside Codex)\n'
     fi
     if ((${#aarch64_skipped[@]} != 0)); then
         printf '\nNot run on aarch64-unknown-linux-musl:\n'
@@ -150,26 +150,62 @@ skill_eval_python() {
     env HOME="$skill_eval_work/home" XDG_CONFIG_HOME="$skill_eval_work/config" \
         XDG_STATE_HOME="$skill_eval_work/state" TMPDIR="$skill_eval_work/tmp" python3 -I "$@"
 }
-skill_eval_python -m unittest discover -s tools/skill-eval -p 'test_*.py'
-skill_eval_args=()
 if "$inside_codex"; then
-    # Codex のサンドボックスではループバックの待ち受けができない（実装プラン P5-01）。
-    for task_file in tools/skill-eval/tasks/*/task.json; do
-        task_name=${task_file%/task.json}
-        task_name=${task_name##*/}
-        if [[ "$task_name" != http_client ]]; then
-            skill_eval_args+=(--task "$task_name")
-        fi
-    done
+    BENITOITEH_SKILL_EVAL_JUDGE_SANDBOX=0 BENITOITEH_SKILL_EVAL_STAGED_E2E=0 skill_eval_python -m unittest discover -v -s tools/skill-eval -p 'test_*.py'
+else
+    skill_eval_binary="$target_dir/debug/benitoiteh"
+    if [[ "$skill_eval_binary" != /* ]]; then
+        skill_eval_binary="$repo_root/$skill_eval_binary"
+    fi
+    BENITOITEH_SKILL_EVAL_JUDGE_SANDBOX=1 BENITOITEH_SKILL_EVAL_STAGED_E2E=1 BENITOITEH_SKILL_EVAL_BINARY="$skill_eval_binary" \
+        skill_eval_python -m unittest discover -s tools/skill-eval -p 'test_*.py'
 fi
-skill_eval_python tools/skill-eval/skill_eval.py --self-test --benitoite "$BENITOITEH_TEST_BENITOITE" \
-    ${skill_eval_args[@]+"${skill_eval_args[@]}"}
-skill_eval_python tools/skill-eval/skill_eval.py --dry-run --benitoite "$BENITOITEH_TEST_BENITOITE" \
-    --work-root "$skill_eval_work" ${skill_eval_args[@]+"${skill_eval_args[@]}"}
-warning_count=$(awk '/^\| W[0-9][0-9][0-9][0-9] \|/ { count++ } END { print count+0 }' "$skill_eval_work/record.md")
-if [[ "$warning_count" != 5 ]]; then
-    printf 'Expected 5 warning rows in the skill-eval record, found %s.\n' "$warning_count" >&2
-    exit 1
+skill_eval_args=()
+compaction_tasks=0
+for task_file in tools/skill-eval/tasks/*/task.json; do
+    task_name=${task_file%/task.json}
+    task_name=${task_name##*/}
+    kind=$(skill_eval_python -c 'import json,sys; print(json.load(open(sys.argv[1])).get("kind", "run"))' "$task_file")
+    if [[ "$kind" == staged ]]; then
+        compaction_tasks=$((compaction_tasks + 1))
+    elif [[ "$kind" != normal ]]; then
+        skill_eval_args+=(--task "$task_name")
+    fi
+done
+if ! "$inside_codex"; then
+    skill_eval_python tools/skill-eval/skill_eval.py --self-test --benitoite "$BENITOITEH_TEST_BENITOITE" \
+        ${skill_eval_args[@]+"${skill_eval_args[@]}"}
+    skill_eval_python tools/skill-eval/skill_eval.py --dry-run --benitoite "$BENITOITEH_TEST_BENITOITE" \
+        --work-root "$skill_eval_work" ${skill_eval_args[@]+"${skill_eval_args[@]}"}
+    warning_count=$(awk '/^\| W[0-9][0-9][0-9][0-9] \|/ { count++ } END { print count+0 }' "$skill_eval_work/record.md")
+    if [[ "$warning_count" != 5 ]]; then
+        printf 'Expected 5 warning rows in the skill-eval record, found %s.\n' "$warning_count" >&2
+        exit 1
+    fi
+fi
+if ((compaction_tasks == 0)); then
+    printf 'skill-eval compaction: 課題未作成（P5-33）。self-test・dry-run・模擬の通しを除外。Python の一時的な課題のテストは実行済み。\n'
+elif ! "$inside_codex"; then
+    skill_eval_python tools/skill-eval/skill_eval.py --self-test --suite compaction \
+        --benitoite "$BENITOITEH_TEST_BENITOITE"
+    skill_eval_python tools/skill-eval/skill_eval.py --dry-run --suite compaction \
+        --benitoite "$BENITOITEH_TEST_BENITOITE" --work-root "$skill_eval_work/compaction-dry"
+    skill_eval_python tools/skill-eval/skill_eval.py --harness benitoiteh-mock-compact --suite compaction \
+        --benitoite "$BENITOITEH_TEST_BENITOITE" --benitoiteh "$target_dir/debug/benitoiteh" \
+        --work-root "$skill_eval_work/compaction" --record "$skill_eval_work/compaction-record.md"
+    skill_eval_python - "$skill_eval_work/compaction-record.jsonl" "$compaction_tasks" <<'EOF'
+import json
+import sys
+
+with open(sys.argv[1], encoding='utf-8') as f:
+    rows = [json.loads(line) for line in f if line.strip()]
+if (len(rows) != int(sys.argv[2]) or any(row.get('success') is not True or row.get('end') != 'completed'
+        or row.get('exec_launches') != 3 or len(row.get('stages', [])) != 3
+        or row.get('compaction_records_match') is not True or row.get('compactions', 0) <= 0
+        or row.get('mock_summary_requests', 0) < row.get('compactions', 0)
+        or row.get('cost_usd') != 0 for row in rows)):
+    raise SystemExit('Expected successful three-stage mock trials with matching compaction records and zero cost.')
+EOF
 fi
 if ! "$inside_codex"; then
     skill_eval_python tools/skill-eval/skill_eval.py --harness benitoiteh-mock \
