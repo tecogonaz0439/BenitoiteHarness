@@ -9,7 +9,7 @@
 3. オーケストレータが作業ごとのブランチと git worktree を用意し、その worktree で `cargo fetch` を実行して依存を取得してから Codex へ依頼する。Codex 内の検査は取得済みの依存を使う。
 4. Codex の報告を受け、オーケストレータがサンドボックスの外で `scripts/check.sh` の全体を走らせる。失敗は出力と終了状態を添えて同じ作業のセッションへ返す。
 5. Claude Code が変更をレビューする。レビューに Codex を使わない。修正を依頼した場合は、その修正に応じて検査とレビューをやり直す。
-6. 取り込む直前に、対象の変更に対する検査の出力と終了状態を読み、終了状態 0 を確かめる。失敗の記録を成功に書き換えない。コミットと `main` への `git merge --no-ff` は [git-workflow](../../.claude/skills/git-workflow/SKILL.md)に従う。
+6. 取り込む直前に、対象の変更に対する検査の出力と終了状態を読み、終了状態 0 を確かめる。失敗の記録を成功に書き換えない。コミットと `gamou` への `git merge --no-ff` は [git-workflow](../../.claude/skills/git-workflow/SKILL.md)に従う。
 7. 確かめた結果を Codex に設計書と実装プランへ反映させ、Claude Code が点検して取り込む。依存を足した場合は、実行ファイルの大きさの変化を測り、`docs/plan/results/` に記録させる。
 8. 取り込んだ内容で release の実行ファイルを作り直す（`cargo build --release -p benitoiteh`）。
 

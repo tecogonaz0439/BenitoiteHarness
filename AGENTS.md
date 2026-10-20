@@ -65,7 +65,7 @@ Benitoite のプロジェクトは改造の途中であることが多い。処�
 | `docs/plan/results/` | 実装プランの作業で確かめた結果 | 作業の文書から参照する |
 | `assets/benitoite/` | Benitoite のリリースから取り込んだ文書（同梱の Agent Skill など） | 手で直さない。取り込み直すときは「Benitoite の処理系と事前検討の参照」に従う |
 | `tools/` | 評価と測定の道具 | LLM を呼ぶ評価は設計者の了承を得てから行う |
-| `.claude/skills/` | 公開のプロジェクト固有のスキル（`git-workflow`、`test-audit`）と、非公開のスキルへのシンボリックリンク（あれば） | 公開のスキルはここに実体を置き、`.agents/skills/` から相対のシンボリックリンクで指す。非公開のスキルとそのリンクは git で追跡しない |
+| `.claude/skills/` | 公開のプロジェクト固有のスキル（`git-workflow`、`test-audit`、`archive-and-bundle`）と、非公開のスキルへのシンボリックリンク（あれば） | 公開のスキルはここに実体を置き、`.agents/skills/` から相対のシンボリックリンクで指す。非公開のスキルとそのリンクは git で追跡しない |
 
 ## 設計書の規約
 
@@ -145,7 +145,8 @@ Benitoite のプロジェクトは改造の途中であることが多い。処�
 
 ## Git の運用
 
-- 既定のブランチは `main` とする。作業は作業用のブランチで行い、`main` に `git merge --no-ff` で取り込む。
+- 既定のブランチは `gamou` とする。コードネームは香川県内の老舗のうどん店にちなむ。処理系の `san_benito` がベニトアイトの産地にちなむのと対になる命名であり、2026-10-21 に設計者が決めた。
+- 作業は作業用のブランチで行い、`gamou` に `git merge --no-ff` で取り込む。
 - コミット時はスキル `git-workflow`（`.claude/skills/git-workflow/SKILL.md`）に従う。
 - push は設計者の指示を得てから行う。リモートは GitHub の公開のリポジトリ（`tecogonaz0439/BenitoiteHarness`）である。秘密の情報（API キー、トークン、個人の設定）と、LLM とのやり取りの生の記録をコミットしない。ただし、設計者が取り込むと決めた外部のレビューの依頼と結果は、参考資料として `docs/design/08-appendix/reviews/` に置く（秘密の情報を含まないことを確かめてから）。
 
@@ -172,6 +173,7 @@ Benitoite のプロジェクトは改造の途中であることが多い。処�
 
 ## Agent Skills の運用
 
+- ソースのアーカイブ、公開対象外の `private/` の zip、ブランチとタグの bundle は、スキル `archive-and-bundle`（`.claude/skills/archive-and-bundle/`）で `work/` に作る。既存の出力は上書きせず、アーカイブと bundle、その保存の記録は片付けで消さない。
 - 公開の共通手順は [実装作業の共通依頼文](docs/workflow/implementation-request.md)と [作業の進め方](docs/plan/00-common.md)に従う。担当の割り当てなどの補足は、非公開の運用の補足（あれば）に従う。
 - 公開のプロジェクト固有のスキルの実体は `.claude/skills/<スキル名>/` に置く。
 - 公開のスキルを新しく作成したら、`.agents/skills/<スキル名>` に実体を指すシンボリックリンクを作成する。相対パスで作成する（例: `ln -s ../../.claude/skills/<スキル名> .agents/skills/<スキル名>`）。

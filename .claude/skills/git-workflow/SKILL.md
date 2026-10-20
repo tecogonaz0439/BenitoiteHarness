@@ -7,13 +7,13 @@ description: このリポジトリで git のコミットを作成するとき�
 
 ## ブランチ
 
-- 既定のブランチは `main` とする。公開のリポジトリ（GitHub の `tecogonaz0439/BenitoiteHarness`）に push するのは `main` と、リリースのタグだけである。
-- 作業は作業用のブランチ（例: `design/initial`、`impl/P1-provider`）で行い、`main` に `git merge --no-ff` で取り込む。
+- 既定のブランチは `gamou` とする。公開のリポジトリ（GitHub の `tecogonaz0439/BenitoiteHarness`）に push するのは `gamou` と、リリースのタグだけである。
+- 作業は作業用のブランチ（例: `design/initial`、`impl/P1-provider`）で行い、`gamou` に `git merge --no-ff` で取り込む。
 - push は設計者の指示を得てから行う。
 
 ## コミットメッセージ
 
-`main` の履歴に入るコミットは、次の形で書く。作業用のブランチで作り、`main` に取り込むコミットも同じ形で書く。
+`gamou` の履歴に入るコミットは、次の形で書く。作業用のブランチで作り、`gamou` に取り込むコミットも同じ形で書く。
 
 1. 1 行目に、変更の要約を英語だけで書く。
 2. 空行の後に、変更内容を英語の箇条書き（`- `）で列挙する。

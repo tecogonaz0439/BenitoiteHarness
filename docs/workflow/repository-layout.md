@@ -16,7 +16,8 @@
 | `Cargo.toml`・`Cargo.lock`・`deny.toml`・`rust-toolchain.toml` | 同名 | 維持。コードとビルドの設定は変えない |
 | `.gitignore` | 同名 | 非公開の運用文書とスキル、スキルへのリンクを除く規則を加えた。未決事項を移す判断は行わず、`docs/todo/` は新設しない |
 | `.cargo/` | 同名 | 維持。ビルドと対象ごとの実行の設定は変えない |
-| `.claude/skills/`・`.agents/skills/` | 同名 | 公開の `git-workflow` と `test-audit` の配置とリンクを維持する。非公開のスキルは下記の配置へ分ける |
+| `.claude/skills/`・`.agents/skills/` | 同名 | 公開の `git-workflow` と `test-audit` の配置とリンクを維持し、`archive-and-bundle` とその相対のリンクを加える。非公開のスキルは下記の配置へ分ける |
+| `.claude/skills/archive-and-bundle/` | 同名（新設） | ソースの tar.gz・zip、`private/` の zip、ブランチとタグの bundle を `work/` に保存する。公開のブランチは `gamou` とし、タグがなければファイル名のタグの部分を省く |
 | `assets/` | `assets/benitoite/` | 維持。リリースから取り込んだ文書と版の管理を続ける |
 | `crates/`・`scripts/`・`tools/` | 同名 | 維持。プロジェクト固有の中身は処理系に合わせて移動しない |
 | `formal/`・`fuzz/` | なし | 今回は新設しない。対応する実装と検査の範囲を追加する決定は行わない |
