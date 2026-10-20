@@ -163,6 +163,7 @@ fn header(session: &Session) -> Record {
         system_prompt_sha256: "a".repeat(64),
         tools_sha256: "b".repeat(64),
         completion_check: None,
+        compaction: None,
         after_write_check: None,
         read_line_numbers: None,
         plugins: Vec::new(),
@@ -232,12 +233,14 @@ fn records_replay_conversation_losslessly_and_finish_with_summary() -> TestResul
     assert!(legacy.get("read_line_numbers").is_none());
     assert!(legacy.get("skills").is_none());
     assert!(legacy.get("completion_check").is_none());
+    assert!(legacy.get("compaction").is_none());
     let Record::Header(loaded) = serde_json::from_value(legacy)? else {
         return Err("header required".into());
     };
     assert_eq!(loaded.after_write_check, None);
     assert_eq!(loaded.read_line_numbers, None);
     assert_eq!(loaded.completion_check, None);
+    assert_eq!(loaded.compaction, None);
     assert!(loaded.skills.is_empty());
     let mut writer = session.writer()?;
     let mut summary_writer = session.writer()?;
@@ -327,6 +330,29 @@ fn records_replay_conversation_losslessly_and_finish_with_summary() -> TestResul
     assert_eq!(
         last,
         json!({"type":"summary", "turns":1, "compactions":0, "tool_calls":{"write":2}, "checks":2, "after_write_checks":0, "fixes":1, "approvals":{"approved":2,"denied":2,"cancelled":1,"policy_denied":0}, "tokens":{"input":100,"cache_read":20,"cache_write":3,"output":9}, "elapsed_ms":123,"reason":"completed"})
+    );
+    // 関門: 後の版の設定を持つセッションも、記録の読み手は既知の値を保って読める。
+    // 設定の読み手の未知の欄の拒否とは別の契約なので、実ファイルの記録で確かめる。
+    let (first, rest) = body.split_once('\n').ok_or("header line")?;
+    let mut future: serde_json::Value = serde_json::from_str(first)?;
+    future.as_object_mut().ok_or("header object")?.insert(
+        "compaction".into(),
+        json!({
+            "reserve_tokens":8192, "keep_tokens":8000, "summary_model":"future-model",
+        }),
+    );
+    fs::write(
+        session.directory().join("session.jsonl"),
+        format!("{future}\n{rest}"),
+    )?;
+    let records = read_records(session.directory())?;
+    let Some(Record::Header(loaded)) = records.first() else {
+        return Err("header required".into());
+    };
+    let compaction = loaded.compaction.ok_or("recorded compaction")?;
+    assert_eq!(
+        (compaction.reserve_tokens, compaction.keep_tokens),
+        (8192, 8000)
     );
     Ok(())
 }
@@ -436,6 +462,8 @@ fn replay_uses_last_compaction_as_its_conversation_base() -> TestResult {
         reason: Default::default(),
         summarized_items: 0,
         kept_items: 0,
+        usage: None,
+        kept_estimate: None,
     })?;
     let base = Conversation {
         items: vec![Item::AssistantTurn(response(&[call("turn-7-call-0")]))],
@@ -449,7 +477,7 @@ fn replay_uses_last_compaction_as_its_conversation_base() -> TestResult {
         json!({"type":"compaction", "node":3, "conversation":base})
     )?;
     assert!(read_records(session.directory())?.iter().any(|record| matches!(record,
-        Record::Compaction { reason: benitoiteh::session::CompactionReason::Threshold, summarized_items: 0, kept_items: 0, conversation, .. }
+        Record::Compaction { reason: benitoiteh::session::CompactionReason::Threshold, summarized_items: 0, kept_items: 0, usage: None, kept_estimate: None, conversation, .. }
             if *conversation == base)));
 
     let conversation = replay(session.directory())?;
@@ -1556,8 +1584,12 @@ fn replay_selects_only_the_path_and_its_reasoning_segments() -> TestResult {
         reason: Default::default(),
         summarized_items: 5,
         kept_items: 0,
+        usage: None,
+        kept_estimate: None,
     })?;
     writer.append(&Record::SessionStart {
+        compaction: None,
+        completion_check: None,
         session_id: session.id().to_string(),
         resumed: true,
         base_url: None,
@@ -1759,6 +1791,8 @@ fn fork_copies_the_whole_selected_path_and_only_its_assets() -> TestResult {
         },
     };
     let start = |hash: &str| Record::SessionStart {
+        compaction: None,
+        completion_check: None,
         session_id: source.id().to_string(),
         resumed: true,
         base_url: None,
@@ -1877,6 +1911,8 @@ fn fork_copies_the_whole_selected_path_and_only_its_assets() -> TestResult {
         reason: Default::default(),
         summarized_items: 4,
         kept_items: 2,
+        usage: None,
+        kept_estimate: None,
     })?;
     writer.append(&Record::ImagesRemoved {
         node: 9,
@@ -2260,6 +2296,8 @@ fn fork_rewrites_only_complete_spill_paths_owned_by_each_result() -> TestResult 
         reason: Default::default(),
         summarized_items: 2,
         kept_items: 1,
+        usage: None,
+        kept_estimate: None,
     })?;
     let copied = source
         .fork(

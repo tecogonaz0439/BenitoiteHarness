@@ -94,6 +94,7 @@ impl Fixture {
     }
     pub fn config(&self, server: &MockProvider) -> AgentConfig {
         AgentConfig {
+            compaction: Default::default(),
             agent: Default::default(),
             project_parent: None,
             allow_effects: None,
@@ -139,6 +140,7 @@ impl Fixture {
             system_prompt_sha256: "test".into(),
             tools_sha256: "test".into(),
             completion_check: None,
+            compaction: None,
             after_write_check: None,
             read_line_numbers: None,
             plugins: Vec::new(),

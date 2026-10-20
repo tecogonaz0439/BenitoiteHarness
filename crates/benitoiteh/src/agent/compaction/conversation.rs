@@ -79,7 +79,10 @@ pub(super) fn tail_start(
     keep_recent: bool,
     kind: AdapterKind,
 ) -> usize {
-    if !keep_recent || (kind == AdapterKind::AnthropicMessages && tool_sequence(conversation)) {
+    if budget == 0
+        || !keep_recent
+        || (kind == AdapterKind::AnthropicMessages && tool_sequence(conversation))
+    {
         return conversation.items.len();
     }
     let mut bytes = 0_u64;
@@ -104,26 +107,21 @@ pub(super) fn tail_start(
 }
 
 fn tool_sequence(conversation: &Conversation) -> bool {
-    for item in conversation.items.iter().rev() {
-        match item {
-            Item::AssistantTurn(turn) => {
-                return turn
-                    .parts
+    // 上限などで道具の結果の後に止まると、新しい依頼の後も thinking が必要になりうる。
+    // BH-036 を確かめるまでは、利用者の発言では区切らない（設計書 01-04「圧縮」）。
+    conversation
+        .items
+        .iter()
+        .rev()
+        .find_map(|item| match item {
+            Item::AssistantTurn(turn) => Some(
+                turn.parts
                     .iter()
-                    .any(|part| matches!(part, AssistantPart::ToolCall(_)));
-            }
-            Item::UserMessage(message)
-                if message
-                    .parts
-                    .iter()
-                    .any(|part| part.kind == UserPartKind::Request) =>
-            {
-                return false;
-            }
-            Item::UserMessage(_) | Item::ToolResult(_) => {}
-        }
-    }
-    false
+                    .any(|part| matches!(part, AssistantPart::ToolCall(_))),
+            ),
+            Item::UserMessage(_) | Item::ToolResult(_) => None,
+        })
+        .unwrap_or(false)
 }
 
 pub(super) fn first_request_count(conversation: &Conversation) -> usize {

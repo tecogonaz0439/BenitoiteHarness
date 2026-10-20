@@ -13,7 +13,7 @@ use std::fmt;
 use std::io::{self, Read};
 use std::path::{Path, PathBuf};
 
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
 use crate::cli::args::ExecArgs;
 use crate::provider::{AdapterKind, Capabilities, Destination, ReasoningReplay};
@@ -363,6 +363,25 @@ pub struct AgentBehaviorConfig {
     pub completion_check: bool,
 }
 
+/// 圧縮の予備と残す量。利用者だけが変更できる（設計書 01-04「圧縮の値を比べる設定」）。
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct CompactionConfig {
+    /// 出力の上限へ足す予備。加算は飽和させる。
+    pub reserve_tokens: u64,
+    /// 残す会話の目安。文脈の上限の 4 分の 1 までに抑える。
+    pub keep_tokens: u64,
+}
+
+impl Default for CompactionConfig {
+    fn default() -> Self {
+        Self {
+            reserve_tokens: 16_384,
+            keep_tokens: 20_000,
+        }
+    }
+}
+
 /// 利用者の設定。信頼しないプロジェクトの設定とは別の型にする。
 #[derive(Clone, Debug, Default, Deserialize)]
 #[serde(default, deny_unknown_fields)]
@@ -375,6 +394,7 @@ pub struct UserConfig {
     pub normal: NormalConfig,
     pub limits: Limits,
     pub agent: AgentBehaviorConfig,
+    pub compaction: CompactionConfig,
     pub web_fetch: WebFetchConfig,
     pub read: UserReadConfig,
     pub skills: UserSkillsConfig,
@@ -535,6 +555,7 @@ impl UserConfig {
                 max_run_tokens: args.max_run_tokens.or(self.limits.max_run_tokens),
             },
             agent: self.agent.clone(),
+            compaction: self.compaction,
             read: ReadConfig { exclude },
             read_line_numbers: self.read.line_numbers,
             skills: self.skills.clone(),
@@ -591,6 +612,7 @@ pub struct ResolvedExec {
     pub auth: Option<ProviderAuth>,
     pub limits: Limits,
     pub agent: AgentBehaviorConfig,
+    pub compaction: CompactionConfig,
     pub read: ReadConfig,
     pub read_line_numbers: bool,
     pub skills: UserSkillsConfig,

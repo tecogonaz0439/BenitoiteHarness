@@ -144,11 +144,20 @@ P0-04 で作った型: 方針の入力 `PolicyConfig`（`readable: ReadAccess`�
 
 ### 圧縮（P4-01）
 
-- `Agent::compact(instructions, cancelled, events) -> Result<CompactReport, AgentError>` と `Agent::compact_with_options(CompactOptions { reason, instructions, keep_recent }, ...)`。`CompactReport { outcome: CompactOutcome::{Compacted, NothingToCompact, Cancelled, Failed}, usage, estimate_before, estimate_after, summarized_items, kept_items }`。
-- `session::CompactionReason::{Threshold, Manual, Overflow}`（`agent` からも再公開）。`Record::Compaction { conversation, reason, summarized_items, kept_items }`、`AgentEvent::Compaction { reason, summarized_items, kept_items, estimate_before, estimate_after }`、`Summary.compactions`、`Summary::add_usage`。
+- `Agent::compact(instructions, cancelled, events) -> Result<CompactReport, AgentError>` と `Agent::compact_with_options(CompactOptions { reason, instructions, keep_recent }, ...)`。`CompactReport { outcome: CompactOutcome::{Compacted, NothingToCompact, Cancelled, Failed}, usage, estimate_before, estimate_after, summarized_items, kept_items, kept_estimate }`。
+- `session::CompactionReason::{Threshold, Manual, Overflow}`（`agent` からも再公開）。`Record::Compaction { conversation, reason, summarized_items, kept_items, usage, kept_estimate }`、`AgentEvent::Compaction { reason, summarized_items, kept_items, estimate_before, estimate_after, usage, kept_estimate }`、`Summary.compactions`、`Summary::add_usage`。
 - `UserPartKind::Summary`、`AgentError::Compaction`（`kind` は `compaction`）。
 - `session::FileHistory { read, modified }`（`add_call`、`from_records`）。
 - 推論を除く処理は `agent/compaction/conversation.rs` にある（P4-02 で共有の関数に切り出す）。
+
+### 圧縮の評価の設定と記録（P5-30）
+
+- `config::CompactionConfig { reserve_tokens: u64, keep_tokens: u64 }`。既定は 16,384 と 20,000。`UserConfig.compaction`・`ResolvedExec.compaction`・`AgentConfig.compaction` で渡す。利用者の設定だけで変更でき、`ProjectConfig` はこの欄を持たない。設定の未知の欄は拒む。再開では現在の利用者の設定を使う。
+- `session::RecordedCompaction { reserve_tokens: u64, keep_tokens: u64 }`。`From<CompactionConfig>` で実効値を写す。記録の未知の欄は無視し、設定の型の検査とは分ける。
+- `Header.compaction: Option<RecordedCompaction>`。最初の起動の値が既定と異なるときだけ書く。再開・フォークでヘッダの設定を更新しない。
+- `Record::SessionStart`・`AgentEvent::SessionStart` の `compaction: Option<RecordedCompaction>` と `completion_check: Option<bool>`。その段の実効値を、新しい記録とイベントには既定値でも `Some` で書く。再開・フォークからの起動も同じである。旧記録の欠落は `None` として読める。
+- `CompactReport.kept_estimate: u64`。残すと選んだ範囲の、再構築前の `item_bytes` の和を 3 で切り上げて割った値。`SameDestination` で推論を除く場合は、送る範囲の見積もりより多くなりうる。残す範囲がなければ 0。
+- `Record::Compaction`・`AgentEvent::Compaction` の `usage: Option<Usage>` と `kept_estimate: Option<u64>`。新しい圧縮では `Some` で書き、旧記録の欠落は `None` として読める。`usage` はその圧縮の要約の要求とやり直しの和であり、通常の集計へ加算済みなので再加算しない。前後の見積もり `estimate_before`・`estimate_after` はイベントだけに持つ。記録はイベントより先に追記し、`AgentEvent::Compaction` から記録を重ねて作らない。
 
 ### 再開とセッションの一覧（P4-02）
 

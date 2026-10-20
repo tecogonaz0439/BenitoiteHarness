@@ -92,6 +92,8 @@ fn every_untrusted_surface_emits_only_harness_controls() -> TestResult {
     screen.startup([attack.into()]);
     let events = [
         AgentEvent::SessionStart {
+            compaction: None,
+            completion_check: None,
             session_id: "id".into(),
             resumed: false,
             base_url: Some("https://user:DO_NOT_PRINT@host/path?DO_NOT_PRINT".into()),
@@ -299,6 +301,7 @@ impl Fixture {
         let directory = session.directory().to_owned();
         let spill = directory.join("spill");
         let config = AgentConfig {
+            compaction: Default::default(),
             agent: Default::default(),
             project_parent: None,
             allow_effects: None,

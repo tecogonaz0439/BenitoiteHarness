@@ -14,7 +14,7 @@ use benitoiteh::config::paths::DataPaths;
 use benitoiteh::config::writable::{
     WritableError, WritableRule, validate_writable, validate_writable_with_executable,
 };
-use benitoiteh::config::{Mode, ProjectConfig, UserConfig};
+use benitoiteh::config::{CompactionConfig, Mode, ProjectConfig, UserConfig};
 use benitoiteh::provider::{AdapterKind, ReasoningReplay};
 
 type TestResult = Result<(), Box<dyn Error>>;
@@ -703,6 +703,8 @@ fn evaluation_switches_are_user_only_and_preserve_read_exclusions() -> TestResul
         assert!(config.restricted.after_write_check);
         assert!(config.read.line_numbers);
         assert!(!config.agent.completion_check);
+        assert_eq!(config.compaction.reserve_tokens, 16_384);
+        assert_eq!(config.compaction.keep_tokens, 20_000);
     }
     let user = UserConfig::parse(
         "default_provider='p'\n[providers.p]\nkind='openai-chat'\nmodel='m'\n[agent]\ncompletion_check=true\n[restricted]\nafter_write_check=false\n[read]\nline_numbers=false\nexclude=['user.*']\n[skills]\nuser=false\nproject=false\n[plugins]\nuser=false\nproject=false",
@@ -721,11 +723,41 @@ fn evaluation_switches_are_user_only_and_preserve_read_exclusions() -> TestResul
     assert!(!resolved.skills.user && !resolved.skills.project);
     assert!(!resolved.plugins.user && !resolved.plugins.project);
     assert_eq!(resolved.read.exclude, ["user.*", "project.*"]);
+    // 両端と片方だけの指定も、設定の所有者で解決まで確かめる。
+    for (input, reserve_tokens, keep_tokens) in [
+        ("", 16_384, 20_000),
+        ("[compaction]\nreserve_tokens=0\nkeep_tokens=0", 0, 0),
+        (
+            "[compaction]\nreserve_tokens=18446744073709551615\nkeep_tokens=18446744073709551615",
+            u64::MAX,
+            u64::MAX,
+        ),
+        ("[compaction]\nreserve_tokens=8192", 8_192, 20_000),
+        ("[compaction]\nkeep_tokens=8000", 16_384, 8_000),
+    ] {
+        let user = UserConfig::parse(&format!(
+            "default_provider='p'\n[providers.p]\nkind='openai-chat'\nmodel='m'\n{input}"
+        ))?;
+        let resolved =
+            user.resolve_exec(&ExecArgs::parse(["request"])?, &loaded.config, &project_dir)?;
+        assert_eq!(
+            resolved.compaction,
+            CompactionConfig {
+                reserve_tokens,
+                keep_tokens
+            }
+        );
+    }
     for (input, field) in [
         ("[read]\nline_numbers=false", "line_numbers"),
         ("model='discarded'\n[agent]\ncompletion_check=true", "agent"),
         ("[restricted]\nafter_write_check=false", "restricted"),
         ("[skills]\nuser=false", "skills"),
+        (
+            "model='discarded'\n[compaction]\nreserve_tokens=0",
+            "compaction",
+        ),
+        ("[compaction]\nkeep_tokens=0", "compaction"),
         ("[plugins]\nuser=false", "plugins"),
     ] {
         fs::write(&path, input)?;
@@ -738,14 +770,33 @@ fn evaluation_switches_are_user_only_and_preserve_read_exclusions() -> TestResul
             format!("unknown configuration field `{field}`")
         );
     }
-    for input in [
-        "[agent]\ncompletion_check=1",
-        "[agent]\ncompletion_check='true'",
-        "[agent]\ncompletion_checks=true",
-        "[read]\nline_numbers=0",
-        "[restricted]\nafter_write_check='false'",
+    let invalid = "invalid configuration (values omitted)";
+    for (input, reason) in [
+        ("[compaction]\nreserve_tokens=true", invalid),
+        ("[compaction]\nkeep_tokens=false", invalid),
+        ("[compaction]\nreserve_tokens=-1", invalid),
+        ("[compaction]\nkeep_tokens=-1", invalid),
+        ("[compaction]\nreserve_tokens=18446744073709551616", invalid),
+        ("[compaction]\nkeep_tokens=18446744073709551616", invalid),
+        ("[compaction]\nkeep_tokens=1.5", invalid),
+        (
+            "[compaction]\nreserve_token=0",
+            "unknown configuration field `reserve_token`",
+        ),
+        ("[agent]\ncompletion_check=1", invalid),
+        ("[agent]\ncompletion_check='true'", invalid),
+        (
+            "[agent]\ncompletion_checks=true",
+            "unknown configuration field `completion_checks`",
+        ),
+        ("[read]\nline_numbers=0", invalid),
+        ("[restricted]\nafter_write_check='false'", invalid),
     ] {
-        assert!(UserConfig::parse(input).is_err());
+        let error = UserConfig::parse(input)
+            .err()
+            .ok_or("accepted invalid evaluation setting")?;
+        assert!(matches!(error, benitoiteh::config::ConfigError::Parse(_)));
+        assert_eq!(error.to_string(), reason, "{input}");
     }
     Ok(())
 }

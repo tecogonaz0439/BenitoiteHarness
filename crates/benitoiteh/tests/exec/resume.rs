@@ -229,7 +229,7 @@ fn all_turns_resume_forces_separate_compaction_and_stops_on_failure() -> TestRes
         fs::write(
             &config,
             format!(
-                "{text}\n[providers.other]\nkind='openai-chat'\nbase_url='{}'\nmodel='other-default'\ncapabilities = {{ reasoning_replay='all-turns', tool_choice_none=true }}\n",
+                "{text}\n[providers.other]\nkind='openai-chat'\nbase_url='{}'\nmodel='other-default'\ncapabilities = {{ reasoning_replay='all-turns', tool_choice_none=true }}\n[compaction]\nkeep_tokens=18446744073709551615\n",
                 server.base_url()
             ),
         )?;
@@ -260,6 +260,13 @@ fn all_turns_resume_forces_separate_compaction_and_stops_on_failure() -> TestRes
                     .iter()
                     .any(|e| e.get("reason") == Some(&json!("resume")))
             );
+            let event = events
+                .iter()
+                .find(|e| e.get("type") == Some(&json!("compaction")))
+                .ok_or("compaction event")?;
+            assert_eq!(event.get("kept_items"), Some(&json!(0)));
+            assert_eq!(event.get("kept_estimate"), Some(&json!(0)));
+            assert_eq!(event.pointer("/usage/input_tokens"), Some(&json!(10)));
             let body = requests.last().ok_or("new request")?.body.to_string();
             assert!(body.contains("<compacted_summary>") && body.contains("New request"));
             assert!(!body.contains("saved"));
@@ -720,13 +727,16 @@ fn completion_final_summary_resume_and_fork_preserve_environment_messages() -> T
         ResponseScript::sse(protocol.response(None, "resumed without prompt", false)),
         ResponseScript::sse(protocol.response(None, "new answer", false)),
         ResponseScript::sse(protocol.response(None, "new verified answer", false)),
+        ResponseScript::sse(protocol.response(None, "fork answer", false)),
     ])?;
     let f = Fixture::new(protocol, &server)?;
     let config = f.root.join("config/benitoiteh/config.toml");
     let original = fs::read_to_string(&config)?;
     fs::write(
         &config,
-        format!("{original}\n[agent]\ncompletion_check=true\n"),
+        format!(
+            "{original}\n[agent]\ncompletion_check=true\n[compaction]\nreserve_tokens=8192\nkeep_tokens=8000\n"
+        ),
     )?;
     let output = Running::start(&mut f.command("First request"))?.finish()?;
     assert!(
@@ -771,14 +781,20 @@ fn completion_final_summary_resume_and_fork_preserve_environment_messages() -> T
         ResumeState::read(copied.directory())?.conversation,
         ResumeState::read(&directory)?.conversation
     );
+    let copied_id = copied.id().to_string();
+    let copied_directory = copied.directory().to_owned();
+    drop(copied);
     drop(source);
-    for (enabled, turns, final_text) in [
-        (false, 1, "resumed without prompt"),
-        (true, 2, "new verified answer"),
+    // 関門: ヘッダを写す再開とフォークでも、その段の実効値をイベントと記録へ残す。
+    for (enabled, turns, final_text, reserve, keep) in [
+        (false, 1, "resumed without prompt", 16_384, 20_000),
+        (true, 2, "new verified answer", 4_000, 8_000),
     ] {
         fs::write(
             &config,
-            format!("{original}\n[agent]\ncompletion_check={enabled}\n"),
+            format!(
+                "{original}\n[agent]\ncompletion_check={enabled}\n[compaction]\nreserve_tokens={reserve}\nkeep_tokens={keep}\n"
+            ),
         )?;
         let output = Running::start(f.command("Next request").args([
             "--resume",
@@ -792,6 +808,15 @@ fn completion_final_summary_resume_and_fork_preserve_environment_messages() -> T
             String::from_utf8_lossy(&output.stderr)
         );
         let events = lines(&output.stdout)?;
+        let start = events
+            .iter()
+            .find(|event| event.get("type") == Some(&json!("session_start")))
+            .ok_or("session start event")?;
+        assert_eq!(start.get("completion_check"), Some(&json!(enabled)));
+        assert_eq!(
+            start.get("compaction"),
+            Some(&json!({"reserve_tokens":reserve, "keep_tokens":keep}))
+        );
         assert_eq!(
             events.last().and_then(|e| e.get("turns")),
             Some(&json!(turns))
@@ -807,6 +832,16 @@ fn completion_final_summary_resume_and_fork_preserve_environment_messages() -> T
             return Err("header".into());
         };
         assert_eq!(header.completion_check, Some(true));
+        let initial = header.compaction.ok_or("initial compaction setting")?;
+        assert_eq!((initial.reserve_tokens, initial.keep_tokens), (8192, 8000));
+        let start = records
+            .iter()
+            .rev()
+            .find(|record| matches!(record, Record::SessionStart { .. }))
+            .ok_or("session start record")?;
+        assert!(matches!(start, Record::SessionStart {
+            compaction: Some(compaction), completion_check: Some(check), ..
+        } if (compaction.reserve_tokens, compaction.keep_tokens) == (reserve, keep) && *check == enabled));
     }
     let state = ResumeState::read(&directory)?;
     let user_parts = state
@@ -837,6 +872,45 @@ fn completion_final_summary_resume_and_fork_preserve_environment_messages() -> T
             .to_string()
             .contains("initial answer")
     );
+    fs::write(
+        &config,
+        format!("{original}\n[compaction]\nreserve_tokens=0\nkeep_tokens=0\n"),
+    )?;
+    let output = Running::start(
+        f.command("Fork request")
+            .args(["--resume", &copied_id, "--json"]),
+    )?
+    .finish()?;
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let events = lines(&output.stdout)?;
+    let start = events
+        .iter()
+        .find(|event| event.get("type") == Some(&json!("session_start")))
+        .ok_or("fork session start event")?;
+    assert_eq!(start.get("completion_check"), Some(&json!(false)));
+    assert_eq!(
+        start.get("compaction"),
+        Some(&json!({"reserve_tokens":0,"keep_tokens":0}))
+    );
+    let records = benitoiteh::session::read_records(&copied_directory)?;
+    let Some(Record::Header(header)) = records.first() else {
+        return Err("fork header".into());
+    };
+    let initial = header.compaction.ok_or("initial fork setting")?;
+    assert_eq!((initial.reserve_tokens, initial.keep_tokens), (8192, 8000));
+    let start = records
+        .iter()
+        .rev()
+        .find(|record| matches!(record, Record::SessionStart { .. }))
+        .ok_or("fork session start record")?;
+    assert!(matches!(start, Record::SessionStart {
+        compaction: Some(compaction), completion_check: Some(false), ..
+    } if (compaction.reserve_tokens, compaction.keep_tokens) == (0, 0)));
+    assert_eq!(server.requests()?.len(), 6);
     server.shutdown()?;
     Ok(())
 }

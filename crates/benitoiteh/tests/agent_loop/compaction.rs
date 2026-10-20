@@ -160,7 +160,8 @@ fn without_cache(mut value: Value) -> Value {
 
 #[test]
 fn threshold_compacts_once_preserves_prefix_and_accounts_only_real_turns() -> TestResult {
-    for (kind, replay_reasoning) in [
+    // 関門: 同じ使用量でも設定で次の要求が変わる。既定・予備だけ・残す量だけを比較する。
+    let defaults = [
         (AdapterKind::OpenAiChat, ReasoningReplay::SameDestination),
         (AdapterKind::OpenAiChat, ReasoningReplay::AllTurns),
         (
@@ -171,9 +172,89 @@ fn threshold_compacts_once_preserves_prefix_and_accounts_only_real_turns() -> Te
             AdapterKind::AnthropicMessages,
             ReasoningReplay::SameDestination,
         ),
-    ] {
+    ]
+    .map(|(kind, replay)| (kind, replay, 16_384, 20_000, None, true));
+    let variants = [
+        (
+            AdapterKind::OpenAiChat,
+            ReasoningReplay::SameDestination,
+            16_384,
+            20_000,
+            Some(4_000),
+            true,
+        ),
+        (
+            AdapterKind::OpenAiChat,
+            ReasoningReplay::SameDestination,
+            0,
+            20_000,
+            Some(4_000),
+            false,
+        ),
+        (
+            AdapterKind::OpenAiChat,
+            ReasoningReplay::SameDestination,
+            u64::MAX,
+            20_000,
+            Some(4_000),
+            true,
+        ),
+        (
+            AdapterKind::OpenAiChat,
+            ReasoningReplay::SameDestination,
+            16_384,
+            0,
+            None,
+            true,
+        ),
+        // read の結果「     1\tsecond\n」は 14 バイトで、5 トークンに収まる。
+        // 呼び出しを含む 53 バイトは収まらないが、結果だけを残して分離しない。
+        (
+            AdapterKind::OpenAiChat,
+            ReasoningReplay::SameDestination,
+            16_384,
+            5,
+            None,
+            true,
+        ),
+        (
+            AdapterKind::OpenAiChat,
+            ReasoningReplay::SameDestination,
+            16_384,
+            u64::MAX,
+            None,
+            true,
+        ),
+        // Anthropic の道具の途中は、大きな設定でも残さない。
+        (
+            AdapterKind::AnthropicMessages,
+            ReasoningReplay::AllTurns,
+            16_384,
+            u64::MAX,
+            None,
+            true,
+        ),
+    ];
+    // 関門: 上限で道具の結果の後に止まると、新しい依頼の後も thinking が必要である。
+    // 既存の表は同じ依頼の途中だけなので、次の依頼へ移る行を足す。公開の入口だけを使う。
+    let cases = defaults
+        .into_iter()
+        .chain(variants)
+        .map(|case| (case, false))
+        .chain([(
+            (
+                AdapterKind::AnthropicMessages,
+                ReasoningReplay::SameDestination,
+                16_384,
+                u64::MAX,
+                None,
+                true,
+            ),
+            true,
+        )]);
+    for ((kind, replay_reasoning, reserve, keep, max_output, compacts), interrupted) in cases {
         let f = Fixture::new()?;
-        let mut server = MockProvider::start(vec![
+        let mut script = vec![
             response(
                 kind,
                 &"old".repeat(17_000),
@@ -186,7 +267,9 @@ fn threshold_compacts_once_preserves_prefix_and_accounts_only_real_turns() -> Te
                 Some(("read", json!({"path":"b.bnt"}))),
                 50_000,
             ),
-            response(
+        ];
+        if compacts {
+            script.push(response(
                 kind,
                 "private-summary",
                 Some((
@@ -194,20 +277,65 @@ fn threshold_compacts_once_preserves_prefix_and_accounts_only_real_turns() -> Te
                     json!({"path":"must-not-exist.bnt","content":"bad"}),
                 )),
                 1_000,
-            ),
-            response(kind, "Done.", None, 10),
-        ])?;
+            ));
+        }
+        script.push(response(kind, "Done.", None, 10));
+        let mut server = MockProvider::start(script)?;
         let mut config = f.config(&server, kind);
         config.capabilities = kind.official_capabilities().unwrap_or_default();
         config.capabilities.context_window = Some(60_000);
         config.capabilities.reasoning_replay = replay_reasoning;
+        config.compaction.reserve_tokens = reserve;
+        config.compaction.keep_tokens = keep;
+        if max_output.is_some() {
+            config.capabilities.max_output_tokens = max_output;
+        }
+        if interrupted {
+            config.limits.max_turns = 2;
+        }
         let (mut agent, directory) = f.agent(config)?;
+        if interrupted {
+            let (first, _) = complete(&mut agent)?;
+            assert_eq!(first.outcome, Outcome::Failed);
+            assert_eq!((first.summary.turns, first.summary.compactions), (2, 0));
+            assert!(matches!(
+                agent.conversation().items.last(),
+                Some(Item::ToolResult(_))
+            ));
+        }
         let (report, events) = complete(&mut agent)?;
         assert_eq!(report.outcome, Outcome::Completed);
-        assert_eq!((report.summary.turns, report.summary.compactions), (3, 1));
+        assert_eq!(
+            (report.summary.turns, report.summary.compactions),
+            (if interrupted { 1 } else { 3 }, u64::from(compacts))
+        );
+        if !compacts {
+            assert_eq!(
+                (report.summary.tokens.input, report.summary.tokens.output),
+                (50_020, 6)
+            );
+            assert!(
+                !events
+                    .iter()
+                    .any(|event| matches!(event, AgentEvent::Compaction { .. }))
+            );
+            let requests = server.requests()?;
+            assert_eq!(requests.len(), 3);
+            let next = requests
+                .last()
+                .ok_or("missing uncompressed request")?
+                .body
+                .to_string();
+            assert!(next.contains(&"old".repeat(100)));
+            assert!(next.contains("recent"));
+            assert!(!next.contains("<compacted_summary>"));
+            assert_eq!(replay(&directory)?, *agent.conversation());
+            server.shutdown()?;
+            continue;
+        }
         assert_eq!(
             (report.summary.tokens.input, report.summary.tokens.output),
-            (51_020, 8)
+            if interrupted { (1_010, 4) } else { (51_020, 8) }
         );
         assert!(!f.project.join("must-not-exist.bnt").exists());
         assert!(!events.iter().any(|event| matches!(event, AgentEvent::TextDelta { text, .. } | AgentEvent::ReasoningDelta { text, .. } if text.contains("private-summary"))));
@@ -216,17 +344,44 @@ fn threshold_compacts_once_preserves_prefix_and_accounts_only_real_turns() -> Te
                 .iter()
                 .filter(|event| matches!(event, AgentEvent::TurnStart { .. }))
                 .count(),
-            3
+            if interrupted { 1 } else { 3 }
         );
         let event = events
             .iter()
             .find(|event| matches!(event, AgentEvent::Compaction { .. }))
             .ok_or("missing compaction event")?;
-        let kept = if kind == AdapterKind::AnthropicMessages {
+        if interrupted {
+            let AgentEvent::Compaction { kept_items, .. } = event else {
+                return Err("missing compaction".into());
+            };
+            assert_eq!(
+                *kept_items, 0,
+                "new request must not end an unfinished Anthropic tool sequence"
+            );
+        }
+        let kept = if kind == AdapterKind::AnthropicMessages || keep <= 5 {
             0
         } else {
             2
         };
+        // recent(6) + 推論(17) + 引数(16) + 行番号付きの結果(14) = 53 バイト。
+        let kept_estimate = if kept == 0 { 0 } else { 18 };
+        assert!(matches!(event, AgentEvent::Compaction {
+            usage: Some(usage), kept_estimate: Some(estimate), summarized_items, ..
+        } if usage.input_tokens == Some(1_000) && usage.output_tokens == Some(2)
+            && *estimate == kept_estimate && *summarized_items == 5 + usize::from(interrupted) - kept));
+        let records = read_records(&directory)?;
+        assert!(
+            records
+                .iter()
+                .any(|record| matches!(record, Record::Compaction {
+            usage: Some(usage), kept_estimate: Some(estimate), kept_items, ..
+        } if usage.input_tokens == Some(1_000) && usage.output_tokens == Some(2)
+            && *estimate == kept_estimate && *kept_items == kept))
+        );
+        let encoded = serde_json::to_value(event)?;
+        assert_eq!(encoded.get("kept_estimate"), Some(&json!(kept_estimate)));
+        assert_eq!(encoded.pointer("/usage/input_tokens"), Some(&json!(1_000)));
         assert!(
             matches!(event, AgentEvent::Compaction { reason: CompactionReason::Threshold, kept_items, .. } if *kept_items == kept)
         );
@@ -258,7 +413,10 @@ fn threshold_compacts_once_preserves_prefix_and_accounts_only_real_turns() -> Te
         assert_eq!(summarizing.get("tools"), previous.get("tools"));
         if kind == AdapterKind::AnthropicMessages {
             assert_eq!(summarizing.get("tool_choice"), previous.get("tool_choice"));
-            assert_eq!(cache_positions(summarizing)?, [(2, 0), (5, 0)]);
+            assert_eq!(
+                cache_positions(summarizing)?,
+                [(2, 0), (if interrupted { 6 } else { 5 }, 0)]
+            );
             assert_eq!(cache_positions(next)?, [(0, 1)]);
         } else {
             assert_eq!(summarizing.get("tool_choice"), Some(&json!("none")));
@@ -267,9 +425,67 @@ fn threshold_compacts_once_preserves_prefix_and_accounts_only_real_turns() -> Te
         assert!(serialized.contains("<environment>"));
         assert!(serialized.contains("<compacted_summary>"));
         assert!(!serialized.contains(&"old".repeat(100)));
+        assert_eq!(serialized.contains("recent"), kept > 0);
+        let next_input = input(next)?;
+        if kind == AdapterKind::AnthropicMessages {
+            let last_assistant = next_input
+                .iter()
+                .rev()
+                .find(|message| message.get("role") == Some(&json!("assistant")));
+            assert!(last_assistant.is_none_or(|message| {
+                message
+                    .get("content")
+                    .and_then(Value::as_array)
+                    .is_some_and(|parts| {
+                        parts
+                            .iter()
+                            .any(|part| part.get("type") == Some(&json!("thinking")))
+                    })
+            }));
+        }
+        assert_eq!(
+            next_input
+                .iter()
+                .any(|message| message.get("role") == Some(&json!("tool"))
+                    || message.get("type") == Some(&json!("function_call_output"))),
+            kept > 0
+        );
+        if kept > 0 {
+            let call = next_input
+                .iter()
+                .find_map(|message| {
+                    if kind == AdapterKind::OpenAiChat {
+                        message.pointer("/tool_calls/0")
+                    } else {
+                        (message.get("type") == Some(&json!("function_call"))).then_some(message)
+                    }
+                })
+                .ok_or("retained tool call")?;
+            let result = next_input
+                .iter()
+                .find(|message| {
+                    message.get("role") == Some(&json!("tool"))
+                        || message.get("type") == Some(&json!("function_call_output"))
+                })
+                .ok_or("retained tool result")?;
+            let (call_key, result_key) = if kind == AdapterKind::OpenAiChat {
+                ("id", "tool_call_id")
+            } else {
+                ("call_id", "call_id")
+            };
+            assert_eq!(
+                call.get(call_key)
+                    .and_then(Value::as_str)
+                    .ok_or("call id")?,
+                result
+                    .get(result_key)
+                    .and_then(Value::as_str)
+                    .ok_or("result id")?
+            );
+        }
         assert_eq!(
             serialized.contains("private-reasoning"),
-            replay_reasoning == ReasoningReplay::AllTurns
+            kept > 0 && replay_reasoning == ReasoningReplay::AllTurns
         );
         if kind == AdapterKind::OpenAiResponses {
             for item in input(next)? {
@@ -448,7 +664,7 @@ fn separate_requests_omit_tools_and_neutralize_untrusted_content_and_file_names(
 
 #[test]
 fn manual_retention_merges_the_first_user_and_removes_only_required_reasoning() -> TestResult {
-    for (kind, reasoning) in [
+    let defaults = [
         (
             AdapterKind::AnthropicMessages,
             ReasoningReplay::SameDestination,
@@ -459,7 +675,44 @@ fn manual_retention_merges_the_first_user_and_removes_only_required_reasoning() 
         ),
         (AdapterKind::OpenAiChat, ReasoningReplay::SameDestination),
         (AdapterKind::OpenAiChat, ReasoningReplay::AllTurns),
-    ] {
+    ]
+    .map(|(kind, reasoning)| (kind, reasoning, 20_000, Some(60_000), 2, 17));
+    // 依頼の境の Anthropic は残せる。上限不明の手動圧縮も設定の量を使う。
+    let variants = [
+        (
+            AdapterKind::AnthropicMessages,
+            ReasoningReplay::SameDestination,
+            u64::MAX,
+            Some(60_000),
+            2,
+            17,
+        ),
+        (
+            AdapterKind::OpenAiChat,
+            ReasoningReplay::SameDestination,
+            0,
+            None,
+            0,
+            0,
+        ),
+        (
+            AdapterKind::OpenAiChat,
+            ReasoningReplay::SameDestination,
+            16,
+            None,
+            1,
+            8,
+        ),
+        (
+            AdapterKind::OpenAiChat,
+            ReasoningReplay::SameDestination,
+            17,
+            None,
+            2,
+            17,
+        ),
+    ];
+    for (kind, reasoning, keep, window, kept, estimate) in defaults.into_iter().chain(variants) {
         let f = Fixture::new()?;
         let mut server = MockProvider::start(vec![
             response(kind, &"old".repeat(24_000), None, 10),
@@ -470,7 +723,8 @@ fn manual_retention_merges_the_first_user_and_removes_only_required_reasoning() 
         let mut config = f.config(&server, kind);
         config.capabilities = kind.official_capabilities().unwrap_or_default();
         config.capabilities.reasoning_replay = reasoning;
-        config.capabilities.context_window = Some(60_000);
+        config.capabilities.context_window = window;
+        config.compaction.keep_tokens = keep;
         let (mut agent, directory) = f.agent(config)?;
         complete(&mut agent)?;
         complete(&mut agent)?;
@@ -482,20 +736,29 @@ fn manual_retention_merges_the_first_user_and_removes_only_required_reasoning() 
         )?;
         let events = receiver.into_iter().collect::<Vec<_>>();
         assert_eq!(report.outcome, CompactOutcome::Compacted);
-        assert_eq!((report.summarized_items, report.kept_items), (2, 2));
-        assert_eq!(events.len(), 1);
+        assert_eq!(
+            (report.summarized_items, report.kept_items),
+            (4 - kept, kept)
+        );
+        // 依頼(28) + recent(6) + 推論(17)。再構築後は SameDestination の推論を除く。
+        assert!(matches!(events.as_slice(), [AgentEvent::Compaction {
+            kept_estimate: Some(actual), ..
+        }] if *actual == estimate));
         let Some(Item::UserMessage(first)) = agent.conversation().items.first() else {
             return Err("missing first user".into());
         };
+        let mut parts = vec![UserPartKind::Environment, UserPartKind::Summary];
+        if kept == 2 {
+            parts.push(UserPartKind::Request);
+        }
         assert_eq!(
             first.parts.iter().map(|part| part.kind).collect::<Vec<_>>(),
-            [
-                UserPartKind::Environment,
-                UserPartKind::Summary,
-                UserPartKind::Request
-            ]
+            parts
         );
-        assert_eq!(agent.conversation().items.len(), 2);
+        assert_eq!(
+            agent.conversation().items.len(),
+            if kept > 0 { 2 } else { 1 }
+        );
         assert_eq!(replay(&directory)?, *agent.conversation());
         let (next_report, _) = complete(&mut agent)?;
         assert_eq!(next_report.summary.compactions, 0);
@@ -504,7 +767,7 @@ fn manual_retention_merges_the_first_user_and_removes_only_required_reasoning() 
         let text = body.to_string();
         assert_eq!(
             text.contains("private-reasoning"),
-            reasoning == ReasoningReplay::AllTurns
+            kept > 0 && reasoning == ReasoningReplay::AllTurns
         );
         if kind == AdapterKind::AnthropicMessages {
             assert!(!text.contains("redacted_thinking"));
@@ -529,7 +792,7 @@ fn overflow() -> Result<ResponseScript, io::Error> {
 #[test]
 fn overflow_uses_largest_input_shortens_utf8_drops_old_items_and_retries_same_turn_once()
 -> TestResult {
-    for overflow_again in [false, true] {
+    for (overflow_again, keep) in [(false, 20_000), (true, 20_000), (false, u64::MAX)] {
         let f = Fixture::new()?;
         fs::write(
             f.project.join("large.bnt"),
@@ -558,7 +821,9 @@ fn overflow_uses_largest_input_shortens_utf8_drops_old_items_and_retries_same_tu
             response(kind, "overflow summary", None, 1_000),
             last,
         ])?;
-        let (mut agent, directory) = f.agent(f.config(&server, kind))?;
+        let mut config = f.config(&server, kind);
+        config.compaction.keep_tokens = keep;
+        let (mut agent, directory) = f.agent(config)?;
         let (report, events) = complete(&mut agent)?;
         assert_eq!(
             report.outcome,
@@ -654,6 +919,15 @@ fn empty_text_or_overflow_in_continuation_falls_back_once_and_never_executes_too
                 Some(if summary_overflow { 20 } else { 40 })
             );
             assert_eq!(events.len(), 1);
+            let expected_input = if summary_overflow { 20 } else { 40 };
+            let expected_output = if summary_overflow { 2 } else { 4 };
+            assert_eq!(report.kept_estimate, 0);
+            assert!(events.iter().any(|event| matches!(event, AgentEvent::Compaction {
+                usage: Some(usage), kept_estimate: Some(0), ..
+            } if usage.input_tokens == Some(expected_input) && usage.output_tokens == Some(expected_output))));
+            assert!(read_records(&directory)?.iter().any(|record| matches!(record, Record::Compaction {
+                usage: Some(usage), kept_estimate: Some(0), ..
+            } if usage.input_tokens == Some(expected_input) && usage.output_tokens == Some(expected_output))));
             assert!(!f.project.join("forbidden.bnt").exists());
             assert!(compacted_text(&agent)?.contains("fallback-summary"));
             let requests = server.requests()?;
@@ -874,6 +1148,20 @@ fn summary_retries_identical_requests_and_counts_usage_toward_the_run_limit() ->
             .iter()
             .any(|event| matches!(event, AgentEvent::Error { kind, .. } if kind == "limit"))
     );
+    assert!(
+        events
+            .iter()
+            .any(|event| matches!(event, AgentEvent::Compaction {
+        usage: Some(usage), ..
+    } if usage.input_tokens == Some(1_000) && usage.output_tokens == Some(2)))
+    );
+    assert!(
+        read_records(&directory)?
+            .iter()
+            .any(|record| matches!(record, Record::Compaction {
+        usage: Some(usage), ..
+    } if usage.input_tokens == Some(1_000) && usage.output_tokens == Some(2)))
+    );
     let requests = server.requests()?;
     assert_eq!(requests.len(), 3);
     assert_eq!(
@@ -900,13 +1188,33 @@ fn manual_report_preserves_unreported_usage_and_reasoning_tokens() -> TestResult
     ])?;
     let (mut agent, directory) = f.agent(f.config(&server, kind))?;
     complete(&mut agent)?;
-    let (report, _) = compact(&mut agent, options(false))?;
+    let (report, events) = compact(&mut agent, options(false))?;
     assert_eq!(report.outcome, CompactOutcome::Compacted);
     assert_eq!(report.usage.input_tokens, None);
     assert_eq!(report.usage.cache_read_tokens, None);
     assert_eq!(report.usage.cache_write_tokens, None);
     assert_eq!(report.usage.output_tokens, Some(9));
     assert_eq!(report.usage.reasoning_tokens, Some(4));
+    let expected = benitoiteh::provider::Usage {
+        output_tokens: Some(9),
+        reasoning_tokens: Some(4),
+        raw: json!([{ "completion_tokens":9,"completion_tokens_details":{"reasoning_tokens":4}}]),
+        ..Default::default()
+    };
+    assert!(
+        events
+            .iter()
+            .any(|event| matches!(event, AgentEvent::Compaction {
+        usage: Some(usage), kept_estimate: Some(0), ..
+    } if *usage == expected))
+    );
+    assert!(
+        read_records(&directory)?
+            .iter()
+            .any(|record| matches!(record, Record::Compaction {
+        usage: Some(usage), kept_estimate: Some(0), ..
+    } if *usage == expected))
+    );
     assert_eq!(replay(&directory)?, *agent.conversation());
     server.shutdown()?;
     Ok(())

@@ -82,6 +82,7 @@ impl Fixture {
 
     fn config(&self, server: &MockProvider, kind: AdapterKind) -> AgentConfig {
         AgentConfig {
+            compaction: Default::default(),
             agent: Default::default(),
             project_parent: None,
             allow_effects: None,
