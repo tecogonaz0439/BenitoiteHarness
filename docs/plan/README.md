@@ -83,6 +83,7 @@
 | [P5-21](tasks/P5-21-chatgpt-login.md) | Sign in with ChatGPT のログイン・保存・更新・ログアウト（ID トークンの検証、BH-114） | P5-18 | 完了 |
 | [P5-22](tasks/P5-22-chatgpt-requests.md) | Sign in with ChatGPT の要求（`auth = "chatgpt"` の提供者） | P5-21 | 完了 |
 | [P5-23](tasks/P5-23-plugin-skills.md) | Agent Plugins のプラグインの Skill を読む（MCP は読まない） | P5-18 | 完了 |
+| [P5-24](tasks/P5-24-plugin-skill-followups.md) | プラグインの Skill の上限の残り（示す文の大きさ、候補の上限で飛ばした名前、上限のテスト） | P5-23 | 未着手 |
 
 P1 の作業は P0-04・P0-05（OS のサンドボックス）の結果に依らないので、P0-04・P0-05 が設計者の判断を待つ間に先に進めてよい。
 
