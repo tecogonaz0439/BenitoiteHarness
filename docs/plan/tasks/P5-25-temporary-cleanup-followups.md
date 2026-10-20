@@ -1,0 +1,94 @@
+# P5-25 一時ディレクトリとセッションの削除の残り
+
+## 目的
+
+2026-10-20 の点検で見つかった、一時ディレクトリとセッションのディレクトリの削除の問題を直す。深い入れ子で記述子が尽きること、子プロセスが変えた権限と印で再開と掃除が止まること、セッションの削除の途中の失敗で半端なセッションが残ること、足した書ける場所が一時ディレクトリの根を含みうること、ほかのデータの置き場所の一時ディレクトリを消しうることの五つである。この作業で本物の LLM の提供者を呼ばない。
+
+## 読む設計書
+
+- [セッション](../../design/01-agent/01-05-sessions.md)の「一時ディレクトリ」「記録を残す期間」「再開」
+- [OS のサンドボックス](../../design/03-safety/03-02-sandbox.md)の「書ける場所の検査」
+- 既存のもの: `crates/benitoiteh/src/session/mod.rs`（`Session::open`、`cleanup`、`inactive_lock`）、`src/session/remove.rs`、`src/session/scan.rs`、`src/session/quota.rs`、`src/session/text.rs`、`src/config/writable.rs`、`src/cli/exec.rs`（起動の流れ）、`src/cli/doctor/mod.rs`、`tests/session.rs`、`tests/support/temporary_cleanup.rs`
+
+## 作るもの
+
+### 1. 開いたままにする記述子を 32 段までにする
+
+設計書 01-05「一時ディレクトリ」の 32 段の【方針】を、`session/remove.rs` の削除に入れる。32 段より深い段に入るときは浅い段の記述子を閉じて (dev, ino) を覚え、閉じた段へ戻るときは子の段の記述子から `..` を開いて (dev, ino) を確かめる。一致しなければ誤りとして止める。
+
+### 2. 権限と印を変えられた一時ディレクトリ
+
+- 再開のとき（`Session::open`）、残った `benitoiteh-<ID>` が自分の持ち物のディレクトリなら、権限によらず墓標の名前（`benitoiteh-<ID>.removing-<乱数>`）に替えて消す。消せなければ、そのことを起動の知らせに出して続ける。
+- 名前を替えられないとき（`EPERM`。macOS の `uchg`）は、`benitoiteh-<ID>.<n>`（`n` は 1〜9）で新しい一時ディレクトリを作って使い、残ったディレクトリのパスと `chflags -R nouchg <パス>` を示す（Linux では印を外すコマンドを示さず、残ったパスだけを示す）。9 個とも使えなければ、今と同じ誤りで止める。
+- 起動の検査と以後の処理は、セッションが実際に使う一時ディレクトリ（代わりの名前のときはそれ）を使う。
+- 起動のときの掃除は、自分の持ち物で、記録があり錠を取れたものなら、0700 でなくなった一時ディレクトリも消し、消したことを示す。
+
+### 3. セッションの削除を墓標の名前から始める
+
+設計書 01-05「記録を残す期間」の【方針】のとおり、期間を過ぎたセッションは、錠を掛けたまま `sessions/.removing-<ID>-<乱数>` に名前を替えてから消す。墓標は ID での再開・一覧・`--continue` の対象にせず、大きさの合計には数え、掃除は期間によらず消す（錠を取れないものは残す）。
+
+### 4. 足した書ける場所と一時ディレクトリの根
+
+設計書 03-02「書ける場所の検査」の【決定】のとおり、`normal.writable_roots` の場所が一時ディレクトリの根（`TMPDIR`、なければ `/tmp`）か、その祖先なら、起動を断る。`doctor` も同じ誤りを示す。
+
+### 5. 記録と錠のある一時ディレクトリだけを消す
+
+設計書 01-05「一時ディレクトリ」の【方針】のとおり、掃除で消す一時ディレクトリは、このデータの置き場所に記録があり、錠を取れたものだけとする。記録のないものは残す。期間を過ぎたセッションを消すときは、錠を掛けたまま、先にその一時ディレクトリを墓標の名前に替えて消す。
+
+### 6. 移された守る名前のディレクトリ（設計書だけ）
+
+設計書 01-05「一時ディレクトリ」に、一時ディレクトリへ移された `.git` なども消す理由を書いた（2026-10-20）。コードとテストは変えない。
+
+## テスト
+
+- (a) 深い入れ子（項目 1）: 記述子の上限を 64 にした子のプロセスで、深さ 750 の入れ子を消せることを確かめる。加えて、閉じた段へ戻るときに戻った先が差し替わっていれば誤りで止まり、差し替えた先の中身を消さないことを確かめる。
+- (b) 権限（項目 2）: 残った一時ディレクトリを 0755 にしてから再開でき、新しい一時ディレクトリが 0700 であること。中に消せないディレクトリ（0000）を残したまま再開でき、知らせが出て、権限を戻した後の掃除で墓標が消えること。
+- (c) 印（項目 2、macOS だけ）: 残った一時ディレクトリに `uchg` を付けてから再開すると、`benitoiteh-<ID>.1` を使い、知らせに `chflags -R nouchg` とパスが出ること。
+- (d) 掃除（項目 2）: 止まったセッションの 0700 でない一時ディレクトリが消え、消したことが示されること。
+- (e) 墓標（項目 3）: 期間を過ぎたセッションの中に消せないディレクトリを置いて掃除すると、そのセッションが ID で開けず、一覧に出ず、大きさの合計に数えられ、権限を戻した後の掃除で消えること。
+- (f) 書ける場所（項目 4）: 根そのもの、根の祖先は断り、根の下の場所は通ること。
+- (g) ほかのデータの置き場所（項目 5）: 同じ一時ディレクトリの根を使う二つのデータの置き場所で、片方の掃除が、もう片方の動いているセッションの一時ディレクトリを消さないこと。記録のない一時ディレクトリが残ること。
+
+## 完了条件
+
+- `scripts/check.sh --inside-codex` が通る（`BENITOITEH_TEST_BENITOITE` を設定して）。
+- 完了の報告に、再開と掃除の知らせの文の例を書く。
+
+## 補足（2026-10-20、始める前の点検）
+
+本節は、上の各節に優先する。行の番号は `main`（`564a32c`）の `crates/benitoiteh/` からの相対である。
+
+1. **記述子の段（項目 1）**:
+   - 今の箇所: `src/session/remove.rs` の `Removal`（41-47。`stack: Vec<(Dir, CString)>`）、段を積む箇所（51-52 の根、88-89 の子）、`EMFILE` をそのまま誤りにする箇所（94-95）、`Step::Finish`（101-114）。
+   - 直し: 段ごとに、名前、(dev, ino)、開いていれば `Dir` を持つ形にする（例 `Level { dir: Option<Dir>, name: CString, identity: (u64, u64) }`）。開いた `Dir` が 32 を超えるときは、最も浅い開いた段の `Dir` を閉じる。`Step::Finish` で子の段を外すとき、親の段が閉じていれば、子の段の記述子から `openat(child, "..", RDONLY | DIRECTORY | NOFOLLOW | CLOEXEC)` で開き、`fstat` の (dev, ino) が覚えた値と一致することを確かめてから `Dir` を作り直して親の段に入れ、それから子を `unlinkat` する。一致しなければ `io::ErrorKind::InvalidData` などの誤りを返す。
+   - 開き直した `Dir` は一覧を初めから読み直す。消し終えた項目は既にないので、読み直しで同じ項目を二度消すことはない。根の段の `lock`・`session.jsonl` を飛ばす判定（76-79 の `self.stack.len() == 1`）は、段の数で行っているので、閉じた段も数に含める形を保つ。
+   - 今のテスト: `tests/session.rs` の `deep_cleanup_and_session_drop_do_not_depend_on_thread_stack_depth`（1065-1146）は、`NOFILE=64`・深さ 750 で `EMFILE` の失敗が 2 件出ることを期待している（1124-1131）。失敗が出ず、ディレクトリが消えることを期待する形に改める。深さ 750 のパスは PATH_MAX を超えるので、入れ子は今のテストと同じく `mkdirat` を連ねて作る。上限は、今と同じく `--exact` で起動した子のテストのプロセスで `setrlimit` する。
+   - 差し替えの試し: `remove.rs` の単体のテスト（185-244 の、`Removal::advance` を一歩ずつ進める形）に倣う。深さ 40 の入れ子を作り、浅い段（例えば 5 段目、32 段の窓の外）の子のディレクトリを、`Step::Finish` に至る前に入れ子の外の別のディレクトリ（中に `keep` を置く）へ `rename` する。戻るときに誤りになり、`keep` が残ることを確かめる。
+2. **再開のときの残り（項目 2）**:
+   - 今の箇所: `src/session/mod.rs` の `Session::open` の 176-187。0700 なら `remove::directory(&temporary)?`（178。失敗で再開が止まる）、0700 でなければ `UNSAFE_PATH`（179）。
+   - 直し: 自分の持ち物のディレクトリ（リンクでない）なら、権限によらず、一時ディレクトリの根を開いた記述子で `renameat` して墓標の名前に替え、`remove::directory_at(&root, 墓標, false)` で消す。消す誤りは知らせにして続ける。持ち主が違うものとリンクは、今どおり `UNSAFE_PATH` とする。`renameat` が `EPERM` なら、`benitoiteh-<ID>.1` から順に、0700 で作れる名前を探す（`EEXIST` で自分の持ち物なら、同じく墓標に替えて消してから作る。替えられなければ次の番号）。乱数は `getrandom` の 8 バイトを 16 桁の 16 進にする。
+   - 知らせの受け渡し: `Session` に、開いたときの知らせを返す口（例 `pub fn startup_notices(&self) -> &[String]`）を足し、`cli/exec.rs` が `diagnostics` に入れる（414-416 の再開の知らせの並び）。`docs/plan/10-interfaces.md` の `session` の項（155 行の `Session::open` の行）に、足した口を書く。文は `session/text.rs` に置く（例 `Could not remove the previous temporary directory {path}: {reason}` と、macOS の `EPERM` のとき `Run chflags -R nouchg {path} and retry.` を添える）。パスは `crate::benitoite::display::one_line` を通す。
+   - `cli/exec.rs` の 350-352 は `paths.temporary_dir(id)` で書ける場所の検査をしている。再開のとき（`opened` が `Some`）は `opened` の `temporary_dir()` を使う。361 の検査と 429-430 の正規化は、そのまま `session.temporary_dir()` を使う。
+   - `--continue`（`src/session/scan.rs` の `continue_session`、199-215）は、`Session::open` の誤りを黙って飛ばす。項目 2 で 0700 でないものが誤りでなくなるので、ここは変えなくてよい。
+   - `benitoiteh` は `uchg` を外さない（`unsafe` を書かずに使える口を、使うクレートに見つけられなかった）。
+3. **掃除の名前と条件（項目 2、3、5）**:
+   - 今の箇所: `cleanup`（`src/session/mod.rs` の 329-508）。一時の根の項目の名前の判定は 412-427、権限の確かめは 433-435（0700 でなければ黙って残す）、錠の判定は 442-448、一時ディレクトリの削除は 470、期間を過ぎたセッションの削除は 471-478。
+   - 一時の根で認める名前は、`benitoiteh-<ID>`、`benitoiteh-<ID>.<n>`（`n` は 1〜9）、`benitoiteh-<ID>.removing-<16 桁の 16 進>` の三つとする。名前から ID と種類を返す小さな関数にまとめ、単体のテストを置く。askpass の親の下の項目（`askpass` が真の段）は、この作業では変えない（P5-26 で `id` のファイルを扱う）。
+   - 一時ディレクトリ（askpass でないもの）の条件: リンクでないディレクトリで、持ち主が自分で、`inactive_lock` が `Inactive::Locked` のときだけ消す（項目 5。今は `Inactive::Missing` でも消している）。0700 でないもの（項目 2）も、この条件なら消し、`CleanupReport` に新しい欄（例 `temporary_unsafe_removed: Vec<PathBuf>`）で返す。起動の流れは、その一件ごとに知らせを出す（例 `Removed temporary directory {path} whose permissions had been changed.`）。
+   - 期間を過ぎたセッション（項目 3、5）: 錠（`Inactive::Locked`）を持ったまま、(1) そのセッションの一時ディレクトリ（`benitoiteh-<ID>` と `benitoiteh-<ID>.<n>`）を墓標に替えて消す、(2) `sessions/<ID>` を `sessions/.removing-<ID>-<16 桁の 16 進>` に `renameat` する、(3) `remove::directory_at(&sessions, 墓標, true)` で消す、の順に行う。(1) の失敗は報告して (2) に進む。(1) の前に期間を確かめ直す今の判定（474）は残す。
+   - セッションの墓標の掃除: `sessions/` の項目で `.removing-<ID>-` で始まるものは、期間を見ずに、墓標の中の `lock` の錠を取って消す。錠を取れないもの（`Busy`）は残す。`lock` がないもの（`NOENT`）は、墓標の中で動くセッションはないので消す（今の `inactive_lock` の `NOENT` を `Busy` とする扱い（551）は、墓標には使わない）。数は `sessions_removed` に含めない（同じセッションを二度数えないため）か、別に数える。どちらにしたかを報告に書く。
+   - `scan::ids`（`src/session/scan.rs` の 51）は名前を `SessionId` として読むので、`.removing-` で始まる墓標は、既に再開・一覧・`--continue` の対象にならない。これを確かめるテストを置く。
+   - 大きさの合計: `storage_usage`（`src/session/quota.rs` の 24-35）は `scan::ids` だけを数える。墓標の名前のディレクトリも、リンクを辿らずに数えて `total` に加える（`current` には数えない）。
+   - 今のテストで期待が変わるもの: `tests/session.rs` の `cleanup_removes_only_inactive_matching_directories_and_expired_sessions`（658-）の 670-675、737、744 は、記録のない一時ディレクトリが消えることを期待している。残る期待に改め、消した数（4 から 3 になる見込み）を直す。`cleanup_reports_failures_continues_and_retries_without_losing_locks`（976-1062）の 1031-1032 は、消し損ねたセッションが ID のまま残る前提なので、墓標の名前で残る前提に改める。
+4. **書ける場所（項目 4）**:
+   - 今の箇所: `src/config/writable.rs` の `validate_locations`（134-182）。実行ファイルの規則は 174-180。
+   - 直し: `WritableRule` に `TemporaryRoot` を足し、`paths.temporary_root` の実のパス（`real_future` か `real_existing`）が足した場所のどれかで始まれば（`temporary_root.starts_with(additional)`）断る。比べる根は `locations.temporary.parent()` ではなく `paths.temporary_root` とする。理由: `doctor` は一時ディレクトリの代わりに試しのディレクトリ（`src/cli/doctor/probe.rs` の `benitoiteh-doctor-<乱数>/write`）を渡すので、その親は根ではない。規則の文は、今の規則の文と同じ所に置き、根のパスと、根の下の場所を足す案を示す。`doctor` の表示（`src/cli/doctor/mod.rs` の 431-450 の `normal`）は、今の `WritableError` の表示で示されることを確かめる。
+   - テストは `config/writable.rs` の単体のテストに置く: 根そのもの、根の親、根の下の `build` の三つ。macOS では `TMPDIR` が `/var/folders/…` で実のパスは `/private/var/…` なので、テストの根は実のパスに直してから比べる。
+   - `remove.rs` の単体のテスト `linked_parents_are_followed_but_targets_and_descendant_links_are_not`（165-179）の `sessions` の場合は、本番では使わない `directory()` で消している（本番のセッションの削除は `directory_at(&sessions, …, true)`）。この作業で `sessions` の場合を本番の経路で確かめる形に改めるか、`temporary` だけに絞る。
+5. **試しの作り方**:
+   - Linux のコンテナ（aarch64 の `container`）は root で走る。root は権限 0000 のディレクトリも消せるので、消せないディレクトリを使うテストは、`tests/session.rs` の 945 あたりの形に倣って root のときに飛ばす。飛ばしたことは、テストの中のコメントに書く。持ち主の違うディレクトリは、root でなければ作れないので、作るテストは置かない。
+   - macOS の `TMPDIR` は長い（`/var/folders/xx/…/T/`）。深い入れ子と長いパスは、根の長さに依らないよう、記述子から相対に作る。
+   - `uchg` のテスト（macOS だけ）は、テストの中で `chflags uchg <パス>` を起動して付け、`Drop` で `chflags -R nouchg <パス>` を起動してから消す（外さないと、テストの一時ディレクトリが消せずに残る）。
+   - テストの後に一時の根に墓標が残っていないことは、`tests/support/temporary_cleanup.rs` の `check_temporary_root`（9-）で確かめられる。墓標が残るテスト（権限を戻す前の段）は、そのテストの最後に権限を戻して掃除を走らせてから確かめる。
+   - 二つのデータの置き場所（項目 5）は、`DataPaths` を二つ作り、`temporary_root` を同じにし、`data_dir`（`sessions_dir`）を分ける。片方でセッションを開いて錠を持ったまま、もう片方で `cleanup` を呼ぶ。
+6. **Linux の `TMPDIR`**: Linux で `TMPDIR` を設定せず `normal.writable_roots = ["/tmp"]` としていた設定は、項目 4 で起動できなくなる。完了の報告の「残したこと」に書く（利用者への案内は設計書 03-02 に書いた）。
