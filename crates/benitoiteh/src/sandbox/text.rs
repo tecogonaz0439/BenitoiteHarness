@@ -106,3 +106,6 @@ pub fn not_checked(name: &str) -> String {
 pub const BUBBLEWRAP: &str = "bubblewrap";
 #[cfg(target_os = "linux")]
 pub const USER_NAMESPACES: &str = "user namespaces";
+
+#[cfg(target_os = "linux")]
+pub const LOOPBACK_UNSUPPORTED: &str = "Port-scoped loopback access is unsupported on Linux.";

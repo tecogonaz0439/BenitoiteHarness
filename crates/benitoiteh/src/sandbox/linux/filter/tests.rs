@@ -254,3 +254,17 @@ fn compiled_socket_rules_limit_domains_types_and_ip_operations() -> TestResult {
     }
     Ok(())
 }
+// 関門: フィルタの入口が接続先の制限を黙って捨て、全 IP を許す退行を防ぐ。
+#[test]
+fn rejects_port_scoped_access_before_compiling() -> Result<(), Box<dyn std::error::Error>> {
+    let mut config = crate::sandbox::PolicyConfig::without_writable();
+    config.allow_loopback_port = std::num::NonZeroU16::new(12345);
+    for allow_ip in [false, true] {
+        config.allow_ip = allow_ip;
+        let error = super::compile_policy(&config)
+            .err()
+            .ok_or("must reject loopback port")?;
+        assert!(error.to_string().contains("unsupported on Linux"));
+    }
+    Ok(())
+}

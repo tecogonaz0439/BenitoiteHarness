@@ -96,6 +96,8 @@ P0-03 で作った主な公開の関数は次のとおりである（`Uri`・`He
 
 ### `sandbox`（P0-04、P0-05、P0-07）
 
+- P5-34（2026-10-21、オーケストレータの決定）で `PolicyConfig.allow_loopback_port: Option<std::num::NonZeroU16>` を加える。省略時は `None`。製品の経路は設定しない。macOS の評価の実行器の引数だけが localhost の指定ポートへの外向きの IP 接続を許し、Linux は指定を拒む。`allow_ip` の既定値と意味は変えない。
+
 P0-04 で作った型: 方針の入力 `PolicyConfig`（`readable: ReadAccess`（`All`・`Roots`）、`denied_read`、`writable`、`protected_names`、`allow_ip`、`programs: ProgramAccess`（`Unrestricted`・`Only`）、`deny_exec_in_writable`（既定は真））と、検証済みの `SandboxPolicy::new(config)`。`SandboxPolicy::seatbelt_profile()`、`SandboxCommand::to_command(&self, helper: &Path) -> Result<Command, SandboxError>`。
 
 

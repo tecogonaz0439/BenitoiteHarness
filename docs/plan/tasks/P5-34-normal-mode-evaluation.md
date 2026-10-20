@@ -86,6 +86,11 @@ CLI の引数の順、入出力の名前、エラーの文のうち判定する�
 
 ## 触るファイル
 
+- `crates/benitoiteh/examples/skill_eval_judge.rs` と `crates/benitoiteh/tests/sandbox_skill_eval_judge.rs`（2026-10-21、オーケストレータの決定による拡張）
+- `crates/benitoiteh/src/sandbox/{policy.rs,macos.rs,text.rs,tests.rs,linux.rs,linux/mounts.rs,linux/filter.rs}` と対応する単体テスト（ポートを限定した例外と Linux での拒否）
+- `docs/design/03-safety/03-02-sandbox.md`・`docs/design/07-quality/07-02-evaluation.md`（2026-10-21 の方針の最小限の追記）
+- `tools/skill-eval/test_judge_sandbox.py`（共通の判定の境界のテストの更新）
+- `docs/plan/10-interfaces.md`（共通の方針の型の追加）、`docs/plan/README.md`（完了の記録）
 - `tools/skill-eval/skill_eval.py`、`test_skill_eval.py`、`README.md`、`SOURCE.md`
 - `tools/skill-eval/mock_provider.py`（通常モードの read → write/edit → bash → Done. の筋書き）
 - `tools/skill-eval/harnesses.json`（`benitoiteh-deepseek-normal` と `benitoiteh-mock-normal`）
@@ -93,6 +98,16 @@ CLI の引数の順、入出力の名前、エラーの文のうち判定する�
 - `scripts/check.sh`（normal の準備とサンドボックスを要する通し、Codex 内で除く名前の表示）
 
 P5-31 の実行器と既存の sandbox の API を使う。通常モードに対応するための変更を Rust の本番のコードへ広げない。
+
+### 判定の実行器の拡張（2026-10-21、オーケストレータの決定）
+
+`--allow-loopback-port <port>` を実行器に加える。1〜65535 のポートを一つだけ受け取り、そのポートの localhost への外向きの IP 接続だけを許す。待ち受け、ほかのポート・宛先、Unix ソケットは許さず、`allow_ip=true` で代用しない。Python 側は `http_client` の判定でだけ、検証した模擬の URL のポートを渡す。
+
+共通の `PolicyConfig` に省略時 `None` の `allow_loopback_port: Option<NonZeroU16>` を加える。製品の起動経路はすべて `None` のまま使い、例外を設定する入口はこの example の引数だけとする。Linux は指定された方針を検証・mounts・filter の入口で拒む。型と既定値、Seatbelt の出力、Linux の拒否を単体テストで確認する。
+
+実行器には `--read-root <dir>` と `--allow-program <path>` も繰り返し指定できるようにし、評価側が OS・判定・信頼する検査の読み取りと、課題に必要な起動先を列挙する。通常モードの判定は、インストール済みの道具を使う課題の契約に合わせ、実行器の既定の起動の方針を使う。Benitoite の課題では起動先を列挙する。省略した従来の呼び出しの既定値は変えない。ポートの例外から `SKILL_EVAL_HTTP_BASE` を作り、HTTP の課題へ渡す。
+
+この共通の方針の拡張だけは上の本番のコードの変更範囲の例外とする。既存の起動の制限と HOME の読み取り拒否を保って実行器へ接続する。圧縮の課題・生成の道具・`skill_eval.py` の圧縮専用の処理は P5-36 が変更するため、本作業では変更しない。
 
 ## テスト
 
@@ -107,6 +122,7 @@ P5-31 の実行器と既存の sandbox の API を使う。通常モードに対
 
 ## 完了条件
 
+- 判定の実行器のポートの例外を、Seatbelt の文の単体テストと、許した接続・ほかのポート・待ち受け・Unix ソケットを対にした macOS の統合テストで確認できる。Linux の方針の読み戻し・mounts・filter は例外の指定を拒む。
 - 2 課題が揃い、LLM を呼ばず未修正・解の判定を確かめられる。既定の 11 課題の選択と成績を保つ。
 - `scripts/check.sh --inside-codex` が通る。オーケストレータが外で normal の self-test・dry-run・模擬の通しを完了できる。
 - 必要な道具、判定と記録の例、走らせなかった検査、試し 2 回の条件を報告する。本体 30 回は P5-35 の後と明記する。

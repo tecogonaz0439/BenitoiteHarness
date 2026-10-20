@@ -1,0 +1,10 @@
+{
+  "kind": "normal",
+  "category": "bugfix",
+  "artifacts": ["totals.py"],
+  "writable_files": ["totals.py"],
+  "allowed_generated": ["__pycache__/", "tests/__pycache__/"],
+  "verify": ["python3", "-m", "unittest", "discover", "-s", "tests"],
+  "judge": ["python3", "-I", "judge/verify.py"],
+  "required_tools": ["python3", "/bin/sh"]
+}

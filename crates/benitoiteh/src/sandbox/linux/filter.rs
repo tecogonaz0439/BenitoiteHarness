@@ -11,6 +11,15 @@ use seccompiler::{
 
 type Result<T> = std::result::Result<T, seccompiler::BackendError>;
 
+/// 呼び出し元が検証済みでも、表現できない接続先の制限をここでも拒む。
+pub(super) fn compile_policy(
+    config: &super::super::PolicyConfig,
+) -> std::result::Result<BpfProgram, super::super::SandboxError> {
+    super::super::policy::reject_loopback_port(config)?;
+    compile(config.allow_ip)
+        .map_err(|error| super::super::SandboxError::Io(std::io::Error::other(error)))
+}
+
 fn condition(argument: u8, comparison: SeccompCmpOp, value: i32) -> Result<SeccompCondition> {
     // カーネル側の int 引数と同じ下位 32 ビットを比べる。上位ビットで拒否を回り込ませない。
     SeccompCondition::new(
