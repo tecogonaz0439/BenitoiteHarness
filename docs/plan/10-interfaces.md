@@ -52,7 +52,7 @@ P0 で作るモジュールは `cli`（`--version`・`--help`・`__sandbox` の�
 | `serde` | `=1.0.229` | P0-04 ほか | 機能 `std`・`derive` |
 | `serde_json` | `=1.0.151` | P0-04 ほか | Benitoite と同じ |
 | `getrandom` | `=0.4.3` | P1 | Benitoite と同じ |
-| `sha2` | `=0.11.0` | P1 | Benitoite と同じ |
+| `sha2` | `=0.11.0` | P1 | Benitoite と同じ。機能 `zeroize`（P5-26）。SHA-256 の途中の状態を手放すときに上書きする（設計書 03-04「秘密の扱い」）。release の実行ファイル（macOS aarch64）は 5,689,920 から 5,689,936 バイト（+16）。新しいクレートは加わらない |
 | `regex` | `=1.13.1` | P1 | Benitoite と同じ |
 | `signal-hook` | `=0.4.5` | P1 | Benitoite と同じ |
 | `toml` | `=1.1.8` | P1 | 既定の機能を切り、`std`・`parse`・`serde` を有効にする |

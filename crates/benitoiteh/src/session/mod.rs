@@ -320,14 +320,16 @@ impl CleanupReport {
     }
 }
 
-/// 一項目の掃除の失敗。誤りの文にファイルのパスは含めない。
+/// 一項目の掃除の失敗。ID の分かる項目の文は ID で示し、一時の根・askpass の親・
+/// 一覧の読み取りの失敗（ID の分からないもの）は、パスを含む文にする。
 #[derive(Debug, Eq, PartialEq)]
 pub struct CleanupFailure {
-    /// 一覧の読み取り自体が失敗した場合は ID を得られない。
+    /// 一時の根・askpass の親・一覧の読み取りの失敗では ID を得られない。
     pub id: Option<SessionId>,
     /// 一時ディレクトリの失敗か。
     pub temporary: bool,
-    /// OS の短い診断、または固定の検証の誤り。
+    /// ID があれば OS の短い診断か固定の検証の誤り。ID がなければ、パスを含む
+    /// `Skipped cleanup of <パス>: …` の文で、そのまま示す。
     pub reason: String,
 }
 
@@ -355,7 +357,7 @@ pub fn cleanup(
     // 開けなければ一覧も読めず、その失敗は下で報告する。
     let temporary_root = temporary::open_root(&paths.temporary_root).ok();
     match fs::read_dir(&paths.temporary_root) {
-        Ok(entries) => roots.push((true, false, entries)),
+        Ok(entries) => roots.push((true, false, paths.temporary_root.clone(), entries)),
         Err(error) => report.failures.push(CleanupFailure {
             id: None,
             temporary: true,
@@ -405,7 +407,7 @@ pub fn cleanup(
             _ => {}
         }
         match fs::read_dir(&parent) {
-            Ok(entries) => roots.push((true, true, entries)),
+            Ok(entries) => roots.push((true, true, parent.clone(), entries)),
             Err(error) => report.failures.push(CleanupFailure {
                 id: None,
                 temporary: true,
@@ -413,16 +415,17 @@ pub fn cleanup(
             }),
         }
     }
-    roots.push((false, false, session_entries));
-    for (temporary, askpass, entries) in roots {
+    roots.push((false, false, paths.sessions_dir.clone(), session_entries));
+    for (temporary, askpass, listed, entries) in roots {
         for entry in entries {
             let entry = match entry {
                 Ok(entry) => entry,
                 Err(error) => {
+                    // ID がなくても、どの根の一覧の誤りかを示す。
                     report.failures.push(CleanupFailure {
                         id: None,
                         temporary,
-                        reason: error.to_string(),
+                        reason: text::cleanup_skipped(&listed, &error.to_string()),
                     });
                     continue;
                 }
@@ -453,15 +456,26 @@ pub fn cleanup(
             let ordinary = temporary && !askpass;
             let parsed = if ordinary {
                 temporary::parse(name_text)
+            } else if askpass {
+                // 子の `id` を読めればその ID で錠と記録を確かめる。`id` のない子（前の版が
+                // 作ったもの）だけ名前の対応表で扱い、確かめに通らない `id` の子は残す
+                // （設計書 03-04「補助」）。
+                match crate::askpass::read_id(&entry.path()) {
+                    Ok(Some(found)) => found
+                        .parse::<SessionId>()
+                        .ok()
+                        .filter(|id| crate::askpass::helper_name(id.as_str()) == name_text),
+                    Ok(None) => name_text
+                        .parse::<SessionId>()
+                        .ok()
+                        .or_else(|| helper_ids.get(name_text).cloned().flatten()),
+                    Err(_) => None,
+                }
+                .map(|id| (id, temporary::Kind::Primary))
             } else {
                 name_text
                     .parse::<SessionId>()
                     .ok()
-                    .or_else(|| {
-                        askpass
-                            .then(|| helper_ids.get(name_text).cloned().flatten())
-                            .flatten()
-                    })
                     .map(|id| (id, temporary::Kind::Primary))
             };
             let Some((id, kind)) = parsed else {

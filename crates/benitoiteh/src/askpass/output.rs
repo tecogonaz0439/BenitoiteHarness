@@ -4,15 +4,35 @@ use sha2::{Digest, Sha256};
 use std::sync::{Arc, PoisonError};
 use zeroize::Zeroizing;
 
-#[derive(Clone, Copy)]
+/// 一つの秘密の照合の値。短い秘密は SHA-256 から総当たりで求めうるので、
+/// 手放すときは `Zeroizing` の入れ物で 0 に上書きする（設計書 03-04「秘密の扱い」）。
+#[derive(Clone, Copy, Default)]
 pub(super) struct SecretHash {
     length: usize,
     sha256: [u8; 32],
     rolling: u64,
     power: u64,
 }
+impl zeroize::DefaultIsZeroes for SecretHash {}
+
+/// 一つの呼び出しで出せる求めの上限。照合の値の入れ物はこの容量で作り、伸ばさない
+/// （伸ばすと古い領域に写しが残る）。
+pub(super) const MAX_HASHES: usize = 3;
+pub(super) fn hash_list() -> Zeroizing<Vec<SecretHash>> {
+    Zeroizing::new(Vec::with_capacity(MAX_HASHES))
+}
+
+/// 照合で区切りとして扱うバイト。秘密はこれらを含まないので、一致はこれらをまたがない。
+fn separator(byte: u8) -> bool {
+    matches!(byte, b'\n' | b'\r' | 0)
+}
+
 impl SecretHash {
-    pub(super) fn new(bytes: &[u8], base: u64) -> Self {
+    /// 区切りのバイトを含む秘密には照合の値を作らない（区切りの手前まで渡す論証が崩れるため）。
+    pub(super) fn new(bytes: &[u8], base: u64) -> Option<Self> {
+        if bytes.iter().any(|byte| separator(*byte)) {
+            return None;
+        }
         let mut rolling = 0u64;
         let mut power = 1u64;
         for byte in bytes {
@@ -21,18 +41,20 @@ impl SecretHash {
                 .wrapping_add(u64::from(*byte) + 1);
             power = power.wrapping_mul(base);
         }
-        Self {
+        Some(Self {
             length: bytes.len(),
             sha256: Sha256::digest(bytes).into(),
             rolling,
             power,
-        }
+        })
     }
 }
 
 /// 未確定の末尾だけを保持する。返すバイトは既に伏せてあり、末尾の上限を掛けてよい。
 pub(crate) struct Redactor {
     call: Arc<CallState>,
+    /// 呼び出しの状態から写した照合の値。写しも手放すときに消す。
+    hashes: Zeroizing<Vec<SecretHash>>,
     pending: Zeroizing<Vec<u8>>,
     covered: Vec<bool>,
     prefixes: Zeroizing<Vec<u64>>,
@@ -49,6 +71,7 @@ impl Redactor {
         prefixes.push(0);
         Self {
             call,
+            hashes: hash_list(),
             pending: Zeroizing::new(Vec::with_capacity(MAX_SECRET.saturating_add(8192))),
             covered: Vec::with_capacity(MAX_SECRET.saturating_add(8192)),
             prefixes,
@@ -60,16 +83,22 @@ impl Redactor {
         }
     }
     pub(crate) fn push(&mut self, bytes: &[u8], finish: bool) -> Vec<u8> {
-        // 錠の中では最大 3 件の小さな指紋だけ写す。出力の走査で回答を止めない。
-        let hashes = self
-            .call
-            .state
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .hashes
-            .clone();
+        // 錠の中では新しく増えた指紋だけ写す。出力の走査で回答を止めない。
+        // 写す先は容量 3 で作ってあり、伸ばさないので古い領域に写しを残さない。
+        {
+            let state = self
+                .call
+                .state
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner);
+            for hash in state.hashes.iter().skip(self.hashes.len()) {
+                if self.hashes.len() < MAX_HASHES {
+                    self.hashes.push(*hash);
+                }
+            }
+        }
         // 登録前の出力は秘密を含まない。走査も未確定の末尾の保持も要らない。
-        if hashes.is_empty() {
+        if self.hashes.is_empty() {
             return bytes.to_vec();
         }
         self.pending.extend_from_slice(bytes);
@@ -88,7 +117,7 @@ impl Redactor {
         }
         // 呼び出し固有の乱数の基数で候補を絞る。一致候補だけ SHA-256 で確かめる。
         // 指紋の衝突は伏せ字の漏れにも誤った一致にも使わない。
-        for hash in &hashes {
+        for hash in self.hashes.iter() {
             if hash.length == 0 {
                 continue;
             }
@@ -116,16 +145,25 @@ impl Redactor {
                 }
             }
         }
-        let lookbehind = hashes
+        let lookbehind = self
+            .hashes
             .iter()
             .map(|hash| hash.length)
             .max()
             .unwrap_or(0)
             .saturating_sub(1);
+        // 秘密は区切りを含まないので、最後の区切りまでで終わる一致もそこをまたぐ一致もない。
+        // そこまでは留めずに渡し、行の終わりの出力と混ぜた並びの順を遅らせない
+        // （設計書 03-04「秘密の扱い」）。
         let count = if finish {
             self.pending.len()
         } else {
-            self.pending.len().saturating_sub(lookbehind)
+            let boundary = self
+                .pending
+                .iter()
+                .rposition(|byte| separator(*byte))
+                .map_or(0, |index| index.saturating_add(1));
+            self.pending.len().saturating_sub(lookbehind).max(boundary)
         };
         let mut output = Vec::new();
         for (byte, covered) in self.pending.iter().zip(&self.covered).take(count) {

@@ -702,6 +702,8 @@ fn cleanup_removes_only_inactive_matching_directories_and_expired_sessions() -> 
         } else {
             "20200101T000000Z-0000000000000002"
         });
+    // 補助の子は `id` なしで作る。前の版が作った子を名前の対応表で扱う後始末の試しである
+    // （設計書 03-04「補助」）。
     let parent = active_askpass.parent().ok_or("missing parent")?;
     fs::create_dir(parent)?;
     fs::set_permissions(parent, fs::Permissions::from_mode(0o700))?;
@@ -2313,7 +2315,8 @@ fn fork_origin_ids_are_checked_by_both_listing_and_opening() -> TestResult {
 }
 
 // 関門: 一時の根が共有されても、別のデータの根の生きている補助と一時ディレクトリや、
-// 記録のない補助を消さない。
+// 記録のない補助を消さない。補助の子は `id` なしで作り、前の版が作った子を名前の対応表で
+// 扱う後始末を確かめる（設計書 03-04「補助」）。
 #[test]
 fn shared_temporary_cleanup_preserves_foreign_live_entries_and_unrecorded_helpers() -> TestResult {
     let first = Fixture::new()?;
@@ -2361,6 +2364,58 @@ fn shared_temporary_cleanup_preserves_foreign_live_entries_and_unrecorded_helper
     Ok(())
 }
 
+// 関門: macOS の子の名前は ID の乱数の部分だけなので、名前の対応表では乱数の重なる
+// 二つのセッションの子をどちらも決められない。`id` で錠を確かめ、錠のない方だけを消す。
+// 同じ名前の子は一つの親に一つしか置けないので、一時の根と /tmp の親に分けて置く。
+#[cfg(target_os = "macos")]
+#[test]
+fn helper_ids_resolve_children_whose_random_parts_collide() -> TestResult {
+    use std::os::unix::fs::OpenOptionsExt;
+    let f = Fixture::new()?;
+    let random = SessionId::generate(SystemTime::now())?.to_string();
+    let random = random.rsplit_once('-').ok_or("missing random part")?.1;
+    let live = Session::create(&f.paths, format!("20200101T000000Z-{random}").parse()?)?;
+    let stale = Session::create(&f.paths, format!("20200102T000000Z-{random}").parse()?)?;
+    let stale_id = stale.id().clone();
+    drop(stale);
+    let parent_name = format!("bha-{}", rustix::process::geteuid().as_raw());
+    struct Remove(PathBuf);
+    impl Drop for Remove {
+        fn drop(&mut self) {
+            let _removed = fs::remove_dir_all(&self.0);
+        }
+    }
+    let shared = std::path::Path::new("/tmp")
+        .canonicalize()?
+        .join(&parent_name);
+    match fs::DirBuilder::new().mode(0o700).create(&shared) {
+        Ok(()) => {}
+        Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {}
+        Err(error) => return Err(error.into()),
+    }
+    let private = f.paths.temporary_root.join(&parent_name);
+    fs::DirBuilder::new().mode(0o700).create(&private)?;
+    let live_child = private.join(random);
+    let stale_child = Remove(shared.join(random));
+    for (child, id) in [(&live_child, live.id()), (&stale_child.0, &stale_id)] {
+        fs::DirBuilder::new().mode(0o700).create(child)?;
+        fs::set_permissions(child, fs::Permissions::from_mode(0o700))?;
+        let mut file = OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .mode(0o600)
+            .open(child.join("id"))?;
+        file.set_permissions(fs::Permissions::from_mode(0o600))?;
+        writeln!(file, "{id}")?;
+    }
+    let report = cleanup(&f.paths, DEFAULT_RETENTION_DAYS, SystemTime::now())?;
+    assert!(report.failures.is_empty(), "{:?}", report.failures);
+    assert!(live_child.join("id").exists());
+    assert!(!stale_child.0.exists());
+    drop(live);
+    Ok(())
+}
+
 // 一時の根だけが読めなくても、記録の保持期間の掃除まで中断しない。
 #[test]
 fn unavailable_temporary_root_is_diagnosed_without_skipping_session_cleanup() -> TestResult {
@@ -2392,9 +2447,14 @@ fn unavailable_temporary_root_is_diagnosed_without_skipping_session_cleanup() ->
             .find(|failure| failure.temporary && failure.id.is_none())
             .ok_or("missing cleanup failure")?
             .diagnostic();
-        assert!(diagnostic.contains("Skipped cleanup of"), "{diagnostic}");
-        assert!(
-            diagnostic.contains(&f.paths.temporary_root.display().to_string()),
+        // ID の分からない失敗は、`unknown` と二重の前置きを付けず、パスを一度だけ示す。
+        assert!(diagnostic.starts_with("Skipped cleanup of"), "{diagnostic}");
+        assert!(!diagnostic.contains("unknown"), "{diagnostic}");
+        assert_eq!(
+            diagnostic
+                .matches(&f.paths.temporary_root.display().to_string())
+                .count(),
+            1,
             "{diagnostic}"
         );
         assert!(
@@ -2424,8 +2484,13 @@ fn cleanup_uses_cleanup_specific_diagnostic_for_nonprivate_parent() -> TestResul
         .find(|failure| failure.temporary)
         .ok_or("missing cleanup diagnostic")?
         .diagnostic();
-    assert!(message.contains("Skipped cleanup of"), "{message}");
-    assert!(message.contains(&parent.display().to_string()), "{message}");
+    assert!(message.starts_with("Skipped cleanup of"), "{message}");
+    assert!(!message.contains("unknown"), "{message}");
+    assert_eq!(
+        message.matches(&parent.display().to_string()).count(),
+        1,
+        "{message}"
+    );
     assert!(
         message.contains("not a private directory owned by you"),
         "{message}"
