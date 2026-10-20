@@ -11,7 +11,7 @@
 | C | Codex の中の macOS | `scripts/check.sh --inside-codex` の実行結果は下記 |
 | M | サンドボックスの外の手元の macOS | 通った（下記「M・A・X での実行結果」） |
 | A | Apple の `container` の aarch64 Linux。Landlock も bubblewrap もない | 通った（同） |
-| X | intelmacmini の rootless podman の x86_64 Linux | 通った（同） |
+| X | x86_64 の試験の機械の rootless podman の Linux | 通った（同） |
 
 M は Seatbelt を要するテストを含み、X は Landlock を要するテストを含む。A では `sandbox_linux.rs`、`sandbox_benitoite.rs`、`sandbox_benitoite_run.rs`、`sandbox_benitoite_test.rs`、`sandbox_benitoite_scratch.rs`、`sandbox_exec_restricted.rs` を除く。したがって、本表で M/X とした処理系の実行のテストは A では走らない。Linux 向けの clippy とビルドの成功を、Linux での実行結果とは扱わない。
 
@@ -24,11 +24,11 @@ C の環境は `sw_vers` と `uname -srmp` で確認した。macOS 27.0.1（26A4
 | A | Apple `container` CLI 1.4.1、`alpine:3.22`（3.22.6）、Linux 6.18.15 aarch64（ホストは上の M）。LSM の一覧は空で Landlock なし。bubblewrap なし。処理系は `version=0.0.7`、静的リンクの aarch64 の ELF（`rust:1.98.1-alpine3.22` で `v0.0.7` のソースから作った）、SHA-256 `56f1cd36a86df65d0781effe8989020b4f91d3b0fdab546c208c7579921676ca`（`check.sh` の一行と手元の `shasum` で一致） |
 | X | Omarchy（Arch 系）、Linux 7.2.9-arch1-Watanare-T2-3-t2 x86_64、Intel Core i3-8100B。podman 6.1.1（rootless）、イメージ `localhost/benitoiteh-test:alpine-3.22-bwrap-bash-python3`（Alpine 3.22.5、bubblewrap 0.12.0、Python 3.12.15）。Landlock は `effective_abi: V9, kernel_abi: Some(10)`（`sandbox_linux.rs::kernel_landlock_and_seccomp_are_available` の出力）。処理系は `version=0.0.7`、static-pie の x86_64 の ELF（同じく `v0.0.7` のソースから作った）、SHA-256 `b0c94bdde85350c30d5169f2c7874783c3d18bb72a7568498cc4df3a4fa4d6e9`（送り先のコンテナの `sha256sum` で、手元と一致） |
 
-C の処理系には、指定された `/Users/tecogonaz/src/BenitoiteHarness/work/benitoite-v0.0.7/target/release/benitoite` を使う。`--version=json` の build.commit は null であるため、ソースのタグ `v0.0.7` のコミットを別に記す。手元のリポジトリで `git rev-parse 'v0.0.7^{commit}'` を実行した結果は `63de89a21cce4d0c2995011226db8f2f938598ec` である。実行ファイルの版とハッシュはそれぞれ `--version=json` と `shasum -a 256` で取得した。
+C の処理系には、指定された `<主の作業ツリー>/work/benitoite-v0.0.7/target/release/benitoite` を使う。`--version=json` の build.commit は null であるため、ソースのタグ `v0.0.7` のコミットを別に記す。手元のリポジトリで `git rev-parse 'v0.0.7^{commit}'` を実行した結果は `63de89a21cce4d0c2995011226db8f2f938598ec` である。実行ファイルの版とハッシュはそれぞれ `--version=json` と `shasum -a 256` で取得した。
 
 ## C での実行結果（2026-10-18）
 
-`BENITOITEH_TEST_BENITOITE=/Users/tecogonaz/src/BenitoiteHarness/work/benitoite-v0.0.7/target/release/benitoite scripts/check.sh --inside-codex` を実行し、終了状態 0 と `All checks passed.` を確認した。cargo はスクリプトの既定の `CARGO_NET_OFFLINE=true` で動かした。整形、ホストと aarch64／x86_64 Linux の clippy、ホストのテストと doctest、ライセンス、3 対象のリリースビルドを通した。ライブラリ 101 件、agent_loop 60 件、tui 41 件を含む。今回狭めた CLI の起動拒否の判定も成功した。
+`BENITOITEH_TEST_BENITOITE="<主の作業ツリー>/work/benitoite-v0.0.7/target/release/benitoite" scripts/check.sh --inside-codex`（パスは公開のため一般化した）を実行し、終了状態 0 と `All checks passed.` を確認した。cargo はスクリプトの既定の `CARGO_NET_OFFLINE=true` で動かした。整形、ホストと aarch64／x86_64 Linux の clippy、ホストのテストと doctest、ライセンス、3 対象のリリースビルドを通した。ライブラリ 101 件、agent_loop 60 件、tui 41 件を含む。今回狭めた CLI の起動拒否の判定も成功した。
 
 ホストのテストの前に、次の一行が出た。
 
@@ -94,7 +94,7 @@ processor aarch64-apple-darwin: version=0.0.7 sha256=ee8eaf0eb4e624be571b14198e2
 
 ## M・A・X での実行結果（2026-10-18、オーケストレータ）
 
-サンドボックスの外で、`BENITOITEH_TEST_BENITOITE`（M）、`BENITOITEH_TEST_BENITOITE_AARCH64`（A）、`BENITOITEH_TEST_BENITOITE_X86_64`（X）と `BENITOITEH_X86_64_HOST=intelmacmini` を設定して `scripts/check.sh` を走らせ、終了状態 0 を確かめた。三つの環境のテストの合計は、成功 1,364 件、失敗 0 件、ignored 14 件（手動の測定など）である。A では上記の 6 ファイルを Landlock がないために飛ばし、そのことを検査の最後に示した。処理系の版とハッシュの一行は、三つの対象のすべてで出た（値は上の表と同じ）。P2-11 で加えた 2 件のテストは M と X で通った。
+サンドボックスの外で、`BENITOITEH_TEST_BENITOITE`（M）、`BENITOITEH_TEST_BENITOITE_AARCH64`（A）、`BENITOITEH_TEST_BENITOITE_X86_64`（X）と `BENITOITEH_X86_64_HOST` に x86_64 の試験の機械の ssh の宛先を設定して `scripts/check.sh` を走らせ、終了状態 0 を確かめた。三つの環境のテストの合計は、成功 1,364 件、失敗 0 件、ignored 14 件（手動の測定など）である。A では上記の 6 ファイルを Landlock がないために飛ばし、そのことを検査の最後に示した。処理系の版とハッシュの一行は、三つの対象のすべてで出た（値は上の表と同じ）。P2-11 で加えた 2 件のテストは M と X で通った。
 
 途中の一回目は、`invalid_processor_shapes_...` が「セッションを作らないこと」を確かめていたために M で失敗した。処理系の確かめはセッションの一時ディレクトリを使うサンドボックスの中の問い合わせなので、セッションを先に作るのは設計どおりであり、確かめを「会話の記録を書かないこと」に改めた（作業文書の補足の誤り）。
 

@@ -35,7 +35,7 @@ P5-02 で評価の道具に `benitoiteh` を加えた。この作業では、本
 | `benitoiteh-gemini` | `openai-chat`、`base_url` は `https://generativelanguage.googleapis.com/v1beta/openai`、キーはサービス `benitoiteh-gemini` | `gemini-3.8-flash` | `high` |
 | `benitoiteh-opus` | `anthropic-messages`（`base_url` は書かない）、キーはサービス `benitoiteh-anthropic` | `claude-opus-5-5` | `medium` |
 
-- キーチェーンのサービスの名前は秘密ではない。キーの値は、どこにも書かない。
+- キーチェーンのサービスの名前は秘密ではない。キーの値は、どこにも書かない。サービス名を変えるときは、`harnesses.json` の該当する項目の `api_key.command` を直す。
 - どの `benitoiteh` の項目にも、単価 `price`（100 万トークンあたりの米ドル。`input`・`cache_read`・`cache_write`・`output`）と、累計を数える提供者の名前 `billing`（`anthropic`・`google`・`deepseek`・`none`）を書く。`benitoiteh-mock` は単価をすべて 0、`billing` を `none` とする。
   - Opus 5.5: 入力 4、読み取り 0.20、書き込み 5、出力 20（Anthropic の公式の価格表。2026-10-18 に確かめた。書き込みは 5 分のキャッシュの単価）。
   - DeepSeek `deepseek-flash`: 入力 0.3、読み取り 0.006、書き込み 0.3、出力 1.2（DeepSeek の公式の価格表のピーク時の単価。2026-10-18 に確かめた。ピークでない時間は半額だが、高い側で見積もる。書き込みの単価は表にないので、入力と同じと置く）。

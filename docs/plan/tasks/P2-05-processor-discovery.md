@@ -18,8 +18,8 @@ Benitoite の処理系（`benitoite`）を見つけ、`--version=json` で要る
 
 ## 前提（オーケストレータが用意する）
 
-- テストに使う処理系は、Benitoite の `v0.0.7` のタグのソースからビルドしたものとする。macOS の実行ファイルは `/Users/tecogonaz/src/BenitoiteHarness/work/benitoite-v0.0.7/target/release/benitoite` にある。
-- Linux のテスト（aarch64 の `container` と x86_64 の機械）に使う、`x86_64-unknown-linux-musl` と `aarch64-unknown-linux-musl` の静的リンクの処理系は、オーケストレータがビルドして置いた（2026-10-18。`v0.0.7` のタグのソースを `rust:1.98.1-alpine3.22` のコンテナでビルドした）。パスは `/Users/tecogonaz/src/BenitoiteHarness/work/benitoite-linux-build/aarch64/release/benitoite`（`ET_EXEC`、`PT_INTERP` なし）と `/Users/tecogonaz/src/BenitoiteHarness/work/benitoite-linux-build/x86_64/release/benitoite`（static-pie。`ET_DYN` で `PT_DYNAMIC` を持つが `PT_INTERP` はない。静的リンクの判定は `PT_INTERP` がないことだけで行う）である。
+- テストに使う処理系は、Benitoite の `v0.0.7` のタグのソースからビルドしたものとする。macOS の実行ファイルは `<主の作業ツリー>/work/benitoite-v0.0.7/target/release/benitoite` にある。
+- Linux のテスト（aarch64 の `container` と x86_64 の機械）に使う、`x86_64-unknown-linux-musl` と `aarch64-unknown-linux-musl` の静的リンクの処理系は、オーケストレータがビルドして置いた（2026-10-18。`v0.0.7` のタグのソースを `rust:1.98.1-alpine3.22` のコンテナでビルドした）。パスは `<主の作業ツリー>/work/benitoite-linux-build/aarch64/release/benitoite`（`ET_EXEC`、`PT_INTERP` なし）と `<主の作業ツリー>/work/benitoite-linux-build/x86_64/release/benitoite`（static-pie。`ET_DYN` で `PT_DYNAMIC` を持つが `PT_INTERP` はない。静的リンクの判定は `PT_INTERP` がないことだけで行う）である。
 
 ## この作業が認める型の変更
 
@@ -77,7 +77,7 @@ Benitoite の処理系（`benitoite`）を見つけ、`--version=json` で要る
 
 - `scripts/check.sh` は、環境変数 `BENITOITEH_TEST_BENITOITE`（手元の macOS の処理系）を受け取り、テストに渡す。Linux の段には、`BENITOITEH_TEST_BENITOITE_X86_64` と `BENITOITEH_TEST_BENITOITE_AARCH64`（静的リンクの処理系）を渡し、テストの中では `BENITOITEH_TEST_BENITOITE` として見せる。aarch64 の段は、`.cargo/config.toml` の runner の `scripts/container-run.sh` が `-e BENITOITEH_TEST_BENITOITE=$BENITOITEH_TEST_BENITOITE_AARCH64` を付け、処理系の親のディレクトリを読み取りだけで同じパスに見せる。x86_64 の段は、`scripts/remote-linux-run.sh` が `--sync` で処理系のファイルだけを `rsync -aR` で同じパスに送り、`podman run` に `-e BENITOITEH_TEST_BENITOITE=$BENITOITEH_TEST_BENITOITE_X86_64` を付ける。`--sync` は `--exclude=/work/` を加え、`work/` の全体（数 GB）を送らない。
 - 処理系を要するテストは、環境変数がなければ、理由を示して失敗する（飛ばさない）。テストの共通の部品（`tests/support/`）に、処理系のパスを得る関数を一つ置く。
-- Codex の中では、`BENITOITEH_TEST_BENITOITE=/Users/tecogonaz/src/BenitoiteHarness/work/benitoite-v0.0.7/target/release/benitoite` を設定して `scripts/check.sh --inside-codex` を走らせる。
+- Codex の中では、`BENITOITEH_TEST_BENITOITE="<主の作業ツリー>/work/benitoite-v0.0.7/target/release/benitoite"` を設定して `scripts/check.sh --inside-codex` を走らせる。
 
 - `/new`（P4-08）は、安全に関わる値を今のセッションの値に固定する（`SessionOverrides`）。この作業で `benitoite.path` を使い始めるので、`/new` では、確かめた処理系の実のパスを固定し、読み直した設定の `benitoite.path` で置き換えない（新しいセッションでも形の確かめとハッシュは行い直す）。テストを加える。
 

@@ -239,7 +239,7 @@ aarch64 の `container` の中では、今のとおり `sandbox_linux` を走ら
 
 - `scripts/check.sh --inside-codex` が通る。
 - 両 Linux の対象で、`cargo clippy --workspace --all-targets --target <対象>` と `cargo test --workspace --target <対象> --no-run` が通る。
-- オーケストレータが、サンドボックスの外で `BENITOITEH_X86_64_HOST=intelmacmini scripts/check.sh` を走らせ、x86_64 の `sandbox_linux` が通る。
+- オーケストレータが、サンドボックスの外で `BENITOITEH_X86_64_HOST` に x86_64 の試験の機械の ssh の宛先を設定して `scripts/check.sh` を走らせ、x86_64 の `sandbox_linux` が通る。
 - 完了の報告に、次のことを書く。
   - 公開の型と関数のシグネチャの変更。
   - 改めたテストの期待。

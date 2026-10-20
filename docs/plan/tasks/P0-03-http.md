@@ -24,7 +24,7 @@
 
 `crates/benitoiteh/src/http/`（`mod.rs`、`text.rs` ほか）と、そのテスト。
 
-1. `HttpClient`: `ureq::Agent` を包み、TLS を `rustls`（暗号の実装は `rustls-graviola`）と OS の証明書の検証で設定する。Benitoite の処理系の設定の仕方（`git -C /Users/tecogonaz/src/Benitoite show v0.0.6:crates/benitoite/src/builtins/funcs/http_client.rs` の 68〜74 行のあたりで `ureq` の `Agent` を作っている）に揃える。接続は使い回す。プロキシの環境変数を使わない設定にする（`web_fetch` の規則。提供者への要求でも使わない）。
+1. `HttpClient`: `ureq::Agent` を包み、TLS を `rustls`（暗号の実装は `rustls-graviola`）と OS の証明書の検証で設定する。Benitoite の処理系の設定の仕方（`git -C <Benitoiteのリポジトリ> show v0.0.6:crates/benitoite/src/builtins/funcs/http_client.rs` の 68〜74 行のあたりで `ureq` の `Agent` を作っている）に揃える。接続は使い回す。プロキシの環境変数を使わない設定にする（`web_fetch` の規則。提供者への要求でも使わない）。
 2. ストリーミングの要求: `POST` で JSON の本文を送り、応答の状態とヘッダを返し、本文を別のスレッドで読む。読んだバイト列は `std::sync::mpsc::sync_channel` で渡す。呼び出した側は次のことができる。
    - 打ち切る（取り消しの印を立てる）。打ち切ったら、読み取りのスレッドがすぐに（目安 1 秒以内に）終わり、チャネルの受け取り側に打ち切りが分かる。
    - 最後にデータを受け取った時刻を見る。データが届かない時間が上限を超えたら、呼び出した側が打ち切る。

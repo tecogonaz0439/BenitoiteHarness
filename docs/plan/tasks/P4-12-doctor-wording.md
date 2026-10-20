@@ -4,7 +4,7 @@
 
 2026-10-18 に設計者が `~/.config` の中で `benitoiteh doctor` を実行したとき、実行したディレクトリがプロジェクトとして扱われ、書ける場所の検査（設計書 03-02「書ける場所の検査」）で拒まれた。安全の規則は意図どおりに働いたが、示した文言が原因を伝えなかった。
 
-- 処理系の四つの項目（`benitoite.*`）の説明が、`writable root is inside a home dot directory or macOS Library: /Users/tecogonaz/.config (/Users/tecogonaz)` で、処理系の項目なのに書ける場所の文だけが出た。
+- 処理系の四つの項目（`benitoite.*`）の説明が、`writable root is inside a home dot directory or macOS Library: /Users/example/.config (/Users/example)` で、処理系の項目なのに書ける場所の文だけが出た。
 - 要約が `Restricted mode sandbox: available (checked with benitoiteh itself; Benitoite was not found or failed validation).` で、処理系は見つからなかったのではなく、確かめなかった。
 - `writable` の項目の文が、どのディレクトリがプロジェクトとして選ばれたか（実行したディレクトリか `--project` か）と、どうすればよいかを示さない。
 

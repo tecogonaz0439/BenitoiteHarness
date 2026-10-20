@@ -11,7 +11,7 @@ P5 の比べる相手のうち、外部のハーネス二つ（DeepSeek Harness 
 - [評価](../../design/07-quality/07-02-evaluation.md)（特に「比べる相手」の DeepSeek Harness と Claude Code の項、「評価の規模と費用の上限」「測る項目」「評価の手順」）
 - [P5-02](P5-02-benitoiteh-harness.md)・[P5-03](P5-03-records-and-cost.md)（行の欄、記録、費用の上限、時間の上限、子の環境）
 - 既存のもの: `tools/skill-eval/`（`skill_eval.py`、`harnesses.json`、`test_skill_eval.py`、`SOURCE.md`、`bin/benitoite`）
-- DeepSeek Harness の手元の作業ツリー `/Users/tecogonaz/src/deepseek-harness`（コミット `687f282e`、`0.2.1-rc.2`。読むだけ。変えない）: `packages/bundle/headless/README.md`、`packages/bundle/headless/src/json-stream.ts`、`packages/bundle/base/cordis.patch.yml`、`packages/sandbox/sandbox/src/roots.ts`、`packages/subprocess/subprocess/src/index.ts`、`packages/skill/skill-filesystem/README.md`、`packages/context/agent-instructions/src/files.ts`
+- DeepSeek Harness の手元の作業ツリー（コミット `687f282e`、`0.2.1-rc.2`。場所はオーケストレータが示す。読むだけ。変えない）: `packages/bundle/headless/README.md`、`packages/bundle/headless/src/json-stream.ts`、`packages/bundle/base/cordis.patch.yml`、`packages/sandbox/sandbox/src/roots.ts`、`packages/subprocess/subprocess/src/index.ts`、`packages/skill/skill-filesystem/README.md`、`packages/context/agent-instructions/src/files.ts`
 
 ## この作業が認める型の変更
 
@@ -21,7 +21,7 @@ P5 の比べる相手のうち、外部のハーネス二つ（DeepSeek Harness 
 
 **DeepSeek Harness**
 
-- 大域のコマンドはない。組み立て済みの `node /Users/tecogonaz/src/deepseek-harness/apps/cli/lib/bin.js` で起動する（どの作業ディレクトリからでも動く。`pnpm dsh` は作業ツリーの中でしか動かない）。版は `--version` で `0.2.1-rc.2` を返す。
+- 大域のコマンドはない。組み立て済みの `node <DeepSeek Harness のリポジトリ>/apps/cli/lib/bin.js` で起動する（どの作業ディレクトリからでも動く。`pnpm dsh` は作業ツリーの中でしか動かない）。版は `--version` で `0.2.1-rc.2` を返す。
 - 非対話の形は `bin.js --profile headless [--patch <file>] --json <依頼>` である。起動の選択肢（`--profile`、`--patch`）は `--json` と依頼より前に置く。依頼を果たして静かになるまで動き、子のエージェントを待って終わる。終了状態は、最後の番が完了すれば 0、取り消し・誤り・番なしなら 1 である。SIGTERM では終了状態 0、SIGINT では 130 で終わるので、時間の上限で止めたことは終了状態で判断しない（P5-03 の `timed_out`）。
 - 確認に答える部品を持たないので、確認を要する操作は拒まれる。既定のサンドボックス（`workspace-write`）では、`write`・`edit` の道具とシェルのコマンドは、作業ディレクトリ（`cwd`）、`/tmp`、`os.tmpdir()`（`TMPDIR`）の下にだけ書ける。ほかへの書き込みは拒まれる。読み取りは限らない。ネットワークは限らない。
 - `--json` は、一行一件の JSON（NDJSON）を標準出力に書く。種類は `session`、`status`（`phase` が `turn_start`・`step_start`・`step_end`・`turn_end`）、`thinking`、`text`、`tool_call`、`tool_result`、`final`（`text`）、`error` である。`step_end` の `usage` に `inputTokens`（キャッシュを含まない）、`outputTokens`、`cacheReadTokens`、`cacheWriteTokens`（省かれうる `totalTokens`）がある。一つの `step_end` が、モデルへの一回の要求に当たる。親のセッションの分だけで、子のエージェントの分は含まない。文字列は、`final` を除き 8 KiB で、一行は 32 KiB で切られる。
@@ -82,14 +82,15 @@ P5 の比べる相手のうち、外部のハーネス二つ（DeepSeek Harness 
 
 `harnesses.json` に、項目 `deepseek-harness` を加える。
 
+- キーチェーンの既定のサービス名は `benitoiteh-deepseek` とする。変えるときは、`harnesses.json` の該当する項目の `api_key.command` を直す。
 - `agent` は `codex`、`skill_parent` は `.agents/skills`、`model` は `deepseek-flash`、`options` は `{"effort": "high"}`、`output` は `dsh-ndjson`、`price` と `billing` は P5-03 の `benitoiteh-deepseek` と同じ（`billing` は `deepseek`）、`verified` は `false`、`default` は `false` とする。
-- `start` は `["node", "/Users/tecogonaz/src/deepseek-harness/apps/cli/lib/bin.js", "--profile", "headless", "--patch", "{trial}/dsh-eval-overlay.yml", "--json", "{prompt}"]`、`cwd` は `{workspace}`、`version` は `["node", "/Users/tecogonaz/src/deepseek-harness/apps/cli/lib/bin.js", "--version"]` とする。手元のパスを書くことは、`SOURCE.md` に理由（大域のコマンドがない）とともに書く。`{trial}` は、型板に新しく加える置き換え（試行のディレクトリ）である。
+- `start` は `["node", "<DeepSeek Harness のリポジトリ>/apps/cli/lib/bin.js", "--profile", "headless", "--patch", "{trial}/dsh-eval-overlay.yml", "--json", "{prompt}"]`、`cwd` は `{workspace}`、`version` は `["node", "<DeepSeek Harness のリポジトリ>/apps/cli/lib/bin.js", "--version"]` とする。ここでは実行ファイルの場所を記号で示す。現在の `harnesses.json` には手元の絶対パスが入っており、ほかの機械では書き換える。この扱いは `SOURCE.md` に理由（大域のコマンドがない）とともに書く。`{trial}` は、型板に新しく加える置き換え（試行のディレクトリ）である。
 - 試行の準備（`run_trial`。項目に新しい `"prepare": "dsh"` を置き、それで分ける）:
   - `<試行>/dsh-eval-overlay.yml` に、前提の事実の重ね書きを書く（`reasoningEffort` は `options.effort`、`model` は `--model` か項目の `model`）。値は ASCII の英数字・`-`・`.` だけを受け付け、ほかは試行を始めずに誤りとする。
   - 環境: P5-03 の整理した環境に、`DSH_HOME=<試行>/dsh-home`、`DSH_AGENTS_HOME=<試行>/agents-home`（どちらも空のディレクトリを作る）、`DSH_TELEMETRY_DISABLED=1`、`TMPDIR=<試行>/tmp`（作る）を加える。
   - 包みのコマンドの記録 `SKILL_EVAL_LOG` を、`<試行>/tmp/benitoite.log` に置く（DeepSeek Harness のサンドボックスは、作業ディレクトリと `TMPDIR` の下にだけ書けるため）。判定と行の `log_exists` も、その場所を読む。`<試行>/bin/` と `<試行>/real/` は `TMPDIR` の外に残す（書けないので、LLM が包みのコマンドを書き換えられない）。
-  - API のキー: 起動の直前に、`/usr/bin/security find-generic-password -s benitoiteh-deepseek -w` を起動して値を得て（標準出力の末尾の改行を除く）、子の環境の `DEEPSEEK_API_KEY` だけに入れる。値をファイル・記録・標準出力・誤りの文に書かない。得られなければ、値を含めずに `cannot read the DeepSeek key from the keychain (exit <n>)` として評価を止める。
-  - 作業ディレクトリの祖先（`/` まで）に `.git` があれば、試行を始めずに誤りとする（DeepSeek Harness がその祖先をプロジェクトの根とし、上の `AGENTS.md` を読むため）。`--work-root` の既定（`tempfile.mkdtemp`）と、`~/src/bh-try/` の下は当たらない。
+  - API のキー: 起動の直前に、`/usr/bin/security find-generic-password -s "benitoiteh-deepseek" -w` を起動して値を得て（標準出力の末尾の改行を除く）、子の環境の `DEEPSEEK_API_KEY` だけに入れる。値をファイル・記録・標準出力・誤りの文に書かない。得られなければ、値を含めずに `cannot read the DeepSeek key from the keychain (exit <n>)` として評価を止める。
+  - 作業ディレクトリの祖先（`/` まで）に `.git` があれば、試行を始めずに誤りとする（DeepSeek Harness がその祖先をプロジェクトの根とし、上の `AGENTS.md` を読むため）。`--work-root` の既定（`tempfile.mkdtemp`）と、git リポジトリを祖先に持たない、利用者が指定した評価用の場所は当たらない。
 - 試行の後、`<試行>/dsh-home` は消さずに残す（生の記録であり、リポジトリの外にある）。
 
 ### 3. Claude Code の項目
@@ -141,8 +142,8 @@ P5 の比べる相手のうち、外部のハーネス二つ（DeepSeek Harness 
 8. **重ね書きの書き方**: 値は `json.dumps` で引用して書く（YAML として正しい。YAML 1.1 では引用しない `off` が真偽になる）。effort は `{off, low, high, max}` のどれかであることを確かめ、モデルの名前は ASCII の英数字・`-`・`.` だけを受け付ける。
 9. **キーを読むコマンド**: `deepseek-harness` の項目に、`benitoiteh-deepseek` と同じ形の `"api_key": {"command": ["/usr/bin/security", "find-generic-password", "-s", "benitoiteh-deepseek", "-w"]}` を置き、道具はそのコマンドを起動する（テストで差し替えられるようにする）。コマンドは P5-03 の整理した環境で起動し、一回の `evaluate` で一度だけ読む（試行ごとにキーチェーンを読まない）。空の出力は誤りとする。`--dry-run` では読まない。
 10. **Claude Code の確かめの範囲**: 設定のディレクトリは、`CLAUDE_CONFIG_DIR` があればそれ、なければ `~/.claude` とする。次のどれかがあれば、試行を始めずに誤りとし、名前（内容でなく）を示す。設計書 07-02 の「利用者が自分で加えたもの」を外す決定と、「評価の手順」の、利用者の指示のファイルを読ませない定めに当たるものである。
-    - `skills/` の直下の、`synced` 以外の項目（ディレクトリかリンク）。2026-10-18 の時点では、`apple-container`・`japanese-tech-writing`・`rtk` の三つのリンクがある。
-    - `agents/`・`commands/`・`output-styles/` の下の項目。2026-10-18 の時点では、`agents/security-reviewer.md` がある。
+    - `skills/` の直下の、`synced` 以外の項目（ディレクトリかリンク）（利用者が追加した Skill のディレクトリやリンク）。
+    - `agents/`・`commands/`・`output-styles/` の下の項目（利用者が追加したエージェントなど）。
     - `CLAUDE.md`。
     - `settings.json` の `enabledPlugins` の真の値、`hooks`、`outputStyle`。
     - 作業ディレクトリの祖先（`/` まで）の `CLAUDE.md`・`CLAUDE.local.md`。
