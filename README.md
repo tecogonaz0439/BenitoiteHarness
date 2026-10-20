@@ -11,6 +11,8 @@ The harness has two modes:
 
 The prototype is implemented through P5-35, including the evaluation tools. The compaction evaluation (BH-014, P5-36) was deferred by the designer on 2026-10-21; some design decisions remain open. See the [design document (in Japanese)](docs/design/README.md), [implementation plan and task status](docs/plan/README.md), and [evaluation summaries](tools/skill-eval/results/).
 
+The [documentation index](docs/README.md) also links to the shared development workflow. For security reports, see [SECURITY.md](SECURITY.md).
+
 ## License
 
 Licensed under either of the [Apache License, Version 2.0](LICENSE-APACHE) or the [MIT License](LICENSE-MIT), at your option (`MIT OR Apache-2.0`).

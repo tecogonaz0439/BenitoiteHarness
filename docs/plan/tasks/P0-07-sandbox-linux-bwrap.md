@@ -221,7 +221,7 @@ P0-05 のテストのうち、新しい形でも成り立つものは残す。
 
 ## テストの環境
 
-Linux のテストは、オーケストレータが、設計者の常設の x86_64 の機械の podman で走らせる（00-common の「検査」）。2026-10-17 に、オーケストレータが次のことを済ませた。Codex は `scripts/` を変えない。
+Linux のテストは、オーケストレータが、x86_64 の試験環境の podman で走らせる（00-common の「検査」）。2026-10-17 に、オーケストレータが次のことを済ませた。Codex は `scripts/` を変えない。
 
 - `scripts/remote-linux-run.sh` を、次の形にして `main` に取り込んだ。
   - イメージは、`alpine:3.22` に bubblewrap 0.12.0 を入れた `localhost/benitoiteh-test:alpine-3.22-bwrap`。

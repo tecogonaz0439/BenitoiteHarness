@@ -21,11 +21,11 @@
 
 - **出力**: `--output-format json` は一つのオブジェクトを書く。2026-10-17 の Benitoite の評価の記録（`harness.stdout`）では、鍵は `conversation_id`、`status`（`"SUCCESS"`）、`response`（最後の応答の文）、`duration_seconds`、`num_turns`（利用者の発言の数で、モデルへの要求の数ではない）、`usage`（`input_tokens`、`output_tokens`、`thinking_tokens`、`cache_read_tokens`、`total_tokens`）だった。`total_tokens = input_tokens + output_tokens` であり、`cache_read_tokens` は `input_tokens` より大きいので、`input_tokens` はキャッシュの読み取りを含まない。キャッシュの書き込みの欄はない。`thinking_tokens` が `output_tokens` に含まれるかは確かめていない。拒んだ操作は `denied_actions` に載る（L1.1.27）。誤りでは終了状態 3 で、標準エラー出力に `AGY_ERROR: {...}` の行を書き、JSON に途中までの応答を含める（L1.2.6、L1.2.10）。使い方の誤りは終了状態 2 である。
 - **会話の記録**: `~/.gemini/antigravity-cli/brain/<conversation_id>/.system_generated/logs/transcript.jsonl` に、一行一件で、`type`（`USER_INPUT`・`PLANNER_RESPONSE`・`GENERIC`）、`step_index`、`tool_calls[].{name,args}`（例 `run_command` の `CommandLine`・`Cwd`）、手ごとの `input_tokens`・`output_tokens`・`cache_read_tokens` がある。10-17 の記録では、`PLANNER_RESPONSE` の 37 手の使用量の和が、標準出力の `usage` と一致した。このため、`PLANNER_RESPONSE` の数がモデルへの要求の数（番）に当たる。
-- **利用者の設定**（2026-10-18 の状態）: `~/.gemini/config/config.json` の根の鍵は `userSettings` だけ、`mcp_config.json` は空（0 バイト）、`projects/` に 4 つの JSON。`~/.gemini` の下と `~` に、`GEMINI.md`・`AGENTS.md`・`skills/`・`plugins/`・`rules/`・`hooks.json` はない。`~/.gemini/antigravity-cli/settings.json` の鍵は `model`・`trustedWorkspaces`。同梱のスキルは `~/.gemini/antigravity-cli/builtin/skills/` に 9 個ある（製品が標準で持つもの）。`~/.agents/skills` の 3 個は、Antigravity が読まない見込みである（10-17 の会話の記録に名前が現れなかった）。設定の別の置き場所を指す、文書にある方法はない。ログインはキーチェーン（keyring）による。
+- **設定の参照先**: 利用者が加えた設定を外すため、下の「走らせる前の確かめ」に挙げる場所を調べる。設定の別の置き場所を指す、同梱の文書にある方法はない。ログインはキーチェーン（keyring）による。
 - **権限**: 非対話の既定は `request-review` で、確認を要する操作は待たずに断られ、`denied_actions` に載る（L1.1.3、L1.1.27）。`--mode accept-edits` はファイルの編集を自動で許し、コマンドは確認を要する（非対話では断られる）。`--mode` は `-p` でも効く（L1.1.12）。`--dangerously-skip-permissions` はすべてを許す（L1.3.2）。
 - **フック**: 作業ディレクトリの `.agents/hooks.json` の `PreToolUse` は、`allow`・`deny`・`ask`・`force_ask` を返せる（`hooks.md`）。入力は `toolCall.name` と `args.CommandLine` などを持つ。フックは `sh -c` で、`hooks.json` のあるディレクトリを作業ディレクトリとして起動される。
 - **時間の上限**: `--print-timeout`（既定 0 は無制限。L1.2.6）。上限に達すると、途中までの出力を書き、標準エラー出力に警告を書いて、終了状態 0 で終わる（L1.1.28）。番の数の上限の選択肢はない。SIGTERM での振る舞いは文書にない。
-- **課金**: まずプランの利用枠を使い、設定 `useG1Credits` で有効にしたときだけ追加のクレジットを使う。残高が足りなければ止まる（L1.0.3、L1.2.13、L1.2.15）。今の設定に `useG1Credits` はない。
+- **課金**: まずプランの利用枠を使い、設定 `useG1Credits` で有効にしたときだけ追加のクレジットを使う。残高が足りなければ止まる（L1.0.3、L1.2.13、L1.2.15）。
 - **自動の更新**: 起動のたびに、背後で更新を確かめるプロセスが起動する。環境変数 `AGY_CLI_DISABLE_AUTO_UPDATE` が実行ファイルの中にある（文書にはない）。
 
 ## 作るもの
@@ -103,7 +103,7 @@
 
 本節は、上の各節に優先する。
 
-1. **祖先の `.agents/`**: `~/.agents/skills`（利用者が加えた 3 個のスキル）があり、Antigravity は作業ディレクトリからプロジェクトの根までの `.agents/` を読む（`json_configs.md`）。前提の事実の「`~/.agents/skills` は読まない見込み」は根拠が弱いので取り消す。走らせる前の確かめで、作業ディレクトリの祖先（作業ディレクトリ自身を除き、`~/.agents/` を含む）に `.agents/` があれば誤りとする。`SOURCE.md` に、Antigravity の項目では `--work-root` を `HOME` の外（例 `/Users/Shared/bh-eval/...`）に置くことを書く。
+1. **祖先の `.agents/`**: Antigravity は作業ディレクトリからプロジェクトの根までの `.agents/` を読む（`json_configs.md`）。ホームに置かれた利用者のスキルが読まれないとの当初の見込みは取り消す。走らせる前の確かめで、作業ディレクトリの祖先（作業ディレクトリ自身を除き、`~/.agents/` を含む）に `.agents/` があれば誤りとする。`SOURCE.md` に、Antigravity の項目では `--work-root` を `HOME` の外に置くことを書く。
 2. **フックは試行ごとに組み立てる**: `files` は型板として置き換えられないので、項目から `files` を除き、`"prepare": "agy"` を置いて `run_trial` で分ける。その分かれ道で、`agy_gate.py` を `<試行>/agy/` に写し、`hooks.json` を `json.dumps` で組み立てて書く。門のコマンドは `shlex.quote(sys.executable) + ' -I ' + shlex.quote(<門の写し>) + ' ' + shlex.quote(<作業ディレクトリの実のパス>)` とする（フックは `sh -c` で起動されるので引用し、作業ディレクトリは推し量らずに引数で渡す）。
 3. **門の規則**（2 の「`benitoite` だけを許す」を置き換える）:
    - 入力の形は `hooks.md` に合わせる。`toolCall.name`、`toolCall.args`（`CommandLine`。`Cwd` は会話の記録でだけ見える。絶対のパス）、`stepIdx`、`conversationId`、`workspacePaths`、`transcriptPath`、`modelName`。出力は `{"decision": ..., "reason": ...}` とする。

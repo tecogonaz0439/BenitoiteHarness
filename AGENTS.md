@@ -10,6 +10,8 @@
 
 設計書、実装プラン、試作の実装は、Codex CLI（モデル GPT-6.1-Sol、推論の度合い high）が行う（実装は 2026-10-17、設計書と実装プランは 2026-10-20 の設計者の指示。Benitoite の処理系と同じ分担）。Claude Code は、オーケストレータとして作業を配り、すべての作業をレビューして取り込む。レビューには Codex を使わない。設計書の外部のレビュー（ChatGPT Pro など）は、設計者が依頼したときに、公開のリポジトリを読ませて行う。
 
+非公開の運用の補足（担当の割り当て、作業の配分の手順、個人の試験環境など）を `private/AGENTS.md` に置く。このファイルがあれば、作業を始める前に読む。
+
 試作の目的は、`docs/design/00-overview/00-01-goals.md` に定める。要点は次の三つである。
 
 - Benitoite 以外のスクリプト言語（sh、Python など）を使わせない**制限モード**と、一般的なエージェントハーネスと同じく振る舞う**通常モード**を持つ。
@@ -49,18 +51,21 @@ Benitoite のプロジェクトは改造の途中であることが多い。処�
 |---|---|---|
 | `reference/` | ユーザーが会話ごとに置く参照用ファイル。会話が終わると削除されることがある | 読み取り専用。編集しない。git で追跡しない。設計書からリンクしない |
 | `work/` | 手元の作業用のファイル（アーカイブ、測定の生の記録など） | git で追跡しない |
+| `private/` | 非公開の運用の文書（`AGENTS.md`）と非公開のスキル（`skills/`） | `.gitignore` で除く。公開の文書からリンクしない。非公開のスキルへのシンボリックリンクも `.gitignore` で除く。git worktree には現れないので、作業に要る条件は依頼文に含める |
+| `docs/README.md` | 文書の入口 | 設計書、実装プラン、作業の手順を案内する |
 | `docs/design/` | 設計書本体 | 主な作業対象 |
 | `docs/design/README.md` | 設計書の目次と凡例 | 章を追加・改名したら更新する |
 | `docs/design/open-issues.md` | 未決事項の一覧（`BH-nnn`） | 「設計書の規約」の「未決事項」 |
 | `docs/design/08-appendix/reviews/` | 外部のレビュー（ChatGPT Pro など）の依頼の文面と結果の写し。レビューごとに `<日付>-<レビューした者>/` を作る | 設計者が取り込むと決めたものだけを置く。受け取ったまま置き、手で直さない。設計書の決定としては扱わず、指摘ごとの扱いは `08-appendix/08-03-external-review.md` に書く |
 | `docs/plan/` | 実装プラン（試作の作業の分け方と、各作業の文書・状態） | 設計書と実装プランだけを読めば実装できる粒度で書く |
+| `docs/workflow/` | 公開の共通依頼文、作業文書の雛形、文書構成の対応表 | 個人の設定を含めない。共通依頼文は `docs/plan/00-common.md` と `scripts/check.sh` の変更に合わせて保守する |
 | `crates/benitoiteh/` | 試作のクレート（ライブラリと実行ファイル） | 「実装の規約」に従う |
 | `crates/sandbox-probe/` | OS のサンドボックスのテストが起動する補助のクレート | 試作の実行ファイルと配布物には含めない |
 | `scripts/` | ビルドとテストをまとめて走らせる道具 | `check.sh --inside-codex` は Codex 内で走らせられる検査を行う |
 | `docs/plan/results/` | 実装プランの作業で確かめた結果 | 作業の文書から参照する |
 | `assets/benitoite/` | Benitoite のリリースから取り込んだ文書（同梱の Agent Skill など） | 手で直さない。取り込み直すときは「Benitoite の処理系と事前検討の参照」に従う |
 | `tools/` | 評価と測定の道具 | LLM を呼ぶ評価は設計者の了承を得てから行う |
-| `.claude/skills/` | プロジェクト固有のスキル（`git-workflow`、`test-audit`、`orchestration`） | `.agents/skills/` にシンボリックリンクを置く |
+| `.claude/skills/` | 公開のプロジェクト固有のスキル（`git-workflow`、`test-audit`）と、非公開のスキルへのシンボリックリンク（あれば） | 公開のスキルはここに実体を置き、`.agents/skills/` から相対のシンボリックリンクで指す。非公開のスキルとそのリンクは git で追跡しない |
 
 ## 設計書の規約
 
@@ -167,9 +172,10 @@ Benitoite のプロジェクトは改造の途中であることが多い。処�
 
 ## Agent Skills の運用
 
-- オーケストレータ（Claude Code）の作業は、スキル [orchestration](.claude/skills/orchestration/SKILL.md) に従う。
-- プロジェクト固有のスキルの実体は `.claude/skills/<スキル名>/` に置く。
-- スキルを新しく作成したら、`.agents/skills/<スキル名>` に実体を指すシンボリックリンクを作成する。相対パスで作成する（例: `ln -s ../../.claude/skills/<スキル名> .agents/skills/<スキル名>`）。
+- 公開の共通手順は [実装作業の共通依頼文](docs/workflow/implementation-request.md)と [作業の進め方](docs/plan/00-common.md)に従う。担当の割り当てなどの補足は、非公開の運用の補足（あれば）に従う。
+- 公開のプロジェクト固有のスキルの実体は `.claude/skills/<スキル名>/` に置く。
+- 公開のスキルを新しく作成したら、`.agents/skills/<スキル名>` に実体を指すシンボリックリンクを作成する。相対パスで作成する（例: `ln -s ../../.claude/skills/<スキル名> .agents/skills/<スキル名>`）。
+- 非公開のスキルの実体は `private/skills/<スキル名>/` に置き、`.claude/skills/<スキル名>` から `../../private/skills/<スキル名>` を、`.agents/skills/<スキル名>` から `../../.claude/skills/<スキル名>` を指す。実体と両方のリンクを `.gitignore` で除く。公開の文書から非公開のスキルへリンクしない。
 - スキルを改名・削除したら、対応するシンボリックリンクも改名・削除する。
 - Benitoite のスキルを写すときは、写した元のリリースのタグを、スキルの末尾の「出典」に書く。
 
