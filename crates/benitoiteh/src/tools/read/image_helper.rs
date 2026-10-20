@@ -70,6 +70,15 @@ fn limit_resources() -> Result<(), HelperError> {
 }
 
 #[cfg(target_os = "linux")]
+fn limit_processes() -> Result<(), HelperError> {
+    // root には NPROC が強制されないため、解く前に呼び出し自体を拒む。
+    // 補助を単独で起動した場合も同じ制限を掛ける（設計書 01-03「画像のファイルの読み取り」）。
+    rustix::thread::set_no_new_privs(true).map_err(|_| HelperError::Limits)?;
+    let filter = crate::sandbox::compile_no_process().map_err(|_| HelperError::Limits)?;
+    seccompiler::apply_filter(&filter).map_err(|_| HelperError::Limits)
+}
+
+#[cfg(target_os = "linux")]
 fn limit_memory() -> Result<(), HelperError> {
     use rustix::process::{Resource, Rlimit, setrlimit};
     setrlimit(
@@ -84,6 +93,8 @@ fn limit_memory() -> Result<(), HelperError> {
 
 fn convert(mut args: impl Iterator<Item = OsString>) -> Result<(), HelperError> {
     limit_resources()?;
+    #[cfg(target_os = "linux")]
+    limit_processes()?;
     // macOS は意味のある RLIMIT_AS を拒むため Linux にだけ掛ける（BH-113）。
     #[cfg(target_os = "linux")]
     limit_memory()?;
@@ -254,9 +265,9 @@ mod text {
 
 #[cfg(test)]
 mod tests {
-    #[cfg(target_os = "linux")]
-    use super::limit_memory;
     use super::limit_resources;
+    #[cfg(target_os = "linux")]
+    use super::{limit_memory, limit_processes};
     use rustix::process::{Resource, getrlimit};
     use std::io::Write;
 
@@ -268,6 +279,8 @@ mod tests {
         const CHILD: &str = "BENITOITEH_IMAGE_LIMITS_CHILD";
         if let Some(mode) = std::env::var_os(CHILD) {
             assert!(limit_resources().is_ok());
+            #[cfg(target_os = "linux")]
+            assert!(limit_processes().is_ok());
             for resource in [Resource::Nproc, Resource::Fsize, Resource::Core] {
                 let limit = getrlimit(resource);
                 assert_eq!((limit.current, limit.maximum), (Some(0), Some(0)));
@@ -283,15 +296,26 @@ mod tests {
                 file.write_all(b"x")?;
                 return Err("file data limit was not enforced".into());
             }
-            // Linux は特権のある root に NPROC を強制しない。
-            if !cfg!(target_os = "linux") || !rustix::process::geteuid().is_root() {
-                let result = std::process::Command::new(std::env::current_exe()?)
+            let result = std::process::Command::new(std::env::current_exe()?)
+                .arg("--list")
+                .output();
+            let error = result.err().ok_or("child unexpectedly started")?;
+            #[cfg(target_os = "linux")]
+            let expected = rustix::io::Errno::PERM;
+            #[cfg(not(target_os = "linux"))]
+            let expected = rustix::io::Errno::AGAIN;
+            assert_eq!(error.raw_os_error(), Some(expected.raw_os_error()));
+            #[cfg(target_os = "linux")]
+            {
+                use std::os::unix::process::CommandExt;
+                // 子の作成で止まる起動とは別に、今のプロセスの execve の拒否も確かめる
+                // （設計書 01-03「画像のファイルの読み取り」）。
+                let error = std::process::Command::new(std::env::current_exe()?)
                     .arg("--list")
-                    .output();
-                let error = result.err().ok_or("child unexpectedly started")?;
+                    .exec();
                 assert_eq!(
                     error.raw_os_error(),
-                    Some(rustix::io::Errno::AGAIN.raw_os_error())
+                    Some(rustix::io::Errno::PERM.raw_os_error())
                 );
             }
             std::io::stdout()
@@ -313,6 +337,7 @@ mod tests {
                     .args(["--exact", "tools::read::image::helper::tests::resource_limits_deny_children_and_file_data_but_allow_pipes", "--nocapture"])
                     .env(CHILD, mode)
                     .env("BENITOITEH_IMAGE_LIMITS_FILE", directory.join("data"))
+                    .env("HOME", &directory)
                     .env("XDG_CONFIG_HOME", &directory)
                     .env("XDG_STATE_HOME", &directory)
                     .env("TMPDIR", &directory)

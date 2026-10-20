@@ -168,7 +168,7 @@ impl Session {
         {
             return Err(SessionError::Invalid(text::INVALID_FORMAT));
         }
-        let resume = ResumeState::from_records(&records)?;
+        let resume = ResumeState::from_records(records)?;
         let spill = open_directory_at(&directory, "spill")?;
         match rustix::fs::mkdirat(&directory, "objects", Mode::RWXU) {
             Ok(()) | Err(rustix::io::Errno::EXIST) => {}

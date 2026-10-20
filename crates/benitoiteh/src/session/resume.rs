@@ -32,16 +32,17 @@ impl ResumeState {
     /// ロックを保持したセッションの記録を読み、実行し直さない結果を取り出す。
     pub fn read(directory: &Path) -> Result<Self, SessionError> {
         let records = read_records(directory)?;
-        Self::from_records(&records)
+        Self::from_records(records)
     }
 
-    pub(super) fn from_records(records: &[Record]) -> Result<Self, SessionError> {
-        Self::from_records_with_tree(records, super::SessionTree::from_records(records)?)
+    pub(super) fn from_records(records: Vec<Record>) -> Result<Self, SessionError> {
+        let tree = super::SessionTree::from_records(&records)?;
+        Self::from_records_with_tree(records, tree)
     }
 
     /// 呼び出した操作が検査済みの木を使い、記録の再読込と索引の再構築を避ける。
     pub(crate) fn from_records_with_tree(
-        records: &[Record],
+        records: Vec<Record>,
         tree: super::SessionTree,
     ) -> Result<Self, SessionError> {
         let Some(Record::Header(header)) = records.first() else {
@@ -57,7 +58,7 @@ impl ResumeState {
             },
         };
         let mut state = Self {
-            conversation: replay::replay_records(records, &tree),
+            conversation: Conversation::default(),
             tree,
             missing_results: Vec::new(),
             max_turn: 0,
@@ -65,12 +66,12 @@ impl ResumeState {
             destination: segment.destination.clone(),
             project_dir: header.project_dir.clone(),
             reasoning: Vec::new(),
-            files: FileHistory::from_records(records),
+            files: FileHistory::from_records(&records),
         };
         let mut node_reasoning = BTreeMap::new();
         let mut results = BTreeSet::new();
         let mut calls = BTreeMap::new();
-        for record in records {
+        for record in &records {
             match record {
                 Record::SessionStart {
                     mode,
@@ -205,6 +206,9 @@ impl ResumeState {
             .values()
             .fold(state.max_turn, |maximum, (turn, _)| maximum.max(*turn));
         state.destination = segment.destination;
+        // 区間・番の番号・ファイルの履歴を先に取り、記録の本文は会話へ移す。
+        // 大きな道具の結果を二重に持たない（設計書 01-05「再開」「セッションの木」）。
+        state.conversation = replay::replay_records(records, &state.tree);
         for item in &state.conversation.items {
             if let Item::ToolResult(result) = item
                 && !results.contains(&result.id)

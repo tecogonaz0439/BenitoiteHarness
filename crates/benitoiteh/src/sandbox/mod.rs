@@ -29,6 +29,8 @@ use std::process::Command;
 use std::process::Stdio;
 
 #[cfg(target_os = "linux")]
+pub(crate) use linux::compile_no_process;
+#[cfg(target_os = "linux")]
 pub use linux::{
     CapabilityStatus, LinuxAvailability, PreparedSandbox, SandboxChild, bubblewrap_version,
     probe_linux, run_helper,

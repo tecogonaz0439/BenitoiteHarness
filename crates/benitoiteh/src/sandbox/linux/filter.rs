@@ -1,4 +1,4 @@
-//! CPU の種類とソケットの引数を制限する seccomp を作る（設計書 03-02「方針の要素」）。
+//! CPU の種類・ソケット・画像補助のプロセス作成を制限する seccomp を作る（設計書 03-02「方針の要素」、01-03「画像のファイルの読み取り」）。
 
 use std::collections::BTreeMap;
 
@@ -83,6 +83,35 @@ pub(super) fn compile(allow_ip: bool) -> Result<BpfProgram> {
         std::env::consts::ARCH.try_into()?,
     )?;
     let compiled: BpfProgram = filter.try_into()?;
+    Ok(reject_x32(compiled))
+}
+
+/// 画像補助が root でも、子とスレッドの作成とプログラムの起動を拒む。
+pub(crate) fn compile_no_process() -> Result<BpfProgram> {
+    let mut rules = BTreeMap::new();
+    for syscall in [
+        libc::SYS_clone,
+        libc::SYS_clone3,
+        libc::SYS_execve,
+        libc::SYS_execveat,
+    ] {
+        rules.insert(syscall, vec![]);
+    }
+    // aarch64 は fork・vfork の番号を持たない。
+    #[cfg(target_arch = "x86_64")]
+    for syscall in [libc::SYS_fork, libc::SYS_vfork] {
+        rules.insert(syscall, vec![]);
+    }
+    let filter = SeccompFilter::new(
+        rules,
+        SeccompAction::Allow,
+        SeccompAction::Errno(libc::EPERM as u32),
+        std::env::consts::ARCH.try_into()?,
+    )?;
+    Ok(reject_x32(filter.try_into()?))
+}
+
+fn reject_x32(compiled: BpfProgram) -> BpfProgram {
     #[cfg(target_arch = "x86_64")]
     {
         // x32 は AUDIT_ARCH_X86_64 を共有するので、ライブラリの CPU の検査だけでは
@@ -108,10 +137,10 @@ pub(super) fn compile(allow_ip: bool) -> Result<BpfProgram> {
             },
         ];
         prefix.extend(compiled);
-        Ok(prefix)
+        prefix
     }
     #[cfg(not(target_arch = "x86_64"))]
-    Ok(compiled)
+    compiled
 }
 
 #[cfg(test)]

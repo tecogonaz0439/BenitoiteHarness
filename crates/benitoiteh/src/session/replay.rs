@@ -101,7 +101,7 @@ pub(super) fn check_format(value: &serde_json::Value) -> Result<(), SessionError
 /// 最後の圧縮を起点に会話を復元し、結果のない呼び出しを自動で再実行せず補う。
 pub fn replay(directory: &Path) -> Result<Conversation, SessionError> {
     let records = read_records(directory)?;
-    Ok(super::ResumeState::from_records(&records)?.conversation)
+    Ok(super::ResumeState::from_records(records)?.conversation)
 }
 
 /// 記録の順から親を確定した、セッションの木。
@@ -285,7 +285,7 @@ pub(crate) fn request_text_ref(record: &Record) -> Option<&str> {
     None
 }
 
-pub(super) fn replay_records(records: &[Record], tree: &SessionTree) -> Conversation {
+pub(super) fn replay_records(mut records: Vec<Record>, tree: &SessionTree) -> Conversation {
     let mut conversation = Conversation::default();
     let starts = records
         .iter()
@@ -301,24 +301,42 @@ pub(super) fn replay_records(records: &[Record], tree: &SessionTree) -> Conversa
         let Some((_, index)) = tree.entry(node) else {
             continue;
         };
-        match records.get(index) {
-            Some(Record::User { message, .. }) => {
-                conversation.items.push(Item::UserMessage(message.clone()))
+        let Some(record) = records.get_mut(index) else {
+            continue;
+        };
+        // 索引をずらさず、道の上の本文の所有権を移す。残った記録は復元後に使わない
+        // （設計書 01-05「セッションの木」）。
+        let record = std::mem::replace(record, Record::TurnStart { turn: 0 });
+        match record {
+            Record::User { message, .. } => conversation.items.push(Item::UserMessage(message)),
+            Record::Assistant { response, .. } => {
+                conversation.items.push(Item::AssistantTurn(response))
             }
-            Some(Record::Assistant { response, .. }) => conversation
-                .items
-                .push(Item::AssistantTurn(response.clone())),
-            Some(Record::ToolResult { result, .. }) => {
-                conversation.items.push(Item::ToolResult(result.clone()))
+            Record::ToolResult { result, .. } => conversation.items.push(Item::ToolResult(result)),
+            Record::ImagesRemoved { results, .. } if !results.is_empty() => {
+                crate::provider::remove_images(&mut conversation, Some(&results));
             }
-            Some(Record::ImagesRemoved { results, .. }) if !results.is_empty() => {
-                crate::provider::remove_images(&mut conversation, Some(results));
-            }
-            Some(Record::Compaction {
+            Record::Compaction {
                 conversation: compacted,
                 ..
-            }) => conversation = compacted.clone(),
-            _ => {}
+            } => conversation = compacted,
+            Record::Header(_)
+            | Record::SessionStart { .. }
+            | Record::TurnStart { .. }
+            | Record::ToolCall { .. }
+            | Record::ToolStart { .. }
+            | Record::WriteTarget { .. }
+            | Record::Approval { .. }
+            | Record::ImagesRemoved { .. }
+            | Record::Retry { .. }
+            | Record::Error { .. }
+            | Record::TurnEnd { .. }
+            | Record::SessionEnd { .. }
+            | Record::Summary { .. }
+            | Record::ProjectDirChanged { .. }
+            | Record::Branch { .. }
+            | Record::Checkpoint(_)
+            | Record::Spilled { .. } => {}
         }
     }
     fill_missing(conversation, &starts)
@@ -328,15 +346,22 @@ fn fill_missing(conversation: Conversation, starts: &BTreeSet<String>) -> Conver
     let known = conversation
         .items
         .iter()
-        .filter_map(|item| match item {
-            Item::ToolResult(result) => Some((result.id.clone(), result.clone())),
+        .enumerate()
+        .filter_map(|(index, item)| match item {
+            Item::ToolResult(result) => Some((result.id.clone(), index)),
             Item::UserMessage(_) | Item::AssistantTurn(_) => None,
         })
         .collect::<std::collections::BTreeMap<_, _>>();
     let mut rebuilt = Conversation::default();
     let mut pending = Vec::<ToolCall>::new();
     let mut emitted = BTreeSet::new();
-    for item in conversation.items {
+    // 結果を先の位置から補う場合も、本文を複製せず一度だけ取り出す
+    // （設計書 01-05「再開」）。
+    let mut items = conversation.items.into_iter().map(Some).collect::<Vec<_>>();
+    for index in 0..items.len() {
+        let Some(item) = items.get_mut(index).and_then(Option::take) else {
+            continue;
+        };
         match item {
             Item::ToolResult(result) => {
                 pending.retain(|call| call.id != result.id);
@@ -345,11 +370,25 @@ fn fill_missing(conversation: Conversation, starts: &BTreeSet<String>) -> Conver
                 }
             }
             Item::UserMessage(message) => {
-                finish_calls(&mut rebuilt, &mut pending, starts, &known, &mut emitted);
+                finish_calls(
+                    &mut rebuilt,
+                    &mut pending,
+                    starts,
+                    &known,
+                    &mut items,
+                    &mut emitted,
+                );
                 rebuilt.items.push(Item::UserMessage(message));
             }
             Item::AssistantTurn(response) => {
-                finish_calls(&mut rebuilt, &mut pending, starts, &known, &mut emitted);
+                finish_calls(
+                    &mut rebuilt,
+                    &mut pending,
+                    starts,
+                    &known,
+                    &mut items,
+                    &mut emitted,
+                );
                 pending.extend(response.parts.iter().filter_map(|part| match part {
                     AssistantPart::ToolCall(call) => Some(call.clone()),
                     AssistantPart::Text(_) | AssistantPart::Reasoning(_) => None,
@@ -358,7 +397,14 @@ fn fill_missing(conversation: Conversation, starts: &BTreeSet<String>) -> Conver
             }
         }
     }
-    finish_calls(&mut rebuilt, &mut pending, starts, &known, &mut emitted);
+    finish_calls(
+        &mut rebuilt,
+        &mut pending,
+        starts,
+        &known,
+        &mut items,
+        &mut emitted,
+    );
     rebuilt
 }
 
@@ -366,15 +412,20 @@ fn finish_calls(
     conversation: &mut Conversation,
     calls: &mut Vec<ToolCall>,
     starts: &BTreeSet<String>,
-    known: &std::collections::BTreeMap<String, ToolResult>,
+    known: &std::collections::BTreeMap<String, usize>,
+    items: &mut [Option<Item>],
     emitted: &mut BTreeSet<String>,
 ) {
     for call in calls.drain(..) {
         if !emitted.insert(call.id.clone()) {
             continue;
         }
-        if let Some(result) = known.get(&call.id) {
-            conversation.items.push(Item::ToolResult(result.clone()));
+        if let Some(result) = known
+            .get(&call.id)
+            .and_then(|index| items.get_mut(*index))
+            .and_then(Option::take)
+        {
+            conversation.items.push(result);
             continue;
         }
         let result = ToolResult {

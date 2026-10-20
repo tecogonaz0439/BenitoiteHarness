@@ -8,6 +8,7 @@ mod mounts;
 mod process;
 
 pub use availability::{CapabilityStatus, LinuxAvailability, bubblewrap_version, probe_linux};
+pub(crate) use filter::compile_no_process;
 pub use process::{PreparedSandbox, SandboxChild};
 
 use std::ffi::{OsStr, OsString};

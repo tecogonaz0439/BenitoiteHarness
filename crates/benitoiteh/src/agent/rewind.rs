@@ -338,7 +338,7 @@ impl Agent {
         let prepared_path = if conversation {
             tree.push_record(&branch, records.len())?;
             records.push(branch.clone());
-            let state = crate::session::ResumeState::from_records_with_tree(&records, tree)?;
+            let state = crate::session::ResumeState::from_records_with_tree(records, tree)?;
             Some(self.prepare_path_state(state)?)
         } else {
             None
