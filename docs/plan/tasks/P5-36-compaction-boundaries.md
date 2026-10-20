@@ -154,3 +154,5 @@ P5-33 の後に、BH-014 の 2026-10-21 の試しの走行を調べ、二つの�
 指定された `BENITOITEH_TEST_BENITOITE` を使い、XDG と TMPDIR を作業用のディレクトリに向けて `scripts/check.sh --inside-codex` を実行した。fmt・clippy・ホストのテスト・既存資料の生成の照合・評価の道具・性能の道具・Linux 二対象のテスト用ビルド・ライセンス・リリースビルドの全段が通った。評価の道具は 103 件中 39 件を規定に従って除き、残りが通った。実行ファイルは macOS aarch64 が 5,706,560 B、Linux aarch64 が 6,232,880 B、Linux x86_64 が 7,498,224 B である。製品のコードを変えていないので、これらを本作業による性能の変化とは扱わない。
 
 `tests/sandbox_*.rs`、Linux のテストの実行、評価の道具の `requires_sandbox` と `test_judge_sandbox.RuntimeTests`、self-test・dry-run、`benitoiteh-mock`・`benitoiteh-mock-completion-check`・`benitoiteh-mock-compact` の通しは Codex 内では走らせていない。保護を外した代替の実行はしていない。新しいテストの追加・削除と製品のコードの変更はともに 0 行である。作業文書の相対リンクと、上の不等式の境の整数計算も確かめた。
+
+2026-10-21、設計者の判断で BH-014 を後回しにし、本作業は保留とした（[試しの走行の記録](../../../tools/skill-eval/results/2026-10-21-p5-compaction-trial.md)）。

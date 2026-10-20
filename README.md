@@ -9,7 +9,7 @@ The harness has two modes:
 
 ## Status
 
-Design phase. The design document (in Japanese) is in [`docs/design/`](docs/design/README.md). No code has been written yet.
+The prototype is implemented through P5-35, including the evaluation tools. The compaction evaluation (BH-014, P5-36) was deferred by the designer on 2026-10-21; some design decisions remain open. See the [design document (in Japanese)](docs/design/README.md), [implementation plan and task status](docs/plan/README.md), and [evaluation summaries](tools/skill-eval/results/).
 
 ## License
 
