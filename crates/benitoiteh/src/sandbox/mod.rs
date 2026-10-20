@@ -106,6 +106,16 @@ impl SandboxCommand {
     /// 補助を経て macOS の `sandbox-exec` を新しいセッションで起動する。
     #[cfg(not(target_os = "linux"))]
     pub fn to_command(&self, helper: &Path) -> Result<Command, SandboxError> {
+        self.to_command_with_limits(helper, session::ResourceLimits::default())
+    }
+
+    /// 呼び出し元の上限は変えず、補助で資源の上限を掛けてから起動する。
+    #[cfg(not(target_os = "linux"))]
+    pub fn to_command_with_limits(
+        &self,
+        helper: &Path,
+        limits: session::ResourceLimits,
+    ) -> Result<Command, SandboxError> {
         self.policy.validate()?;
         policy::canonical_path(&self.program)?;
         policy::canonical_path(&self.cwd)?;
@@ -116,7 +126,8 @@ impl SandboxCommand {
                 return Err(SandboxError::Unavailable);
             }
             let profile = self.policy.seatbelt_profile();
-            let mut command = session::command(helper, Path::new("/usr/bin/sandbox-exec"));
+            let mut command =
+                session::command_with_limits(helper, Path::new("/usr/bin/sandbox-exec"), limits);
             command.arg("-p").arg(profile.source);
             for (name, value) in profile.parameters {
                 let mut argument = OsString::from(format!("-D{name}="));

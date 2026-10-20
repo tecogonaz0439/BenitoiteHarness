@@ -45,6 +45,9 @@ impl SandboxPolicy {
         let mut profile = SeatbeltProfile {
             source: String::from(
                 "(version 1)\n(deny default)\n\
+                 ; 他のプロセスの引数と環境にある提供者のキーを読ませない（設計書 03-02）。\n\
+                 (deny process-info*)\n\
+                 (allow process-info* (target self))\n\
                  ; Rust の標準のライブラリが起動時にページの大きさを読むために必要。\n\
                  ; 拒否すると guard page の確保に失敗して SIGABRT になる。\n\
                  ; 2026-10-17 に、オーケストレータがこの sysctl だけで起動できることを確認した。\n\

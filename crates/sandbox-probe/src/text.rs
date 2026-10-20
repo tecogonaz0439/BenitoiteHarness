@@ -5,6 +5,7 @@ pub const OK: &str = "ok";
 pub const CHILD_FAILED: &str = "child failed";
 pub const FD_CLOSED: &str = "descriptor closed";
 pub const READY: &str = "ready";
+pub const WORKER_FAILED: &str = "A probe worker failed.";
 
 // P2-01 のプロセスの探査に使う英文。
 pub const ECHO_STDERR: &str = "echo stderr\n";

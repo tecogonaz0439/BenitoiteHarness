@@ -169,9 +169,32 @@ fn session_helper_executes_only_after_setsid_and_failures_exit_125() -> Result<(
         vec!["__session"],
         vec!["__session", "wrong", "/usr/bin/true"],
         vec!["__session", "--", "/missing-program"],
+        vec!["__session", "--rlimit-cpu", "0", "--", "/usr/bin/true"],
+        vec!["__session", "--rlimit-fsize", "bad", "--", "/usr/bin/true"],
+        vec![
+            "__session",
+            "--rlimit-cpu",
+            "1",
+            "--rlimit-cpu",
+            "2",
+            "--",
+            "/usr/bin/true",
+        ],
+        vec![
+            "__session",
+            "--rlimit-cpu",
+            "18446744073709551616",
+            "--",
+            "/usr/bin/true",
+        ],
     ] {
         let output = Command::new(env!("CARGO_BIN_EXE_benitoiteh"))
             .args(arguments)
+            .env_clear()
+            .env("HOME", &directory.0)
+            .env("XDG_CONFIG_HOME", &directory.0)
+            .env("XDG_STATE_HOME", &directory.0)
+            .env("TMPDIR", &directory.0)
             .current_dir(&directory.0)
             .output()?;
         assert_eq!(output.status.code(), Some(125), "{output:?}");
@@ -186,6 +209,11 @@ fn session_helper_executes_only_after_setsid_and_failures_exit_125() -> Result<(
         std::path::Path::new("/usr/bin/touch"),
     )
     .arg(&marker)
+    .env_clear()
+    .env("HOME", &directory.0)
+    .env("XDG_CONFIG_HOME", &directory.0)
+    .env("XDG_STATE_HOME", &directory.0)
+    .env("TMPDIR", &directory.0)
     .process_group(0)
     .output()?;
     assert_eq!(output.status.code(), Some(125));
@@ -198,11 +226,59 @@ fn session_helper_executes_only_after_setsid_and_failures_exit_125() -> Result<(
     .args(["-c", "printf '%s' \"$SESSION_HELPER_VALUE\"; exit 17"])
     .env_clear()
     .env("SESSION_HELPER_VALUE", "passed unchanged")
-    .env("HOME", "/missing-home")
+    .env("HOME", directory.0.join("missing-home"))
+    .env("XDG_CONFIG_HOME", &directory.0)
+    .env("XDG_STATE_HOME", &directory.0)
+    .env("TMPDIR", &directory.0)
     .current_dir(&directory.0)
     .output()?;
     assert_eq!(output.status.code(), Some(17));
     assert_eq!(output.stdout, b"passed unchanged");
     assert!(output.stderr.is_empty());
+    Ok(())
+}
+
+// 関門: 資源の上限を補助の exec 先と孫へ継がせ、呼び出し元の上限は変えない。
+#[test]
+fn session_helper_limits_only_the_exec_target_and_its_descendants() -> Result<(), Box<dyn Error>> {
+    use benitoiteh::sandbox::session::{ResourceLimits, command_with_limits};
+    use rustix::process::{Resource, getrlimit};
+    let directory = TestDirectory::new("session-limits")?;
+    let before_cpu = getrlimit(Resource::Cpu);
+    let before_file = getrlimit(Resource::Fsize);
+    let mut script = "/bin/sh -c 'ulimit -Ht; ulimit -Hf'".to_owned();
+    // root が持ちうる資源の上限を広げる権限は、この契約の拒否の対象ではない。
+    if !rustix::process::geteuid().is_root() {
+        script.push_str("; if (ulimit -Ht unlimited) 2>/dev/null; then exit 41; fi; if (ulimit -Hf unlimited) 2>/dev/null; then exit 42; fi");
+    }
+    let output = command_with_limits(
+        std::path::Path::new(env!("CARGO_BIN_EXE_benitoiteh")),
+        std::path::Path::new("/bin/sh"),
+        ResourceLimits {
+            cpu_seconds: Some(10),
+            file_size_bytes: Some(64 * 1024 * 1024),
+        },
+    )
+    .args(["-c", &script])
+    .env_clear()
+    .env("HOME", &directory.0)
+    .env("XDG_CONFIG_HOME", &directory.0)
+    .env("XDG_STATE_HOME", &directory.0)
+    .env("TMPDIR", &directory.0)
+    .output()?;
+    assert!(output.status.success(), "{output:?}");
+    // macOS 同梱の sh（bash 3.2）は 1024 バイト、Linux の BusyBox sh は 512 バイト単位。
+    // BusyBox 1.37.0 の shell/shell_common.c の RLIMIT_FSIZE は factor_shift=9。
+    let file_blocks = if cfg!(target_os = "macos") {
+        65536
+    } else {
+        131072
+    };
+    assert_eq!(
+        String::from_utf8(output.stdout)?,
+        format!("10\n{file_blocks}\n")
+    );
+    assert_eq!(getrlimit(Resource::Cpu), before_cpu);
+    assert_eq!(getrlimit(Resource::Fsize), before_file);
     Ok(())
 }

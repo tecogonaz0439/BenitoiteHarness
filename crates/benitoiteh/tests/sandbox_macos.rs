@@ -8,6 +8,9 @@ mod temporary_cleanup;
 #[path = "support/bash_sandbox.rs"]
 mod bash_sandbox;
 
+#[path = "support/macos_process_info.rs"]
+mod macos_process_info;
+
 use std::collections::BTreeMap;
 use std::error::Error;
 use std::ffi::{OsStr, OsString};
@@ -177,6 +180,24 @@ fn check(output: &Output, expected: i32) {
         output.status,
         String::from_utf8_lossy(&output.stderr)
     );
+}
+
+// 関門: file-read の制限とは別の sysctl 経由の環境漏れを、本物の囮と自己の正の対照で守る。
+#[test]
+fn process_info_denies_parent_and_unrelated_environments_but_allows_self() -> TestResult {
+    let f = Fixture::new(true)?;
+    let probe = macos_process_info::ProcessInfoProbe::new(&f.root)?;
+    let args = probe.args("denied");
+    let args: Vec<&OsStr> = args.iter().map(OsString::as_os_str).collect();
+    let command = f.command_for(
+        PolicyConfig::new(vec![f.writable.clone()]),
+        probe.python(),
+        &args,
+    )?;
+    let output = probe.wrap(&command).output()?;
+    assert!(output.status.success(), "{output:?}");
+    assert_eq!(output.stdout, b"process-info: denied\n");
+    Ok(())
 }
 
 // 作成時の関門: 読ませない場所の設定漏れを、実際の read と正の対照で捕まえる。
