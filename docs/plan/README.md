@@ -84,6 +84,10 @@
 | [P5-22](tasks/P5-22-chatgpt-requests.md) | Sign in with ChatGPT の要求（`auth = "chatgpt"` の提供者） | P5-21 | 完了 |
 | [P5-23](tasks/P5-23-plugin-skills.md) | Agent Plugins のプラグインの Skill を読む（MCP は読まない） | P5-18 | 完了 |
 | [P5-24](tasks/P5-24-plugin-skill-followups.md) | プラグインの Skill の上限の残り（示す文の大きさ、候補の上限で飛ばした名前、上限のテスト） | P5-23 | 完了 |
+| [P5-25](tasks/P5-25-temporary-cleanup-followups.md) | 一時ディレクトリとセッションの削除の残り（記述子の 32 段、権限と印を変えられた一時ディレクトリ、墓標の名前、足した書ける場所と一時ディレクトリの根、記録と錠のある一時ディレクトリだけを消す） | P5-24 | 未着手 |
+| [P5-26](tasks/P5-26-askpass-followups.md) | 秘密の入力の段 2 の残り（区切りの手前までの伏せ字、照合の値を消す、補助のディレクトリの `id`、掃除の失敗の文） | P5-25 | 未着手 |
+| [P5-27](tasks/P5-27-chatgpt-followups.md) | Sign in with ChatGPT の残り（戻り先の `poll`、後片付けの誤り、408・429、壊れた更新の応答、失敗したログインの取り消し、取り消しと更新の錠、誤りの文） | P5-26 | 未着手 |
+| [P5-28](tasks/P5-28-image-helper-and-rewind-memory.md) | 画像の補助の seccomp によるプロセスの作成の禁止と、枝を移るときの記録の写しの除去 | P5-27 | 未着手 |
 
 P1 の作業は P0-04・P0-05（OS のサンドボックス）の結果に依らないので、P0-04・P0-05 が設計者の判断を待つ間に先に進めてよい。
 
