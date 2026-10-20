@@ -315,6 +315,23 @@ impl Default for UserSkillsConfig {
     }
 }
 
+/// 利用者だけがプラグインの探索元を切り替えられる設定（設計書 01-04）。
+#[derive(Clone, Debug, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct UserPluginsConfig {
+    pub user: bool,
+    pub project: bool,
+}
+
+impl Default for UserPluginsConfig {
+    fn default() -> Self {
+        Self {
+            user: true,
+            project: true,
+        }
+    }
+}
+
 /// セッションを残す期間。
 #[derive(Clone, Debug, Deserialize)]
 #[serde(default, deny_unknown_fields)]
@@ -353,6 +370,7 @@ pub struct UserConfig {
     pub web_fetch: WebFetchConfig,
     pub read: UserReadConfig,
     pub skills: UserSkillsConfig,
+    pub plugins: UserPluginsConfig,
     pub sessions: SessionsConfig,
     pub secrets: SecretsConfig,
 }
@@ -511,6 +529,7 @@ impl UserConfig {
             read: ReadConfig { exclude },
             read_line_numbers: self.read.line_numbers,
             skills: self.skills.clone(),
+            plugins: self.plugins.clone(),
         })
     }
 
@@ -565,6 +584,7 @@ pub struct ResolvedExec {
     pub read: ReadConfig,
     pub read_line_numbers: bool,
     pub skills: UserSkillsConfig,
+    pub plugins: UserPluginsConfig,
 }
 
 /// プロジェクトにはモデルの変更と除外の追加だけを許す。

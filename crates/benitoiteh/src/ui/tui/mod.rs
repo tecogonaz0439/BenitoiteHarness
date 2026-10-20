@@ -257,6 +257,9 @@ impl Screen {
                 notice,
                 instruction_files,
                 skipped_instructions,
+                plugins,
+                skipped_plugins,
+                plugin_notices,
                 skills,
                 skipped_skills,
                 ..
@@ -268,8 +271,17 @@ impl Screen {
                 if let Some(notice) = notice {
                     self.notice(notice);
                 }
+                for plugin in plugins {
+                    self.notice(&text::plugin_loaded(plugin));
+                }
+                for plugin in skipped_plugins {
+                    self.notice(&text::plugin_skipped(plugin));
+                }
+                for plugin in plugin_notices {
+                    self.notice(&text::plugin_notice(plugin));
+                }
                 for skill in skills {
-                    self.notice(&text::skill_loaded(&skill.name, &skill.path));
+                    self.notice(&text::skill_loaded(skill));
                 }
                 for skipped in skipped_skills {
                     self.notice(&text::skill_skipped(&skipped.path, &skipped.reason));

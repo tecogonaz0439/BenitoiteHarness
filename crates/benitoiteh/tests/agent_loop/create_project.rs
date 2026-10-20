@@ -51,6 +51,7 @@ fn creation_keeps_loaded_project_skills_readable_and_the_index_fixed() -> TestRe
         &f.project,
         &f.paths.home,
         &benitoiteh::config::UserSkillsConfig::default(),
+        &benitoiteh::config::UserPluginsConfig::default(),
         &exclude,
     );
     let context = ToolContext::new(

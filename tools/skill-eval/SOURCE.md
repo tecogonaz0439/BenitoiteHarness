@@ -233,3 +233,7 @@ python3 -I tools/skill-eval/skill_eval.py \
 ### P5-10 openai-chat の reasoning_effort
 
 - `benitoiteh-gemini` の `provider.capabilities.reasoning_effort` を真にし、生成する設定に `capabilities = { reasoning_effort = true }` が入ることを確かめるテストを加えた。
+
+### P5-23 Agent Plugins の Skill
+
+- `benitoiteh` の評価の設定に `[plugins] user = false` を加え、利用者のプラグインを読まないようにした。生成する設定のテストも合わせて更新した。

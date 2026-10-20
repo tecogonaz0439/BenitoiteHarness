@@ -141,5 +141,5 @@ S の段の二つは、2026-10-19 に比較を終え、設計者が決めた。�
 - 評価の作業ディレクトリと生の記録は、リポジトリの外に置く。理由: 課題の解のスクリプトや設計書をエージェントに読ませないためであり、Benitoite の Skill の評価と同じ扱いである。
 - `benitoiteh` の設定ファイルとセッションの記録は、試行ごとに試行のディレクトリ（リポジトリの外）に置き、利用者の普段の設定と記録を使わない。API のキーは、設定ファイルにキーの値を書かず、利用者の macOS のキーチェーンを読むコマンドで渡す（[CLI と設定ファイル](../05-interface/05-01-cli.md)）。
 - 外部のハーネスも、利用者の設定（ほかの Skill、MCP のサーバ、利用者の指示のファイル）を読まない形で起動する。その形は、ハーネスごとに評価の前に確かめる。
-- 【方針】`benitoiteh` は、利用者の Agent Skill を読まない設定（利用者の設定ファイルの `skills.user = false`）で走らせる（[文脈の管理](../01-agent/01-04-context.md)の「利用者の Agent Skill」。2026-10-19 に加えた）。評価の道具が作業ディレクトリに置く `.agents/skills/benitoite` は、名前 `benitoite` を Benitoite の Skill のために取っておくので読まない。
+- 【方針】`benitoiteh` は、利用者の Agent Skill を読まない設定（利用者の設定ファイルの `skills.user = false`）で走らせる（[文脈の管理](../01-agent/01-04-context.md)の「利用者の Agent Skill」。2026-10-19 に加えた）。Agent Plugins のプラグインも、利用者の設定ファイルの `plugins.user = false` で読まない（同章の「Agent Plugins のプラグイン」。2026-10-20 に加えた）。評価の道具が作業ディレクトリに置く `.agents/skills/benitoite` は、名前 `benitoite` を Benitoite の Skill のために取っておくので読まない。
 - 記録の要約（課題ごとの成功率と回数）は `tools/skill-eval/results/` に Markdown で置く。生の記録はリポジトリに入れない。

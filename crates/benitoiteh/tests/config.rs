@@ -116,6 +116,9 @@ fn user_configuration_reads_the_design_example_and_rejects_invalid_fields() -> T
         ("[normal]\nnetwrok = true", Some("netwrok")),
         ("[skills]\nusers = false", Some("users")),
         ("[skills]\nuser = 'false'", None),
+        ("[plugins]\nusers = false", Some("users")),
+        ("[plugins]\nuser = 'false'", None),
+        ("[plugins]\nproject = 0", None),
         (
             "[providers.p]\nkind='openai-chat'\nmodel='m'\ncapabilities={strcit_tools=true}",
             Some("strcit_tools"),
@@ -269,6 +272,7 @@ fn exec_resolution_applies_options_project_user_and_defaults_in_order() -> TestR
     assert!(defaults.restricted.after_write_check);
     assert!(defaults.read.line_numbers);
     assert!(defaults.skills.user && defaults.skills.project);
+    assert!(defaults.plugins.user && defaults.plugins.project);
     assert!(
         defaults
             .resolve_exec(
@@ -700,7 +704,7 @@ fn evaluation_switches_are_user_only_and_preserve_read_exclusions() -> TestResul
         assert!(config.read.line_numbers);
     }
     let user = UserConfig::parse(
-        "default_provider='p'\n[providers.p]\nkind='openai-chat'\nmodel='m'\n[restricted]\nafter_write_check=false\n[read]\nline_numbers=false\nexclude=['user.*']\n[skills]\nuser=false\nproject=false",
+        "default_provider='p'\n[providers.p]\nkind='openai-chat'\nmodel='m'\n[restricted]\nafter_write_check=false\n[read]\nline_numbers=false\nexclude=['user.*']\n[skills]\nuser=false\nproject=false\n[plugins]\nuser=false\nproject=false",
     )?;
     assert!(!user.restricted.after_write_check);
     assert!(!user.read.line_numbers);
@@ -713,11 +717,13 @@ fn evaluation_switches_are_user_only_and_preserve_read_exclusions() -> TestResul
         user.resolve_exec(&ExecArgs::parse(["request"])?, &loaded.config, &project_dir)?;
     assert!(!resolved.read_line_numbers);
     assert!(!resolved.skills.user && !resolved.skills.project);
+    assert!(!resolved.plugins.user && !resolved.plugins.project);
     assert_eq!(resolved.read.exclude, ["user.*", "project.*"]);
     for (input, field) in [
         ("[read]\nline_numbers=false", "line_numbers"),
         ("[restricted]\nafter_write_check=false", "restricted"),
         ("[skills]\nuser=false", "skills"),
+        ("[plugins]\nuser=false", "plugins"),
     ] {
         fs::write(&path, input)?;
         let loaded = ProjectConfig::load(&root);

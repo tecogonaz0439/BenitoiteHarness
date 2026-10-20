@@ -70,6 +70,7 @@ impl Fixture {
             &project,
             &paths.home,
             &benitoiteh::config::UserSkillsConfig::default(),
+            &benitoiteh::config::UserPluginsConfig::default(),
             &exclude,
         );
         let context = ToolContext::new(

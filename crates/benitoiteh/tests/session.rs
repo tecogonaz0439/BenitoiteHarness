@@ -162,6 +162,7 @@ fn header(session: &Session) -> Record {
         tools_sha256: "b".repeat(64),
         after_write_check: None,
         read_line_numbers: None,
+        plugins: Vec::new(),
         skills: Vec::new(),
     })
 }
@@ -1242,7 +1243,10 @@ fn replay_selects_only_the_path_and_its_reasoning_segments() -> TestResult {
         notice: None,
         instruction_files: vec![],
         skipped_instructions: vec![],
+        plugins: Vec::new(),
         skills: vec![],
+        skipped_plugins: Vec::new(),
+        plugin_notices: Vec::new(),
         skipped_skills: vec![],
     })?;
     writer.append(&Record::Branch {
@@ -1440,7 +1444,10 @@ fn fork_copies_the_whole_selected_path_and_only_its_assets() -> TestResult {
         notice: None,
         instruction_files: vec![],
         skipped_instructions: vec![],
+        plugins: Vec::new(),
         skills: vec![],
+        skipped_plugins: Vec::new(),
+        plugin_notices: Vec::new(),
         skipped_skills: vec![],
     };
     writer.append(&start("a"))?;
