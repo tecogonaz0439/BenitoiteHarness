@@ -31,6 +31,8 @@
 - `crates/benitoiteh/examples/skill_eval_judge.rs`（新）
 - `crates/benitoiteh/tests/sandbox_skill_eval_judge.rs`（新、`#![cfg(target_os = "macos")]`）と必要な既存の共有の準備
 - `scripts/check.sh`（example の明示的なビルドと、実行器のテストを走らせなかったことの表示）
+- `crates/benitoiteh/src/sandbox/{session.rs,mod.rs,text.rs,macos.rs}`（子だけの資源の上限と共通の process-info の拒否）、`tests/cli.rs`、`tests/sandbox_macos.rs`、`tests/support/macos_process_info.rs`、`crates/sandbox-probe/src/{process.rs,text.rs}`
+- 設計書 03-02・07-01・07-02 と `docs/plan/{10-interfaces.md,tasks/P5-34-normal-mode-evaluation.md}`（レビューで明示された安全の性質と呼び出しの条件を揃える）
 
 既存の sandbox の API を再利用し、実行の本体と Seatbelt の方針を写さない。テストのために本番の API を広げない。
 
@@ -76,3 +78,24 @@
 
 - 評価の道具が整理した環境を渡す。判定の環境に `PYTHONDONTWRITEBYTECODE=1` を加え、Python の実体のパスでサンドボックス内の起動を準備時に試す処理は P5-34 が持つ。
 - 判定の失敗、出力の打ち切り、残る子孫の可能性を P5-34 が行の失敗として残す。
+
+## 補足（レビュー後の安全の性質と結果の形）
+
+本節は、上の各節の古い記述に優先する。
+
+- `--cwd` と `--temp` は既存のディレクトリで、`..` の要素、末尾のシンボリックリンクを拒む。開いたパスを `rustix::fs::getpath`（F_GETPATH）でカーネルのパスへ直し、字面と一致することを求める。先頭の `/tmp`・`/var`・`/etc` と `/private` の別名だけを許す。中間のリンクや firmlink の別名による writable の指定は拒む。`--helper`・`--deny-read`・コマンドも F_GETPATH で直し、直せなければ失敗とする。
+- 書ける場所と読ませない場所がどちら向きに含み合っても拒む。二つの書ける場所の重なり、`/`、HOME とその祖先、実行器または補助を含む書ける場所も拒む。`--temp` は空に限る。`DataPaths::from_env()` による設定とデータ、HOME 下の `.ssh`・`.gnupg`・`.aws`・`Library/Keychains` を、存在すれば必ず読ませない場所に足す。
+- `--helper` は実行器の `examples/` の隣の `benitoiteh` と同じ実のパスであることを確かめる。起動前に `/dev/fd` を列挙し、標準入出力のほかの開いた記述子があれば失敗とする。
+- 共通の Seatbelt の方針で、`(deny process-info*)` の後に `(allow process-info* (target self))` を置く。子の環境を整理しても残る、親やほかのプロセスの引数・環境からのキーの読み取りを防ぐ（設計書 03-02「方針の要素」）。
+- `session::ResourceLimits` と `SandboxCommand::to_command_with_limits` は、実行器の CPU 時間を制限せず、子孫だけを制限するための起動の口である。テスト用の差し込み口ではない。`__session` は setsid の後、exec の前に `--rlimit-cpu`（秒）・`--rlimit-fsize`（バイト）を掛ける。判定の CPU は `timeout × 論理 CPU 数 + 5 秒`、FSIZE は 64 MiB。継いだ小さい上限は広げない。SIGXCPU（24）と SIGXFSZ（25）は別の理由を返す。
+- 判定ごとに新しい乱数の印 `SKILL_EVAL_JUDGE_RUN=<32 桁の 16 進>` を子の環境へ加える。回収の後に `ps -axE -o pid=,command=` で今回の印だけを探し、同じ UID の cwd を `/usr/sbin/lsof -a -d cwd -u <uid> -Fpn` で調べる。書ける場所またはその下の cwd も、検出した残りとして失敗させる。無関係な孤児の出現だけでは失敗させない。lsof の `p`・`f`・`n` のフィールドと名前の文字の表記は macOS の `lsof(8)`「OUTPUT FOR OTHER PROGRAMS」「OUTPUT」に従い、解く関数を OS のサンドボックスなしの単体テストで確かめる。
+
+結果は schema_version 1 の JSON オブジェクト一つで返す。`success`、`exit_code`（なければ null）、`signal`（なければ null）、`end`（`exited|timed_out|cancelled|error`）、`timed_out`、`possibly_remaining`、`stop_required`、`stdout`、`stderr`、`stdout_truncated`、`stderr_truncated`、`error`（成功なら null）を持つ。成功は終了状態 0・通常の終了・打ち切りなし・残りの兆候なしを満たすときだけで、実行器自体の終了状態も 0、それ以外は 1 とする。macOS 以外はサンドボックスなしで起動せず、使えないという失敗の JSON を返す。
+
+cwd の一覧から実行器自身は除く。検査の lsof は `/` を cwd にして起動する。理由: 呼び出し元が実行器自身の cwd を `--cwd` と同じにしても、実行器と検査の子を残存した子孫と誤認しないためである。
+
+`possibly_remaining` は、閉じないパイプ、環境の印、書ける場所の cwd を検出したか、実行・後始末・検査が失敗して残りを否定できなかったことを表す。true のときは `stop_required` も true とする。false は全子孫の終了の保証ではない。macOS 27 の Apple 製プログラム（sh・sleep・perl など）の環境は `ps -E` に出ないので、悪意がなくても環境の印だけでは拾えない。印が見えず、cwd も外へ移した残りは拾えない。cwd の検査には同じ場所を使う無関係な同 UID のプロセスを拾う偽陽性もある。
+
+時間切れの例は `end: "timed_out"`・`timed_out: true` とし、子が SIGTERM を扱って 0 を返しても失敗とする。各出力の保存は 1 MiB で打ち切り、超過は読み捨て続けて失敗とする。検出した残り・後始末の失敗・一覧の検査の失敗は、後続を止める理由を `error` に返す。出力の打ち切りがあっても、時間切れや資源の合図の理由を優先する。
+
+P5-34 では、コマンドごとに新しい判定のディレクトリと空の一時の場所を用意し、verify と期待する値を書ける場所の外に置く。評価の終わりに残ったプロセスを調べ、Python からは `close_fds=True` で起動する。実行器が合図で終わった場合や JSON が読めない場合も停止扱いとする。出力の制御文字を端末へそのまま出さない。実行器自身には元の HOME と XDG の場所を渡して通常の秘密を除外させ、判定の子だけを私有の HOME へ切り替える。

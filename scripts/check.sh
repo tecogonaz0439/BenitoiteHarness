@@ -107,6 +107,9 @@ processor_report=$("$BENITOITEH_TEST_BENITOITE" --version=json)
 processor_hash=$(shasum -a 256 "$BENITOITEH_TEST_BENITOITE" | awk '{print $1}')
 processor_identity "$host_target" "$processor_report" "$processor_hash"
 begin_stage test
+# sandbox_skill_eval_judge は current_exe の隣の examples/ を探す。
+cargo build -p benitoiteh --example skill_eval_judge
+cargo test -p benitoiteh --example skill_eval_judge
 python3 -I -m unittest discover -s scripts -p 'test_askpass_test_directory.py'
 askpass_test_guard=$(mktemp)
 python3 -I scripts/askpass_test_directory.py prepare "$askpass_test_guard"

@@ -4,18 +4,39 @@ use std::ffi::OsString;
 use std::fs;
 use std::io::{self, Read, Write};
 use std::os::unix::net::UnixStream;
+use std::os::unix::process::CommandExt;
 #[cfg(target_os = "linux")]
 use std::path::Path;
 use std::process::{Command, Stdio};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use super::text;
 
 pub(super) fn run(operation: &str, args: &[OsString]) -> io::Result<Option<u8>> {
     match (operation, args) {
         ("noop", []) => Ok(Some(0)),
+        ("cpu-four-threads", []) => {
+            let started = Instant::now();
+            let workers: Vec<_> = (0..4)
+                .map(|_| {
+                    std::thread::spawn(move || {
+                        let mut count = 0_u64;
+                        while started.elapsed() < Duration::from_secs(3) {
+                            count = std::hint::black_box(count.wrapping_add(1));
+                        }
+                        count
+                    })
+                })
+                .collect();
+            for worker in workers {
+                worker
+                    .join()
+                    .map_err(|_| io::Error::other(text::WORKER_FAILED))?;
+            }
+            Ok(Some(0))
+        }
         ("exit", [code]) => Ok(code.to_str().and_then(|code| code.parse::<u8>().ok())),
         ("echo-stdin", []) => {
             io::copy(&mut io::stdin().lock(), &mut io::stdout().lock())?;
@@ -73,8 +94,20 @@ pub(super) fn run(operation: &str, args: &[OsString]) -> io::Result<Option<u8>> 
             Ok(Some(0))
         }
         ("descendant-child", [session, _marker]) => {
-            if session == "session" {
+            if session == "session" || session == "marked-session" || session == "apple-session" {
                 rustix::process::setsid()?;
+            }
+            if session == "marked-session" {
+                // cwd の検査と独立に、印を保持した探査の検出を確かめる。
+                std::env::set_current_dir("/")?;
+            }
+            if session == "apple-session" {
+                // Apple のプログラムの環境が見える OS でも、cwd による検出を単独で確かめる。
+                // sh の起動後に stdin のソケットで通知し、探査自身を拾う競合を避ける。
+                return Err(Command::new("/bin/sh")
+                    .env_remove("SKILL_EVAL_JUDGE_RUN")
+                    .args(["-c", "printf R >&0; /bin/sleep 15; :"])
+                    .exec());
             }
             // 記述子 0 はソケットなので、unsafe を使わずに準備の通知を書ける。
             let fd = rustix::io::fcntl_dupfd_cloexec(rustix::stdio::stdin(), 3)?;
