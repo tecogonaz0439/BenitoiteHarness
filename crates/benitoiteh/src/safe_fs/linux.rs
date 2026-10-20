@@ -7,6 +7,7 @@ use std::path::{Path, PathBuf};
 use rustix::fs::{self, Mode, OFlags, ResolveFlags};
 
 use super::SafeFsError;
+use super::retry::retry_eagain;
 
 pub(super) fn open(
     root: &File,
@@ -15,19 +16,25 @@ pub(super) fn open(
     mode: Mode,
 ) -> Result<File, SafeFsError> {
     // ENOSYS を含め、制約のない openat に戻さない（設計書 01-03「道具の定義の共通の規則」）。
-    fs::openat2(
-        root,
-        path,
-        flags | OFlags::CLOEXEC,
-        mode,
-        ResolveFlags::BENEATH | ResolveFlags::NO_MAGICLINKS,
-    )
+    retry_eagain(|| {
+        fs::openat2(
+            root,
+            path,
+            flags | OFlags::CLOEXEC,
+            mode,
+            ResolveFlags::BENEATH | ResolveFlags::NO_MAGICLINKS,
+        )
+    })
     .map(File::from)
-    .map_err(|error| match error {
+    .map_err(map_error)
+}
+
+fn map_error(error: rustix::io::Errno) -> SafeFsError {
+    match error {
         rustix::io::Errno::XDEV => SafeFsError::OutsideScope,
         rustix::io::Errno::LOOP => SafeFsError::IntermediateSymlink(error.into()),
         other => SafeFsError::from_errno(other),
-    })
+    }
 }
 
 pub(super) fn metadata_file(parent: &File, name: &Path) -> Result<File, SafeFsError> {
@@ -50,17 +57,15 @@ pub(super) fn open_no_follow(
     flags: OFlags,
     mode: Mode,
 ) -> Result<File, SafeFsError> {
-    fs::openat2(
-        root,
-        path,
-        flags | OFlags::CLOEXEC | OFlags::NOFOLLOW,
-        mode,
-        ResolveFlags::BENEATH | ResolveFlags::NO_SYMLINKS,
-    )
-    .map(File::from)
-    .map_err(|error| match error {
-        rustix::io::Errno::XDEV => SafeFsError::OutsideScope,
-        rustix::io::Errno::LOOP => SafeFsError::IntermediateSymlink(error.into()),
-        other => SafeFsError::from_errno(other),
+    retry_eagain(|| {
+        fs::openat2(
+            root,
+            path,
+            flags | OFlags::CLOEXEC | OFlags::NOFOLLOW,
+            mode,
+            ResolveFlags::BENEATH | ResolveFlags::NO_SYMLINKS,
+        )
     })
+    .map(File::from)
+    .map_err(map_error)
 }

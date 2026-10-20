@@ -11,7 +11,10 @@ const VERSION_LIMIT: usize = 64;
 pub(super) struct Manifest {
     pub name: String,
     pub version: Option<String>,
+    // 決まった文の通知（extensions、version）。
     pub notices: Vec<String>,
+    // 知らない欄の通知。名前をリポジトリが選べるので、まとめた行の最後に置く。
+    pub unknown: Option<String>,
 }
 
 /// マニフェスト全体を断る理由。
@@ -80,9 +83,6 @@ pub(super) fn parse(
         }
     }
     let mut notices = Vec::new();
-    if let Some(notice) = unknown_fields(fields) {
-        notices.push(notice);
-    }
     // 使わない拡張の値にはクライアント固有の検査を掛けない（同節、仕様 §8.1）。
     if fields
         .get("extensions")
@@ -104,6 +104,7 @@ pub(super) fn parse(
         name: name.into(),
         version,
         notices,
+        unknown: unknown_fields(fields),
     })
 }
 

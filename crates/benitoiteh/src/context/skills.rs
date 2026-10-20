@@ -26,6 +26,8 @@ const PLUGIN_LIMIT: usize = 100;
 const PLUGIN_CANDIDATE_LIMIT: usize = 1_000;
 // 段ごとに一件ずつ示して記録する、飛ばした Skill と断ったプラグインの数。
 const SKIPPED_REPORT_LIMIT: usize = 100;
+// 段ごとに一件ずつ示す項目の、パスと理由の UTF-8 のバイト数の和の上限（設計書 01-04）。
+const SKIPPED_REPORT_BYTES: usize = 64 * 1024;
 // 開かずに飛ばした Skill をこの数まで一件ずつ示し、超えたら一行にまとめる。
 const SKIPPED_DETAIL_LIMIT: usize = 20;
 
@@ -120,6 +122,7 @@ enum SkillError {
     Io,
     Scope(SafeFsError),
     OutsideScope,
+    AbsoluteLink,
     Broad,
     PathNotUtf8,
     NotRegular,
@@ -133,6 +136,7 @@ enum SkillError {
 struct Reasons {
     unreadable: &'static str,
     outside_scope: &'static str,
+    absolute_link: &'static str,
     broad: &'static str,
     path_not_utf8: &'static str,
     not_regular: &'static str,
@@ -146,6 +150,7 @@ struct Reasons {
 const SKILL_REASONS: Reasons = Reasons {
     unreadable: text::UNREADABLE,
     outside_scope: text::OUTSIDE_SCOPE,
+    absolute_link: text::ABSOLUTE_LINK,
     broad: text::BROAD_DIRECTORY,
     path_not_utf8: text::PATH_NOT_UTF8,
     not_regular: text::NOT_REGULAR,
@@ -159,6 +164,7 @@ const SKILL_REASONS: Reasons = Reasons {
 const PLUGIN_REASONS: Reasons = Reasons {
     unreadable: plugins::text::UNREADABLE,
     outside_scope: plugins::text::OUTSIDE_SCOPE,
+    absolute_link: plugins::text::ABSOLUTE_LINK,
     broad: plugins::text::BROAD_DIRECTORY,
     path_not_utf8: plugins::text::PATH_NOT_UTF8,
     not_regular: plugins::text::NOT_REGULAR,
@@ -185,6 +191,7 @@ impl SkillError {
             Self::Excluded(reason) => (reasons.excluded)(reason),
             Self::Io => reasons.unreadable.into(),
             Self::OutsideScope => reasons.outside_scope.into(),
+            Self::AbsoluteLink => reasons.absolute_link.into(),
             Self::Broad => reasons.broad.into(),
             Self::PathNotUtf8 => reasons.path_not_utf8.into(),
             Self::NotRegular => reasons.not_regular.into(),
@@ -206,6 +213,19 @@ impl SkillError {
         }
     }
 }
+/// 開けなかった最後の要素が絶対のパスのリンクなら、範囲の中を指していても読まず、
+/// 範囲の外と別の理由で示す。範囲の判定は開く操作のまま変えない（設計書 01-04）。
+fn absolute_link(
+    root: &ScopeRoot,
+    relative: &ScopeRelPath,
+    opened: Result<ScopeRoot, SafeFsError>,
+) -> Result<ScopeRoot, SkillError> {
+    opened.map_err(|error| match root.read_link(relative) {
+        Ok(target) if target.is_absolute() => SkillError::AbsoluteLink,
+        _ => error.into(),
+    })
+}
+
 impl From<std::io::Error> for SkillError {
     fn from(_error: std::io::Error) -> Self {
         Self::Io
@@ -331,42 +351,71 @@ struct Collector<'a> {
     plugin_counts: BTreeMap<u8, (usize, usize, Option<PathBuf>)>,
     // 出所ごとの、開いたプラグインの Skill の候補の数と、開かなかった数と最初の場所。
     plugin_candidates: BTreeMap<u8, (usize, usize, Option<PathBuf>)>,
-    // 出所ごとの、一件ずつ示した数と、示さず数えた数と最初の場所。
-    reported: BTreeMap<u8, (usize, usize, Option<PathBuf>)>,
+    // 出所ごとの、一件ずつ示した項目と、示さず数えた項目。
+    reported: BTreeMap<u8, Reported>,
+}
+
+/// 段ごとの、示した件数とバイト数、隠した飛ばしと通知の数、最初に隠したもののパス。
+#[derive(Default)]
+struct Reported {
+    shown: usize,
+    bytes: usize,
+    hidden_skips: usize,
+    hidden_notices: usize,
+    first_hidden: Option<PathBuf>,
 }
 
 impl Collector<'_> {
     fn skip(&mut self, source: SkillSource, path: PathBuf, reason: impl Into<String>) {
-        if self.report(source, &path) {
-            self.skipped.push(skipped(path, reason));
+        let item = skipped(path, reason);
+        if self.report(source, &item, false) {
+            self.skipped.push(item);
         }
     }
 
     fn skip_plugin(&mut self, source: SkillSource, path: PathBuf, reason: impl Into<String>) {
-        if self.report(source, &path) {
-            self.skipped_plugins.push(skipped(path, reason));
+        let item = skipped(path, reason);
+        if self.report(source, &item, false) {
+            self.skipped_plugins.push(item);
         }
     }
 
-    /// 信頼しないリポジトリが多数の誤りで画面と記録を膨らませないよう、段ごとに
-    /// 100 件まで一件ずつ示し、残りは数える（設計書 01-04 の「長さと数の上限」）。
-    fn report(&mut self, source: SkillSource, path: &Path) -> bool {
+    /// 信頼しないリポジトリが多数の誤りや長いパスで画面と記録を膨らませないよう、
+    /// 段ごとに 100 件かつ 64 KiB まで一件ずつ示し、残りは数える
+    /// （設計書 01-04 の「長さと数の上限」）。一度越えたら、その段の残りは示さない。
+    fn report(&mut self, source: SkillSource, item: &SkippedInstruction, notice: bool) -> bool {
         let counts = self.reported.entry(stage(source, false)).or_default();
-        if counts.0 < SKIPPED_REPORT_LIMIT {
-            counts.0 = counts.0.saturating_add(1);
+        let size = item
+            .path
+            .as_os_str()
+            .len()
+            .saturating_add(item.reason.len());
+        let bytes = counts.bytes.saturating_add(size);
+        if counts.first_hidden.is_none()
+            && counts.shown < SKIPPED_REPORT_LIMIT
+            && bytes <= SKIPPED_REPORT_BYTES
+        {
+            counts.shown = counts.shown.saturating_add(1);
+            counts.bytes = bytes;
             return true;
         }
-        counts.1 = counts.1.saturating_add(1);
-        counts.2.get_or_insert_with(|| path.to_path_buf());
+        if notice {
+            counts.hidden_notices = counts.hidden_notices.saturating_add(1);
+        } else {
+            counts.hidden_skips = counts.hidden_skips.saturating_add(1);
+        }
+        counts.first_hidden.get_or_insert_with(|| item.path.clone());
         false
     }
 
     fn report_hidden(&mut self) {
         let reported = std::mem::take(&mut self.reported);
-        for (_source, (_shown, hidden, path)) in reported {
-            if let Some(path) = path.filter(|_| hidden > 0) {
-                self.skipped
-                    .push(skipped(path, text::skipped_hidden(hidden)));
+        for (_source, counts) in reported {
+            if let Some(path) = counts.first_hidden {
+                self.skipped.push(skipped(
+                    path,
+                    text::skipped_hidden(counts.hidden_skips, counts.hidden_notices),
+                ));
             }
         }
     }
@@ -547,6 +596,12 @@ impl Collector<'_> {
                 if counts.0 >= PLUGIN_CANDIDATE_LIMIT {
                     counts.1 = counts.1.saturating_add(1);
                     counts.2.get_or_insert_with(|| directory.to_path_buf());
+                    // 開かずに飛ばした候補も、開いた場合と違う優先順位を生まないよう
+                    // 名前を覚える。規則に合わない名前は採られないので覚えない。後の段を
+                    // 覆すのは利用者の段だけなので、プロジェクトの段では覚えない（設計書 01-04）。
+                    if matches!(source, SkillSource::User) && valid_name(entry) {
+                        self.seen_names.insert(entry.to_owned());
+                    }
                     continue;
                 }
                 counts.0 = counts.0.saturating_add(1);
@@ -658,7 +713,7 @@ impl Collector<'_> {
                     {
                         return Ok(());
                     }
-                    other => other?,
+                    other => absolute_link(&scope_root, &relative, other)?,
                 };
                 self.check_directory(&root, scope)?;
                 let manifest_path = ScopeRelPath::new("plugin.json")?;
@@ -678,16 +733,20 @@ impl Collector<'_> {
                 if !self.seen_plugins.insert(manifest.name.clone()) {
                     return Err(SkillError::Invalid(plugins::text::DUPLICATE_NAME));
                 }
-                for reason in manifest.notices {
-                    self.plugin_notices
-                        .push(skipped(root.real_path().into(), reason));
-                }
+                let mut notices = manifest.notices;
                 // MCP の内容や拡張のディレクトリは開かない（設計書 01-04、BH-116）。
                 match root.metadata(&ScopeRelPath::new("mcp.json")?) {
                     Err(SafeFsError::NotFound(_)) => {}
-                    _ => self
-                        .plugin_notices
-                        .push(skipped(root.real_path().into(), plugins::text::MCP)),
+                    _ => notices.push(plugins::text::MCP.into()),
+                }
+                // 知らない欄の文はリポジトリが選べるので、決まった文を装わせないよう最後に置く。
+                notices.extend(manifest.unknown);
+                // 一つのプラグインの通知は一行にまとめ、示す枠に数える（設計書 01-04 の「長さと数の上限」）。
+                if !notices.is_empty() {
+                    let item = skipped(root.real_path().into(), notices.join(" "));
+                    if self.report(source, &item, true) {
+                        self.plugin_notices.push(item);
+                    }
                 }
                 self.search_skills(
                     &root,
@@ -755,7 +814,7 @@ impl Collector<'_> {
             Err(SafeFsError::Io(error)) if error.kind() == std::io::ErrorKind::NotADirectory => {
                 return Ok(None);
             }
-            other => other?,
+            other => absolute_link(root, &relative, other)?,
         };
         self.check_directory(&directory, scope)?;
         let real = directory.real_path();
@@ -892,12 +951,7 @@ fn attributes(contents: &str) -> Result<(&str, &str), SkillError> {
     }
     let name = single_line(parts.name)?;
     let description = single_line(parts.description)?;
-    if name.is_empty()
-        || name.len() > 64
-        || !name
-            .bytes()
-            .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'-')
-    {
+    if !valid_name(name) {
         return Err(SkillError::Invalid(text::NAME));
     }
     if description.is_empty()
@@ -907,6 +961,14 @@ fn attributes(contents: &str) -> Result<(&str, &str), SkillError> {
         return Err(SkillError::Invalid(text::DESCRIPTION));
     }
     Ok((name, description))
+}
+
+fn valid_name(name: &str) -> bool {
+    !name.is_empty()
+        && name.len() <= 64
+        && name
+            .bytes()
+            .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'-')
 }
 
 fn single_line(value: &str) -> Result<&str, SkillError> {

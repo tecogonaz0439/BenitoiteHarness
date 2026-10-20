@@ -7,6 +7,9 @@ mod os;
 #[cfg(target_os = "macos")]
 #[path = "macos.rs"]
 mod os;
+// 開き直しの判定は Linux だけが使うが、どの OS でも単体のテストを走らせる。
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+mod retry;
 mod self_check;
 mod text;
 

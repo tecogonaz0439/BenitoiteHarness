@@ -3,6 +3,8 @@
 pub const HOME_UNAVAILABLE: &str = "Could not resolve the home directory for user skills.";
 pub const UNREADABLE: &str = "Could not open or read this skill.";
 pub const OUTSIDE_SCOPE: &str = "Skill path is outside the search scope.";
+pub const ABSOLUTE_LINK: &str =
+    "Skill path is an absolute symbolic link; use a relative link inside the search scope.";
 pub const BROAD_DIRECTORY: &str =
     "Skill directory is the project, search root, home, or an ancestor of one of them.";
 pub const NOT_REGULAR: &str = "SKILL.md is not a regular file.";
@@ -43,8 +45,8 @@ pub fn plugin_candidate_limit(count: usize) -> String {
     )
 }
 
-pub fn skipped_hidden(count: usize) -> String {
+pub fn skipped_hidden(count: usize, notices: usize) -> String {
     format!(
-        "{count} more skipped skills and plugins for this source are not listed; only the first 100 are listed."
+        "{count} more skipped skills and plugins and {notices} plugin notices for this source are not listed; only the first 100 entries within 64 KiB are listed."
     )
 }

@@ -293,23 +293,19 @@ fn reports_bounded_unknown_fields_extensions_and_mcp_without_reading_them() -> T
     let collected = f.collect(&UserSkillsConfig::default()).0;
     assert_eq!(collected.plugins.len(), 1);
     assert_eq!(collected.loaded.len(), 1);
-    assert_eq!(collected.plugin_notices.len(), 3);
-    let unknown = &collected.plugin_notices.first().ok_or("notice")?.reason;
+    // P5-24 で期待を変えた: 一つのプラグインの通知を一行にまとめ、リポジトリが名前を選べる
+    // 知らない欄の文を最後に置く（設計書 01-04 の「長さと数の上限」）。
+    assert_eq!(collected.plugin_notices.len(), 1);
+    let notice = collected.plugin_notices.first().ok_or("notice")?;
+    assert_eq!(notice.path, root);
+    let fixed = "Ignored plugin.json extensions because it is not an object. mcp.json is present; MCP servers from this plugin are not used. ";
+    let unknown = notice
+        .reason
+        .strip_prefix(fixed)
+        .ok_or("fixed notices first")?;
     assert!(unknown.starts_with("Ignored unknown plugin.json fields: unknown00, unknown01,"));
     assert!(unknown.ends_with("unknown09 (and 3 more)."));
     assert!(!unknown.contains("unknown10"));
-    assert!(
-        collected
-            .plugin_notices
-            .iter()
-            .any(|n| n.reason.contains("extensions because it is not an object"))
-    );
-    assert!(
-        collected
-            .plugin_notices
-            .iter()
-            .any(|n| n.reason == "mcp.json is present; MCP servers from this plugin are not used.")
-    );
     Ok(())
 }
 
@@ -338,7 +334,7 @@ fn rejects_unsafe_plugin_roots_and_manifest_files() -> TestResult {
         match kind {
             "outside-root" => {
                 f.write("outside/p/plugin.json", &manifest)?;
-                symlink(f.root.join("outside/p"), &candidate)?;
+                symlink("../../../outside/p", &candidate)?;
             }
             "alias" => {
                 f.manifest("home/elsewhere", "real")?;
@@ -651,6 +647,130 @@ fn bounds_versions_unknown_field_names_and_plugins_per_source() -> TestResult {
     Ok(())
 }
 
+// 関門: plugin.json を読む前に断った項目を 100 個の上限に数えず、範囲の外へのリンクを
+// 並べて後ろのプラグインを多数開かせる退行を防ぐ（`counted` の扱い、設計書 01-04）。
+#[test]
+fn entries_rejected_before_reading_the_manifest_count_toward_the_plugin_limit() -> TestResult {
+    let f = Fixture::new()?;
+    f.write(
+        "outside/plugin.json",
+        format!("{{\"$schema\":\"{SCHEMA}\",\"name\":\"outside\"}}"),
+    )?;
+    let base = f.home.join(".agents/plugins");
+    fs::create_dir_all(&base)?;
+    for n in 0..100 {
+        symlink("../../../outside", base.join(format!("a{n:03}")))?;
+    }
+    f.manifest("home/.agents/plugins", "z")?;
+    f.skill("home/.agents/plugins/z/skills", "late", "must not load")?;
+    let collected = f.collect(&UserSkillsConfig::default()).0;
+    assert!(collected.plugins.is_empty(), "{:?}", collected.plugins);
+    assert!(collected.loaded.is_empty());
+    let reasons = collected
+        .skipped_plugins
+        .iter()
+        .map(|p| p.reason.as_str())
+        .collect::<Vec<_>>();
+    assert_eq!(reasons.len(), 101, "{reasons:?}");
+    assert!(
+        reasons
+            .iter()
+            .take(100)
+            .all(|r| *r == "Plugin path is outside the search scope.")
+    );
+    assert_eq!(
+        reasons.last(),
+        Some(&"Skipped 1 entries beyond the 100-plugin limit for this source.")
+    );
+    Ok(())
+}
+
+// 関門: 範囲の中を指す絶対のパスのリンクを、読むか、範囲の外の理由で示す退行を、
+// 二つの段と Skill・プラグインの四つで防ぐ（設計書 01-04「利用者の Agent Skill」）。
+#[test]
+fn absolute_links_inside_the_scope_are_not_read_and_have_their_own_reason() -> TestResult {
+    let skill_reason =
+        "Skill path is an absolute symbolic link; use a relative link inside the search scope.";
+    let plugin_reason =
+        "Plugin path is an absolute symbolic link; use a relative link inside the search scope.";
+    for (stage, base) in [("user", "home"), ("project", "repo")] {
+        let f = Fixture::new()?;
+        f.skill(&format!("{base}/elsewhere"), "abs", "inside the scope")?;
+        f.manifest(&format!("{base}/elsewhere"), "absplugin")?;
+        for kind in ["skills", "plugins"] {
+            fs::create_dir_all(f.root.join(base).join(".agents").join(kind))?;
+        }
+        let skill_link = f.root.join(base).join(".agents/skills/abs");
+        let plugin_link = f.root.join(base).join(".agents/plugins/absplugin");
+        symlink(f.root.join(base).join("elsewhere/abs"), &skill_link)?;
+        symlink(f.root.join(base).join("elsewhere/absplugin"), &plugin_link)?;
+        let collected = f.collect(&UserSkillsConfig::default()).0;
+        assert!(
+            collected.loaded.is_empty(),
+            "{stage}: {:?}",
+            collected.loaded
+        );
+        assert!(
+            collected.plugins.is_empty(),
+            "{stage}: {:?}",
+            collected.plugins
+        );
+        assert_eq!(
+            collected
+                .skipped
+                .iter()
+                .map(|s| (s.path.clone(), s.reason.as_str()))
+                .collect::<Vec<_>>(),
+            [(skill_link.join("SKILL.md"), skill_reason)],
+            "{stage}"
+        );
+        assert_eq!(
+            collected
+                .skipped_plugins
+                .iter()
+                .map(|p| (p.path.clone(), p.reason.as_str()))
+                .collect::<Vec<_>>(),
+            [(plugin_link, plugin_reason)],
+            "{stage}"
+        );
+    }
+    Ok(())
+}
+
+// 関門: 候補の上限で開かなかった利用者のプラグインの Skill の名前を覚えず、同名の
+// プロジェクトの Skill が読まれて優先順位が変わる退行を防ぐ（設計書 01-04）。
+#[test]
+fn plugin_skill_candidates_beyond_the_limit_still_shadow_later_stages() -> TestResult {
+    let f = Fixture::new()?;
+    let a = f.manifest("home/.agents/plugins", "a")?;
+    for n in 0..1000 {
+        fs::create_dir_all(a.join(format!("skills/e{n:04}")))?;
+    }
+    f.manifest("home/.agents/plugins", "b")?;
+    f.skill("home/.agents/plugins/b/skills", "dup", "beyond the limit")?;
+    f.skill("repo/sub/project/.agents/skills", "dup", "project")?;
+    let collected = f.collect(&UserSkillsConfig::default()).0;
+    assert!(collected.loaded.is_empty(), "{:?}", collected.loaded);
+    assert_eq!(
+        collected
+            .skipped
+            .iter()
+            .map(|s| (s.path.clone(), s.reason.as_str()))
+            .collect::<Vec<_>>(),
+        [
+            (
+                f.project.join(".agents/skills/dup/SKILL.md"),
+                "Another skill with this name takes precedence."
+            ),
+            (
+                f.home.join(".agents/plugins/b/skills"),
+                "Skipped 1 plugin skill entries beyond the first 1000 for this source without opening them."
+            ),
+        ]
+    );
+    Ok(())
+}
+
 // 関門: 上限を越える Skill を開いて読み、一件ずつ記録を膨らませる退行を防ぐ。
 #[test]
 fn skips_skills_beyond_the_limits_without_opening_them() -> TestResult {
@@ -703,7 +823,7 @@ fn rejects_project_roots_skill_directories_and_skill_files_outside_their_bounds(
     f.manifest("outside", "escaped")?;
     fs::create_dir_all(f.root.join("repo/.agents/plugins"))?;
     symlink(
-        f.root.join("outside/escaped"),
+        "../../../outside/escaped",
         f.root.join("repo/.agents/plugins/escaped"),
     )?;
     let linked = f.manifest("repo/.agents/plugins", "linked")?;
