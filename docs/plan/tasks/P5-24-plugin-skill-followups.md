@@ -60,3 +60,8 @@ P5-23 の 2 回目の再レビュー（2026-10-20）で「公開の後でよい�
    - まとめた一行で期待が変わるテスト: `tests/user_skills/plugins.rs` の 296（件数 3 が 1）、298-299（`ends_with`）、307-311（等値の比較）、`tests/exec/skills.rs:105-111`（`plugin_notices` の件数 2 が 1）。
 9. **長いパス**: macOS の PATH_MAX は 1024（NUL を含む）で、絶対パスは 1023 バイトまで、要素一つは 255 バイトまでである。いちばん長い `<プラグインの根>/skills/<名前>/SKILL.md` も 1023 バイトに収める。プラグインの根の実のパスを 900〜950 バイトに揃え、足す長さを実行時に `目標 − 根の長さ` で計算し、200 バイト以下の要素に分ける。長い実のディレクトリを範囲の中に置き、`.agents/plugins/pNNN` をそこへのリンクにする（最後の要素を `pNNN` にして名前の一致を満たす。範囲の中のリンクの手本は `tests/user_skills/plugins.rs:395-406`）。Linux のコンテナには TMPDIR が渡らず `/tmp` になる。コンテナは root で走るので、飛ばす候補は権限でなく、範囲の外へのリンクか書式の誤りで作る。
 10. **補助**: `tests/user_skills.rs` の `Fixture`（21-125。`home`、`project`、`write`、`skill`、`collect`）、`tests/user_skills/plugins.rs` の `Fixture::plugin`・`manifest`・`with_plugins`（9-36）、1,000 個を超えるディレクトリの作り方（557-559）、exec の入口の `tests/support/exec_fixture.rs`（`Fixture::new`、`command`、`records`、`lines`、`Running`）、`list_sessions` の使い方（`tests/exec/skills.rs:392-404`）。
+11. **openat2 の `EAGAIN`**（2026-10-20、全体の検査で見つかった）:
+    - 起きたこと: Linux の aarch64 のコンテナで、`tests/exec/skills.rs` の `long_plugin_paths_keep_listed_notices_and_skips_within_64_kib_per_stage` が落ちた。ほかのテストと並べて走らせたときだけ、まれに一つのプラグインを `Could not open or read this plugin.` で断る（5 回に 1 回ほど。単独では通る）。
+    - 原因: `src/safe_fs/linux.rs` の `open` と `open_no_follow` は、`openat2` の `RESOLVE_BENEATH` で `..` を含むパス（テストの範囲の中を指す相対のリンク）を解くときの `EAGAIN` を、そのまま誤りにしている。
+    - 直し: 設計書 01-03「道具の定義の共通の規則」に加えたとおり、`EAGAIN` のときは同じ引数で 8 回まで開き直し、それでも `EAGAIN` なら今と同じ誤りにする。`EAGAIN` を返す試しを作れないなら、開き直しの判定を小さな関数に切り出し、その関数の単体のテストを置く。
+    - このテストの `plugins.len()` の確かめでは、誤りの文を、`skipped_plugins` の全体を示す形にしてある。オーケストレータが原因を調べるときに改めたもので、そのままにする。
