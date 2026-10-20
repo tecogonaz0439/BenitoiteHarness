@@ -1,0 +1,35 @@
+// 全段の条件を、選んだ入力だけに適用する（実装プラン P5-33）。
+import Benitoite.Unofficial.IO.Console
+import Benitoite.Unofficial.IO.File
+import Benitoite.Unofficial.IO.Process
+import Benitoite.Unofficial.Json
+
+function field(order: Json.Value, name: String) -> String
+  return Option.unwrapOr(o: Option.andThen(o: Json.get(value: order, k: name), f: Json.asString), fallback: "")
+end function
+
+function addOrder(totals: Map[String, Pair[Integer, Integer]], order: Json.Value) -> Map[String, Pair[Integer, Integer]]
+  if field(order: order, name: "status") = "cancelled" then return totals end if
+  bind region <- field(order: order, name: "region")
+  bind key <- if List.contains(xs: ["east", "north", "south", "west"], x: region) then region else "other" end if
+  bind amount <- Option.unwrapOr(o: Option.andThen(o: Json.get(value: order, k: "amount"), f: Json.asInteger), fallback: 0)
+  bind current <- Option.unwrapOr(o: Map.get(m: totals, k: key), fallback: Pair(0, 0))
+  return Map.set(m: totals, k: key, value: Pair(Pair.first(current) + 1, Pair.second(current) + amount))
+end function
+
+function main() -> Result[Unit, String] uses File.Read, File.Write, Process.Environment, Console.Write
+  bind path <- Option.unwrapOr(o: List.head(Process.arguments()), fallback: "orders.json")
+  bind text <- try File.readText(path) |> Result.mapError(r: _, f: lambda(error) return IOError.message(error) end lambda) or return
+  bind parsed <- try Json.parse(text) |> Result.mapError(r: _, f: lambda(error) return Json.ParseError.message(error) end lambda) or return
+  bind orders <- try Option.okOr(o: Json.asArray(parsed), error: "input is not an array") or return
+  bind totals <- List.fold(xs: orders, initial: Map.empty(), f: lambda(acc, value) return addOrder(totals: acc, order: value) end lambda)
+  List.forEach(xs: List.reverse(Map.toList(totals)), f: lambda(value)
+    bind entry <- Pair.second(value)
+    Console.writeLine("${Pair.first(value)}: ${Pair.first(entry)} orders, ${Pair.second(entry)}")
+  end lambda)
+  bind report <- Json.Value.Object(Map.map(m: totals, f: lambda(key, value)
+    return Json.Value.Object(Map.fromList([Pair("count", Json.Value.Integer(Pair.first(value))), Pair("amount", Json.Value.Integer(Pair.second(value)))]))
+  end lambda))
+  bind _ <- try File.writeText(path: "report.json", text: Json.stringify(report) + "\n") |> Result.mapError(r: _, f: lambda(error) return IOError.message(error) end lambda) or return
+  return Result.Ok(())
+end function

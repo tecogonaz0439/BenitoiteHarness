@@ -92,7 +92,7 @@
 | [P5-30](tasks/P5-30-compaction-evaluation.md) | M の段の圧縮（BH-014）の Rust の設定、境と残す量、記録とイベントの欄、ループのテスト | P5-29 | 完了 |
 | [P5-31](tasks/P5-31-normal-mode-tasks.md) | 通常モードの判定の実行器とそのテスト（macOS のみ） | P5-29 | 完了 |
 | [P5-32](tasks/P5-32-compaction-runner.md) | 圧縮の評価の道具（組の選択、段の実行、上限と費用、模擬、判定の Seatbelt、`check.sh`） | P5-30 | 完了 |
-| [P5-33](tasks/P5-33-compaction-tasks.md) | 圧縮の 2 課題、資料の生成、全段の判定と否定の対照 | P5-32 | 未着手 |
+| [P5-33](tasks/P5-33-compaction-tasks.md) | 圧縮の 2 課題、資料の生成、全段の判定と否定の対照 | P5-32 | 完了 |
 | [P5-34](tasks/P5-34-normal-mode-evaluation.md) | 通常モードの評価の道具と試しの 2 課題（準備、判定、環境、記録、模擬） | P5-31、P5-32 | 未着手 |
 | [P5-35](tasks/P5-35-normal-mode-tasks.md) | 通常モードの残りの 8 課題を加え、計 10 課題を揃える | P5-34 | 未着手 |
 

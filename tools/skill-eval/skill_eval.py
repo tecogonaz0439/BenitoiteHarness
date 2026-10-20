@@ -746,7 +746,7 @@ def prepare_inputs(task: Task, directory: str) -> None:
 
 
 def run_command(command: List[str], cwd: str, env: Dict[str, str], timeout: int = RUN_TIMEOUT) -> Tuple[int, str, str]:
-    """コマンドを新しいプロセスの群れで起動する。時間切れなら群れをまとめて止める（孫のプロセスを残さない）。
+    """コマンドを新しいプロセスの群れで起動し、正常終了後も同じ群れの子孫を止める。
 
     起動できないとき（コマンドがないなど）は、終了状態 -2 と理由を返し、例外にしない。
     """
@@ -764,6 +764,13 @@ def run_command(command: List[str], cwd: str, env: Dict[str, str], timeout: int 
             pass
         process.communicate()
         return -1, '', 'timed out after %d seconds' % timeout
+    finally:
+        # 出力を閉じて背景に残る子も、判定の後に動かし続けない（設計書 07-02「評価の手順」）。
+        # 別の群れへ移った子の検出は、この起動の口では行わない。
+        try:
+            os.killpg(process.pid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
     return process.returncode, out.decode('utf-8', 'replace'), err.decode('utf-8', 'replace')
 
 
@@ -1492,9 +1499,10 @@ def judge_policy(task: Task, benitoite: str, directory: str, allowed: set,
                  http_base: Optional[str]) -> str:
     """判定の実行に掛ける Seatbelt の方針（設計書 07-02「M の段の圧縮」）。"""
     def literal(path: str) -> str:
+        path = os.path.realpath(path)
         if any(ord(char) < 32 or ord(char) == 127 for char in path):
             raise ValueError('control character in sandbox path')
-        return json.dumps(os.path.realpath(path), ensure_ascii=False)
+        return json.dumps(path, ensure_ascii=False)
 
     # 実行するプログラムは課題の仕様から固定する。解の文字列から許可を作らない。
     # この macOS の /bin/sh は /private/var/select/sh が指す /bin/bash を起動し直す。
@@ -1515,12 +1523,18 @@ def judge_policy(task: Task, benitoite: str, directory: str, allowed: set,
         # Seatbelt のホストの書式は localhost または * に限られる。
         # URL は上で 127.0.0.1 と検証し、方針にも同じポートだけを渡す。
         lines.append('(allow network-outbound (remote ip "localhost:%d"))' % int(match.group(1)))
+    # SBPL の後の規則を優先し、親 HOME の秘密を判定の理由へ持ち出させない。
+    # 判定用の HOME とは分ける。TMPDIR と処理系が親 HOME の下でも必要な箇所だけ戻す。
+    # （設計書 07-02「評価の手順」）
+    lines.append('(deny file-read-data (subpath %s))' % literal(os.path.expanduser('~')))
+    lines += ['(allow file-read-data (literal %s))' % literal(path) for path in programs]
+    lines.append('(allow file-read-data (subpath %s))' % literal(directory))
     return '\n'.join(lines) + '\n'
 
 
 def judge_execute(task: Task, benitoite: str, directory: str, env: Dict[str, str],
                   allowed: set, command: List[str], arguments: Optional[List[str]] = None) -> Tuple[int, str, str]:
-    """OS の保護が掛からなければ、解を実行しない。検査と実行の間も処理系に検証させる。"""
+    """OS の保護が掛からなければ実行しない。直接の起動には同じエフェクトの許可も渡す。"""
     if sys.platform != 'darwin':
         raise ValueError('judgment requires the macOS sandbox')
     policy = judge_policy(task, benitoite, directory, allowed, env.get(http_server.BASE_VARIABLE))
@@ -1542,7 +1556,7 @@ def judge_check(task: Task, benitoite: str, directory: str, env: Dict[str, str],
     reason = (errors or messages)[0]['message'] if (errors or messages) else first_line(err)
     effects = declared_effects(code, out, 'testCheckReport' if task.result_kind == 'test' else 'checkReport')
     if code != 0:
-        return with_codes(Verdict(False, 'check failed (exit %d): %s' % (code, reason),
+        return with_codes(Verdict(False, 'check failed (exit %d): %s' % (code, judgment_excerpt(reason)),
                                   failure_kind='check'), codes)
     if effects is None:
         return with_codes(Verdict(False, 'invalid declared effects report', failure_kind='check'), codes)
@@ -1619,7 +1633,7 @@ def judge_run(task: Task, benitoite: str, directory: str, env: Dict[str, str], a
     except (OSError, ValueError) as error:
         return Verdict(False, 'judgment sandbox unavailable: %s' % error, failure_kind='sandbox')
     if code != task.exit_code:
-        return Verdict(False, 'run exited with %d, expected %d: %s' % (code, task.exit_code, first_line(err)),
+        return Verdict(False, 'run exited with %d, expected %d: %s' % (code, task.exit_code, judgment_excerpt(first_line(err))),
                        failure_kind='run')
     stdout = task_path(task.dir, case['expected_stdout']) if case else task.path('expected.stdout')
     with open(stdout, encoding='utf-8') as f:
@@ -1657,7 +1671,7 @@ def judge_test_output(task: Task, code: int, out: str, err: str) -> Verdict:
         if isinstance(value, dict) and value.get('kind') == 'testSummary':
             summary = value
     if summary is None:
-        return Verdict(False, 'no test summary (exit %d): %s' % (code, first_line(err or out)))
+        return Verdict(False, 'no test summary (exit %d): %s' % (code, judgment_excerpt(first_line(err or out))))
     passed = int(summary.get('passed', 0))
     failed = int(summary.get('failed', 0))
     if code != 0 or failed != 0 or summary.get('filesNotRun', 0) != 0:
@@ -1681,8 +1695,14 @@ def first_difference(expected: str, actual: str) -> str:
         a = want[index] if index < len(want) else '<end>'
         b = got[index] if index < len(got) else '<end>'
         if a != b:
-            return 'line %d: expected %r, got %r' % (index + 1, a, b)
+            return 'line %d: expected "%s", got "%s"' % (index + 1, judgment_excerpt(a), judgment_excerpt(b))
     return 'trailing newline'
+
+
+def judgment_excerpt(text: str) -> str:
+    """判定の出力の抜粋を ASCII に逃がし、120文字以下にする（設計書 07-02「評価の手順」）。"""
+    escaped = json.dumps(text[:120], ensure_ascii=True)[1:-1]
+    return escaped[:117] + '...' if len(text) > 120 or len(escaped) > 120 else escaped
 
 
 def read_log(path: str) -> List[List[str]]:

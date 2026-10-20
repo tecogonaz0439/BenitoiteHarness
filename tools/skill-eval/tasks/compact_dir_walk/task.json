@@ -1,0 +1,169 @@
+{
+  "attempt_limit": 20,
+  "generation": {
+    "added_units_kib": [
+      12,
+      12,
+      12,
+      12,
+      12,
+      12,
+      12,
+      12,
+      12,
+      12,
+      12,
+      12,
+      12,
+      12,
+      12,
+      12,
+      12
+    ],
+    "arguments": {
+      "chunk_kib": 10,
+      "seed": 33,
+      "total_kib": 268
+    },
+    "bytes": 274880,
+    "files_sha256": {
+      "materials/1/notes-01.md": "a23e92377b3655dd30b430315f4428ec0ba11d4be2edb8df2c7bb80e949ed1fd",
+      "materials/1/notes-02.md": "ecbca647e497ff309b0a8c06fd27fb27a2a1de51348b013886575a1228dd9a6d",
+      "materials/1/notes-03.md": "d379166139089f844f5726ec4e8420a6c5cef118dfc6ff1d10515aa413ddf5f1",
+      "materials/1/notes-04.md": "f8bec570be4d3db7f37f7dbfa9d528dd0cb864c85b26385084b82d6346b92c9a",
+      "materials/1/notes-05.md": "3817b53f2ce445be22983f31efc7773610bb7acfce8ee51f3a757a8354960e3f",
+      "materials/1/notes-06.md": "ff1d4c166d56b42a28c5ca71330eb4e096bd47c6587bbcb305911b72b2c6b969",
+      "materials/1/notes-07.md": "6ad2166cb76ee07dbcc8e8280fb56b6438452569b6f6f2448232046681fb769b",
+      "materials/1/notes-08.md": "fb0f976f93e3c50c56227c71a9e1c4fb1f7b8bc6726a7878fabd74a8889fc40d",
+      "materials/1/notes-09.md": "6fabfc0791b19e6c855422c2c2d1cf40520096f12205029491b2e2985541e72b",
+      "materials/2/notes-01.md": "1ba91a051a12b0694b35a6d240af94ced8f80c94b155907e5eddab9f1941630b",
+      "materials/2/notes-02.md": "0e83d12b90261f92fbc1080b7bc29605a43dd43e8ea5be97760b3f29e752397c",
+      "materials/2/notes-03.md": "5438cf5d0f03888e165c17f81bbba11e097f90a906cfe4ee005b029d17ea7cbb",
+      "materials/2/notes-04.md": "a842dadc342d94cb0e95f60f7f15075ad018ba8a1d5c70ba71cbb2fe6a733590",
+      "materials/2/notes-05.md": "9baab49be54789ba65de6de68591dac3fc69ad5b535e28bce08bb8a181a4a298",
+      "materials/2/notes-06.md": "9511a21672364d6b336a44885a58f067a14333c4c0bedcb8620e4db26027886f",
+      "materials/2/notes-07.md": "fa93943b0981f2456b1cfe98ad4b66b65f171c196072a4382f4248afcab9e88b",
+      "materials/2/notes-08.md": "ce84d88747afa838ccabf2ff914f997d0bbc420bf4ae1c5bdadac7ac7cb78a53",
+      "materials/2/notes-09.md": "48d23ec80edc3cc59adbecf471aa3ff47fed21702d15b04634c5a06e93787610",
+      "materials/3/notes-01.md": "c7c2c389c6fccb183874fabaac81c436b3431ad7a074f867fe65e31d7ae6e098",
+      "materials/3/notes-02.md": "fde41ffb8823403c37ff5892bab22e8a516a8bf2878601c291eca2b66d36dd1c",
+      "materials/3/notes-03.md": "182d5754865c2a78a06c9c83a8457def1fb13b378f0a00ec2569f5033e31b36a",
+      "materials/3/notes-04.md": "139f3d052663556a37855e192b24b301f3becd8f2c15a69b8a7502385a06c36b",
+      "materials/3/notes-05.md": "7c12e8960d55c7fe7a9969b810504cdf237b9091906fdaac236b87a3df6d5e60",
+      "materials/3/notes-06.md": "3727a1142c60cdef0e1a4f3caea28949635ae2866b1fdcce1381ff979eec4ddc",
+      "materials/3/notes-07.md": "b0b5869f58ffeee1823d4630a00e6e21957415501d52eba4cc0e6d6fead1d08a",
+      "materials/3/notes-08.md": "67ad9b9733c9806cf55b45ee47744c0ca148b6f79f0a7839bcbb20c0246ab5d0",
+      "materials/3/notes-09.md": "bc3a500320cb6f04caa58086b32ab34ee85d8fd5427a5ed399ae3ca346d52df7"
+    },
+    "generator": "generate_compaction_materials.py",
+    "initial_candidate_kib": 64,
+    "initial_candidates_kib": [
+      24,
+      48,
+      64
+    ],
+    "length_status": "provisional; fix common length and stages after paid pilot",
+    "sha256": "ed977d6a1d30fc626270810d44558ff30a424eee07c611d3fa6601e2fe53f24f",
+    "stage_bytes": {
+      "1": 91600,
+      "2": 91660,
+      "3": 91620
+    },
+    "version": 1
+  },
+  "http": false,
+  "judge_cases": [
+    {
+      "args": [],
+      "expected_files": "cases/default/expected.files",
+      "expected_stdout": "cases/default/expected.stdout",
+      "input": "cases/default/input",
+      "name": "default"
+    },
+    {
+      "args": [
+        "snapshots/hidden"
+      ],
+      "expected_files": "cases/s1_hidden_directories/expected.files",
+      "expected_stdout": "cases/s1_hidden_directories/expected.stdout",
+      "input": "cases/s1_hidden_directories/input",
+      "name": "s1_hidden_directories"
+    },
+    {
+      "args": [
+        "snapshots/drafts-check"
+      ],
+      "expected_files": "cases/s1_drafts/expected.files",
+      "expected_stdout": "cases/s1_drafts/expected.stdout",
+      "input": "cases/s1_drafts/input",
+      "name": "s1_drafts"
+    },
+    {
+      "args": [
+        "snapshots/sorted"
+      ],
+      "expected_files": "cases/s1_name_order/expected.files",
+      "expected_stdout": "cases/s1_name_order/expected.stdout",
+      "input": "cases/s1_name_order/input",
+      "name": "s1_name_order"
+    },
+    {
+      "args": [
+        "snapshots/case"
+      ],
+      "expected_files": "cases/s2_uppercase/expected.files",
+      "expected_stdout": "cases/s2_uppercase/expected.stdout",
+      "input": "cases/s2_uppercase/input",
+      "name": "s2_uppercase"
+    },
+    {
+      "args": [
+        "snapshots/empty"
+      ],
+      "expected_files": "cases/s3_empty/expected.files",
+      "expected_stdout": "cases/s3_empty/expected.stdout",
+      "input": "cases/s3_empty/input",
+      "name": "s3_empty"
+    },
+    {
+      "args": [
+        "snapshots/nested/root"
+      ],
+      "expected_files": "cases/s3_nested/expected.files",
+      "expected_stdout": "cases/s3_nested/expected.stdout",
+      "input": "cases/s3_nested/input",
+      "name": "s3_nested"
+    },
+    {
+      "args": [
+        "snapshots/all"
+      ],
+      "expected_files": "cases/all_conditions/expected.files",
+      "expected_stdout": "cases/all_conditions/expected.stdout",
+      "input": "cases/all_conditions/input",
+      "name": "all_conditions"
+    }
+  ],
+  "kind": "staged",
+  "result_kind": "run",
+  "script": "main.bnt",
+  "self_test_failures": [
+    {
+      "case": "s1_hidden_directories",
+      "script": "negative/include_hidden.bnt"
+    },
+    {
+      "case": "s1_drafts",
+      "script": "negative/include_drafts.bnt"
+    },
+    {
+      "case": "s1_name_order",
+      "script": "negative/reverse_names.bnt"
+    }
+  ],
+  "stages": [
+    "stages/1.md",
+    "stages/2.md",
+    "stages/3.md"
+  ]
+}

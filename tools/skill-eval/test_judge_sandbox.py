@@ -4,6 +4,13 @@
 import json
 import os
 import re
+import signal
+import socket
+import socketserver
+import subprocess
+import threading
+import time
+import shutil
 import sys
 import tempfile
 import unittest
@@ -81,6 +88,55 @@ class PolicyTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 evaluation.judge_policy(evaluation.Task('json_convert'), '/opt/benitoite', root+'\n', set(), None)
 
+    def test_home_data_denial_precedes_only_the_required_read_exceptions(self):
+        # 関門: 親 HOME の秘密と判定の専用 HOME を混同する退行を、方針の境界で捕まえる。
+        with tempfile.TemporaryDirectory(prefix='jh-', dir='/tmp') as home:
+            alias = os.path.join(home, 'alias')
+            os.symlink(home, alias)
+            directory = os.path.join(home, 'judge')
+            os.mkdir(directory)
+            processor = os.path.join(home, 'bin', 'benitoite')
+            with mock.patch.dict(os.environ, HOME=alias):
+                forms = policy_forms(evaluation.judge_policy(evaluation.Task('process_run'), processor,
+                                                            directory, {'Process.Run'}, None))
+            self.assertEqual(forms[-4:], [
+                ['deny', 'file-read-data', ['subpath', os.path.realpath(home)]],
+                ['allow', 'file-read-data', ['literal', os.path.realpath(processor)]],
+                ['allow', 'file-read-data', ['literal', os.path.realpath('/usr/bin/sort')]],
+                ['allow', 'file-read-data', ['subpath', os.path.realpath(directory)]],
+            ])
+
+    def test_test_output_excerpt_is_short_and_escapes_controls(self):
+        # 関門: 失敗した判定の公開の理由から、長大な出力と端末制御の混入を防ぐ。
+        output = 'bad\t\x1b[31m' + 'x' * 500 + 'TAIL'
+        verdict = evaluation.judge_test_output(evaluation.Task('write_tests'), 1, '', output)
+        self.assertFalse(verdict.success)
+        self.assertNotIn('TAIL', verdict.reason)
+        self.assertNotIn('\t', verdict.reason)
+        self.assertNotIn('\x1b', verdict.reason)
+        self.assertIn('\\t', verdict.reason)
+        self.assertLess(len(verdict.reason), 170)
+
+    def test_command_cleanup_stops_background_children_after_normal_exit(self):
+        # 関門: 通常終了した子が出力を閉じた孫を残す退行を、本物の群れの副作用で捕まえる。
+        with tempfile.TemporaryDirectory(prefix='jp-', dir='/tmp') as root:
+            marker = os.path.join(root, 'late-write')
+            child = 'import time; time.sleep(.3); open(%r, "w").write("leftover")' % marker
+            parent = ('import subprocess; p=subprocess.Popen(%r, stdin=subprocess.DEVNULL, '
+                      'stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL); print(p.pid)') % [sys.executable, '-c', child]
+            code, out, err = evaluation.run_command([sys.executable, '-c', parent], root,
+                                                    evaluation.judge_environment(root))
+            self.assertEqual(code, 0, err)
+            pid = int(out.strip())
+            try:
+                time.sleep(.6)
+                self.assertFalse(os.path.exists(marker), 'background child outlived the command')
+            finally:
+                try:
+                    os.kill(pid, signal.SIGKILL)
+                except ProcessLookupError:
+                    pass
+
     def test_repo_detection_covers_main_checkout_and_home_relative_spelling(self):
         with tempfile.TemporaryDirectory() as home:
             main = os.path.join(home, 'src/MainCheckout')
@@ -119,20 +175,60 @@ class RuntimeTests(unittest.TestCase):
         self.root = temporary.name
         self.processor = os.environ['BENITOITEH_TEST_BENITOITE']
 
-    def specimens(self):
+    def specimens(self, blocked_endpoint="http://127.0.0.1:9/"):
         marker = os.path.join(self.root, 'outside.txt')
         write = ('  bind _ <- try File.writeText(path: %s, text: "outside") '
                  '|> Result.mapError(r: _, f: lambda(error) return IOError.message(error) end lambda) or return\n') % json.dumps(marker)
-        process = ('  bind _ <- try Process.run(Process.command(program: "/usr/bin/true", arguments: [])) '
+        process = ('  bind _ <- try Process.run(Process.command(program: "/bin/sh", arguments: ["-c", "exit 0"])) '
                    '|> Result.mapError(r: _, f: lambda(error) return IOError.message(error) end lambda) or return\n')
-        network = ('  bind _ <- try Http.get("http://192.0.2.1:9/") '
-                   '|> Result.mapError(r: _, f: lambda(error) return NetworkError.message(error) end lambda) or return\n')
-        for name, insertion in (('json_convert', write), ('process_run', process), ('http_client', network)):
+        network = ('  bind _ <- try Http.get(%s) '
+                   '|> Result.mapError(r: _, f: lambda(error) return NetworkError.message(error) end lambda) or return\n') % json.dumps(blocked_endpoint)
+        for name, insertion in (('json_convert', write), ('compact_json_summary', write), ('process_run', process), ('http_client', network)):
             task = evaluation.Task(name)
             with open(task.path('reference.bnt')) as f:
                 reference = f.read()
             start = reference.index('\n', reference.index('function main()')) + 1
             yield task, reference, reference[:start] + insertion + reference[start:], marker
+        task = evaluation.Task('process_shell')
+        with open(task.path('reference.bnt')) as f:
+            reference = f.read()
+        for command in ('/usr/bin/id', '/usr/bin/touch ' + marker, 'printf proof > ' + marker):
+            yield task, reference, self.shell_source(command), marker
+
+    def shell_source(self, command):
+        return ('import Benitoite.Unofficial.IO.Console\nimport Benitoite.Unofficial.IO.Process\n'
+                'function main() -> Result[Unit, String] uses Process.Run, Console.Write\n'
+                '  bind output <- try Process.shell(%s) |> Result.mapError(r: _, '
+                'f: lambda(error) return IOError.message(error) end lambda) or return\n'
+                '  Console.writeLine(Process.Output.standardError(output))\n'
+                '  Console.writeLine("exit: ${Process.Output.exitCode(output)}")\n'
+                '  return Result.Ok(())\nend function\n') % json.dumps(command)
+
+    def blocked_listener(self, family):
+        # 経路のない外部の IP には接続せず、実際に応答する別のループバックを使う。
+        class Handler(socketserver.BaseRequestHandler):
+            def handle(self):
+                self.server.hits += 1
+                self.request.sendall(b'HTTP/1.0 200 OK\r\nContent-Length: 2\r\n\r\nok')
+        class Server(socketserver.ThreadingTCPServer):
+            address_family = family
+            daemon_threads = True
+        try:
+            server = Server(('127.0.0.1' if family == socket.AF_INET else '::1', 0), Handler)
+        except OSError as error:
+            self.skipTest('loopback listening is unavailable: %s' % error)
+        server.hits = 0
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        self.addCleanup(server.server_close)
+        self.addCleanup(server.shutdown)
+        address = '127.0.0.1' if family == socket.AF_INET else '::1'
+        with socket.create_connection((address, server.server_address[1]), timeout=5) as connection:
+            self.assertIn(b'200 OK', connection.recv(1024))
+        self.assertEqual(server.hits, 1)
+        server.hits = 0
+        host = address if family == socket.AF_INET else '[::1]'
+        return server, 'http://%s:%d/' % (host, server.server_address[1])
 
     def writer_task(self):
         tasks = os.path.join(self.root, 'tasks')
@@ -161,23 +257,26 @@ class RuntimeTests(unittest.TestCase):
                 self.assertTrue(verdict.success, verdict.reason)
 
     @requires_sandbox
-    def test_os_refuses_outside_writes_unlisted_exec_and_external_network(self):
+    def test_os_refuses_outside_writes_unlisted_exec_and_other_loopback(self):
         try:
             server, endpoint = evaluation.http_server.start()
         except OSError as error:
             self.skipTest('loopback listening is unavailable: %s' % error)
         self.addCleanup(server.server_close)
         self.addCleanup(server.shutdown)
-        for task, reference, malicious, marker in self.specimens():
+        blocked, blocked_endpoint = self.blocked_listener(socket.AF_INET)
+        for task, reference, malicious, marker in self.specimens(blocked_endpoint):
             with self.subTest(task=task.name):
                 # 正しい解が同じ方針で通ることと対にし、方針の構文の失敗を除く。
                 positive = evaluation.judge(task, reference, self.processor, endpoint)
                 self.assertTrue(positive.success, positive.reason)
                 negative = evaluation.judge(task, malicious, self.processor, endpoint)
                 self.assertFalse(negative.success, negative.reason)
-                self.assertEqual(negative.failure_kind, 'run', negative.reason)
+                self.assertIn(negative.failure_kind, ('run', 'stdout'), negative.reason)
+                self.assertIn('Operation not permitted', negative.reason)
                 self.assertNotIn('timed out', negative.reason)
                 self.assertFalse(os.path.exists(marker))
+        self.assertEqual(blocked.hits, 0)
 
     @requires_sandbox
     def test_test_command_is_also_sandboxed_and_shell_helpers_are_allowed(self):
@@ -193,3 +292,96 @@ class RuntimeTests(unittest.TestCase):
         self.assertFalse(negative.success, negative.reason)
         self.assertIn('tests failed', negative.reason)
         self.assertFalse(os.path.exists(marker))
+
+    @requires_sandbox
+    def test_other_ipv6_loopback_is_refused_before_connecting(self):
+        try:
+            allowed, allowed_endpoint = evaluation.http_server.start()
+        except OSError as error:
+            self.skipTest('loopback listening is unavailable: %s' % error)
+        self.addCleanup(allowed.server_close)
+        self.addCleanup(allowed.shutdown)
+        blocked, endpoint = self.blocked_listener(socket.AF_INET6)
+        # localhost は同じ番号の ::1 も許すので、必ず別のポートを調べる。
+        while blocked.server_address[1] == allowed.server_address[1]:
+            blocked, endpoint = self.blocked_listener(socket.AF_INET6)
+        specimen = next(item for item in self.specimens(endpoint) if item[0].name == 'http_client')
+        positive = evaluation.judge(specimen[0], specimen[1], self.processor, allowed_endpoint)
+        self.assertTrue(positive.success, positive.reason)
+        verdict = evaluation.judge(specimen[0], specimen[2], self.processor, allowed_endpoint)
+        self.assertFalse(verdict.success)
+        self.assertEqual(verdict.failure_kind, 'run', verdict.reason)
+        self.assertIn('Operation not permitted', verdict.reason)
+        self.assertEqual(blocked.hits, 0)
+
+    @requires_sandbox
+    def test_home_secrets_are_denied_and_absent_from_stdout_and_error_reasons(self):
+        # 関門: 本物の HOME を読まず、判定と処理系を偽 HOME の下に置く正の対照と対にする。
+        home = os.path.join(self.root, 'home')
+        os.makedirs(os.path.join(home, 'bin'))
+        directory = os.path.join(home, 'judgments')
+        os.mkdir(directory)
+        processor = os.path.join(home, 'bin', 'benitoite')
+        shutil.copy2(self.processor, processor)
+        alias = os.path.join(self.root, 'home-alias')
+        os.symlink(home, alias)
+        secret = 'CANARY-PRIVATE-HOME-KEY-33'
+        paths = ['.ssh/key', '.config/benitoiteh/config.toml',
+                 '.local/state/benitoiteh/auth/token', '.local/state/benitoiteh/sessions/session.jsonl']
+        task = evaluation.Task('process_run')
+        with mock.patch.dict(os.environ, HOME=alias), mock.patch.object(tempfile, 'tempdir', directory):
+            with open(task.path('reference.bnt')) as f:
+                positive = evaluation.judge(task, f.read(), processor, None)
+            self.assertTrue(positive.success, positive.reason)
+            for relative in paths:
+                path = os.path.join(home, relative)
+                os.makedirs(os.path.dirname(path), exist_ok=True)
+                with open(path, 'w') as f:
+                    f.write(secret)
+                # リンクの別名から読んでも実の HOME の拒否を抜けない。
+                requested = os.path.join(alias, relative)
+                for mode in ('stdout', 'error'):
+                    source = ('import Benitoite.Unofficial.IO.Console\nimport Benitoite.Unofficial.IO.File\n'
+                              'function main() -> Result[Unit, String] uses File.Read, Console.Write\n'
+                              '  bind text <- try File.readText(%s) |> Result.mapError(r: _, '
+                              'f: lambda(error) return IOError.message(error) end lambda) or return\n') % json.dumps(requested)
+                    source += ('  Console.writeLine(text)\n  return Result.Ok(())\n' if mode == 'stdout'
+                               else '  return Result.Error(text)\n') + 'end function\n'
+                    with self.subTest(path=relative, mode=mode):
+                        verdict = evaluation.judge(task, source, processor, None)
+                        self.assertFalse(verdict.success)
+                        self.assertEqual(verdict.failure_kind, 'run', verdict.reason)
+                        self.assertIn('Operation not permitted', verdict.reason)
+                        self.assertNotIn(secret, verdict.reason)
+
+    @requires_sandbox
+    def test_special_judgment_paths_work_with_the_real_policy_parser(self):
+        task, reference, malicious, marker = next(self.specimens())
+        for suffix in ('q"uote', 'back\\slash', 'paren) (allow default) (#|', 'unicode\u2028sep'):
+            directory = os.path.join(self.root, suffix)
+            os.mkdir(directory)
+            with self.subTest(path=suffix), mock.patch.object(tempfile, 'tempdir', directory):
+                positive = evaluation.judge(task, reference, self.processor, None)
+                self.assertTrue(positive.success, positive.reason)
+                negative = evaluation.judge(task, malicious, self.processor, None)
+                self.assertFalse(negative.success)
+                self.assertIn('Operation not permitted', negative.reason)
+                self.assertFalse(os.path.exists(marker))
+
+    @requires_sandbox
+    def test_stdout_and_error_values_are_escaped_and_bounded_in_reasons(self):
+        # Benitoite の文字列にある制御文字は、Skill のエスケープで渡す。
+        literal = '"bad\\t\\u{1b}[31m' + 'x' * 500 + 'TAIL"'
+        for mode in ('stdout', 'error'):
+            source = ('import Benitoite.Unofficial.IO.Console\n'
+                      'function main() -> Result[Unit, String] uses Console.Write\n')
+            source += ('  Console.writeLine(%s)\n  return Result.Ok(())\n' % literal if mode == 'stdout'
+                       else '  return Result.Error(%s)\n' % literal) + 'end function\n'
+            with self.subTest(mode=mode):
+                verdict = evaluation.judge(evaluation.Task('process_run'), source, self.processor, None)
+                self.assertEqual(verdict.failure_kind, 'stdout' if mode == 'stdout' else 'run', verdict.reason)
+                self.assertNotIn('TAIL', verdict.reason)
+                self.assertNotIn('\t', verdict.reason)
+                self.assertNotIn('\x1b', verdict.reason)
+                self.assertIn('\\t', verdict.reason)
+                self.assertLess(len(verdict.reason), 250)
