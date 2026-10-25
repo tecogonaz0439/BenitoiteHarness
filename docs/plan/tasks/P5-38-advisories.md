@@ -1,6 +1,6 @@
 # P5-38 依存のクレートの勧告の検査
 
-- 状態: 未着手
+- 状態: 完了
 - 依存: P0-01
 
 ## 目的
@@ -95,6 +95,17 @@
 
 1. 依存の更新前の `Cargo.lock` で、`cargo deny check licenses advisories` が背景の 5 件を挙げて失敗し、`scripts/check.sh` も `deny` の段で失敗すること。データベースの更新で別の勧告が増えていたら、追加分も失敗の理由として記録する。
 2. 勧告のデータベースを取得・更新できない状態で、勧告の検査が非 0 で終わり、`scripts/check.sh` が `deny` の段で失敗すること。試験用の一時の設定とデータベースの保存先を使い、更新先への通信を失敗させるなどして、通常の保存済みデータベースを壊さずに確かめる。勧告による失敗と取得の失敗を区別し、古いデータベースやライセンスだけの検査に切り替えて通していないことを確認する。
+
+### 確かめた結果
+
+2026-10-24 に、オーケストレータが、P5-38 の変更を加えたコミット前の作業ツリーで、サンドボックスの外で確かめた。cargo-deny は 0.20.2。以下はオーケストレータから受け取った結果であり、P5-39 の実装者が再実行した結果ではない。
+
+1. `cargo deny check licenses advisories` は終了状態 1 で終わり、RUSTSEC-2026-0346、0347、0348、0349、0382 の 5 件を挙げた（`advisories FAILED, licenses ok`）。`scripts/check.sh` 全体は、`processors`・`fmt`・`clippy`・`test`・`skill-eval`・`perf-tools`・`linux` の段を通った後、`FAILED: deny (exit 1)` で終わった。x86_64 の Linux は、試験の機械を指定しなかったためビルドとリンクまでとし、aarch64 の Linux の Landlock を要するテストは、既存の扱いどおり走らせなかった。
+2. 勧告のデータベースを取れない状態を二つ試した。どちらも、今の `deny.toml` に `[advisories]` の `db-path` を一時の場所にした試験用の写しを、`cargo deny --config <写し> check ...` で使い、通常の保存済みのデータベースを変えなかった。
+   - (a) `db-urls` を存在しないホストにし、空の保存先から取得させた。`failed to fetch advisory database` で終了状態 1 となった。
+   - (b) 保存済みのデータベースの写しを保存先に置き、`https_proxy` を接続できない宛先にして更新させた。`failed to fetch latest changes` で終了状態 1 となった。
+
+どちらも、古いデータベースやライセンスだけの検査で通ることはなかった。`scripts/check.sh` は `set -e` で cargo-deny の非 0 を `deny` の段の失敗として扱う（1 の結果）。
 
 ## 完了条件
 
