@@ -98,7 +98,10 @@ Linux のテストは、aarch64 の対象を、macOS 上の Apple の `container
 1. `cargo fmt --check`
 2. `cargo clippy --all-targets`（`[workspace.lints]` と `.cargo/config.toml` の `warnings = "deny"` で、警告を誤りとして扱う）
 3. `cargo test`
-4. `cargo deny check licenses`
+4. `cargo deny check licenses advisories`
+
+   理由: ライセンスの検査だけでは、依存のクレートの既知の脆弱性を検出できない。勧告のデータベースを取得できないときも失敗させ、勧告を確かめないまま検査が通ることを防ぐ。
+
 5. リリースのビルドの実行ファイルの大きさの測定（[性能](../06-impl/06-02-performance.md)の「測り方」）
 
 検査をまとめて走らせる仕組み（Benitoite の `scripts/check.sh` に当たるもの）を作るかと、その書き方は BH-070 で決める。

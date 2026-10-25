@@ -8,7 +8,7 @@
 Cargo.toml                    ワークスペース（[workspace.lints]、[profile.release]）
 Cargo.lock
 .cargo/config.toml            warnings = "deny"、Linux 向けのリンカと実行の仕方
-deny.toml                     ライセンスの許可の一覧
+deny.toml                     依存のライセンスと勧告の検査の設定（勧告は cargo-deny の既定）
 scripts/check.sh              完了の前に通す検査
 scripts/container-run.sh      Linux 向けのテストの実行ファイルを container の中で走らせる
 scripts/remote-linux-run.sh   x86_64 の Linux 向けのテストの実行ファイルを、ssh で届く機械の podman で走らせる
@@ -44,12 +44,12 @@ P0 で作るモジュールは `cli`（`--version`・`--help`・`__sandbox` の�
 
 ## 依存のクレート
 
-版は `=` で固定する。Benitoite の処理系（`v0.0.6`）と同じクレートは同じ版にする。既定の機能を切り、作業が要る機能だけを足す（[クレートの構成](../design/06-impl/06-01-crate-structure.md)の「依存の基準」）。
+版は `=` で固定する。Benitoite の処理系（`v0.0.6`）と同じクレートは同じ版にする。ただし、依存の勧告を解消するために、処理系のリリースより先に版を上げることがある（P5-39 の `rustls`）。既定の機能を切り、作業が要る機能だけを足す（[クレートの構成](../design/06-impl/06-01-crate-structure.md)の「依存の基準」）。
 
 | クレート | 版 | 使う作業 | 備考 |
 |---|---|---|---|
 | `ureq` | `=3.4.2` | P0-03 | 機能 `rustls-no-provider`・`platform-verifier`。Benitoite と同じ |
-| `rustls` | `=0.23.45` | P0-03 | 機能 `std`・`tls12`。Benitoite と同じ |
+| `rustls` | `=0.23.46` | P0-03 | 機能 `std`・`tls12` は Benitoite と同じ。版は勧告に合わせて 0.23.46 に上げた（P5-39） |
 | `rustls-graviola` | `=0.4.0` | P0-03 | Benitoite と同じ |
 | `graviola` | `=0.4.1` | P5-21 | `default-features = false`。ID トークンの RS256 の検証（設計書 02-01「Sign in with ChatGPT」）。`rustls-graviola` が既に引く版 |
 | `rustix` | `=1.1.5` | P0-02 ほか | 機能は要るものだけ（`fs`・`process`・`thread` など）。Benitoite と同じ。機能 `event`（P5-27）は、ログインの戻り先の待ち受けと接続を `poll` でまとめて待つために使う（設計書 02-01「ログイン」）。`event` の追加前・追加だけを行った後・P5-27 の実装後の release の実行ファイル（macOS aarch64）は、いずれも 5,689,936 バイト（差 0）。新しいクレートは加わらない |

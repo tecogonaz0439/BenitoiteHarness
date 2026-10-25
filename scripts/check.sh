@@ -43,6 +43,7 @@ finish() {
     fi
     if "$inside_codex"; then
         printf '\nSkipped with --inside-codex:\n'
+        printf '  deny: advisories (requires advisory database updates outside Codex)\n'
         if ((${#skipped_tests[@]} == 0)); then
             printf '  sandbox integration tests: none found (tests/sandbox_*.rs)\n'
         else
@@ -328,10 +329,12 @@ if ! "$inside_codex"; then
 fi
 
 begin_stage deny
+# 勧告のデータベースの取得は --offline（--frozen も含む）だけで止まる（cargo-deny 0.20.2: src/cargo-deny/main.rs、check.rs）。
+# cargo-deny は CARGO_NET_OFFLINE を読まず、この変数は内部で起動する cargo metadata にだけ効く（cargo-deny 0.20.2: src/cargo-deny/common.rs）。
 if "$inside_codex"; then
     cargo deny --offline check licenses
 else
-    cargo deny check licenses
+    cargo deny check licenses advisories
 fi
 
 begin_stage size
