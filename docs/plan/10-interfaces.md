@@ -8,7 +8,7 @@
 Cargo.toml                    ワークスペース（[workspace.lints]、[profile.release]）
 Cargo.lock
 .cargo/config.toml            warnings = "deny"、Linux 向けのリンカと実行の仕方
-deny.toml                     ライセンスの許可の一覧
+deny.toml                     依存のライセンスと勧告の検査の設定（勧告は cargo-deny の既定）
 scripts/check.sh              完了の前に通す検査
 scripts/container-run.sh      Linux 向けのテストの実行ファイルを container の中で走らせる
 scripts/remote-linux-run.sh   x86_64 の Linux 向けのテストの実行ファイルを、ssh で届く機械の podman で走らせる
