@@ -307,7 +307,7 @@ def find_benitoite(given: Optional[str]) -> str:
     found = shutil.which('benitoite')
     if found and os.path.dirname(os.path.abspath(found)) != WRAPPER_DIR:
         return found
-    raise SystemExit('benitoite not found; pass --benitoite <path to benitoite v0.0.7>')
+    raise SystemExit('benitoite not found; pass --benitoite <path to benitoite v0.0.12>')
 
 
 def find_benitoiteh(given: Optional[str]) -> str:

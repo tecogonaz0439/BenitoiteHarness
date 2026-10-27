@@ -4,7 +4,7 @@
 
 ## 目的と範囲
 
-本章は、本設計書で使う術語を定義する。Benitoite の設計書の用語集（[00-04「用語集」](https://github.com/tecogonaz0439/Benitoite/blob/v0.0.7/docs/design/00-overview/00-04-glossary.md)）にある語（エフェクト、処理系、根のディレクトリなど）は、同じ意味で使い、ここでは本設計書に固有の語と、意味を限って使う語だけを挙げる。
+本章は、本設計書で使う術語を定義する。Benitoite の設計書の用語集（[00-04「用語集」](https://github.com/tecogonaz0439/Benitoite/blob/v0.0.12/docs/design/00-overview/00-04-glossary.md)）にある語（エフェクト、処理系、根のディレクトリなど）は、同じ意味で使い、ここでは本設計書に固有の語と、意味を限って使う語だけを挙げる。
 
 ## 前提
 

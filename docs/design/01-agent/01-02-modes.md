@@ -9,7 +9,7 @@
 
 ## 前提
 
-- 制限モードは、Benitoite の事前検討が採った操作の範囲（[ADR 0344](https://github.com/tecogonaz0439/Benitoite/blob/v0.0.7/docs/archive/2026-10-09-design-first-release/decisions/0344-agent-harness-operation-scope-and-tools.md) の (γ)。スクリプトの作成・検査・実行と、プロジェクトの中のファイルの一覧と読み取り）に当たる。
+- 制限モードは、Benitoite の事前検討が採った操作の範囲（[ADR 0344](https://github.com/tecogonaz0439/Benitoite/blob/v0.0.12/docs/archive/2026-10-09-design-first-release/decisions/0344-agent-harness-operation-scope-and-tools.md) の (γ)。スクリプトの作成・検査・実行と、プロジェクトの中のファイルの一覧と読み取り）に当たる。
 - 通常モードは、事前検討になかったものであり、利用者の要件（一般的なハーネスと同じく振る舞うモード）による。
 - モードはセッションの間変えない（[セキュリティモデル](../03-safety/03-01-security-model.md)の「モードを変える操作」）。
 

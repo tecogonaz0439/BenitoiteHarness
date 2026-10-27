@@ -17,7 +17,7 @@ fn test_processor() -> Result<PathBuf, Box<dyn Error>> {
         std::env::var_os("BENITOITEH_TEST_BENITOITE")
             .filter(|path| !path.is_empty())
             .ok_or(
-                "BENITOITEH_TEST_BENITOITE is required: set it to a benitoite v0.0.7 executable.",
+                "BENITOITEH_TEST_BENITOITE is required: set it to a benitoite v0.0.12 executable.",
             )?,
     )?)
 }
@@ -879,7 +879,7 @@ fn changed_processor_is_reported_in_diagnostics_and_notice_without_rewriting_res
     resumed
         .agent
         .run("request".into(), Arc::new(AtomicBool::new(true)), sender)?;
-    assert!(receiver.into_iter().any(|event| matches!(event, crate::agent::AgentEvent::SessionStart { notice: Some(notice), .. } if notice.contains("executable changed") && notice.contains("0.0.7"))));
+    assert!(receiver.into_iter().any(|event| matches!(event, crate::agent::AgentEvent::SessionStart { notice: Some(notice), .. } if notice.contains("executable changed") && notice.contains("0.0.12"))));
     assert_eq!(
         fs::read_to_string(record_path)?.lines().next(),
         Some(original_header.as_str())
@@ -1158,7 +1158,7 @@ fn prepared_skill_is_in_prompt_tools_header_and_environment_in_both_modes()
             .agent
             .run("request".into(), Arc::new(AtomicBool::new(true)), sender)?;
         let _events = receiver.into_iter().collect::<Vec<_>>();
-        assert!(prepared.agent.conversation().items.iter().any(|item| matches!(item, Item::UserMessage(message) if message.parts.iter().any(|part| part.text.contains("<benitoite_version>0.0.7</benitoite_version>")))));
+        assert!(prepared.agent.conversation().items.iter().any(|item| matches!(item, Item::UserMessage(message) if message.parts.iter().any(|part| part.text.contains("<benitoite_version>0.0.12</benitoite_version>")))));
     }
     Ok(())
 }

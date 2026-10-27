@@ -4,10 +4,11 @@ use crate::sandbox::{ReadAccess, RestrictedAccess};
 use std::collections::BTreeSet;
 use std::path::Path;
 
-/// `--allow-effects` と検査の報告が共有する十三の名前。
+/// `--allow-effects` と検査の報告が共有する十四の名前。
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
 pub enum Effect {
     State,
+    Log,
     ConsoleRead,
     ConsoleWrite,
     FileRead,
@@ -27,6 +28,7 @@ impl Effect {
     pub const fn name(self) -> &'static str {
         match self {
             Self::State => "State",
+            Self::Log => "Log",
             Self::ConsoleRead => "Console.Read",
             Self::ConsoleWrite => "Console.Write",
             Self::FileRead => "File.Read",
@@ -45,6 +47,7 @@ impl Effect {
     pub fn from_name(name: &str) -> Option<Self> {
         Some(match name {
             "State" => Self::State,
+            "Log" => Self::Log,
             "Console.Read" => Self::ConsoleRead,
             "Console.Write" => Self::ConsoleWrite,
             "File.Read" => Self::FileRead,

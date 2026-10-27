@@ -52,6 +52,10 @@ fn reports_require_every_authoritative_condition_and_preserve_evidence()
         ),
         (
             "aggregateEffects",
+            json!({"basis":"declaredUpperBound","expanded":["Fail"]}),
+        ),
+        (
+            "aggregateEffects",
             json!({"basis":"declaredUpperBound","expanded":["File.Write","Future.New"]}),
         ),
     ] {
@@ -61,6 +65,17 @@ fn reports_require_every_authoritative_condition_and_preserve_evidence()
             report::parse(&serde_json::to_vec(&object)?, Some(0), ReportKind::Run).is_err(),
             "{key}: {object}"
         );
+    }
+    // 局所の分析範囲は、型とエフェクトの検査が完全かの条件を変えない。
+    for (complete, coverage, accepted) in [(true, "some", true), (false, "all", false)] {
+        let mut object = valid();
+        *object.get_mut("complete").ok_or("complete")? = json!(complete);
+        object.as_object_mut().ok_or("report")?.insert(
+            "intervalAnalysis".into(),
+            json!({"basis":"localIntervals","coverage":coverage}),
+        );
+        let parsed = report::parse(&serde_json::to_vec(&object)?, Some(0), ReportKind::Run);
+        assert_eq!(parsed.is_ok(), accepted, "{object}");
     }
     for status in [None, Some(1), Some(2), Some(130)] {
         assert!(report::parse(&bytes, status, ReportKind::Run).is_err());

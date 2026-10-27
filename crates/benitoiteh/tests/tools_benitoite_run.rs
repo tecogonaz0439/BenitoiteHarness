@@ -157,20 +157,27 @@ fn restricted_facts_cover_current_and_previously_confirmed_effects() -> TestResu
     let stop = AtomicBool::new(false);
     for (uses, write, network, programs) in [
         ("", false, false, false),
+        ("Log", false, false, false),
+        ("file-level Log", false, false, false),
         ("File.Write", true, false, false),
         ("Http.Connect", false, true, false),
         ("Process.Run", false, false, true),
         ("Console.Write", true, true, true),
     ] {
-        let declaration = if uses.is_empty() {
+        let declaration = if uses.is_empty() || uses == "file-level Log" {
             String::new()
         } else {
             format!(" uses {uses}")
         };
+        let shared = if uses == "file-level Log" {
+            "uses Log\n"
+        } else {
+            ""
+        };
         fs::write(
             f.project.join("scope.bnt"),
             format!(
-                "import Benitoite.Unofficial.IO.File\nimport Benitoite.Unofficial.Network.Http\nimport Benitoite.Unofficial.IO.Process\nimport Benitoite.Unofficial.IO.Console\nfunction main() -> Unit{declaration}\n return ()\nend function\n"
+                "import Benitoite.Unofficial.IO.File\nimport Benitoite.Unofficial.Network.Http\nimport Benitoite.Unofficial.IO.Process\nimport Benitoite.Unofficial.IO.Console\n{shared}function main() -> Unit{declaration}\n return ()\nend function\n"
             ),
         )?;
         let key = ConfirmKey::Run(f.project.join("scope.bnt"));
@@ -185,6 +192,9 @@ fn restricted_facts_cover_current_and_previously_confirmed_effects() -> TestResu
         }
         let output = f.call(json!({"path":"scope.bnt"}), false, "scope", &stop);
         let facts = &output.approval.as_ref().ok_or(format!("{output:?}"))?.facts;
+        if uses.contains("Log") {
+            assert_eq!(facts.effects, ["Log"]);
+        }
         let restricted = facts.restricted.as_ref().ok_or("restricted facts")?;
         let mut writable = Vec::new();
         if write {

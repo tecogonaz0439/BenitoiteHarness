@@ -145,15 +145,16 @@ fn allow_accepts_atomic_effects_and_rejects_aliases_duplicates_and_interactive_u
 -> Result<(), Box<dyn Error>> {
     use benitoiteh::benitoite::Effect;
     assert_eq!(
-        ExecArgs::parse(["--allow", "Assert.Check,File.Write", "request"])?.allow,
+        ExecArgs::parse(["--allow", "Assert.Check,File.Write,Log", "request"])?.allow,
         Some(
-            [Effect::AssertCheck, Effect::FileWrite]
+            [Effect::AssertCheck, Effect::FileWrite, Effect::Log]
                 .into_iter()
                 .collect()
         )
     );
     for value in [
         "IO.All",
+        "Fail",
         "File.Unknown",
         "File.Read,File.Read",
         "File.Read,",

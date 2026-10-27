@@ -92,7 +92,7 @@ HTTP の受け取りは、ソケットを閉じて打ち切る（[提供者の�
 | 検査と修正の回数（制限モード） | 10 | 止めて、残る診断とともに利用者に報告する |
 | 一連の処理のトークンの量 | なし | 止めて、達したことを示す |
 
-- 検査と修正の回数は、同じスクリプトについて、検査（`benitoite_check` と、書いた後の検査）が誤りを返した回数を数え、誤りなく通ったら 0 に戻す。誤りを返したとするのは、`benitoite_check` では検査の誤り（[Benitoite の処理系との連携](../04-benitoite/04-01-benitoite-integration.md)の「終了状態と診断の受け渡し」の分類）、書いた後の検査では書いたファイルに `error` の診断があるか、位置が `null` の誤りがあるときである。警告だけのときは誤りなく通ったとする。使い方の誤り、処理系の不具合、時間切れ、取り消し、検査しなかったとき（[道具](01-03-tools.md)の「書いた後の検査（制限モード）」の `Not checked automatically`）は、回数を変えない。上限に達して止めたら、そのスクリプトの回数を 0 に戻す。回数はループのメモリに持ち、再開のときに記録から戻さないので、再開したセッションは 0 から数える。既定の 10 回は、Benitoite の事前検討の見立てと、Skill の評価の上限に揃えた（[ADR 0344](https://github.com/tecogonaz0439/Benitoite/blob/v0.0.7/docs/archive/2026-10-09-design-first-release/decisions/0344-agent-harness-operation-scope-and-tools.md) の帰結、Benitoite の docs/todo の TODO-134）。
+- 検査と修正の回数は、同じスクリプトについて、検査（`benitoite_check` と、書いた後の検査）が誤りを返した回数を数え、誤りなく通ったら 0 に戻す。誤りを返したとするのは、`benitoite_check` では検査の誤り（[Benitoite の処理系との連携](../04-benitoite/04-01-benitoite-integration.md)の「終了状態と診断の受け渡し」の分類）、書いた後の検査では書いたファイルに `error` の診断があるか、位置が `null` の誤りがあるときである。警告だけのときは誤りなく通ったとする。使い方の誤り、処理系の不具合、時間切れ、取り消し、検査しなかったとき（[道具](01-03-tools.md)の「書いた後の検査（制限モード）」の `Not checked automatically`）は、回数を変えない。上限に達して止めたら、そのスクリプトの回数を 0 に戻す。回数はループのメモリに持ち、再開のときに記録から戻さないので、再開したセッションは 0 から数える。既定の 10 回は、Benitoite の事前検討の見立てと、Skill の評価の上限に揃えた（[ADR 0344](https://github.com/tecogonaz0439/Benitoite/blob/v0.0.12/docs/archive/2026-10-09-design-first-release/decisions/0344-agent-harness-operation-scope-and-tools.md) の帰結、Benitoite の docs/todo の TODO-134）。
 - Pi と DeepSeek Harness は番の数の上限を持たない。試作が持つのは、LLM の誤りで利用料が上限なく増えることを防ぐためである（[セキュリティモデル](../03-safety/03-01-security-model.md)の「守るもの」）。
 
 ### 同じ呼び出しの繰り返し

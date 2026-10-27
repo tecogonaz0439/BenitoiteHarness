@@ -9,8 +9,8 @@
 
 ## 前提
 
-- 対象とする処理系は、Benitoite の最新のリリース `v0.0.7`（コミット `63de89a2`）である。`v0.0.7` もソースコードだけのリリースであり、実行ファイルは配っていない（[Benitoite の CHANGELOG](https://github.com/tecogonaz0439/Benitoite/blob/v0.0.7/CHANGELOG.md) の 0.0.7）。利用者は処理系をソースからビルドして用意する。
-- 処理系の CLI は `check`・`run`・`test`・`fmt`・`skill`・`package` のサブコマンドを持ち、`--diagnostics=json` で診断を一行一件の JSON で標準エラー出力に書く（[CLI](https://github.com/tecogonaz0439/Benitoite/blob/v0.0.7/docs/design/06-tooling/06-01-cli.md)、[診断エンジン](https://github.com/tecogonaz0439/Benitoite/blob/v0.0.7/docs/design/02-impl/02-10-diagnostics.md)の「JSON の形式」）。`test` は、`--diagnostics=json` のとき、テストごとの結果と集計を一行一件の JSON で標準出力に書く（[Benitoite のリファレンス](https://github.com/tecogonaz0439/Benitoite/blob/v0.0.7/docs/reference/benitoite.md)の「16. Tests」）。
+- 対象とする処理系は、Benitoite の最新のリリース `v0.0.12`（コミット `d0678ddb`）である。`v0.0.12` もソースコードだけのリリースであり、実行ファイルは配っていない（[Benitoite の CHANGELOG](https://github.com/tecogonaz0439/Benitoite/blob/v0.0.12/CHANGELOG.md) の 0.0.12）。利用者は処理系をソースからビルドして用意する。
+- 処理系の CLI は `check`・`run`・`test`・`fmt`・`skill`・`package` のサブコマンドを持ち、`--diagnostics=json` で診断を一行一件の JSON で標準エラー出力に書く（[CLI](https://github.com/tecogonaz0439/Benitoite/blob/v0.0.12/docs/design/06-tooling/06-01-cli.md)、[診断エンジン](https://github.com/tecogonaz0439/Benitoite/blob/v0.0.12/docs/design/02-impl/02-10-diagnostics.md)の「JSON の形式」）。`test` は、`--diagnostics=json` のとき、テストごとの結果と集計を一行一件の JSON で標準出力に書く（[Benitoite のリファレンス](https://github.com/tecogonaz0439/Benitoite/blob/v0.0.12/docs/reference/benitoite.md)の「16. Tests」）。
 - `v0.0.7` は、`benitoiteh` の依頼（後述の「処理系への要望」）に応えて、次の機能を加えた（CHANGELOG の 0.0.7 の「Harness interfaces」、同梱の Skill の [Inspecting before execution](https://github.com/tecogonaz0439/Benitoite/blob/v0.0.7/crates/benitoite/skill/references/inspection.md)）。
   - `check --report=json`: `main` を実行せずに検査し、宣言したエフェクトの上限、読み込んだソースとその SHA-256、診断、`Process.shell` の参照の有無を、一つの JSON で標準出力に書く。
   - `test --check [--report=json]`: `test` と同じ選び方の対象を、テストを実行せずに検査する。
@@ -19,8 +19,9 @@
   - `Process.Command` の `environment` で、`DYLD_`・`LD_` で始まる名前を設定させない。
   - `skill list` と `skill show`: 同梱の Skill の文書を、インストールせずに標準出力に書く。
 - `v0.0.7` は、`language "0.0.6"` 以前の宣言を `E0908` にする。ローダの環境変数の拒否を互換性の変更として登録したためである。`language` の宣言を省いたファイルは、今の版の規則で検査する（CHANGELOG の 0.0.7）。
-- 処理系の静的な検査とエフェクトの上限の照合は、宣言した契約を比べるだけであり、実行時の権限制御と OS のサンドボックスを持たない。隔離は処理系を起動する側に委ねる（[Benitoite の SECURITY.md](https://github.com/tecogonaz0439/Benitoite/blob/v0.0.7/SECURITY.md)、Inspecting before execution の末尾）。
-- 処理系の実行ファイルは Wasmtime と Cranelift を含み、aarch64 の macOS のリリースのビルドで約 30 MB である（2026-10-18 に、`v0.0.7` のタグのソースからビルドしたもので 30,097,536 バイトを確かめた）。
+- `v0.0.12` は、`language "0.0.11"` 以前を E0908 にする。ソースと依存の変更を点検してから宣言と依存のハッシュを更新する（[CHANGELOG](https://github.com/tecogonaz0439/Benitoite/blob/v0.0.12/CHANGELOG.md)の 0.0.12）。宣言を省いたファイルは現在の規則を使う。
+- 処理系の静的な検査とエフェクトの上限の照合は、宣言した契約を比べるだけであり、実行時の権限制御と OS のサンドボックスを持たない。隔離は処理系を起動する側に委ねる（[Benitoite の SECURITY.md](https://github.com/tecogonaz0439/Benitoite/blob/v0.0.12/SECURITY.md)、Inspecting before execution の末尾）。
+- 処理系の実行ファイルは Wasmtime と Cranelift を含み、aarch64 の macOS のリリースのビルドで約 30 MB である（2026-10-18 に、`v0.0.7` のタグのソースからビルドしたもので 30,097,536 バイトを確かめた）。2026-10-27 に、オーケストレータが `v0.0.12` のタグのアーカイブからビルドした aarch64 の macOS の実行ファイルは 32,091,952 バイトであった。
 
 ## 仕様
 
@@ -29,6 +30,16 @@
 【決定】`benitoiteh` は処理系のクレートをライブラリとして組み込まず、処理系の実行ファイルを子プロセスとして起動する。理由: 処理系を組み込むと Wasmtime と Cranelift が入り、`benitoiteh` の実行ファイルが処理系と同じ 30 MB 前後になって、小さい実行ファイルという目標（[目的と設計原則](../00-overview/00-01-goals.md)の「性能の目標」）を満たせない。また、子プロセスにすれば、処理系にだけ OS のサンドボックスを掛けられる。
 
 子プロセスにする代償は、起動のたびにプロセスの生成と処理系の初期化の時間がかかることである。2026-10-18 に、手元の macOS（Apple Silicon）で `v0.0.7` の処理系の一回の起動を測ると、`check --report=json` が約 22 ミリ秒（標準のモジュールを含めて 44 のソースを読む小さなスクリプト）、`--version=json` と `skill show` が約 5 ミリ秒であった。LLM の応答の時間（秒の単位）と比べて小さいので、子プロセスにする形を保つ（BH-020 を閉じた）。
+
+2026-10-27 に、オーケストレータが同じ macOS（Apple Silicon）の条件で 30 回の中央値を測った結果は次のとおりである。`check --report=json` は、標準のモジュールを含めて 44 のソースを読む小さなスクリプトを使った。この結果はオーケストレータから受け取った測定であり、上の 2026-10-18 の測定とは別である。
+
+| コマンド | v0.0.7 | v0.0.12 |
+|---|---|---|
+| `--version=json` | 5.8 ミリ秒 | 5.8 ミリ秒 |
+| `skill show --format=json SKILL.md` | 5.6 ミリ秒 | 6.5 ミリ秒 |
+| `check --report=json` | 13.6 ミリ秒 | 16.6 ミリ秒 |
+
+いずれも LLM の応答の時間と比べて小さく、BH-020 の判断は変わらない。
 
 ### 処理系の見つけ方と版の確かめ
 
@@ -50,7 +61,7 @@
 
 満たさないとき（処理系が見つからないときを含む）は、制限モードでは起動を止め、通常モードでは Benitoite の道具を外して続ける。どちらも、理由を画面に示す。理由: 制限モードの確認とサンドボックスは、後述の「実行の前の検査の報告」と、処理系の `--allow-effects` の照合に頼る。これらを持たない処理系では、確認したエフェクトを処理系に確かめさせられない。
 
-【方針】`version`（版の数）と `build`（ビルドのコミットなど）は、セッションの記録のヘッダと `doctor` に示す。`version` が、`benitoiteh` のシステムプロンプトの対応の説明を確かめた版（`0.0.7`。後述の「取り込む文書と版」）と違えば、画面とセッションの記録に警告を出して続ける。理由: Skill の手順が変わると、システムプロンプトに書いた、Skill の手順と `benitoiteh` の道具の対応が合わなくなりうる。止めずに続けるのは、要る機能の有無は `formats` で確かめてあり、対応の食い違いは LLM の手数を増やしうるだけで、確認とサンドボックスを弱めないからである。`build` は実行ファイルの自己申告であり、同じ実行ファイルであることの証明には使わない（`dirty` の `null` は「変更なし」でなく「不明」を表す。Inspecting before execution）。
+【方針】`version`（版の数）と `build`（ビルドのコミットなど）は、セッションの記録のヘッダと `doctor` に示す。`version` が、`benitoiteh` のシステムプロンプトの対応の説明を確かめた版（`0.0.12`。後述の「取り込む文書と版」）と違えば、画面とセッションの記録に警告を出して続ける。理由: Skill の手順が変わると、システムプロンプトに書いた、Skill の手順と `benitoiteh` の道具の対応が合わなくなりうる。止めずに続けるのは、要る機能の有無は `formats` で確かめてあり、対応の食い違いは LLM の手数を増やしうるだけで、確認とサンドボックスを弱めないからである。`build` は実行ファイルの自己申告であり、同じ実行ファイルであることの証明には使わない（`dirty` の `null` は「変更なし」でなく「不明」を表す。Inspecting before execution）。
 
 【方針】起動のときに、処理系の実のパスのファイルの SHA-256 を求め、セッションの記録のヘッダに書く。同じプロジェクトのディレクトリの直前のセッションの記録と値が違えば、処理系の実行ファイルが変わったことを、前と今の版とともに画面に示して続ける。理由: 処理系の実行ファイルの中身は、制限モードの保証の前提である（[セキュリティモデル](../03-safety/03-01-security-model.md)の「保証しないこと」）。`build` の自己申告と違い、ハッシュは中身が変わったことを確かめられる。利用者が意図して処理系を更新したときも示すので、止めずに続ける。
 
@@ -67,7 +78,9 @@
 
 理由: 起動した処理系と同じ版の文書を LLM に見せられる。版の違う写しを埋め込むと、LLM が古い書き方で書き、検査で誤りになりうる（`v0.0.6` で `language "0.0.5"` が、`v0.0.7` で `language "0.0.6"` が `E0908` になった）。取り込み直しの手間と、実行ファイルの約 330 KB（`v0.0.7` の文書の大きさ）もなくなるので、文書を圧縮して埋め込むかの検討は要らなくなった（BH-021 を閉じた）。処理系は制限モードの起動に要り、通常モードで処理系がないときは Benitoite の道具を外すので、処理系なしに文書だけが要る場面は生じない。問い合わせの時間は前述のとおり小さい。
 
-【方針】処理系の Skill の写しを、`v0.0.7` のタグから `assets/benitoite/v0.0.7/skill/` に置く。同じディレクトリの `SOURCE.md` に、元のタグ、コミット（`63de89a2`）、写した日、写したパスを書く。写した文書は、60 のファイル、合わせて 328,650 バイトである。この写しは実行ファイルに埋め込まず、システムプロンプトの対応の説明を書いたときに読んだ版の記録として置く。写した文書を手で直さない。処理系の新しいリリースが出ても自動では取り込み直さず、設計者の指示で取り込み直し、そのときに対応の説明を見直す。2026-10-18 に、手元でビルドした `v0.0.7` の `skill show SKILL.md` の本文が、この写しの `{{benitoite-version}}` を `0.0.7` に置き換えたものとバイト列で一致することを確かめた。
+【方針】処理系の Skill の写しは、`v0.0.12` のタグ（コミット `d0678ddb7e82da77715ea2e01ef974d06d41814b`）の `crates/benitoite/skill/` 全体を `assets/benitoite/v0.0.12/skill/` に置く。同じディレクトリの `SOURCE.md` に元のタグ、コミット、写した日、元と先のパス、ファイルの数と合計のバイト数を書く。2026-10-27 に、設計者の指示で取り込み直した写しは 71 ファイル、441,389 バイトである。この写しは実行ファイルに埋め込まず、対応の説明を確かめた版の記録とする。古い `assets/benitoite/v0.0.7/` は消し、git の履歴に残す。
+
+写した本文は手で直さない。処理系の新しいリリースが出ても自動では取り込み直さず、設計者の指示で取り込み直し、そのときに対応の説明を見直す。2026-10-27 に、同じタグからビルドした処理系の `skill show --format=json SKILL.md` の名前、長さ、SHA-256 を確かめ、本文が写しの `{{benitoite-version}}` を `0.0.12` に置き換えたものと、改行を含めバイト列で一致することを確かめた。2026-10-18 にも `v0.0.7` の写し（60 ファイル、328,650 バイト）について、同じ版の本文との一致を確かめている。
 
 ### 処理系の起動
 
@@ -86,18 +99,19 @@
 
 - `run` と `test` には、いつも `--allow-effects` を付ける。エフェクトがないときは `--allow-effects=` とする（空の集合）。理由: 省くと、処理系は上限を掛けない。渡す集合は後述の「実行の前の検査の報告」で定める。
 - ほかのサブコマンド（`fmt`・`package`・`skill install`）は起動しない。
+- `benitoite_check` と `benitoite_test` は、検査にも実行にも `--doc` を付けない。理由: 文書の例を含むテストは `testCheckReport`・`testResults` の形式 2 と `docExample`・`docSummary` を扱う必要がある。試作は形式 1 の通常のテストを対象とし、検査と実行で選ぶ対象を揃える（[リファレンス](https://github.com/tecogonaz0439/Benitoite/blob/v0.0.12/docs/reference/benitoite.md)の「Documentation examples」）。
 - 作業ディレクトリはプロジェクトのディレクトリとする。
 - 環境変数は、`benitoiteh` の環境から LLM の提供者のキーの変数（`OPENAI_API_KEY`・`ANTHROPIC_API_KEY`・`GEMINI_API_KEY`・`DEEPSEEK_API_KEY` と、設定ファイルで提供者のキーとして参照した変数）を除いて渡す。理由: LLM が書いたスクリプトが `Process.Environment` でキーを読み、出力に含めて LLM の提供者へ送ることを防ぐ。Benitoite の事前検討でも同じ対策が挙がっている（Benitoite の docs/todo の TODO-132）。
 - 標準入力は、利用者の端末につながない。道具の引数（`stdin`）で文字列が渡されたときは、それを書いてから閉じ、渡されないときは空（`/dev/null`）にする。理由: 子プロセスが利用者の端末の入力を奪うと、取り消しの操作ができなくなる（[道具](../01-agent/01-03-tools.md)の「benitoite_run（制限モード）」）。
 - 標準出力と標準エラー出力は、子プロセスが終わるまで読み続ける（上限を超えても読むのをやめない）。受け取った出力の扱い（LLM に返す末尾、`spill/` に残す量、捨てた量の表示）は、[道具](../01-agent/01-03-tools.md)の「出力の切り詰め」で定める。理由: 読むのをやめると、子プロセスがパイプの書き込みで止まる。末尾を返す道具では、途中で受け取りをやめると、本当の末尾（失敗の理由や集計）が失われる。ただし、検査の報告と問い合わせの結果は、標準出力の全体を一つの JSON として読む必要があるので、16 MiB を上限とし、超えたら読むのをやめて子プロセスを止め、報告が読めないものとして `The inspection report from benitoite exceeded 16 MiB and was not read. Pass fewer or narrower paths.` を道具の誤りとして返す。理由: 報告の `sources` は、対象（入口）ごとに、読み込んだ標準のモジュールを含むソースの記録を繰り返し持つ。2026-10-18 に `v0.0.7` で測ると、対象一つにつき約 9 KB であり、約 1,900 の入口を持つディレクトリを `benitoite_test` に渡すと上限に届く。上限を設けないと、大きな報告や壊れた処理系の出力で主のプロセスのメモリを使い尽くしうる。検査（`check --diagnostics=json` と `test --check --diagnostics=json`）の標準エラー出力も、診断を一件も落とさずに読む必要があるので、同じく 16 MiB を上限とし、超えたら読むのをやめて子プロセスを止め、`The diagnostics from benitoite exceeded 16 MiB and were not read. Check fewer or narrower paths.` を返す。理由: 処理系は、取り込んだモジュールの診断を入口ごとに繰り返す。2026-10-18 に `v0.0.7` で、300 の入口が取り込む一つのモジュールに誤りを置くと、診断は 302 行、121 KB になった。末尾だけを残す形では、どの診断が落ちたかが分からない。
-- 時間の上限（`run` と `test` の既定 120 秒、検査と実行の前の検査の既定 30 秒、問い合わせの既定 10 秒）を過ぎたら、`SIGINT` を送る。処理系は `run` と `test` では `SIGINT` を受けるとリソースを解放して終了状態 130 で終わる（[CLI](https://github.com/tecogonaz0439/Benitoite/blob/v0.0.7/docs/design/06-tooling/06-01-cli.md)の「終了状態」）。送ってから 10 秒で終わらなければ `SIGKILL` を送る。利用者の取り消しも同じ手順で止める（[エージェントのループ](../01-agent/01-01-agent-loop.md)の「取り消し」）。
+- 時間の上限（`run` と `test` の既定 120 秒、検査と実行の前の検査の既定 30 秒、問い合わせの既定 10 秒）を過ぎたら、`SIGINT` を送る。処理系は `run` と `test` では `SIGINT` を受けるとリソースを解放して終了状態 130 で終わる（[CLI](https://github.com/tecogonaz0439/Benitoite/blob/v0.0.12/docs/design/06-tooling/06-01-cli.md)の「終了状態」）。送ってから 10 秒で終わらなければ `SIGKILL` を送る。利用者の取り消しも同じ手順で止める（[エージェントのループ](../01-agent/01-01-agent-loop.md)の「取り消し」）。
 - スクリプトとテストの対象のパスは、範囲の判定（[道具](../01-agent/01-03-tools.md)の「道具の定義の共通の規則」）に使った、シンボリックリンクを解いた絶対の実のパスで処理系に渡す。理由: 判定したものと処理系が読むものを揃える。LLM が渡した相対のパスをそのまま渡すと、`-` で始まるパスが処理系のオプションとして読まれうる。
 - 子プロセスは新しいプロセスグループで起動し、止めるときはグループに送る。理由: 通常モードでスクリプトが起動した外部コマンドも、あわせて止めるためである。終わった後に残ったプロセスの片付けと、グループを抜けたプロセスの扱いは、[OS のサンドボックス](../03-safety/03-02-sandbox.md)の「子プロセスの後始末」で定める。
 - 検査、実行の前の検査、問い合わせは、利用者のスクリプトを実行しない（報告の `executed` は偽に決まっている）が、書ける場所を一時ディレクトリだけ、ネットワークを使えない方針の OS のサンドボックスの中で起動する（[OS のサンドボックス](../03-safety/03-02-sandbox.md)の「制限モードの方針」）（2026-10-18 に設計者が承認した）。理由: 検査でも、定数の評価と外部の関数の宣言の照合のために WASM の部品をコンパイルする（Inspecting before execution）。処理系の欠陥で検査の途中に予期しない操作が起きても、範囲を狭めておく。通常モードでも、サンドボックスの方針（`danger-full-access` を含む）によらず、この方針で起動する。ただし、通常モードで、サンドボックスを掛けられない環境で `--no-sandbox` を指定してサンドボックスを外したときは、サンドボックスを掛けずに、ほかの道具の子と同じく端末から切り離して起動する（2026-10-18 に決めた【決定】）。`--no-sandbox` を指定しても、サンドボックスを掛けられる環境では、`bash` と同じく問い合わせもサンドボックスの中で起動する。通常モードで、サンドボックスの方針が `workspace-write` か `read-only` なのにサンドボックスを掛けられず、`--no-sandbox` もないときは、起動を止める（[OS のサンドボックス](../03-safety/03-02-sandbox.md)の「サンドボックスを掛けられないとき」）。`danger-full-access` でサンドボックスを掛けられないときだけ、Benitoite の道具を外して続ける。理由: 利用者がサンドボックスを外すと決めたときは、`bash` も `benitoite_run` もサンドボックスの外で動くので、問い合わせだけを止めても範囲は狭まらない。
 
 ### 終了状態と診断の受け渡し
 
-【方針】`check` と `run` の終了状態は、処理系の定め（0 成功、1 スクリプトの実行の失敗、2 検査の誤り・エフェクトの上限を超えたこと・使い方の誤り、3 処理系の不具合、130 中断）のとおりに解釈する。`run` は `Process.exit(code)` で任意の値で終わりうるので、標準エラー出力に処理系の形式の JSON の報告があるかで、処理系の失敗とスクリプトの終了を区別する（処理系の定めた方法である）。`try e or die` の失敗は、終了状態 1 と `kind` が `"die"` の報告で示されるので、スクリプトの実行の失敗として扱う（[CLI](https://github.com/tecogonaz0439/Benitoite/blob/v0.0.7/docs/design/06-tooling/06-01-cli.md)の「終了状態」）。
+【方針】`check` と `run` の終了状態は、処理系の定め（0 成功、1 スクリプトの実行の失敗、2 検査の誤り・エフェクトの上限を超えたこと・使い方の誤り、3 処理系の不具合、130 中断）のとおりに解釈する。`run` は `Process.exit(code)` で任意の値で終わりうるので、標準エラー出力に処理系の形式の JSON の報告があるかで、処理系の失敗とスクリプトの終了を区別する（処理系の定めた方法である）。`try e or die` の失敗は、終了状態 1 と `kind` が `"die"` の報告で示されるので、スクリプトの実行の失敗として扱う（[CLI](https://github.com/tecogonaz0439/Benitoite/blob/v0.0.12/docs/design/06-tooling/06-01-cli.md)の「終了状態」）。
 
 検査（`check --diagnostics=json` と `test --check --diagnostics=json`）について、2026-10-18 に `v0.0.7` で次のことを確かめた。警告だけのときは、終了状態 0 で終わり、診断を標準エラー出力に書く。検査の誤りのときは 2 で終わる。使い方の誤りも 2 で終わり、標準エラー出力に JSON でない文（`error: directory … has no main.bnt` など）を書く。使い方の誤りを診断の形で示すときは、`code` と `primary` を `null` にする。どの場合も標準出力は空である。
 
@@ -163,7 +177,7 @@ error[E0405] src/report.bnt:12:5: <message>
 
 【決定】確認が要るときは、報告を二度得る。一度目の報告で確認の要否を決めて確認を求め、利用者が許した後に、実行の直前にもう一度報告を得る。二度目の報告の集合（`Assert.Check` を除く）が、確認を経て広げた範囲（[利用者の確認](../03-safety/03-03-approval.md)の「制限モードの確認」）に収まるときだけ、二度目の報告の集合で実行する（`--allow-effects` とサンドボックスの方針も、二度目の報告の集合から作る）。収まらなければ実行せず、後述の `E0512` のときと同じ英文を返す。確認が要らないときは、報告を一度だけ得る（2026-10-18 に設計者が承認した）。理由: 試作の確認の流れは、道具が確認の要求を返し、ループが確認を受けた後に同じ呼び出しを改めて実行する形であり（[道具](../01-agent/01-03-tools.md)の「web_fetch」）、ループには一度目の報告を二度目の呼び出しへ渡す口がない。二度目に得れば、報告を得てから実行するまでの間（スクリプトが変えられうる間）も短くなる。
 
-報告は処理系の言明として、処理系の実行ファイルを信頼する範囲で信頼する（[セキュリティモデル](../03-safety/03-01-security-model.md)の「信頼の境界」）。理由: 報告を作る検査は利用者の関数を実行せず、検査の前に値を求める `const` は、リテラル、定数、構築子、演算子などの純粋な式に限られ（[Benitoite のリファレンス](https://github.com/tecogonaz0439/Benitoite/blob/v0.0.7/docs/reference/benitoite.md)の「8. Constants and type aliases」）、外部の WASM の部品はコンパイルしても実体化も呼び出しもしない（同リファレンスの「2. The command line」）。このため、スクリプトは報告の中身を自分の出力で書けない。ただし、報告の診断の文には、スクリプトが選んだ名前（識別子、ファイルの名前、文字列）が含まれうるので、LLM に渡す内容としては信頼しない（[セキュリティモデル](../03-safety/03-01-security-model.md)の「関係する者と信頼」の、LLM が読む内容）。
+報告は処理系の言明として、処理系の実行ファイルを信頼する範囲で信頼する（[セキュリティモデル](../03-safety/03-01-security-model.md)の「信頼の境界」）。理由: 報告を作る検査は利用者の関数を実行せず、検査の前に値を求める `const` は、リテラル、定数、構築子、演算子などの純粋な式に限られ（[Benitoite のリファレンス](https://github.com/tecogonaz0439/Benitoite/blob/v0.0.12/docs/reference/benitoite.md)の「8. Constants and type aliases」）、外部の WASM の部品はコンパイルしても実体化も呼び出しもしない（同リファレンスの「2. The command line」）。このため、スクリプトは報告の中身を自分の出力で書けない。ただし、報告の診断の文には、スクリプトが選んだ名前（識別子、ファイルの名前、文字列）が含まれうるので、LLM に渡す内容としては信頼しない（[セキュリティモデル](../03-safety/03-01-security-model.md)の「関係する者と信頼」の、LLM が読む内容）。
 
 【方針】報告を確定した結果として使うのは、次のすべてを満たすときだけとする。条件は、処理系の側が確定した集合として使ってよいとする条件（Inspecting before execution）に、`benitoiteh` の側の確かめを加えたものである。
 
@@ -174,7 +188,13 @@ error[E0405] src/report.bnt:12:5: <message>
 
 満たさないときは実行しない。`status` が `"checkError"` なら、報告の `diagnostics` を前述の診断の形に変えて返す。ほかのとき（使い方の誤り、処理系の不具合、中断、読めない報告、知らない名前）は、処理系の誤りとして理由を一行で返す。理由: 処理系の側は、不完全な報告、`null`、知らない状態と名前を、空の集合として読まないよう求めている。`v0.0.6` までの字句の読み取りは、読めないときに最大の集合とみなして確認を求めた。報告では、読めないことは処理系の誤りか検査の誤りを示し、`--allow-effects` には集合を名前で渡すので、知らない名前を含む集合を処理系に渡せない。
 
-知るエフェクトの名前は、`--allow-effects` が受け付ける次の 13 とする（Inspecting before execution）: `State`、`Console.Read`、`Console.Write`、`File.Read`、`File.Write`、`Process.Run`、`Process.Exit`、`Process.Environment`、`Clock.Time`、`Random.Generate`、`Http.Connect`、`Http.Listen`、`Assert.Check`。報告の `expanded` は `IO.All` を開いた原子の名前で書かれる。
+知るエフェクトの名前は、`--allow-effects` が受け付ける次の 14 とする（Inspecting before execution）: `State`、`Console.Read`、`Console.Write`、`File.Read`、`File.Write`、`Process.Run`、`Process.Exit`、`Process.Environment`、`Clock.Time`、`Random.Generate`、`Http.Connect`、`Http.Listen`、`Log`、`Assert.Check`。報告の `expanded` は `IO.All` を開いた原子の名前で書かれる。
+
+`Log` は `Console.Write` と `IO.All` から独立した原子の名前である。既定では標準エラー出力に書くが、ファイルなどに出す受け手の `File.Write` などは別のエフェクトとして残り、その確認と OS の制限も別に掛ける。`Log` は確認の画面と増加の判定に含め、無効なログの水準でも宣言の上限から除かない。標準の `Failure.Fail[E]` は入口で処理しないと E0506 となり、`Fail` は報告と `--allow-effects` の名前に含めない（[リファレンス](https://github.com/tecogonaz0439/Benitoite/blob/v0.0.12/docs/reference/benitoite.md)の「Inspection reports」「10. Effects」「Structured logging and source locations」）。
+
+【方針】報告と各対象に加わった `intervalAnalysis` は読み飛ばし、受け入れの条件にも許可にも使わない。`complete` は型とエフェクトの検査と契約の取り出しの完全さであり、局所の区間分析の `coverage` とは独立している。`coverage: "all"` を要求せず、`all` や警告がないことを安全や実行の成功の証明としない。要約は道具の結果として LLM に渡さず、局所の警告は通常の診断で説明する。理由: 追加の欄は報告の形式の版と受け入れの規則を変えない（[リファレンス](https://github.com/tecogonaz0439/Benitoite/blob/v0.0.12/docs/reference/benitoite.md)の「Interval analysis coverage」、同梱の Skill の `references/inspection.md`「Local interval analysis」）。未知の値、未対応の構文、分析の予算切れだけを理由に `uses` を広げない。
+
+ファイルの単位の `uses` は各最上位の関数の宣言と合わさり、使わない追加のエフェクトも報告に残る。関数のソースの行だけから集合を決めず、合わさった宣言の上限を報告から得る（同リファレンスの「File-level effect declarations」）。
 
 【方針】確認とサンドボックスの方針に使うエフェクトは、報告の `aggregateEffects.expanded` とする（`main` では `main` の宣言の上限、テストでは選んだテストの関数の宣言の上限の和）。処理系に渡す `--allow-effects` も同じ集合とし、前に確認した範囲（[利用者の確認](../03-safety/03-03-approval.md)の「制限モードの確認」）がこれより広くても、広い範囲を渡さない。理由: 渡す集合を今回の報告の集合に限れば、報告の後にスクリプトが変えられてエフェクトが増えたとき、処理系が実行の直前の検査で `E0512` を返して実行を断る。サンドボックスの方針と処理系の照合も、同じ集合で揃う。
 
@@ -186,7 +206,7 @@ error[E0405] src/report.bnt:12:5: <message>
 
 【決定】報告の `sources` のうち `kind` が `"user"` のものに、そのモードの `read` が開かないソース（読まないファイルの規則に当たるもの、読める範囲の外のもの）があるときは、その実行を「読まないファイルを取り込む実行」とする。判定は診断と同じ部品で行い、除いたパスの存在を調べず、後ろの部分の規則（BH-029）と解決の上限も同じに当てる（解決の上限を超えたソースは、読まないものとして数える）。加えて、表示のパスを解いて `read` が開けたファイルでも、その内容の SHA-256 がそのソースの `contentHash`（`algorithm` が `"sha256"`）と一致しなければ、読まないソースとして数える。アルゴリズムが `"sha256"` でないときと、内容を読めないときも同じとする。同じ表示のパスのソースが二つ以上あるときは、ハッシュの違うものを別々に調べる（2026-10-18 に設計者が承認した）。理由: 2026-10-18 に、P2-12 の二回目の点検で、BH-029 の誤った表示のパスに読める囮のファイルを置き、除いたディレクトリに下位のパッケージを置くと、除いたモジュールのソースが囮の表示のパスだけで報告され、パスだけの判定では読めるソースに見えることを、本物の処理系で確かめた。処理系のハッシュは、検査に使った元のバイトの全体に掛かる（Inspecting before execution）ので、囮とは一致しない。報告の後にファイルが変わったときも一致しなくなるが、確認を求める側に倒れるだけである。対話では、エフェクトが確認した範囲に収まっていても、確認なしの範囲（一時的なスクリプト）に収まっていても、毎回確認を求め、確認の画面に `Imports files that benitoiteh does not read: <n>` を示す（パスは示さない）。非対話では、`--allow` の範囲に収まっても実行せず、`<paths> import files that benitoiteh does not read; run them interactively to confirm.` を道具の結果として返す（`<paths>` は指定した対象の表示用のパスを `, ` で繋いだもの）。`benitoite_run`、`benitoite_test`、`benitoite_scratch` に当てる。理由: 2026-10-18 に、試作の P2-12 の点検で、`read.exclude` で除いたモジュールを取り込む読めるテストが `Assert.equal(actual: Keys.token(), expected: "")` と書くと、除いたモジュールの文字列が表明の `left` に出ることを、本物の処理系で確かめた。`benitoite_run` の `Result.Error(Keys.token())` でも、同じく `[stderr]` に出る。前述の件数だけを示す規則は位置のファイルで判定するので、読めるファイルの中で外れた表明の値は防げない。値の流れを `benitoiteh` の側で追うことはできないので、取り込むこと自体を利用者に確かめる。非対話で断るのは、利用者が読まないと決めたファイルの内容を LLM に渡してよいかを、`--allow` のエフェクトの名前では表せないからである。
 
-【方針】`benitoite_test` の対象には、`.bnt` のファイルのほか、ディレクトリも受け付ける（BH-023 を閉じた）。同じパスを重ねて指定したときは一つにまとめてから渡す。理由: 対象の選び方（下のディレクトリの辿り方、下位のパッケージを除く規則など）は、`test --check` と `test` が同じ処理で行う（[CLI](https://github.com/tecogonaz0439/Benitoite/blob/v0.0.7/docs/design/06-tooling/06-01-cli.md)の「テストの非実行の検査報告」）。`v0.0.6` までは、`benitoiteh` が選び方を作り直すとエフェクトを読んだファイルの組と処理系が実行するファイルの組がずれうるので、ファイルだけに限っていた。報告と実行の間にディレクトリにファイルが加えられても、加わったファイルのテストのエフェクトも `--allow-effects` で照合される。
+【方針】`benitoite_test` の対象には、`.bnt` のファイルのほか、ディレクトリも受け付ける（BH-023 を閉じた）。同じパスを重ねて指定したときは一つにまとめてから渡す。理由: 対象の選び方（下のディレクトリの辿り方、下位のパッケージを除く規則など）は、`test --check` と `test` が同じ処理で行う（[CLI](https://github.com/tecogonaz0439/Benitoite/blob/v0.0.12/docs/design/06-tooling/06-01-cli.md)の「テストの非実行の検査報告」）。`v0.0.6` までは、`benitoiteh` が選び方を作り直すとエフェクトを読んだファイルの組と処理系が実行するファイルの組がずれうるので、ファイルだけに限っていた。報告と実行の間にディレクトリにファイルが加えられても、加わったファイルのテストのエフェクトも `--allow-effects` で照合される。
 
 ### 参照の文書と診断の説明
 

@@ -449,6 +449,7 @@ impl UserConfig {
                     | "State"
                     | "Process.Exit"
                     | "File.Read"
+                    | "Log"
                     | "Clock.Time"
                     | "Random.Generate"
                     | "Process.Environment"

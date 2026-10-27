@@ -28,7 +28,7 @@ pub type CheckQuery = dyn Fn(&[std::ffi::OsString], QueryLimits, &AtomicBool) ->
     + Sync;
 
 /// システムプロンプトとの対応を確かめた処理系の版。
-pub const PROMPT_VERIFIED_VERSION: &str = "0.0.7";
+pub const PROMPT_VERIFIED_VERSION: &str = "0.0.12";
 
 /// 問い合わせと探索で起きた誤り。
 #[derive(Debug)]

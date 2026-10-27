@@ -81,7 +81,7 @@ if ! "$inside_codex"; then
 fi
 for variable in "${required_processors[@]}"; do
     if [[ -z "${!variable}" ]]; then
-        printf '%s is required: set it to a benitoite v0.0.7 executable.\n' "$variable" >&2
+        printf '%s is required: set it to a benitoite v0.0.12 executable.\n' "$variable" >&2
         exit 2
     fi
     processor_path=${!variable}

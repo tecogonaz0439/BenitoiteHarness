@@ -22,7 +22,7 @@ crates/benitoiteh/            試作のクレート（ライブラリと実行�
   tests/support/              統合テストが共有する補助（一時ディレクトリ、模擬の提供者など）
 crates/sandbox-probe/         サンドボックスのテストが起動する、決まった操作だけをする小さなプログラム（P0-04）
 tools/skill-eval/             評価の実行器、課題、結果の要約（LLM を呼ぶ走行は設計者の了承を要する）
-assets/benitoite/v0.0.7/      処理系の Skill の写し（手で直さない。埋め込まず、Skill は起動した処理系から得る。テストが比べる元）
+assets/benitoite/v0.0.12/      処理系の Skill の写し（手で直さない。埋め込まず、Skill は起動した処理系から得る。テストが比べる元）
 ```
 
 `crates/sandbox-probe` は配らない（`publish = false`）。設計書 06-01 の「ワークスペースとクレート」は試作のクレートを一つとするが、これはテストの道具であり、試作の実行ファイルには入らない。`cargo test` はほかのパッケージの実行ファイルを作らないので、`scripts/check.sh` がテストの前に `cargo build -p sandbox-probe` を、ホストと Linux の二つの対象で走らせる。テストの対象の外の操作（ファイルを読む、書く、ソケットにつなぐ、プログラムを起動する）を、引数で指示したとおりに一つ行い、結果を決まった終了状態で返す。
@@ -44,12 +44,12 @@ P0 で作るモジュールは `cli`（`--version`・`--help`・`__sandbox` の�
 
 ## 依存のクレート
 
-版は `=` で固定する。Benitoite の処理系（`v0.0.6`）と同じクレートは同じ版にする。ただし、依存の勧告を解消するために、処理系のリリースより先に版を上げることがある（P5-39 の `rustls`）。既定の機能を切り、作業が要る機能だけを足す（[クレートの構成](../design/06-impl/06-01-crate-structure.md)の「依存の基準」）。
+版は `=` で固定する。Benitoite の処理系（`v0.0.12`）と同じクレートは同じ版にする。P5-39 では勧告を解消するため処理系のリリースより先に `rustls` を更新したが、`v0.0.12` では処理系も同じ版である。既定の機能を切り、作業が要る機能だけを足す（[クレートの構成](../design/06-impl/06-01-crate-structure.md)の「依存の基準」）。
 
 | クレート | 版 | 使う作業 | 備考 |
 |---|---|---|---|
 | `ureq` | `=3.4.2` | P0-03 | 機能 `rustls-no-provider`・`platform-verifier`。Benitoite と同じ |
-| `rustls` | `=0.23.46` | P0-03 | 機能 `std`・`tls12` は Benitoite と同じ。版は勧告に合わせて 0.23.46 に上げた（P5-39） |
+| `rustls` | `=0.23.46` | P0-03 | 版と機能 `std`・`tls12` は Benitoite v0.0.12 と同じ（P5-39 で勧告に合わせて更新） |
 | `rustls-graviola` | `=0.4.0` | P0-03 | Benitoite と同じ |
 | `graviola` | `=0.4.1` | P5-21 | `default-features = false`。ID トークンの RS256 の検証（設計書 02-01「Sign in with ChatGPT」）。`rustls-graviola` が既に引く版 |
 | `rustix` | `=1.1.5` | P0-02 ほか | 機能は要るものだけ（`fs`・`process`・`thread` など）。Benitoite と同じ。機能 `event`（P5-27）は、ログインの戻り先の待ち受けと接続を `poll` でまとめて待つために使う（設計書 02-01「ログイン」）。`event` の追加前・追加だけを行った後・P5-27 の実装後の release の実行ファイル（macOS aarch64）は、いずれも 5,689,936 バイト（差 0）。新しいクレートは加わらない |
@@ -65,7 +65,7 @@ P0 で作るモジュールは `cli`（`--version`・`--help`・`__sandbox` の�
 | `similar` | `=3.2.0` | P1 | 機能 `text` |
 | `landlock` | `=0.4.7` | P0-05 | Linux だけ（`[target.'cfg(target_os = "linux")'.dependencies]`） |
 | `seccompiler` | `=0.5.0` | P0-05 | Linux だけ |
-| `libc` | `=0.2.190` | P0-05 | Linux だけ。seccomp の規則の呼び出しの番号と `AF_*`・`SOCK_*` の定数を得るためだけに使い、`unsafe` の関数を呼ばない。Benitoite の `v0.0.6` の `Cargo.lock` と同じ版 |
+| `libc` | `=0.2.190` | P0-05 | Linux だけ。seccomp の規則の呼び出しの番号と `AF_*`・`SOCK_*` の定数を得るためだけに使い、`unsafe` の関数を呼ばない。Benitoite の `v0.0.12` の `Cargo.lock` と同じ版 |
 | `crossterm` | `=0.29.0` | P0-06（`[dev-dependencies]`）、P4 | |
 | `unicode-width` | `=0.2.2` | P0-06（`[dev-dependencies]`）、P4 | |
 | `zeroize` | `=1.9.1` | P5-20 | `default-features = false`、機能 `alloc`。秘密の入力を補助に渡したら消す（設計書 03-04「段 2」）。`rustls` が既に引く版 |
@@ -226,7 +226,7 @@ P0-04 で作った型: 方針の入力 `PolicyConfig`（`readable: ReadAccess`�
 
 ### 処理系の見つけ方と問い合わせ（P2-05）
 
-- `benitoite`（新、持ち主 P2-05）: `PROMPT_VERIFIED_VERSION = "0.0.7"`、`discover(configured, path, locations) -> Result<PathBuf, BenitoiteError>`、`validate_executable(path, locations, allowed_program) -> Result<(PathBuf, String), BenitoiteError>`（実のパスと SHA-256。`O_NOFOLLOW|O_NONBLOCK` で開いた一つの記述子で形とハッシュを確かめる）、`json_object(bytes, kind) -> Result<Map<String, Value>, BenitoiteError>`（一つの完全なオブジェクト、`schemaVersion` 1、`kind`）。
+- `benitoite`（新、持ち主 P2-05）: `PROMPT_VERIFIED_VERSION = "0.0.12"`、`discover(configured, path, locations) -> Result<PathBuf, BenitoiteError>`、`validate_executable(path, locations, allowed_program) -> Result<(PathBuf, String), BenitoiteError>`（実のパスと SHA-256。`O_NOFOLLOW|O_NONBLOCK` で開いた一つの記述子で形とハッシュを確かめる）、`json_object(bytes, kind) -> Result<Map<String, Value>, BenitoiteError>`（一つの完全なオブジェクト、`schemaVersion` 1、`kind`）。
 - `Processor { path, version, build, sha256 }`、`Processor::query(&self, args, QueryLimits { timeout, grace }, cancelled) -> Result<QueryOutput { stdout, stderr }, BenitoiteError>`、`version_warning()`。`pub(crate) Processor::inspect(configured, path, QueryContext)`。`QueryContext { helper, scratch, placeholders, env, locations, denied_candidates, launcher }`、`QueryLauncher { Sandboxed, Unsandboxed, #[cfg(test)] TestDirect }`（`Unsandboxed` は通常モードで実際にサンドボックスを外したときだけ）。
 - `BenitoiteError { Io, Invalid(&'static str), Sandbox, Run, Exit { code, stderr }, TimedOut, Cancelled, OutputLimit }`。標準出力は 16 MiB で止め、標準エラー出力は先頭 64 KiB を保つ（P2-07 で検査の上限を足す）。残りうるプロセスは誤りにする。
 - `sandbox::restricted_policy(&RestrictedAccess { write_project, allow_ip, programs, readable }, locations, denied_candidates)`（`sandbox/restricted.rs`）。エフェクトから `RestrictedAccess` を作るのは `benitoite` の側（P2-08）。
@@ -238,7 +238,7 @@ P0-04 で作った型: 方針の入力 `PolicyConfig`（`readable: ReadAccess`�
 - `benitoite::skill`: `SkillDocument::from_json(requested_name, stdout)`（`text()`・`content_hash()`）、`SkillDocuments`（`new(問い合わせの関数)`・`from_processor(Arc<Processor>)`。名前ごとに一度だけ問い合わせ、成功だけを保つ）、属性と注釈の解析、`query_reason`（`BenitoiteError` を Skill 向けの理由にする）。`benitoite::text::skill_exit(code)`。
 - `ToolContext` の公開の欄 `benitoite: Option<Arc<Processor>>` と `skill`。`Agent::new` は `tool_context.skill.is_some()` で `ToolSet::new(mode)` か `ToolSet::without_benitoite(mode)` を選ぶ。`SystemContext::new(tools, skill)`。道具の定義の `arg_described(name, kind, required, description)`（definitions.rs の非公開の関数）。
 - 道具 `benitoite_reference`（`read.rs` の `LineStyle::Reference` で区切る）と `benitoite_explain`。`tools::text::SKILL_UNAVAILABLE`・`skill_failure`。
-- `assets/benitoite/v0.0.6/` は消した。`assets/benitoite/v0.0.7/` はテストが比べる元である。
+- `assets/benitoite/v0.0.6/` は消した。`assets/benitoite/v0.0.12/` はテストが比べる元である。
 
 ### 診断と検査（P2-07）
 
@@ -250,7 +250,7 @@ P0-04 で作った型: 方針の入力 `PolicyConfig`（`readable: ReadAccess`�
 
 ### 実行の前の検査とスクリプトの実行（P2-08）
 
-- `benitoite::effects`: `Effect`（13 の名前。`name()`・`from_name()`）、`names(effects, include_assert)`（綴りの順）、`restricted_access(effects, processor, allowed) -> RestrictedAccess`。
+- `benitoite::effects`: `Effect`（14 の名前。`Log` を含む。`name()`・`from_name()`）、`names(effects, include_assert)`（綴りの順）、`restricted_access(effects, processor, allowed) -> RestrictedAccess`。
 - `benitoite::report`: `parse(bytes, status, ReportKind { Run, Test }) -> Result<InspectionReport { effects, shell_reference, sources }, ReportError { Check(Vec<Diagnostic>), Invalid(String) }>`（`report/decode.rs` で型を付けて直接読む）。`ApprovalSource { display_path, content_hash: ContentHash { algorithm, value } }`。
 - `benitoite::RunContext { processor, helper, scratch, placeholders, env, locations, denied_candidates, allowed_programs }`、`ToolContext::with_run_context`（`ToolContext.run`）。`BenitoiteError::Exit` に `stdout`。
 - `tools`: `ConfirmKey { Run(PathBuf), Test(Vec<PathBuf>) }`・`ConfirmKey::from_facts(kind, facts)`、`Invocation.confirmed_effects`、`ToolOutput` の `processor_launches`・`stderr_spill`・`stop_run`、`tools/process_output.rs`（`bash` と共有する末尾の保ち方）。`ToolId::BenitoiteRun`。
@@ -278,7 +278,7 @@ P0-04 で作った型: 方針の入力 `PolicyConfig`（`readable: ReadAccess`�
 ### エフェクトの確認の画面（P2-10）
 
 - `approval::ApprovalFacts.restricted: Option<RestrictedFacts>`（`serde(default, skip_serializing_if)`）。`RestrictedFacts { writable: Vec<PathBuf>, network: bool, programs: Vec<PathBuf>, process_run: bool }`。前の確認と今回の報告の和から `tools/benitoite_process.rs` で作る。`context.run` がなければ `None`。
-- `ui/tui/text.rs` の `effect_description(Effect)`（v0.0.7 の Skill の表の写し。`Process.Run` は ` (name them)` を除く）。事実の並びは `Targets` → 読まないファイルの取り込み → `Effects`（`+` を先に）→ `Sandbox` → `Programs`（`process_run` のとき）→ `Shell`。`Added effects` の行はない。確認の事実のパスは、改行とタブを `\x0a`・`\x09` にして一行にする。
+- `ui/tui/text.rs` の `effect_description(Effect)`（v0.0.12 の Skill の表の写し。`Process.Run` は ` (name them)` を除く）。事実の並びは `Targets` → 読まないファイルの取り込み → `Effects`（`+` を先に）→ `Sandbox` → `Programs`（`process_run` のとき）→ `Shell`。`Added effects` の行はない。確認の事実のパスは、改行とタブを `\x0a`・`\x09` にして一行にする。
 
 ### `doctor` の処理系の項目（P4-10）
 

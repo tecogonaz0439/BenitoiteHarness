@@ -9,9 +9,9 @@
 
 ## 前提
 
-- Benitoite の処理系は、静的検査（型とエフェクトの規則への適合）だけを保証し、実行時の権限制御と OS のサンドボックスを持たない。隔離は処理系を起動する側に委ねる（[Benitoite のセキュリティモデル](https://github.com/tecogonaz0439/Benitoite/blob/v0.0.7/docs/design/07-quality/07-01-security-model.md)）。`benitoiteh` は、この「起動する側」に当たる。
+- Benitoite の処理系は、静的検査（型とエフェクトの規則への適合）だけを保証し、実行時の権限制御と OS のサンドボックスを持たない。隔離は処理系を起動する側に委ねる（[Benitoite のセキュリティモデル](https://github.com/tecogonaz0439/Benitoite/blob/v0.0.12/docs/design/07-quality/07-01-security-model.md)）。`benitoiteh` は、この「起動する側」に当たる。
 - 検査を通ったスクリプトは、`main` の `uses` にない組み込みの操作を行わない（同上の「各機構が保証すること」）。エフェクトは操作の種類を表し、どのファイル・どのコマンド・どのホストかは表さない。
-- Benitoite の事前検討は、エージェントハーネスの脅威の前提を「エージェントハーネスのコードは信頼し、LLM の出力と、LLM が読んだファイル・ウェブのページ・実行結果に含まれる指示は信頼しない」と定めた（[ADR 0345](https://github.com/tecogonaz0439/Benitoite/blob/v0.0.7/docs/archive/2026-10-09-design-first-release/decisions/0345-agent-harness-confirmation-and-server-approval.md)）。本章はこれを引き継ぐ。
+- Benitoite の事前検討は、エージェントハーネスの脅威の前提を「エージェントハーネスのコードは信頼し、LLM の出力と、LLM が読んだファイル・ウェブのページ・実行結果に含まれる指示は信頼しない」と定めた（[ADR 0345](https://github.com/tecogonaz0439/Benitoite/blob/v0.0.12/docs/archive/2026-10-09-design-first-release/decisions/0345-agent-harness-confirmation-and-server-approval.md)）。本章はこれを引き継ぐ。
 
 ## 仕様
 

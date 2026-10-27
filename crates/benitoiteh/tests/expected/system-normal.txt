@@ -23,6 +23,7 @@ edit: Read the file before editing it. Provide a nonempty old_string that occurs
 bash: Use timeout to set a limit of 1-600 seconds (default 120).
 If the sandbox blocks a necessary command, retry with escalate=true and a justification; the user will be asked.
 benitoite_check: Set `tests` to true to check a file, or every .bnt file under a directory, without requiring `main` and without running tests (like `benitoite test --check`).
+Documentation examples (`--doc`) are not checked.
 A file passed directly resolves imports from its own directory; to check a module that imports others by names from the project root, pass the project directory with `tests` set to true.
 benitoite_explain: Pass the code shown in a diagnostic; the result is that code's section of `references/diagnostics.md`.
 benitoite_reference: Pass `name` as the path under references/ without `.md`, such as `idioms`, `grammar`, `common-mistakes`, `language-comparison`, `diagnostics`, `inspection`, or `stdlib/List`; `stdlib/index` lists the standard library modules.

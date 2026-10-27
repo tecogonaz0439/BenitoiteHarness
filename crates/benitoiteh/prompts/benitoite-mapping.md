@@ -3,4 +3,6 @@ Read `references/<name>.md` with benitoite_reference, passing `<name>` as `name`
 Use benitoite_explain to look up a diagnostic code.
 Skip the "Check the version first" section, including `skill list` and `skill show`: benitoiteh has already checked the processor at startup, and benitoite_reference reads the Skill documents.
 benitoite_run, benitoite_test and benitoite_scratch obtain the inspection report and pass `--allow-effects` themselves; you do not read the report or choose the allowed effects.
+The tools do not return the report's `intervalAnalysis` summary. Read local interval warnings in benitoite_check diagnostics and consult the Skill's examples; do not infer safety from missing warnings or widen effects because analysis is incomplete.
+benitoite_check and benitoite_test do not use `--doc`; documentation examples are not included in their checks or test runs.
 benitoiteh handles the "Before running" confirmation in its UI; you do not need to ask the user for confirmation yourself. You may explain what the effects mean in your response.
