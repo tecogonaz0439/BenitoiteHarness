@@ -2964,12 +2964,15 @@ class CompactionTaskTests(unittest.TestCase):
                 return start(*args, **kwargs)
             except OSError as error:
                 self.skipTest('loopback listening is unavailable: %s' % error)
-        settings = [('base', 16384, 20000), ('reserve', 8192, 20000), ('keep', 16384, 8000)]
+        # v0.0.12 の固定の文脈の増加を、この通しの模擬だけで窓に反映する（P5-40）。
+        # 窓を広げても、残す量は従来の実効上限 65536 / 4 = 16384 を保つ。
+        settings = [('base', 16384, 16384), ('reserve', 8192, 16384), ('keep', 16384, 8000)]
         for task in evaluation.load_tasks([], 'compaction'):
             rows = {}
             with tempfile.TemporaryDirectory(prefix='ce-', dir='/tmp') as root:
                 for label, reserve, keep in settings:
                     harness = evaluation.load_harnesses()['benitoiteh-mock-compact']
+                    harness['provider']['context_window'] = 73728
                     harness['config']['compaction'].update(reserve_tokens=reserve, keep_tokens=keep)
                     with self.subTest(task=task.name, setting=label), mock.patch.object(
                             mock_provider, 'start', side_effect=available):

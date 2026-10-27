@@ -268,7 +268,7 @@ mod tests {
         let usable = inspection_items(
             &mut items,
             &"a".repeat(64),
-            Ok(("0.0.7", &Value::Null, &"b".repeat(64))),
+            Ok(("0.0.12", &Value::Null, &"b".repeat(64))),
         );
         assert!(!usable);
         assert_eq!(items.len(), 2);
@@ -317,10 +317,10 @@ mod tests {
             assert!(item.detail.contains(expected), "{}", item.detail);
             assert!(
                 item.detail
-                    .contains("differs from the prompt-verified version 0.0.7")
+                    .contains("differs from the prompt-verified version 0.0.12")
             );
         }
-        assert!(version_item(Ok(("0.0.7", &Value::Null))).status == Status::Ok);
+        assert!(version_item(Ok(("0.0.12", &Value::Null))).status == Status::Ok);
     }
 
     // 作成時の関門: サンドボックスの失敗を無視して問い合わせる退行を、問い合わせの

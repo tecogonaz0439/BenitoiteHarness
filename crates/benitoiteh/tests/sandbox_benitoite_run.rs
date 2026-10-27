@@ -918,3 +918,52 @@ fn effect_limit_notice_requires_the_actual_target_path() -> TestResult {
     }
     Ok(())
 }
+
+// 関門: Log を許しても受け手の File.Write は別に確認し、その後も OS の書く範囲を守る（設計書 03-02、03-03）。
+#[test]
+fn log_file_sinks_require_their_own_effects_and_respect_os_write_scope() -> TestResult {
+    use benitoiteh::{benitoite::Effect, tools::ConfirmKey};
+    let mut f = Fixture::new()?;
+    f.sandbox()?;
+    let stop = AtomicBool::new(false);
+    let source = format!(
+        "import Benitoite.Unofficial.IO.File\nimport Benitoite.Unofficial.IO.Process\nuses Log\nfunction main() -> Unit uses File.Write, Process.Exit\n bind sink <- lambda(record: Log.Record) -> Unit uses File.Write, Process.Exit\n  bind _ <- try File.writeText(path: {}, text: Log.formatRecord(record: record)) or die\n  return ()\n end lambda\n Log.withSinks(sinks: [Pair(Log.Level.Info, sink)], body: lambda() Log.info(message: \"sink-event\", attributes: [], location: SourceLocation.here()))\nend function\n",
+        json!(f.root.join("outside.log"))
+    );
+    fs::write(f.project.join("main.bnt"), &source)?;
+    f.confirmed.insert(
+        ConfirmKey::Run(f.project.join("main.bnt")),
+        [Effect::Log].into_iter().collect(),
+    );
+    let denied = f.call(json!({"path":"main.bnt"}), true, "log-only", &stop);
+    assert!(
+        denied.is_error && denied.text.contains("The script changed"),
+        "{denied:?}"
+    );
+    assert!(!f.root.join("outside.log").exists());
+    let first = f.call(json!({"path":"main.bnt"}), false, "sink", &stop);
+    let facts = &first.approval.as_ref().ok_or(format!("{first:?}"))?.facts;
+    assert_eq!(facts.added_effects, ["File.Write", "Process.Exit"]);
+    f.confirm(&first)?;
+    let output = f.call(json!({"path":"main.bnt"}), true, "sink", &stop);
+    let denied = permission_errno(&output.text);
+    // Linux の書ける場所の外は、bubblewrap の読み取り専用マウントで EROFS となる。
+    // 別の実行の誤りを通さないよう、拒否の番号まで確かめる。
+    #[cfg(target_os = "linux")]
+    let denied = denied
+        || output.text.contains(&format!(
+            "(os error {})",
+            rustix::io::Errno::ROFS.raw_os_error()
+        ));
+    assert!(output.is_error && denied, "{output:?}");
+    assert!(!f.root.join("outside.log").exists());
+    // 同じ受け手が許された書く場所なら動くことを対照にする。
+    let inside = source.replace(
+        &json!(f.root.join("outside.log")).to_string(),
+        &json!(f.project.join("inside.log")).to_string(),
+    );
+    let output = run(&mut f, &inside, "inside-sink", json!({}))?;
+    assert!(!output.is_error, "{output:?}");
+    assert!(fs::read_to_string(f.project.join("inside.log"))?.contains("sink-event"));
+    Ok(())
+}

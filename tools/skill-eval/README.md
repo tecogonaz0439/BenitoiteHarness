@@ -34,7 +34,7 @@ workspace には `input/` と `task.md` だけを写す。`task.json` の `artif
 `negative/` も通常の準備では workspace へ写さない。期待値は固定し、解から計算しない。
 公開テストの削除や変更で判定を偽れない契約は、P5-34 の共通のテストで確かめる。
 
-通常モードは macOS と、ビルド済みの `benitoiteh`・判定の example、v0.0.7 の処理系を必要とする。
+通常モードは macOS と、ビルド済みの `benitoiteh`・判定の example、v0.0.12 の処理系を必要とする。
 Python は `/usr/bin/python3` から実際の処理系のパスを求める。`python3`・`/bin/sh`、sh の
 課題の `find`・`sort` が必要である。準備時に実のパスと SHA-256、Python と sh の版を記録し、macOS の sh の起動先の `/bin/bash` も記録する。
 Python が判定のサンドボックス内で起動できることも確かめる。道具がなければ停止し、導入や更新は行わない。
@@ -43,11 +43,11 @@ Python が判定のサンドボックス内で起動できることも確かめ�
 CARGO_NET_OFFLINE=true cargo build -p benitoiteh --bin benitoiteh --example skill_eval_judge
 # 以下の判定と模擬の通しは Codex の外の macOS で行う。
 /usr/bin/python3 -I tools/skill-eval/skill_eval.py --self-test --suite normal \
-  --benitoite <v0.0.7の処理系>
+  --benitoite <v0.0.12の処理系>
 /usr/bin/python3 -I tools/skill-eval/skill_eval.py --dry-run --suite normal \
-  --benitoite <v0.0.7の処理系> --work-root <リポジトリと共有のtmpの外の作業場所>
+  --benitoite <v0.0.12の処理系> --work-root <リポジトリと共有のtmpの外の作業場所>
 /usr/bin/python3 -I tools/skill-eval/skill_eval.py --suite normal --harness benitoiteh-mock-normal \
-  --benitoite <v0.0.7の処理系> --benitoiteh target/debug/benitoiteh \
+  --benitoite <v0.0.12の処理系> --benitoiteh target/debug/benitoiteh \
   --work-root <リポジトリと共有のtmpの外の作業場所> --record <記録.md>
 ```
 
@@ -100,12 +100,12 @@ dry-run は `dry_run: true` で区別し、本物の成績に混ぜない。
 /usr/bin/python3 -I tools/skill-eval/skill_eval.py --suite normal \
   --harness benitoiteh-deepseek-normal --allow-unverified --trials 1 --stop-cost 3 \
   --task normal_csv_totals --task normal_path_filter \
-  --benitoite <v0.0.7の処理系> --benitoiteh <共通の実行ファイル> \
+  --benitoite <v0.0.12の処理系> --benitoiteh <共通の実行ファイル> \
   --work-root <リポジトリと共有のtmpの外の作業場所>
 # 本体。残額と回数を示して改めて了承を得る。
 /usr/bin/python3 -I tools/skill-eval/skill_eval.py --suite normal \
   --harness benitoiteh-deepseek-normal --allow-unverified --trials 3 --stop-cost <残額> \
-  --benitoite <v0.0.7の処理系> --benitoiteh <共通の実行ファイル> \
+  --benitoite <v0.0.12の処理系> --benitoiteh <共通の実行ファイル> \
   --work-root <リポジトリと共有のtmpの外の作業場所>
 ```
 
@@ -117,8 +117,8 @@ dry-run は `dry_run: true` で区別し、本物の成績に混ぜない。
 /usr/bin/python3 -I tools/skill-eval/generate_compaction_materials.py --check
 # 再生成するときは --check を外す。同じ引数で同じ資料と generation を作る。
 /usr/bin/python3 -I tools/skill-eval/generate_compaction_materials.py --total-kib 268 --chunk-kib 10 --seed 33
-/usr/bin/python3 -I tools/skill-eval/skill_eval.py --self-test --suite compaction --benitoite <v0.0.7の処理系>
-/usr/bin/python3 -I tools/skill-eval/skill_eval.py --dry-run --suite compaction --benitoite <v0.0.7の処理系> \
+/usr/bin/python3 -I tools/skill-eval/skill_eval.py --self-test --suite compaction --benitoite <v0.0.12の処理系>
+/usr/bin/python3 -I tools/skill-eval/skill_eval.py --dry-run --suite compaction --benitoite <v0.0.12の処理系> \
   --work-root <リポジトリと共有のtmpの外の作業場所>
 ```
 
@@ -131,13 +131,13 @@ dry-run は `dry_run: true` で区別し、本物の成績に混ぜない。
 /usr/bin/python3 -I tools/skill-eval/skill_eval.py --suite compaction --task compact_json_summary \
   --harness benitoiteh-deepseek-compact-base,benitoiteh-deepseek-compact-reserve,benitoiteh-deepseek-compact-keep \
   --allow-unverified --interleave --trials 1 --stop-cost 5 \
-  --benitoite <v0.0.7の処理系> --benitoiteh <全条件で共通の実行ファイル> \
+  --benitoite <v0.0.12の処理系> --benitoiteh <全条件で共通の実行ファイル> \
   --work-root <リポジトリと共有のtmpの外の作業場所>
 # 本体: 試しで共通の長さと段を確定してから、二課題を三回ずつ。
 /usr/bin/python3 -I tools/skill-eval/skill_eval.py --suite compaction \
   --harness benitoiteh-deepseek-compact-base,benitoiteh-deepseek-compact-reserve,benitoiteh-deepseek-compact-keep \
   --allow-unverified --interleave --trials 3 --stop-cost <残額> \
-  --benitoite <v0.0.7の処理系> --benitoiteh <全条件で共通の実行ファイル> \
+  --benitoite <v0.0.12の処理系> --benitoiteh <全条件で共通の実行ファイル> \
   --work-root <リポジトリと共有のtmpの外の作業場所>
 ```
 
@@ -208,7 +208,7 @@ python3 tools/skill-eval/skill_eval.py --harness default --trials 3 --allow-unve
 | `--stop-cost <USD>` | 提供者ごとの費用の見積もりを累計し、額以上になった試行の後で止める。圧縮は段の後にも判定する。実行中の試行・段は止めないため、その分だけ超えうる |
 | `--benitoiteh <path>` | 試作の実行ファイル。省略時は target の release・debug のうち新しい方を探す |
 | `--judge-runner <path>` | ビルド済みの `skill_eval_judge`。省略時は target の debug、release の順に探す。判定は macOS のみ |
-| `--benitoite <path>` | Benitoite の処理系。省略時は target の release・debug のうち新しい方、PATH の順に探す。本リポジトリでは v0.0.7 を明示する |
+| `--benitoite <path>` | Benitoite の処理系。省略時は target の release・debug のうち新しい方、PATH の順に探す。本リポジトリでは v0.0.12 を明示する |
 | `--record <file>` | 記録のファイル（既定 `results/<日時>-<ハーネス>.md`） |
 
 ### 一回の試行の流れ

@@ -639,7 +639,7 @@ fn status_prints_all_fields_and_sanitizes_values_without_a_base_url() {
     let mut status = crate::agent::AgentStatus {
         session_id: "session".into(),
         benitoite_path: Some("/opt/benitoite".into()),
-        benitoite_version: Some("0.0.7".into()),
+        benitoite_version: Some("0.0.12".into()),
         mode: Mode::Normal,
         project: "/project".into(),
         provider: "mock\x1b[2J".into(),
@@ -698,7 +698,7 @@ fn status_prints_all_fields_and_sanitizes_values_without_a_base_url() {
         "Provider: mock\\x1b[2J",
         "Model: model spoof",
         "Host: host",
-        "Interpreter: /opt/benitoite (version 0.0.7)",
+        "Interpreter: /opt/benitoite (version 0.0.12)",
         "Sandbox: workspace-write (disabled by --no-sandbox)",
         "Approval: untrusted",
         "input 1, cache read 2, cache write 3, output 4",

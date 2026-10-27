@@ -1382,7 +1382,7 @@ fn security_followup_confirmation_paths_escape_newlines_and_tabs_before_joining(
 fn effect_descriptions_match_bundled_skill_and_common_effects_fit() -> TestResult {
     let skill = fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("../../assets/benitoite/v0.0.7/skill/SKILL.md"),
+            .join("../../assets/benitoite/v0.0.12/skill/SKILL.md"),
     )?;
     let table = skill
         .split_once("| Effect | Tell the user |\n")
@@ -1405,7 +1405,7 @@ fn effect_descriptions_match_bundled_skill_and_common_effects_fit() -> TestResul
             ))
         })
         .collect();
-    assert_eq!(descriptions.len(), 12);
+    assert_eq!(descriptions.len(), 13);
     let mut screen = Screen::new((300, 60), status());
     let (mut request, _receiver) = prompt(ApprovalKind::Effects, "unused");
     request.request.facts = ApprovalFacts {

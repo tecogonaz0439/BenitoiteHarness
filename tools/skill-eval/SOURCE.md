@@ -14,7 +14,7 @@
 
 `results/` は Benitoite の評価の記録なので写さない。本リポジトリの評価の要約は、同じ名前のディレクトリに置く（設計書 07-02「評価の手順」）。
 
-`v0.0.8` の評価の道具は、`v0.0.7`（コミット `63de89a21cce4d0c2995011226db8f2f938598ec`）と比べて `results/` のファイルが増えただけである。評価に使う処理系は `v0.0.7` とする（設計書 07-02「評価の課題」）。
+`v0.0.8` の評価の道具は、`v0.0.7`（コミット `63de89a21cce4d0c2995011226db8f2f938598ec`）と比べて `results/` のファイルが増えただけである。2026-10-27 の設計者の指示で、今後の評価に使う処理系は `v0.0.12` とする（設計書 07-02「評価の課題」）。
 
 ## 本リポジトリでの使い方
 
@@ -23,7 +23,7 @@
 ```sh
 python3 -I tools/skill-eval/skill_eval.py \
   --harness benitoiteh-deepseek --trials 3 --allow-unverified \
-  --benitoite <path-to-benitoite-v0.0.7> --benitoiteh <path-to-benitoiteh> \
+  --benitoite <path-to-benitoite-v0.0.12> --benitoiteh <path-to-benitoiteh> \
   --work-root <directory-outside-repository> --stop-cost <USD>
 ```
 
@@ -34,7 +34,7 @@ DeepSeek Harness は、次の形で走らせる。評価の道具はサンドボ
 ```sh
 python3 -I tools/skill-eval/skill_eval.py \
   --harness deepseek-harness --trials 3 --allow-unverified \
-  --benitoite <path-to-benitoite-v0.0.7> \
+  --benitoite <path-to-benitoite-v0.0.12> \
   --work-root <directory-outside-git-repositories> --stop-cost <USD>
 ```
 
@@ -51,7 +51,7 @@ Claude Code は、ほかの Claude Code のセッションを止め、利用者�
 ```sh
 python3 -I tools/skill-eval/skill_eval.py \
   --harness claude-code --trials 3 \
-  --benitoite <path-to-benitoite-v0.0.7> \
+  --benitoite <path-to-benitoite-v0.0.12> \
   --work-root <directory-outside-repository>
 ```
 
@@ -66,7 +66,7 @@ python3 -I tools/skill-eval/skill_eval.py \
 ```sh
 python3 -I tools/skill-eval/skill_eval.py \
   --harness benitoiteh-mock --task json_summary \
-  --benitoite <path-to-benitoite-v0.0.7> --benitoiteh <path-to-benitoiteh> \
+  --benitoite <path-to-benitoite-v0.0.12> --benitoiteh <path-to-benitoiteh> \
   --work-root <directory-outside-repository> --record <record.md>
 ```
 
@@ -93,7 +93,7 @@ Antigravity は、普段の Google アカウントのログインとプランの
 ```sh
 python3 -I tools/skill-eval/skill_eval.py \
   --harness antigravity-gemini --trials 3 --allow-unverified \
-  --benitoite <path-to-benitoite-v0.0.7> \
+  --benitoite <path-to-benitoite-v0.0.12> \
   --work-root <directory-outside-home-and-repository> --record <record.md>
 ```
 
@@ -171,7 +171,7 @@ python3 -I tools/skill-eval/skill_eval.py \
   --harness benitoiteh-deepseek,benitoiteh-deepseek-completion-check \
   --allow-unverified --interleave --trials 3 \
   --task json_summary --task file_process --task error_handling --task write_tests \
-  --benitoite <v0.0.7の処理系> --benitoiteh <両条件で共通の実行ファイル> \
+  --benitoite <v0.0.12の処理系> --benitoiteh <両条件で共通の実行ファイル> \
   --work-root <リポジトリの外の作業場所> --stop-cost <残額>
 ```
 
@@ -350,7 +350,7 @@ P5-32 の再レビューの低-A・低-C に従い、check の JSON の診断か
 
 `compact_json_summary` は本ディレクトリの `tasks/json_summary/`、`compact_dir_walk` は `tasks/dir_walk/` を基にした。元の十一課題は変えていない。前者は分類別から地域別へ変え、取消済みの除外・金額欠落の扱い・名前順を第一段、未知の地域と JSON の生成を第二段、CLI の入力選択を第三段で渡す。後者は行数の集計をやめ、Markdown の列挙・隠れたディレクトリと drafts の除外・名前順を第一段、大文字小文字の拡張子とディレクトリ別の件数を第二段、CLI の根の選択を第三段で渡す。依頼と資料は英語で、前の条件の全文と解のコードを後の段に写さない。
 
-入力・正しい解・手計算の期待値は本作業で作成した。正しい解は取り込んだ v0.0.7 の Skill の構文と標準ライブラリを使う。実行の形は `benitoite run <script> <args>...` とし、CLI の引数は `Process.arguments()` で取る（`assets/benitoite/v0.0.7/skill/references/stdlib/IO.Process.md`、同 `idioms.md`）。全段の `task_allow` は最終解が宣言する `Console.Write,File.Read,File.Write,Process.Environment` である。追加の起動と通信は要らない。
+入力・正しい解・手計算の期待値は本作業で作成した。正しい解は取り込んだ v0.0.7 の Skill の構文と標準ライブラリを使う。実行の形は `benitoite run <script> <args>...` とし、CLI の引数は `Process.arguments()` で取る（[当時の IO.Process](https://github.com/tecogonaz0439/Benitoite/blob/v0.0.7/crates/benitoite/skill/references/stdlib/IO.Process.md)、同じタグの `idioms.md`）。全段の `task_allow` は最終解が宣言する `Console.Write,File.Read,File.Write,Process.Environment` である。追加の起動と通信は要らない。
 
 各ケースの入力は原本を重ねる先に置き、最終解だけを写して判定する。JSON の期待値は値で比較する。注文には取消済みだけを除くケース、欠落金額でも件数に入るケース、未知の複数地域をまとめるケース、空配列、名前順、全条件の組を置く。走査には隠れたディレクトリと通常の `.visible.md`、入れ子の drafts と通常の drafts.md ディレクトリ、大文字小文字の拡張子、空の根、深い根、名前順を置く。大文字と小文字だけが違うファイル名は、macOS の既定のファイルシステムで共存しないので使わない。
 

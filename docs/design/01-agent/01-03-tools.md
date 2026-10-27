@@ -10,7 +10,7 @@
 ## 前提
 
 - モードの定義と、モードごとの書き込みの範囲は[モード](01-02-modes.md)で定める。
-- Benitoite の事前検討は、エージェントハーネスの道具を `create_project`・`write_script`・`run_scratch`・`check`・`explain`・`read_reference`・`list_files`・`read_file`・`run`・`web_fetch`・`test`・`ask_user` と git の道具と定めた（[ADR 0344](https://github.com/tecogonaz0439/Benitoite/blob/v0.0.7/docs/archive/2026-10-09-design-first-release/decisions/0344-agent-harness-operation-scope-and-tools.md) の決定 4、[ADR 0348](https://github.com/tecogonaz0439/Benitoite/blob/v0.0.7/docs/archive/2026-10-09-design-first-release/decisions/0348-agent-harness-rewind-and-git.md)）。本章は、この一覧を制限モードの道具の元にし、名前と形を後述の「道具の形の選び方」で改める。
+- Benitoite の事前検討は、エージェントハーネスの道具を `create_project`・`write_script`・`run_scratch`・`check`・`explain`・`read_reference`・`list_files`・`read_file`・`run`・`web_fetch`・`test`・`ask_user` と git の道具と定めた（[ADR 0344](https://github.com/tecogonaz0439/Benitoite/blob/v0.0.12/docs/archive/2026-10-09-design-first-release/decisions/0344-agent-harness-operation-scope-and-tools.md) の決定 4、[ADR 0348](https://github.com/tecogonaz0439/Benitoite/blob/v0.0.12/docs/archive/2026-10-09-design-first-release/decisions/0348-agent-harness-rewind-and-git.md)）。本章は、この一覧を制限モードの道具の元にし、名前と形を後述の「道具の形の選び方」で改める。
 - 参考にしたハーネスの道具の形と制限の値は、[先行事例](../08-appendix/08-01-prior-art.md)にまとめた。
 
 ## 仕様
@@ -21,7 +21,7 @@
 
 Benitoite に固有の道具だけは新しい形になる。名前に `benitoite_` を付け、同梱の Agent Skill が使う `benitoite` のコマンドと一対一に対応させる（`benitoite check` に対して `benitoite_check`）。理由: Skill の文書は `benitoite` のコマンドを打つ前提で書いてあり、名前が対応していれば、システムプロンプトに置く対応の説明が短くて済む（[文脈の管理](01-04-context.md)の「システムプロンプトの構成」）。
 
-Benitoite の事前検討は、LLM に見せる道具の形を、サーバモードの MCP の道具と揃えると定めた（[ADR 0346](https://github.com/tecogonaz0439/Benitoite/blob/v0.0.7/docs/archive/2026-10-09-design-first-release/decisions/0346-agent-harness-connects-to-daemon-directly.md)）。サーバモードの MCP の道具はまだ定まっていないので、試作では揃える相手がない。マージを決めるときに見直す（BH-009）。
+Benitoite の事前検討は、LLM に見せる道具の形を、サーバモードの MCP の道具と揃えると定めた（[ADR 0346](https://github.com/tecogonaz0439/Benitoite/blob/v0.0.12/docs/archive/2026-10-09-design-first-release/decisions/0346-agent-harness-connects-to-daemon-directly.md)）。サーバモードの MCP の道具はまだ定まっていないので、試作では揃える相手がない。マージを決めるときに見直す（BH-009）。
 
 ### 道具の定義の共通の規則
 
@@ -257,6 +257,8 @@ Benitoite の事前検討は、LLM に見せる道具の形を、サーバモー
 - 出力は、標準出力と標準エラー出力のそれぞれについて末尾の 1,000 行か 25 KiB を返し、`bash` と同じく `spill/` に書く。
 - 時間の上限は既定 120 秒、`timeout` で 600 秒まで延ばせる。止め方は[Benitoite の処理系との連携](../04-benitoite/04-01-benitoite-integration.md)の「処理系の起動」による。
 
+`Log` は確認と報告の集合に含めるが、OS の書き込み・通信・プログラムの起動の範囲を広げない。ファイルなどへ出す受け手のエフェクトは別に確認する（[OS のサンドボックス](../03-safety/03-02-sandbox.md)の「制限モードの方針」）。
+
 ### benitoite_test（制限モード）
 
 ```json
@@ -271,6 +273,8 @@ Benitoite の事前検討は、LLM に見せる道具の形を、サーバモー
 - 結果は、失敗したテストの名前、位置、理由（表明が外れたときは比べた二つの値 `left`・`right`）、成功と失敗の数、実行しなかった対象の数とする。結果の作り方、`benitoiteh` が読まないファイルのテストを件数だけにする規則、テストが通ったと示す条件は、[Benitoite の処理系との連携](../04-benitoite/04-01-benitoite-integration.md)の「終了状態と診断の受け渡し」で定める。
 - 【方針】失敗したテストは、出た順に先頭 20 件を示し、残りの件数を `[<n> more failed tests not shown. Fix the ones above, then run the tests again.]` で示す。数えるのは、読まないファイルのテストを件数だけにした後に残った行である。理由: テストごとの出力の上限（後述の「出力の切り詰め」）だけでは、失敗が多いと結果が 64 KiB を超え、中ほどの切り詰めで失敗の行が途中で欠ける。診断の 20 件の上限と揃えれば、LLM は上から直して実行し直す同じ手順で進められる。
 
+`Log` も選んだテストの宣言の上限の和に含め、独立した名前として確認する。文書の例は `benitoite_check` の `tests` が真のときも `benitoite_test` も対象に含めず、`--doc` を付けない。理由: 文書の例を扱う形式 2 は実装せず、形式 1 の通常のテストについて、検査と実行の対象を揃える。
+
 ### benitoite_scratch（制限モード）
 
 ```json
@@ -279,6 +283,7 @@ Benitoite の事前検討は、LLM に見せる道具の形を、サーバモー
 
 - `code` を、セッションごとの一時ディレクトリに新しい名前の `.bnt` のファイル（`scratch-<n>.bnt`）として書き、`benitoite_run` と同じく実行の前の検査の報告を得て、エフェクトが確認なしの範囲に収まれば確認なしで実行する。実行では、報告のエフェクトを `--allow-effects` に渡す。範囲を超えれば、`benitoite_run` と同じく確認を受ける。確認なしの範囲と、確認なしで実行するときの読める範囲は、[利用者の確認](../03-safety/03-03-approval.md)の「一時的なスクリプト」で定める。出力の扱いと時間の上限は `benitoite_run` と同じとする。
 - 結果に、書いた一時ファイルのパスを含める。役に立ったスクリプトは、LLM が `read` で読んで `write` でプロジェクトへ写せる。
+- `Log` は確認なしの既定に含めない。利用者が `restricted.scratch_auto_effects` に `Log` を書いた場合だけ加え、受け手に残った `File.Write` などは別に扱う。非対話の通常の実行とテストには、この設定を引き継がない。
 - 一時的なスクリプトの根のディレクトリは一時ディレクトリなので、プロジェクトのモジュールは取り込めない。
 
 ### benitoite_explain と benitoite_reference
@@ -289,7 +294,7 @@ Benitoite の事前検討は、LLM に見せる道具の形を、サーバモー
 ```
 
 - 中身は [Benitoite の処理系との連携](../04-benitoite/04-01-benitoite-integration.md)の「参照の文書と診断の説明」で定める。
-- 【方針】`benitoite_reference` の道具の定義（説明の文と引数）は、処理系から得た一覧に依らない固定の文とする。説明の文には、`v0.0.7` の主な名前（`idioms`・`grammar`・`common-mistakes`・`language-comparison`・`diagnostics`・`inspection`）を例として挙げ、`stdlib/index` でモジュールの一覧を得られることと、`name` を省くと引ける名前の一覧を返すことを書く。`name` を省いたときと、一覧にない名前を指定したときは、処理系の `skill list` から作った引ける名前の一覧を返す（一覧にない名前は誤りの印を付ける）。理由: 道具の定義をモードだけで決まる形に保てば、プロンプトのキャッシュが処理系の版に依らず効き、道具の定義の全文をテストで固定できる（[文脈の管理](01-04-context.md)の「文脈の構成」、[テスト](../07-quality/07-01-testing.md)の「LLM に見せる文の固定」）。
+- 【方針】`benitoite_reference` の道具の定義（説明の文と引数）は、処理系から得た一覧に依らない固定の文とする。説明の文には、`v0.0.12` の主な名前（`idioms`・`grammar`・`common-mistakes`・`language-comparison`・`diagnostics`・`inspection`）を例として挙げ、`stdlib/index` でモジュールの一覧を得られることと、`name` を省くと引ける名前の一覧を返すことを書く。`name` を省いたときと、一覧にない名前を指定したときは、処理系の `skill list` から作った引ける名前の一覧を返す（一覧にない名前は誤りの印を付ける）。理由: 道具の定義をモードだけで決まる形に保てば、プロンプトのキャッシュが処理系の版に依らず効き、道具の定義の全文をテストで固定できる（[文脈の管理](01-04-context.md)の「文脈の構成」、[テスト](../07-quality/07-01-testing.md)の「LLM に見せる文の固定」）。
 - 通常モードでは、`name` に `SKILL` を指定すると同梱の Skill の `SKILL.md` を返す（[文脈の管理](01-04-context.md)の「Benitoite の Skill の置き方」）。
 - `read` と同じく、2,000 行か 50 KiB で区切り、続きの読み方を示す。
 
@@ -323,7 +328,7 @@ Benitoite の事前検討は、LLM に見せる道具の形を、サーバモー
 { "url": "string" }
 ```
 
-- 事前検討の決定（[ADR 0347](https://github.com/tecogonaz0439/Benitoite/blob/v0.0.7/docs/archive/2026-10-09-design-first-release/decisions/0347-agent-harness-web-fetch.md)）を引き継ぐ。`https` の GET だけを行い、クッキーと認証の情報を送らない。利用者の設定の一覧にあるドメインは確認なしで取得し、それ以外のドメインは、セッションで初めて取得するときに確認を受ける。一覧はプロジェクトの設定では広げられない。非対話では一覧のドメインだけを取得する。
+- 事前検討の決定（[ADR 0347](https://github.com/tecogonaz0439/Benitoite/blob/v0.0.12/docs/archive/2026-10-09-design-first-release/decisions/0347-agent-harness-web-fetch.md)）を引き継ぐ。`https` の GET だけを行い、クッキーと認証の情報を送らない。利用者の設定の一覧にあるドメインは確認なしで取得し、それ以外のドメインは、セッションで初めて取得するときに確認を受ける。一覧はプロジェクトの設定では広げられない。非対話では一覧のドメインだけを取得する。
 - リダイレクトは 5 回まで辿り、辿るたびに先のドメインを同じ規則で判定する。リダイレクトの先が `https` でなければ取得しない。確認が要るドメイン（一覧にも、このセッションで許したドメインにもないもの）へのリダイレクトは辿らずに止め、先の URL を結果に示す。LLM がその URL で改めて呼べば、確認を受ける。理由: 一つの道具の実行の途中に確認を挟むと、確認の流れ（確認を受けてから実行し直す形）で扱えない。
 - 名前を解いて得たアドレスのどれかが、ループバック（`127.0.0.0/8`・`::1`）、プライベート（`10.0.0.0/8`・`172.16.0.0/12`・`192.168.0.0/16`・`fc00::/7`）、リンクローカル（`169.254.0.0/16`・`fe80::/10`）、CGNAT（`100.64.0.0/10`）、未指定（`0.0.0.0`・`::`）、および IPv4 を写した IPv6 でこれらに当たるもの、に入れば、一覧にあっても取得しない。判定したアドレスにそのまま接続し、名前を解き直さない。理由: LLM が組み立てた URL で、手元の計算機、クラウドの仮想機械の情報のサービス（`169.254.169.254`）、内側のネットワークのサービスを読ませないためである。判定と接続の間に名前の答えを変える攻撃（DNS rebinding）も、解き直さないことで防ぐ。
 - 環境変数のプロキシの指定（`HTTPS_PROXY` など）を使わない。

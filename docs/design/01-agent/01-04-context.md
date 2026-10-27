@@ -9,7 +9,7 @@
 
 ## 前提
 
-- Benitoite の事前検討は、初めの指示に `SKILL.md` に当たる内容を入れ、参照の文書は必要なときに読ませる形を見立てとし、圧縮と会話の保存・再開は初めは設けないとした（Benitoite の docs/todo の TODO-134。[検討メモ](https://github.com/tecogonaz0439/Benitoite/blob/v0.0.7/docs/archive/2026-10-09-design-first-release/sources/post-first-release/post-first-release-agent-harness.md)の「文脈の管理」）。
+- Benitoite の事前検討は、初めの指示に `SKILL.md` に当たる内容を入れ、参照の文書は必要なときに読ませる形を見立てとし、圧縮と会話の保存・再開は初めは設けないとした（Benitoite の docs/todo の TODO-134。[検討メモ](https://github.com/tecogonaz0439/Benitoite/blob/v0.0.12/docs/archive/2026-10-09-design-first-release/sources/post-first-release/post-first-release-agent-harness.md)の「文脈の管理」）。
 - Pi のシステムプロンプトは、核の部分が約 400 トークンであり、日付と OS を含まない（作業ディレクトリと `AGENTS.md` の中身は含む）。DeepSeek Harness は、システムプロンプトを変えずに保ち、変わる情報を利用者の側の発言として後から加える（[先行事例](../08-appendix/08-01-prior-art.md)）。
 
 ## 仕様
@@ -41,17 +41,19 @@
 
 - 前置きは、Pi の前置き（「You are an expert coding assistant operating inside pi, a coding agent harness.」）と同じ程度の短さにする。作業の進め方の一般論（テストを走らせよ、自分の変更を見直せ、など）は書かない。理由: Pi と DeepSeek Harness はどちらもそうした一般論を持たず、Pi の作者は、エージェントとして学習したモデルに長い一般論は要らないとしている。
 - 日付、作業ディレクトリ、OS などの変わる情報は、システムプロンプトに入れない（後述の「環境の情報」）。
-- システムプロンプトの全文と道具の定義の全文は、テストで固定する（[テスト](../07-quality/07-01-testing.md)の「LLM に見せる文の固定」）。システムプロンプトは処理系から得た `SKILL.md` を含むので、テストは決まった版（`v0.0.7`）の処理系で行う。理由: LLM に見せる文は性能と費用を左右するので、意図しない変更を差分として見えるようにする。DeepSeek Harness が同じことをしている。
+- システムプロンプトの全文と道具の定義の全文は、テストで固定する（[テスト](../07-quality/07-01-testing.md)の「LLM に見せる文の固定」）。システムプロンプトは処理系から得た `SKILL.md` を含むので、テストは決まった版（`v0.0.12`）の処理系で行う。理由: LLM に見せる文は性能と費用を左右するので、意図しない変更を差分として見えるようにする。DeepSeek Harness が同じことをしている。
 
 ### Benitoite の Skill の置き方
 
-【方針】制限モードでは、起動した処理系から得た Skill の `SKILL.md` の本文（先頭の属性の部分と、本文の先頭の HTML の注釈を除く。[Benitoite の処理系との連携](../04-benitoite/04-01-benitoite-integration.md)の「取り込む文書と版」）を `<benitoite>` の節にそのまま入れる。その前に、次の対応を書く。対応は `v0.0.7` の `SKILL.md` に合わせて書く。
+【方針】制限モードでは、起動した処理系から得た Skill の `SKILL.md` の本文（先頭の属性の部分と、本文の先頭の HTML の注釈を除く。[Benitoite の処理系との連携](../04-benitoite/04-01-benitoite-integration.md)の「取り込む文書と版」）を `<benitoite>` の節にそのまま入れる。その前に、次の対応を書く。対応は `v0.0.12` の `SKILL.md` に合わせて書く。
 
 - Skill の `benitoite check` は `benitoite_check`、`benitoite test --check` は `tests` を真にした `benitoite_check`、`benitoite run` は `benitoite_run`、`benitoite test` は `benitoite_test` の道具で行う。
 - `references/<name>.md` は `benitoite_reference` の道具で `name` を指定して読む。
 - 診断のコード（`E0405` など）の説明は、`benitoite_explain` の道具で引く。
 - Skill の「Check the version first」の手順（`--version` と `--version=json`）と、`skill list`・`skill show` は、`benitoiteh` が起動のときに済ませているので行わない。
 - Skill の、確認の直前の `check --report=json`・`test --check --report=json` と、実行の `--allow-effects` は、`benitoite_run`・`benitoite_test`・`benitoite_scratch` が行う。LLM は報告を読まず、許す集合を渡さない。
+- 道具は `intervalAnalysis` の要約を返さない。局所の区間の警告は通常の検査の診断として読み、Skill の例と分析の境界に従って説明する。警告がないことを安全の証明にせず、分析が不完全という理由だけでエフェクトを広げない。
+- `benitoite_check` と `benitoite_test` は `--doc` を使わず、文書の例を検査と実行に含めない。理由: 通常のテストの形式 1 と、確認する対象の一致を保つ（[Benitoite の処理系との連携](../04-benitoite/04-01-benitoite-integration.md)の「処理系の起動」）。
 - Skill の「Before running」の確認は `benitoiteh` が画面で行うので、LLM は利用者に確認を求めなくてよい。ただし、エフェクトの意味を応答の文で説明するのはよい。
 
 【決定】本文の先頭の HTML の注釈（`<!--` から最初の `-->` まで）は、LLM に見せるときにいつも除く。通常モードで `benitoite_reference` に `SKILL` を指定して読ませるときも同じである。2026-10-17 に設計者が決めた。理由: この注釈は、処理系の側のテストが文書の中の例をどう確かめるかの説明であり、LLM の作業に要らない。`v0.0.6` と `v0.0.7` の時点で 878 バイトある。

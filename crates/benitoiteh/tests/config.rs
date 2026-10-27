@@ -109,6 +109,9 @@ fn user_configuration_reads_the_design_example_and_rejects_invalid_fields() -> T
     );
     assert_eq!(config.web_fetch.allowed_domains, ["docs.rs"]);
     assert_eq!(config.sessions.retention_days, 30);
+    assert!(config.restricted.scratch_auto_effects.is_empty());
+    let configured = UserConfig::parse("[restricted]\nscratch_auto_effects=['Log']")?;
+    assert_eq!(configured.restricted.scratch_auto_effects, ["Log"]);
 
     for (input, field) in [
         ("unexpected = true", Some("unexpected")),

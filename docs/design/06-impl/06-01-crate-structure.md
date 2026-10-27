@@ -9,8 +9,8 @@
 
 ## 前提
 
-- Benitoite の処理系は、Rust の 1.98.1（`rust-toolchain.toml`）、edition 2024 で書き、`[workspace.lints]` で `unwrap_used`・`expect_used`・`panic`・`indexing_slicing`・`arithmetic_side_effects` などを禁じている（[Benitoite の Cargo.toml](https://github.com/tecogonaz0439/Benitoite/blob/v0.0.7/Cargo.toml)）。依存のクレートの版は `=` で固定し、ライセンスを `cargo-deny` で確かめる（[Benitoite の deny.toml](https://github.com/tecogonaz0439/Benitoite/blob/v0.0.7/deny.toml)）。
-- Benitoite の処理系は、HTTP に `ureq`、TLS に `rustls` と `rustls-graviola`、ファイルの操作に `rustix`、JSON に `serde_json`、正規表現に `regex`、SHA-256 に `sha2` を使う（[Benitoite のクレートの Cargo.toml](https://github.com/tecogonaz0439/Benitoite/blob/v0.0.7/crates/benitoite/Cargo.toml)）。
+- Benitoite の処理系は、Rust の 1.98.1（`rust-toolchain.toml`）、edition 2024 で書き、`[workspace.lints]` で `unwrap_used`・`expect_used`・`panic`・`indexing_slicing`・`arithmetic_side_effects` などを禁じている（[Benitoite の Cargo.toml](https://github.com/tecogonaz0439/Benitoite/blob/v0.0.12/Cargo.toml)）。依存のクレートの版は `=` で固定し、ライセンスを `cargo-deny` で確かめる（[Benitoite の deny.toml](https://github.com/tecogonaz0439/Benitoite/blob/v0.0.12/deny.toml)）。
+- Benitoite の処理系は、HTTP に `ureq`、TLS に `rustls` と `rustls-graviola`、ファイルの操作に `rustix`、JSON に `serde_json`、正規表現に `regex`、SHA-256 に `sha2` を使う（[Benitoite のクレートの Cargo.toml](https://github.com/tecogonaz0439/Benitoite/blob/v0.0.12/crates/benitoite/Cargo.toml)）。
 - Codex CLI は約 150 のクレートと約 208 万行の Rust から成り、V8・SQLite・Starlark を含む。aarch64 の macOS 向けのリリースの zstd で圧縮した配布物は 71 MB である（[先行事例](../08-appendix/08-01-prior-art.md)）。試作はこの規模を目指さない。
 
 ## 仕様

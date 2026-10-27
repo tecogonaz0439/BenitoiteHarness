@@ -56,6 +56,6 @@ fn main() -> Result<(), Box<dyn Error>> {
 mod text {
     //! 期待ファイルを更新できない理由を示す英文。
     pub const PROCESSOR_REQUIRED: &str =
-        "BENITOITEH_TEST_BENITOITE is required; supply benitoite v0.0.7";
+        "BENITOITEH_TEST_BENITOITE is required; supply benitoite v0.0.12";
     pub const QUERY_FAILED: &str = "benitoite skill show failed";
 }

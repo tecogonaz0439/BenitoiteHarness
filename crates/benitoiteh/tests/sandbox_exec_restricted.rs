@@ -726,7 +726,7 @@ fn normal_query_inspects_real_processor_and_records_its_identity() -> TestResult
     let (_, records) = f.records()?;
     let header = records.first().ok_or("header")?;
     assert_eq!(header.pointer("/benitoite/path"), Some(&json!(processor)));
-    assert_eq!(header.pointer("/benitoite/version"), Some(&json!("0.0.7")));
+    assert_eq!(header.pointer("/benitoite/version"), Some(&json!("0.0.12")));
     assert_eq!(
         header
             .pointer("/benitoite/sha256")

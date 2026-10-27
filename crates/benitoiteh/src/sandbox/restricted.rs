@@ -56,6 +56,8 @@ pub fn scratch_policy(
     #[cfg(target_os = "macos")]
     {
         // オーケストレータの v0.0.7・macOS 27.0.1 の実測の組を使う（実装プラン P2-09）。
+        // 2026-10-27 に v0.0.12・macOS 27 でも、同じ組で狭い読み取りと
+        // 時計・乱数・環境のテストが通った（実装プラン P5-40、sandbox_benitoite_scratch）。
         // 全体のメタデータを許すと、範囲外のファイルの有無や大きさを調べられる。
         if let ReadAccess::Roots(roots) = &mut config.readable {
             for path in [

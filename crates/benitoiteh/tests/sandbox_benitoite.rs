@@ -242,7 +242,7 @@ fn real_processor_version_runs_under_the_query_sandbox() -> TestResult {
     let object = benitoiteh::benitoite::json_object(&output.stdout, "version")?;
     assert_eq!(
         object.get("version").and_then(serde_json::Value::as_str),
-        Some("0.0.7")
+        Some("0.0.12")
     );
     Ok(())
 }

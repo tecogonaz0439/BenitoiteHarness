@@ -593,8 +593,8 @@ fn processor_skill_matches_archived_release_and_context_requires_matching_tools(
     let document = documents.document("SKILL.md", &std::sync::atomic::AtomicBool::new(false))?;
     assert_eq!(
         document.text().as_bytes(),
-        include_str!("../../../assets/benitoite/v0.0.7/skill/SKILL.md")
-            .replace("{{benitoite-version}}", "0.0.7")
+        include_str!("../../../assets/benitoite/v0.0.12/skill/SKILL.md")
+            .replace("{{benitoite-version}}", "0.0.12")
             .as_bytes()
     );
     for (tools, skill) in [

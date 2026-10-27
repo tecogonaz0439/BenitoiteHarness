@@ -604,13 +604,14 @@ pub fn effect_line(name: &str, added: bool) -> String {
     format!("{mark}{name}  {description}")
 }
 
-// Benitoite v0.0.7 の同梱 Skill「Before running」の表から写した。
+// Benitoite v0.0.12 の同梱 Skill「Before running」の表から写した。
 // Process.Run の末尾の (name them) はエージェント向けの指示なので含めない。
 /// 同梱 Skill の確認用の説明。表明は道具の側で表示から除く。
 pub fn effect_description(effect: crate::benitoite::Effect) -> &'static str {
     use crate::benitoite::Effect;
     match effect {
         Effect::ConsoleWrite => "writes to standard output and standard error",
+        Effect::Log => "structured log events; independent of Console.Write and IO.All",
         Effect::ConsoleRead => "reads standard input",
         Effect::FileRead => "reads files and directories",
         Effect::FileWrite => "creates, changes, moves, or deletes files and directories",

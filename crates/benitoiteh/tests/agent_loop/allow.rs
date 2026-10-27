@@ -138,34 +138,78 @@ fn allowed_effects_reset_denials_and_each_request_starts_a_new_sequence() -> Tes
 // 関門: --allow の集合を事実の部分集合と逆に比べる、Assert.Check を別の許可として数える退行。
 #[test]
 fn named_allow_set_is_honored_without_asking_the_approver() -> TestResult {
-    for allowed in [
-        vec![benitoiteh::benitoite::Effect::FileWrite],
-        vec![benitoiteh::benitoite::Effect::FileRead],
+    use benitoiteh::benitoite::Effect;
+    for (source, tool, args, needed) in [
+        (
+            WRITE,
+            "benitoite_run",
+            json!({"path":"a.bnt"}),
+            Effect::FileWrite,
+        ),
+        (
+            "function main() -> Unit uses Log\n return ()\nend function\n",
+            "benitoite_run",
+            json!({"path":"a.bnt"}),
+            Effect::Log,
+        ),
+        (
+            "uses Log\n@test\nfunction example() -> Unit uses Assert.Check\n Assert.equal(actual: 1, expected: 1)\nend function\n",
+            "benitoite_test",
+            json!({"paths":["a.bnt"]}),
+            Effect::Log,
+        ),
+        (
+            "function main() -> Unit uses Log\n return ()\nend function\n",
+            "benitoite_scratch",
+            json!({"code":"function main() -> Unit uses Log\n return ()\nend function\n"}),
+            Effect::Log,
+        ),
     ] {
-        let f = Fixture::new()?;
-        setup(&f)?;
-        let mut server = MockProvider::start(vec![
-            ResponseScript::sse(calls(&[run()], "tool_calls")),
-            final_text(),
-        ])?;
-        let mut config = f.config(&server, AdapterKind::OpenAiChat);
-        config.mode = Mode::Restricted;
-        config.allow_effects = Some(allowed.iter().copied().collect());
-        let (mut agent, _) =
-            f.agent_with_check(config, None, Some(support::checks(f.project.clone())?))?;
-        let (report, events) = complete(&mut agent)?;
-        let permitted = allowed.contains(&benitoiteh::benitoite::Effect::FileWrite);
-        assert_eq!(
-            report.summary.approvals.policy_denied,
-            u64::from(!permitted)
-        );
-        assert_eq!(report.summary.checks, if permitted { 2 } else { 1 });
-        assert!(
-            !events
-                .iter()
-                .any(|e| matches!(e, AgentEvent::ApprovalRequest { .. }))
-        );
-        server.shutdown()?;
+        for permitted in [false, true] {
+            let f = Fixture::new()?;
+            fs::write(f.project.join("a.bnt"), source)?;
+            let mut server = MockProvider::start(vec![
+                ResponseScript::sse(calls(&[(tool, args.clone())], "tool_calls")),
+                final_text(),
+            ])?;
+            let mut config = f.config(&server, AdapterKind::OpenAiChat);
+            config.mode = Mode::Restricted;
+            config.allow_effects = Some(if permitted {
+                [needed].into_iter().collect()
+            } else {
+                Default::default()
+            });
+            let (mut agent, _) =
+                f.agent_with_check(config, None, Some(support::checks(f.project.clone())?))?;
+            let (report, events) = complete(&mut agent)?;
+            assert_eq!(
+                report.summary.approvals.policy_denied,
+                u64::from(!permitted),
+                "{tool}"
+            );
+            assert_eq!(
+                report.summary.checks,
+                if permitted { 2 } else { 1 },
+                "{tool}: {:?}",
+                results(&agent)
+            );
+            let outputs = results(&agent);
+            let output = outputs.first().ok_or("result")?;
+            assert!(
+                if permitted {
+                    output.text.contains("execution context is unavailable")
+                } else {
+                    output.text.contains("allows only these effects:")
+                },
+                "{tool}: {output:?}"
+            );
+            assert!(
+                !events
+                    .iter()
+                    .any(|e| matches!(e, AgentEvent::ApprovalRequest { .. }))
+            );
+            server.shutdown()?;
+        }
     }
     let f = Fixture::new()?;
     let mut server = MockProvider::start(vec![])?;
@@ -418,7 +462,7 @@ fn scratch_unread_dependencies_are_denied_without_starting_a_refusal_sequence() 
         };
         fs::write(
             dependency.join("package.bnt"),
-            "language \"0.0.7\"\npackage Ext\nend package\n",
+            "language \"0.0.12\"\npackage Ext\nend package\n",
         )?;
         let alias = module.rsplit('.').next().ok_or("module")?;
         let code = format!(

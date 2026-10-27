@@ -138,6 +138,7 @@ fn test_restricted_facts_cover_current_and_previously_confirmed_effects() -> Tes
     let processor = run.processor.clone();
     for (uses, write, network, programs) in [
         ("", false, false, false),
+        (", Log", false, false, false),
         (", File.Write", true, false, false),
         (", Http.Connect", false, true, false),
         (", Process.Run", false, false, true),

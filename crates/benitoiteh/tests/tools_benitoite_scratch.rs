@@ -220,6 +220,21 @@ fn automatic_effects_and_import_roots_use_the_real_inspection_report() -> TestRe
         );
         assert_eq!(out.processor_launches, 1);
     }
+    let log = f.call_tool(
+        "benitoite_scratch",
+        json!({"code":"function main() -> Unit uses Log\n return ()\nend function\n"}),
+        false,
+        "log",
+        &stop,
+    );
+    assert_eq!(
+        log.approval
+            .as_ref()
+            .ok_or(format!("{log:?}"))?
+            .facts
+            .effects,
+        ["Log"]
+    );
     fs::write(
         f.project.join("Local.bnt"),
         "public function value() -> Unit\n return ()\nend function\n",
@@ -237,7 +252,7 @@ fn automatic_effects_and_import_roots_use_the_real_inspection_report() -> TestRe
     );
     assert_eq!(
         out.text.lines().next(),
-        f.session.temporary_dir().join("scratch-3.bnt").to_str()
+        f.session.temporary_dir().join("scratch-4.bnt").to_str()
     );
     Ok(())
 }
@@ -272,7 +287,7 @@ fn unread_dependencies_always_require_confirmation_even_with_automatic_effects()
         };
         fs::write(
             dependency.join("package.bnt"),
-            "language \"0.0.7\"\npackage Ext\nend package\n",
+            "language \"0.0.12\"\npackage Ext\nend package\n",
         )?;
         let alias = module.rsplit('.').next().ok_or("module")?;
         let source = format!(
