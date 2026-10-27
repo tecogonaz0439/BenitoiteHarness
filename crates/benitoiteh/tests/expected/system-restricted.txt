@@ -31,8 +31,8 @@ Pass script arguments in `args` and standard input in `stdin` (empty otherwise).
 benitoite_test: Check them with benitoite_check with `tests` set to true first. You do not choose the allowed effects: benitoiteh passes the union of the selected tests' effects, including Assert.Check.
 A directory runs every .bnt file under it except package.bnt and nested packages.
 Documentation examples (`--doc`) are not included.
-benitoite_scratch: benitoiteh runs it without asking when its effects stay within the automatic set (no effects, Console.Write, State, Process.Exit, and any the user added); otherwise the user confirms them as for benitoite_run. You do not choose the allowed effects.
-Log is not automatic by default; the user can add it in restricted.scratch_auto_effects. File and other sink effects still need their own permission.
+benitoite_scratch: benitoiteh runs it without asking when its effects stay within the automatic set (no effects, Console.Write, Log, State, Process.Exit, and any the user added); otherwise the user confirms them as for benitoite_run. You do not choose the allowed effects.
+Log is automatic by default. File.Write and other sink effects still need their own permission.
 The script's root is the session temporary directory, so `import` cannot load project modules. The result shows the script's path; read it and write it into the project to keep it.
 Pass script arguments in `args` and standard input in `stdin` (empty otherwise). The time limit is 120 seconds.
 benitoite_explain: Pass the code shown in a diagnostic; the result is that code's section of `references/diagnostics.md`.
