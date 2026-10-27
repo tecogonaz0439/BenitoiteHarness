@@ -273,7 +273,7 @@ P0-04 で作った型: 方針の入力 `PolicyConfig`（`readable: ReadAccess`�
 - `tools`: `ToolId::BenitoiteScratch`（`code`・`args`・`stdin`。並べない。120 秒）。実行の本体は `tools/benitoite_process.rs` に移して `benitoite_run` と共有する。`ToolContext::remember_scratch_automatic(call_id, effects, explicitly_allowed)`（`pub(crate)`。非対話の和のうち `--allow` にない分を、その呼び出しの呼び直しにだけ持たせる）。呼び直しは `call_id` で覚えたファイルを開き直し、新しく書かない。
 - `safe_fs::ScopeRoot::create_new(path) -> Result<File, SafeFsError>`（`O_CREAT|O_EXCL|O_NOFOLLOW`、0600）。
 - `sandbox::PolicyConfig` に `readable_files: Vec<PathBuf>`（配下を含まない一つのファイル）と `readable_metadata: Vec<PathBuf>`（macOS でメタデータだけを許す）。`sandbox::restricted::scratch_policy(...)`（確認なしの実行の読める範囲）。
-- `benitoite::RunContext.scratch_auto_effects: BTreeSet<Effect>`、`benitoite::effects::scratch_auto_effects(configured)`（既定と利用者の設定の和）。`agent::SessionSafety.scratch_auto_effects: Vec<String>`（`/new` で固定する）。`rewind::CheckpointReason::BenitoiteScratch`（戻せないものに数える）。
+- `benitoite::RunContext.scratch_auto_effects: BTreeSet<Effect>`、`benitoite::effects::scratch_auto_effects(configured)`（既定と利用者の設定の集合の和。既定はエフェクトなし、`Console.Write`、`Log`、`State`、`Process.Exit`。設定に `Log` を書いても集合として扱う）。`agent::SessionSafety.scratch_auto_effects: Vec<String>`（`/new` で固定する）。`rewind::CheckpointReason::BenitoiteScratch`（戻せないものに数える）。
 
 ### エフェクトの確認の画面（P2-10）
 

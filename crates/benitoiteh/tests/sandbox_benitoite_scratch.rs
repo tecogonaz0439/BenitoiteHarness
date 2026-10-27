@@ -463,10 +463,11 @@ fn noninteractive_union_confines_automatic_file_reads_and_does_not_authorize_lat
     Ok(())
 }
 
-// 関門: 設定で Log を自動にしても、その許可を後の run・test に残さない（設計書 03-03）。
+// 関門: 既定と重なる Log の設定でも確認なしで動き、その許可を後の run・test に残さない。
+// （設計書 03-03「一時的なスクリプト」「非対話での扱い」）。
 #[test]
-fn configured_log_does_not_authorize_later_scripts_or_tests() -> TestResult {
-    use benitoiteh::agent::Outcome;
+fn automatic_log_does_not_authorize_later_scripts_or_tests() -> TestResult {
+    use benitoiteh::agent::{AgentEvent, Outcome};
     use benitoiteh::provider::Item;
     use std::sync::{Arc, mpsc};
     use support::mock_provider::MockProvider;
@@ -494,18 +495,13 @@ fn configured_log_does_not_authorize_later_scripts_or_tests() -> TestResult {
         let mut agent = scratch_agent(&f, &server, Default::default())?;
         let (send, recv) = mpsc::sync_channel(64);
         let report = agent.run("run".into(), Arc::new(AtomicBool::new(false)), send)?;
-        let _events: Vec<_> = recv.into_iter().collect();
-        assert_eq!(
-            report.outcome,
-            if configured {
-                Outcome::Completed
-            } else {
-                Outcome::Failed
-            }
-        );
-        assert_eq!(
-            report.summary.approvals.policy_denied,
-            if configured { 2 } else { 3 }
+        let events: Vec<_> = recv.into_iter().collect();
+        assert_eq!(report.outcome, Outcome::Completed);
+        assert_eq!(report.summary.approvals.policy_denied, 2);
+        assert!(
+            !events
+                .iter()
+                .any(|event| matches!(event, AgentEvent::ApprovalRequest { .. }))
         );
         let outputs: Vec<_> = agent
             .conversation()
@@ -521,17 +517,10 @@ fn configured_log_does_not_authorize_later_scripts_or_tests() -> TestResult {
             .collect();
         assert_eq!(outputs.len(), 3);
         let first = outputs.first().ok_or("scratch")?;
-        if configured {
-            assert!(
-                !first.is_error && first.text.contains("message=\"scratch-log\""),
-                "{first:?}"
-            );
-        } else {
-            assert!(
-                first.is_error && first.text.contains("uses: Log."),
-                "{first:?}"
-            );
-        }
+        assert!(
+            !first.is_error && first.text.contains("message=\"scratch-log\""),
+            "configured={configured}: {first:?}"
+        );
         for output in outputs.get(1..).ok_or("later results")? {
             assert!(
                 output.is_error

@@ -96,8 +96,13 @@ pub fn restricted_access(
 
 /// 検証済みの利用者の設定を、既定の確認なしの範囲と合わせる（設計書 03-03）。
 pub fn scratch_auto_effects(configured: &[String]) -> BTreeSet<Effect> {
-    [Effect::ConsoleWrite, Effect::State, Effect::ProcessExit]
-        .into_iter()
-        .chain(configured.iter().filter_map(|name| Effect::from_name(name)))
-        .collect()
+    [
+        Effect::ConsoleWrite,
+        Effect::Log,
+        Effect::State,
+        Effect::ProcessExit,
+    ]
+    .into_iter()
+    .chain(configured.iter().filter_map(|name| Effect::from_name(name)))
+    .collect()
 }

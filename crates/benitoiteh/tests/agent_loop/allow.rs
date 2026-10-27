@@ -57,7 +57,7 @@ fn third_denial_stops_after_turn_end_and_records_all_calls_without_approval_reco
     assert_eq!(
         scratch.text,
         format!(
-            "{path}\nThis non-interactive run allows only these effects: Console.Write, Process.Exit, State. {path} uses: File.Write. Narrow the uses of main, or stop and report."
+            "{path}\nThis non-interactive run allows only these effects: Console.Write, Log, Process.Exit, State. {path} uses: File.Write. Narrow the uses of main, or stop and report."
         )
     );
     assert!(!f.project.join("MUST_NOT_EXIST").exists());
@@ -136,9 +136,11 @@ fn allowed_effects_reset_denials_and_each_request_starts_a_new_sequence() -> Tes
     Ok(())
 }
 // 関門: --allow の集合を事実の部分集合と逆に比べる、Assert.Check を別の許可として数える退行。
+// scratch の自動の Log と明示した File.Write の和を、再検査にも渡す（設計書 03-03「非対話での扱い」）。
 #[test]
 fn named_allow_set_is_honored_without_asking_the_approver() -> TestResult {
     use benitoiteh::benitoite::Effect;
+    let log_write = "import Benitoite.Unofficial.IO.File\nfunction main() -> Unit uses Log, File.Write\n Log.info(message: \"write\", attributes: [], location: SourceLocation.here())\n bind _ <- File.writeText(path: \"MUST_NOT_EXIST\", text: \"ran\")\nend function\n";
     for (source, tool, args, needed) in [
         (
             WRITE,
@@ -159,10 +161,10 @@ fn named_allow_set_is_honored_without_asking_the_approver() -> TestResult {
             Effect::Log,
         ),
         (
-            "function main() -> Unit uses Log\n return ()\nend function\n",
+            log_write,
             "benitoite_scratch",
-            json!({"code":"function main() -> Unit uses Log\n return ()\nend function\n"}),
-            Effect::Log,
+            json!({"code":log_write}),
+            Effect::FileWrite,
         ),
     ] {
         for permitted in [false, true] {
@@ -203,6 +205,9 @@ fn named_allow_set_is_honored_without_asking_the_approver() -> TestResult {
                 },
                 "{tool}: {output:?}"
             );
+            if tool == "benitoite_scratch" && !permitted {
+                assert!(output.text.contains("uses: File.Write, Log."), "{output:?}");
+            }
             assert!(
                 !events
                     .iter()
@@ -414,9 +419,9 @@ fn scratch_noninteractive_allow_unions_automatic_effects_and_reports_the_union_o
             );
         } else {
             assert!(
-                out.text
-                    .contains("allows only these effects: Console.Write, Process.Exit, State.")
-                    && out.text.contains("uses: Console.Write, File.Read."),
+                out.text.contains(
+                    "allows only these effects: Console.Write, Log, Process.Exit, State."
+                ) && out.text.contains("uses: Console.Write, File.Read."),
                 "{out:?}"
             );
         }
