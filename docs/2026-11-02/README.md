@@ -17,6 +17,7 @@
 | [01-cloud-linux-check.md](01-cloud-linux-check.md) | クラウドの x86_64 の Linux で検査を走らせる環境（準備の道具、podman の試験の機械との違い）と、検査の各段の結果 |
 | [02-session-flaky-tests.md](02-session-flaky-tests.md) | `tests/session.rs` の時々失敗するテストの再現、原因の推定と確かめ、テストの側の修正 |
 | [03-other-test-files.md](03-other-test-files.md) | 同じ競合が、ほかのテストのファイルと `src/` の単体テストにないかの調べと、見つかった 2 件の修正 |
+| [04-oss-feature-review.md](04-oss-feature-review.md) | Codex CLI、Pi Coding Agent、Hermes Agent、DeepSeek Harness、nono、sandbox-runtime のソースコードとの機能の比べと、キャッチアップの案 |
 
 ## 変更したファイル
 
