@@ -98,11 +98,35 @@ fn redirected_xdg_keeps_default_home_configuration_and_state_unreadable() -> Tes
 #[test]
 fn redirected_xdg_keeps_default_home_paths_unreadable_from_normal_bash() -> TestResult {
     let protocol = Protocol::Chat;
-    let command = r#"for path in "$HOME/.config/benitoiteh/config.toml" "$HOME/.local/state/benitoiteh/auth/token.json" "$HOME/.local/state/benitoiteh/sessions/fake/session.jsonl"; do
+    // 資格情報・保管庫・履歴・ブラウザの組から、ディレクトリとファイルの例を一つ以上ずつ選ぶ。
+    // 実装の一覧から写さない（設計書 03-02「読ませないホームの場所」）。
+    let secrets = [
+        ".config/benitoiteh/config.toml",
+        ".local/state/benitoiteh/auth/token.json",
+        ".local/state/benitoiteh/sessions/fake/session.jsonl",
+        ".ssh/id_ed25519",
+        ".kube/config",
+        ".config/gcloud/credentials.db",
+        ".netrc",
+        ".git-credentials",
+        ".npmrc",
+        ".env",
+        ".local/share/keyrings/login.keyring",
+        ".bash_history",
+        ".config/google-chrome/Default/Cookies",
+    ];
+    let paths = secrets
+        .iter()
+        .map(|relative| format!("\"$HOME/{relative}\""))
+        .collect::<Vec<_>>()
+        .join(" ");
+    let command = format!(
+        r#"for path in {paths}; do
 if cat "$path" 2>/dev/null; then printf 'UNEXPECTED-READ\n'; else printf 'denied\n'; fi
 done
 cat "$HOME/public-control.txt"
-printf 'allowed' > output.txt"#;
+printf 'allowed' > output.txt"#
+    );
     let mut server = MockProvider::start(vec![
         ResponseScript::sse(protocol.response(
             Some(("read-home", "bash", json!({"command":command}))),
@@ -112,11 +136,7 @@ printf 'allowed' > output.txt"#;
         ResponseScript::sse(protocol.response(None, "Done", false)),
     ])?;
     let f = Fixture::restricted(protocol, &server)?;
-    for relative in [
-        ".config/benitoiteh/config.toml",
-        ".local/state/benitoiteh/auth/token.json",
-        ".local/state/benitoiteh/sessions/fake/session.jsonl",
-    ] {
+    for relative in secrets {
         let path = f.root.join("home").join(relative);
         fs::create_dir_all(path.parent().ok_or("secret parent")?)?;
         fs::write(path, "FAKE-SECRET")?;
@@ -147,7 +167,7 @@ printf 'allowed' > output.txt"#;
         .and_then(|record| record.pointer("/result/text"))
         .and_then(Value::as_str)
         .ok_or("bash result")?;
-    assert_eq!(text.matches("denied").count(), 3, "{text}");
+    assert_eq!(text.matches("denied").count(), secrets.len(), "{text}");
     assert!(text.contains("PUBLIC-CONTROL"), "{text}");
     assert!(!text.contains("FAKE-SECRET"), "{text}");
     assert!(!text.contains("UNEXPECTED-READ"), "{text}");

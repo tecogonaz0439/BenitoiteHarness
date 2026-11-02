@@ -38,6 +38,9 @@
 | `crates/benitoiteh/src/tools/benitoite_process.rs` | 変更 | 制限モードの実行で、印の付け直しだけを `remark_child_environment` で行う | [05](05-stage1.md) |
 | `crates/benitoiteh/tests/config.rs` ほか、`child_environment` の呼び出し元 | 変更 | 環境と設定のテストに行を足し、ほかの呼び出し元に引数を足した | [05](05-stage1.md) |
 | `docs/design/03-safety/03-01-security-model.md`、`03-02-sandbox.md`、`04-benitoite/04-01-benitoite-integration.md`、`05-interface/05-01-cli.md` | 変更 | 子プロセスの環境の方針と `pass_env` を書いた | [05](05-stage1.md) |
+| `crates/benitoiteh/src/cli/mod.rs` | 変更 | 読ませないホームの場所に、資格情報、保管庫、履歴、ブラウザの組を加えた | [05](05-stage1.md) |
+| `crates/benitoiteh/tests/sandbox_exec_restricted.rs` | 変更 | 通常モードの `bash` が HOME の秘密を読めないことを確かめる行を足した | [05](05-stage1.md) |
+| `docs/design/03-safety/03-02-sandbox.md` | 変更 | 「読ませないホームの場所」を加えた | [05](05-stage1.md) |
 | `docs/2026-11-02/` | 追加 | 本ディレクトリ | — |
 | `docs/README.md` | 変更 | 本ディレクトリへの案内を加えた | — |
 

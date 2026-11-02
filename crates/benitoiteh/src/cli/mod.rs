@@ -125,18 +125,71 @@ fn run(
 }
 
 // XDG の付け替えでも普段の秘密を公開せず、exec と doctor で共有する（設計書 03-02「方針の要素」）。
+// 資格情報、パスワードの保管庫、シェルの履歴、ブラウザのプロファイルの組は、nono の既定の
+// 拒否の組から採った（設計書 03-02「読ませないホームの場所」）。ない場所は方針を作るときに飛ばす。
+const DENIED_HOME: &[&str] = &[
+    ".config/benitoiteh",
+    ".local/state/benitoiteh",
+    // 資格情報
+    ".ssh",
+    ".gnupg",
+    ".aws",
+    ".azure",
+    ".config/gcloud",
+    ".gcloud",
+    ".kube",
+    ".docker",
+    ".git-credentials",
+    ".netrc",
+    ".npmrc",
+    ".bunfig.toml",
+    ".config/bun/bunfig.toml",
+    ".vault-token",
+    ".credentials",
+    ".secrets",
+    ".keys",
+    ".pki",
+    ".terraform.d",
+    ".config/op",
+    ".env",
+    ".envrc",
+    // パスワードの保管庫
+    ".password-store",
+    ".1password",
+    ".op",
+    ".local/share/keyrings",
+    "Library/Keychains",
+    "Library/Group Containers/2BUA8C4S2C.com.1password",
+    "Library/Application Support/1Password",
+    "Library/Containers/com.1password.1password",
+    // シェルの履歴
+    ".bash_history",
+    ".zsh_history",
+    ".history",
+    ".python_history",
+    // ブラウザのプロファイル
+    ".config/google-chrome",
+    ".config/chromium",
+    ".mozilla/firefox",
+    ".config/microsoft-edge",
+    ".config/BraveSoftware",
+    ".config/vivaldi",
+    ".config/opera",
+    "Library/Application Support/Google/Chrome",
+    "Library/Application Support/Chromium",
+    "Library/Application Support/Firefox",
+    "Library/Application Support/Microsoft Edge",
+    "Library/Application Support/Arc",
+    "Library/Application Support/BraveSoftware",
+    "Library/Application Support/Vivaldi",
+    "Library/Application Support/com.operasoftware.Opera",
+    "Library/Safari",
+    "Library/Cookies",
+];
+
 fn denied_candidates(paths: &crate::config::paths::DataPaths) -> Vec<std::path::PathBuf> {
     let mut candidates = vec![paths.config_dir.clone(), paths.data_dir.clone()];
-    candidates.extend(
-        [
-            ".config/benitoiteh",
-            ".local/state/benitoiteh",
-            ".ssh",
-            ".gnupg",
-            ".aws",
-        ]
-        .map(|name| paths.home.join(name)),
-    );
+    candidates.extend(DENIED_HOME.iter().map(|name| paths.home.join(name)));
     candidates.sort();
     candidates.dedup();
     candidates

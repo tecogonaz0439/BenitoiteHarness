@@ -124,7 +124,7 @@ Linux の守る場所の保証は macOS より狭い。子プロセスが新し�
 | 要素 | 内容 |
 |---|---|
 | 読める範囲 | 既定はファイルシステムの全体から、読ませない場所を除いたもの |
-| 読ませない場所 | `~/.ssh`・`~/.gnupg`・`~/.aws`・`benitoiteh` の設定のディレクトリとデータのディレクトリ。XDG の値に依らず、`$HOME/.config/benitoiteh` と `$HOME/.local/state/benitoiteh` も常に候補に加える。macOS も同じパスとする。利用者の設定で足せる |
+| 読ませない場所 | 後述の「読ませないホームの場所」と、`benitoiteh` の設定のディレクトリとデータのディレクトリ。XDG の値に依らず、`$HOME/.config/benitoiteh` と `$HOME/.local/state/benitoiteh` も常に候補に加える。macOS も同じパスとする。利用者の設定で足せる |
 | 書ける場所 | プロジェクトのディレクトリと、セッションの一時ディレクトリ。通常モードでは利用者の設定で足せる |
 | 書ける場所の中の守る場所 | `.git` と `.benitoiteh`（プロジェクトの設定のディレクトリ）。macOS では、書ける場所の下のどの深さにあるものも守り（入れ子のリポジトリの `sub/.git` を含む）、名前は ASCII の大文字と小文字を区別せずに比べ、まだなくても作らせない。Linux では、書ける場所の根の直下のものを、あってもなくても守り、それより深いものは、すでにあるものだけを守る（前述の「Linux のファイルシステムの見え方」） |
 | ネットワーク（IP の通信） | 使えない／使える |
@@ -145,6 +145,25 @@ Linux の守る場所の保証は macOS より狭い。子プロセスが新し�
 - 【決定】macOS のどのサンドボックスの方針でも、`(deny process-info*)` の後に `(allow process-info* (target self))` を置き、他のプロセスの情報を拒み、自分の情報だけを許す。理由: `sysctl(KERN_PROCARGS2)` は同じ利用者の別のプロセスの引数と環境を返しうる。親の `benitoiteh` や評価の Python の環境には、環境変数で指定した提供者のキーが含まれうるので、ファイルの読み取りの拒否と子の環境の整理だけでは足りない。2026-10-20 の P5-31 のレビューの実測（macOS 27.0.1）では、`deny default` と `deny sysctl-read` だけでは読め、この二文で拒否された。`KERN_PROCARGS2` の番号は macOS SDK の `sys/sysctl.h` による。自己の読み取りを正の対照にして、親と外の囮の環境の拒否を `tests/sandbox_macos.rs` と `tests/sandbox_skill_eval_judge.rs` で確かめる。
 - macOS で守る名前を大文字と小文字を区別せずに比べるのは、macOS の既定のファイルシステムが区別しないので、`.GIT` を作れば git がそれを `.git` として使いうるからである。
 - 2026-10-17 に、試作の P0-04 で、macOS 27.0.1 の Seatbelt が次のように働くことを、サンドボックスの外で本物の子プロセスで確かめた。読ませない場所を読めない。書ける場所の外と、守る場所（まだないとき、付け替えて作るとき、`.GIT` の綴りを含む）に書けない。起動できるプログラムの一覧が子孫にも及び、書ける場所の下の実行ファイルは一覧にあっても起動できない。書ける場所の動的ライブラリを `DYLD_INSERT_LIBRARIES` で読み込ませられない。外部の Unix ドメインのソケットに、IP の通信を許す方針でも許さない方針でも、接続も宛先付きの送信もできない。IP の通信は方針のとおり。Seatbelt は記述子を閉じないので、close-on-exec の印のない記述子は子に残る（親は標準入出力のほかを渡さない）。
+
+### 読ませないホームの場所
+
+【方針】どの方針でも、ホームの下の次の場所を読ませない場所の候補とする。候補のうち、方針を作るときにないものは飛ばし、シンボリックリンクは指す先を塞ぐ。OS ごとに分けず、両方の OS の場所を候補にする。
+
+| 組 | 場所（`~` はホーム） |
+|---|---|
+| 資格情報 | `~/.ssh`・`~/.gnupg`・`~/.aws`・`~/.azure`・`~/.config/gcloud`・`~/.gcloud`・`~/.kube`・`~/.docker`・`~/.git-credentials`・`~/.netrc`・`~/.npmrc`・`~/.bunfig.toml`・`~/.config/bun/bunfig.toml`・`~/.vault-token`・`~/.credentials`・`~/.secrets`・`~/.keys`・`~/.pki`・`~/.terraform.d`・`~/.config/op`・`~/.env`・`~/.envrc` |
+| パスワードの保管庫 | `~/.password-store`・`~/.1password`・`~/.op`・`~/.local/share/keyrings`・`~/Library/Keychains`・`~/Library/Group Containers/2BUA8C4S2C.com.1password`・`~/Library/Application Support/1Password`・`~/Library/Containers/com.1password.1password` |
+| シェルの履歴 | `~/.bash_history`・`~/.zsh_history`・`~/.history`・`~/.python_history` |
+| ブラウザのプロファイル | `~/.config/google-chrome`・`~/.config/chromium`・`~/.mozilla/firefox`・`~/.config/microsoft-edge`・`~/.config/BraveSoftware`・`~/.config/vivaldi`・`~/.config/opera`、macOS の `~/Library/Application Support` の下の Chrome・Chromium・Firefox・Microsoft Edge・Arc・BraveSoftware・Vivaldi・Opera のディレクトリ、`~/Library/Safari`・`~/Library/Cookies` |
+
+理由: 通常モードの `bash` と、`File.Read` を確認したスクリプトは、読める場所の秘密を出力に含めて LLM の提供者へ送れる。組は nono の既定の拒否の組（<https://github.com/nolabs-ai/nono> のコミット `c657265f65457efbd0b4e9e2cf246bdeb45cbe22` の `crates/nono-cli/data/policy.json` の `deny_credentials`・`deny_keychains_macos`・`deny_keychains_linux`・`deny_shell_history`・`deny_browser_data_macos`・`deny_browser_data_linux` と、`deny_macos_private` の `~/Library/Cookies`）から採った。nono の `deny_shell_configs` のうち、シェルの起動の設定（`~/.bashrc`・`~/.profile` など）は採らず、`~/.env` と `~/.envrc` だけを採った。理由: 起動の設定は秘密を含みうるが、ログインのシェルや、起動の設定を読み込むプログラムが読めないと失敗し、通常モードの使い勝手への影響が大きい。採るかは評価で影響を測ってから決める。
+
+読めない設定のファイルの扱いはプログラムによる。2026-11-02 に、読めない `~/.npmrc` があっても npm 10.9.9 の `npm config get registry` が通ること、Python の標準の `netrc.netrc()` は読めない `~/.netrc` で `PermissionError` を投げることを確かめた。読ませない場所に頼るプログラム（`kubectl`・`docker` の認証、`gcloud` など）は、サンドボックスの中では認証に失敗するので、`escalate` で外で動かす。
+
+macOS で `~/Library/Keychains` などを読ませないことが、サンドボックスの中の TLS の検証や資格情報の補助に及ぼす影響は、まだ確かめていない（macOS での確かめは別に行う）。評価の判定の例（`examples/skill_eval_judge.rs`）は、すでに `~/Library/Keychains` を読ませない場所に入れている。
+
+プロジェクトの中の `.env` などを `bash` から読ませないかは、BH-100 で扱う。
 
 ### 書ける場所の検査
 
