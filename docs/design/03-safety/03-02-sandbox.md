@@ -163,15 +163,16 @@ Linux の守る場所の保証は macOS より狭い。子プロセスが新し�
 | 資格情報 | `~/.ssh`・`~/.gnupg`・`~/.aws`・`~/.azure`・`~/.config/gcloud`・`~/.gcloud`・`~/.kube`・`~/.docker`・`~/.git-credentials`・`~/.netrc`・`~/.npmrc`・`~/.bunfig.toml`・`~/.config/bun/bunfig.toml`・`~/.vault-token`・`~/.credentials`・`~/.secrets`・`~/.keys`・`~/.pki`・`~/.terraform.d`・`~/.config/op`・`~/.env`・`~/.envrc` |
 | パスワードの保管庫 | `~/.password-store`・`~/.1password`・`~/.op`・`~/.local/share/keyrings`・`~/Library/Keychains`・`~/Library/Group Containers/2BUA8C4S2C.com.1password`・`~/Library/Application Support/1Password`・`~/Library/Containers/com.1password.1password` |
 | シェルの履歴 | `~/.bash_history`・`~/.zsh_history`・`~/.history`・`~/.python_history` |
+| シェルの起動の設定 | `~/.bashrc`・`~/.bash_profile`・`~/.bash_login`・`~/.bash_logout`・`~/.profile`・`~/.zshrc`・`~/.zprofile`・`~/.zlogin`・`~/.zlogout`・`~/.config/fish` |
 | ブラウザのプロファイル | `~/.config/google-chrome`・`~/.config/chromium`・`~/.mozilla/firefox`・`~/.config/microsoft-edge`・`~/.config/BraveSoftware`・`~/.config/vivaldi`・`~/.config/opera`、macOS の `~/Library/Application Support` の下の Chrome・Chromium・Firefox・Microsoft Edge・Arc・BraveSoftware・Vivaldi・Opera のディレクトリ、`~/Library/Safari`・`~/Library/Cookies` |
 
-理由: 通常モードの `bash` と、`File.Read` を確認したスクリプトは、読める場所の秘密を出力に含めて LLM の提供者へ送れる。組は nono の既定の拒否の組（<https://github.com/nolabs-ai/nono> のコミット `c657265f65457efbd0b4e9e2cf246bdeb45cbe22` の `crates/nono-cli/data/policy.json` の `deny_credentials`・`deny_keychains_macos`・`deny_keychains_linux`・`deny_shell_history`・`deny_browser_data_macos`・`deny_browser_data_linux` と、`deny_macos_private` の `~/Library/Cookies`）から採った。nono の `deny_shell_configs` のうち、シェルの起動の設定（`~/.bashrc`・`~/.profile` など）は採らず、`~/.env` と `~/.envrc` だけを採った。理由: 起動の設定は秘密を含みうるが、ログインのシェルや、起動の設定を読み込むプログラムが読めないと失敗し、通常モードの使い勝手への影響が大きい。採るかは評価で影響を測ってから決める。
+理由: 通常モードの `bash` と、`File.Read` を確認したスクリプトは、読める場所の秘密を出力に含めて LLM の提供者へ送れる。組は nono の既定の拒否の組（<https://github.com/nolabs-ai/nono> のコミット `c657265f65457efbd0b4e9e2cf246bdeb45cbe22` の `crates/nono-cli/data/policy.json` の `deny_credentials`・`deny_keychains_macos`・`deny_keychains_linux`・`deny_shell_history`・`deny_browser_data_macos`・`deny_browser_data_linux` と、`deny_macos_private` の `~/Library/Cookies`）から採った。nono の `deny_shell_configs` からは、`~/.zshenv` だけを採らなかった。理由: zsh は、対話でない起動（`zsh -c`）でも `~/.zshenv` を読むので、読めないと、zsh のスクリプトを使う道具が、そこで設定した `PATH` を失う。macOS では zsh が既定のシェルである。`~/.zshenv` に書いた秘密は読めるままになる。ほかの起動の設定は、`export` した秘密を含みやすいので読ませない。`benitoiteh` の `bash` は `bash -c` で起動するので、起動の設定を読まない。子のコマンドが `bash -l` や `bash -i` を起動すると、読めない設定について警告を出して続け、その設定の `PATH` などは効かない（2026-11-02 に、Alpine 3.22.7 の bash で、root でない利用者で確かめた）。2026-11-02 に設計者が決めた。
 
 読めない設定のファイルの扱いはプログラムによる。2026-11-02 に、読めない `~/.npmrc` があっても npm 10.9.9 の `npm config get registry` が通ること、Python の標準の `netrc.netrc()` は読めない `~/.netrc` で `PermissionError` を投げることを確かめた。読ませない場所に頼るプログラム（`kubectl`・`docker` の認証、`gcloud` など）は、サンドボックスの中では認証に失敗するので、`escalate` で外で動かす。
 
 macOS で `~/Library/Keychains` などを読ませないことが、サンドボックスの中の TLS の検証や資格情報の補助に及ぼす影響は、まだ確かめていない（macOS での確かめは別に行う）。評価の判定の例（`examples/skill_eval_judge.rs`）は、すでに `~/Library/Keychains` を読ませない場所に入れている。
 
-プロジェクトの中の `.env` などを `bash` から読ませないかは、BH-100 で扱う。
+プロジェクトの中の `.env` などは、制限モードでだけ読ませない（後述の「制限モードの方針」）。通常モードの `bash` からは読める（[道具](../01-agent/01-03-tools.md)の「読まないファイル」）。
 
 ### 書ける場所の検査
 
@@ -193,7 +194,7 @@ macOS で `~/Library/Keychains` などを読ませないことが、サンドボ
 
 | 要素 | 値 |
 |---|---|
-| 読める範囲 | 既定 |
+| 読める範囲 | 既定から、プロジェクトの中の秘密を含みやすい名前（後述）を除いたもの |
 | 書ける場所 | エフェクトに `File.Write` を含むときは、プロジェクトのディレクトリと一時ディレクトリ。含まないときは一時ディレクトリだけ |
 | ネットワーク（IP の通信） | エフェクトに `Http.Connect` か `Http.Listen` を含み、利用者が確認したときだけ使える |
 | 起動できるプログラム | エフェクトに `Process.Run` を含むときは、処理系の実のパスと、制限モードで実行を許すプログラム（後述）。含まないときは、処理系の実のパスだけ |
@@ -202,6 +203,7 @@ macOS で `~/Library/Keychains` などを読ませないことが、サンドボ
 - 書ける場所のファイルの実行を拒むのは、スクリプトが `File.Write` で書いたライブラリを、`Process.Run` の環境変数（`DYLD_INSERT_LIBRARIES`・`LD_PRELOAD`）で処理系や許したプログラムに読み込ませ、Benitoite の外のコードを動かす道を塞ぐためである。Benitoite の `Process` のモジュールは、起動するコマンドに環境変数を渡せる。処理系（`v0.0.7`）は、`Command.environment` に `DYLD_`・`LD_` で始まる名前を明示することを拒む（BH-026 を閉じた）が、親から受け継いだ環境変数と、許したコマンドが子に設定する変数は対象の外であり、この拒否はサンドボックスの代わりにならない（[Benitoite の処理系との連携](../04-benitoite/04-01-benitoite-integration.md)の「処理系への要望」）。Linux では、処理系と許したプログラムを静的リンクに限る（後述）ので、`LD_PRELOAD` は効かない。
 - `Log` は一時的なスクリプトの確認なしの既定に含めるが、書ける場所、IP の通信、起動できるプログラムを広げない。確認なしの実行では、読める範囲も狭く限る（[利用者の確認](03-03-approval.md)の「一時的なスクリプト」）。既定の標準エラー出力は子プロセスの出力として受け、利用者が定義した受け手に残る `File.Write` などはそのエフェクトの規則を別に適用する（[Benitoite のリファレンス](https://github.com/tecogonaz0439/Benitoite/blob/v0.0.12/docs/reference/benitoite.md)の「Structured logging and source locations」「File and JSON log sinks」）。
 - 利用者のスクリプトを実行しない処理系の起動（`benitoite_check` と書いた後の検査、実行の前の検査、版と Skill の文書の問い合わせ）は、書ける場所を一時ディレクトリだけ、ネットワークを使えない方針で行う。
+- 【方針】制限モードでは、どの起動でも（問い合わせ、実行、テスト、一時的なスクリプト）、プロジェクトの中の、道具が読まない名前（[道具](../01-agent/01-03-tools.md)の「読まないファイル」の `.env`・`.env.*`（例と見本を除く）、鍵と証明書の形の名前、`.ssh`・`.gnupg`・`.aws`・`.netrc`・`.git-credentials`）のファイルとディレクトリを、読ませない場所に加える。探す深さは、入れ子の守る場所と同じく根から 3 段（`a/b/.env` まで）とし、`.git` は辿らない。名前がシンボリックリンクであれば、指す先を塞ぐ。通常のファイルとディレクトリでない先は塞がない。Benitoite のソース（`.env.bnt` など、拡張子が `.bnt` のもの）は塞がない。理由: 処理系は検査と実行にソースを読む。このようなソースは、取り込みの確認（[利用者の確認](03-03-approval.md)の「制限モードの確認」）と、位置がそのファイルである診断を件数だけ示す規則（[Benitoite の処理系との連携](../04-benitoite/04-01-benitoite-integration.md)の「終了状態と診断の受け渡し」）で扱う。塞ぐと、読めないという診断にそのパスが載り、テストも動かなくなる。利用者が `read.exclude` で足した規則は、まだ加えない。理由: `File.Read` を確認したスクリプトと、確認なしの範囲に `File.Read` を足した一時的なスクリプトは、プロジェクトの `.env` を読んで出力に含め、LLM の提供者へ送れた。制限モードの保証を、道具の規則と揃える。macOS の Seatbelt は名前の正規表現でどの深さも拒めるが、macOS で確かめられないうちは、Linux と同じく探す形にする。代わりに、`.env` を読む正当なスクリプトは制限モードでは動かず、塞いだファイルには書けない。子プロセスが動いている間に作られたファイルと、4 段より深いファイルは塞がない。2026-11-02 に設計者が、通常モードの `bash` は塞がず、制限モードだけを塞ぐと決めた（BH-100 を閉じた）。
 - エフェクトに応じて方針を狭めるのは、Benitoite の静的検査（エフェクトにない組み込みの操作を行わない）と OS のサンドボックスを重ねるためである。静的検査が正しければ、狭めた方針はスクリプトの動作を妨げない。処理系に欠陥があっても、確認していない種類の操作は OS のサンドボックスが拒否する。検査と実行の間にスクリプトが変えられ、確認していないエフェクトを持つスクリプトが動いたときも、書き込み・ネットワーク・プログラムの起動は、確認したエフェクトから作った方針の範囲にとどまる（[セキュリティモデル](03-01-security-model.md)の「保証しないこと」）。
 
 ### 制限モードで実行を許すプログラム

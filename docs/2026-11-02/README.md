@@ -50,6 +50,10 @@
 | `crates/benitoiteh/src/`（サンドボックス、道具、確認、ループ、CLI、画面） | 変更 | `.agents` を守る名前に加え、`write_agents` と `exec --allow-agents-write` で、一回ごとの確認の後にだけ書けるようにした | [05](05-stage1.md) |
 | `crates/benitoiteh/tests/`（実行、テスト、書く道具、exec、Linux のサンドボックス、引数）と `tests/expected/` | 変更 | `.agents` の守りと確認のテストを加え、道具の定義の期待を作り直した | [05](05-stage1.md) |
 | `docs/design/01-agent/01-03-tools.md`、`03-safety/03-02-sandbox.md`、`03-safety/03-03-approval.md`、`05-interface/05-01-cli.md` | 変更 | 「.agents の守り」と「.agents への書き込み」を加え、道具の引数とオプションを書いた | [05](05-stage1.md) |
+| `crates/benitoiteh/src/sandbox/restricted.rs`、`src/tools/exclude.rs` | 変更 | 制限モードで、プロジェクトの中の秘密の名前を根から 3 段まで読ませない（BH-100） | [05](05-stage1.md) |
+| `crates/benitoiteh/src/cli/mod.rs` | 変更 | 読ませないホームの場所に、`~/.zshenv` を除くシェルの起動の設定を加えた | [05](05-stage1.md) |
+| `crates/benitoiteh/tests/sandbox_benitoite_run.rs`、`tests/sandbox_exec_restricted.rs` | 変更 | 上の二つのテストを加え、行を足した | [05](05-stage1.md) |
+| `docs/design/01-agent/01-03-tools.md`、`03-safety/03-01-security-model.md`、`03-safety/03-02-sandbox.md`、`open-issues.md` | 変更 | BH-100 を閉じ、起動の設定と BH-118 の決定を書いた | [05](05-stage1.md) |
 | `docs/2026-11-02/` | 追加 | 本ディレクトリ | — |
 | `docs/README.md` | 変更 | 本ディレクトリへの案内を加えた | — |
 
@@ -85,5 +89,6 @@
 
 - macOS での実行。`aarch64-apple-darwin` の確かめは Linux からのコンパイルと lint だけである。macOS だけで走る `pinned_temporary_directory_uses_an_alternate_name_on_resume` も、`Fixture::spawning()` に変えた。
 - aarch64 の Linux（Apple の `container`）での実行。
+- macOS で確かめる項目に加えたもの: 主のプロセスの環境と記憶をほかのプロセスから読めるか（BH-118）、Seatbelt で `.agents` が守られること、制限モードのプロジェクトの秘密の名前をどの深さでも塞ぐ正規表現の規則にするか、`PATH` の判定のデバイスと inode の比べ、`~/Library/Keychains` を読ませないことの影響。
 - 原因を確かめていない失敗 2 件（`tests/exec.rs::closed_event_output_still_finishes_the_session_record`、`tests/tui/commands.rs` の `accepted_rewind_finishes_before_quit_and_repeated_keyboard_interrupts`）。[03](03-other-test-files.md)の「ほかの失敗」に記した。
 - 評価の道具の Python のテストのうち、macOS の判定を要しない 4 件の失敗の原因（[01](01-cloud-linux-check.md)の「結果」）。

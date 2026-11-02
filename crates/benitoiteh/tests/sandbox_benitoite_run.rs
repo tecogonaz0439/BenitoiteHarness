@@ -23,6 +23,48 @@ fn permission_errno(message: &str) -> bool {
         .any(|error| message.contains(&format!("(os error {})", error.raw_os_error())))
 }
 
+// 関門: File.Read を確認した制限モードのスクリプトも、道具が読まない名前のファイル（.env と鍵の形）を、
+// 根から 3 段まで読めない。例のファイルと普通のファイルは読め、4 段目は保証の外（設計書 03-02「制限モードの方針」）。
+#[test]
+fn restricted_scripts_cannot_read_project_secret_names() -> TestResult {
+    let mut f = Fixture::new()?;
+    f.sandbox()?;
+    for (relative, readable) in [
+        (".env", false),
+        ("config/.env.local", false),
+        ("a/b/id_ed25519", false),
+        ("keys/server.pem", false),
+        (".env.example", true),
+        ("notes.txt", true),
+        ("a/b/c/.env", true),
+        // Benitoite のソースは処理系が読むので塞がない。取り込みと診断は別の規則で扱う。
+        (".env.bnt", true),
+    ] {
+        let path = f.project.join(relative);
+        fs::create_dir_all(path.parent().ok_or("parent")?)?;
+        fs::write(&path, format!("CONTENT-{relative}"))?;
+        let source = format!(
+            "import Benitoite.Unofficial.IO.File\nimport Benitoite.Unofficial.IO.Console\nfunction main() -> Unit uses File.Read, Console.Write\n match File.readText({}) with\n case Result.Ok(text) -> Console.write(text)\n case Result.Error(error) -> match IOError.kind(error) with\n case IOErrorKind.PermissionDenied -> Console.write(\"DENIED\")\n case other -> Console.write(\"OTHER_ERROR: ${{IOError.message(error)}}\")\n end match\n end match\nend function\n",
+            serde_json::to_string(relative)?
+        );
+        let output = run(&mut f, &source, relative, json!({}))?;
+        assert!(!output.is_error, "{relative}: {output:?}");
+        assert_eq!(
+            output.text.contains(&format!("CONTENT-{relative}")),
+            readable,
+            "{relative}: {}",
+            output.text
+        );
+        assert_eq!(
+            output.text.contains("DENIED"),
+            !readable,
+            "{relative}: {}",
+            output.text
+        );
+    }
+    Ok(())
+}
+
 // 関門: File.Write を確認したスクリプトからも .agents には書けず、write_agents を付けて利用者が
 // 承認した一回だけ書ける。前に確認したエフェクトでも、その一回の確認を省かない
 // （設計書 03-03「.agents への書き込み」）。

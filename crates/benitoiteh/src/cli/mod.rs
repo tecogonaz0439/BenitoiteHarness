@@ -163,6 +163,18 @@ const DENIED_HOME: &[&str] = &[
     ".config/op",
     ".env",
     ".envrc",
+    // シェルの起動の設定。zsh がどの起動でも読む .zshenv は、PATH を保つため読めるままにする
+    // （設計書 03-02「読ませないホームの場所」）。
+    ".bashrc",
+    ".bash_profile",
+    ".bash_login",
+    ".bash_logout",
+    ".profile",
+    ".zshrc",
+    ".zprofile",
+    ".zlogin",
+    ".zlogout",
+    ".config/fish",
     // パスワードの保管庫
     ".password-store",
     ".1password",

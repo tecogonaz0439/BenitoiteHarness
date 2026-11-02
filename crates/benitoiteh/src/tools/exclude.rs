@@ -166,7 +166,9 @@ impl ExcludeRules {
     }
 }
 
-fn secret_component(name: &str) -> bool {
+/// 秘密を含みやすい名前か。道具の「読まないファイル」と、制限モードのサンドボックスの読ませない場所で
+/// 同じ規則を使う（設計書 01-03「読まないファイル」、03-02「制限モードの方針」）。
+pub(crate) fn secret_component(name: &str) -> bool {
     (name == ".env" || name.starts_with(".env.")) && name != ".env.example" && name != ".env.sample"
         || [
             ".ssh",

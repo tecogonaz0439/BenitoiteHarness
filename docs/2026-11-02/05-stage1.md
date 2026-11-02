@@ -257,3 +257,47 @@ macOS では手当てしていない。同じ利用者のほかのプロセス�
 - LLM が `.agents` に書くたびに確認が出る。非対話では `--allow-agents-write` が要る。
 - 通常モードの `bash` から `.agents` に書くには、`escalate` で外で動かす。
 - 子プロセスを起動するたびに、根の直下にまだない `.agents` を塞ぐ空のディレクトリが一時的にでき、子の終了の後に消える（`.git` と `.benitoiteh` と同じ）。
+
+## 判断待ちの 3 件の決定
+
+設計者が 2026-11-02 に、次のとおり決めた。
+
+| 件 | 決定 |
+|---|---|
+| BH-100（プロジェクトの中の `.env*`） | 制限モードだけを塞ぐ。通常モードの `bash` は塞がない |
+| シェルの起動の設定 | `~/.zshenv` を除いて読ませない |
+| BH-118（macOS の主のプロセス） | macOS の実機で確かめてから対策を決める |
+
+### プロジェクトの中の秘密の名前（BH-100）
+
+`crates/benitoiteh/src/sandbox/restricted.rs` の `restricted_policy` で、プロジェクトの中の、道具が読まない名前（`.env`・`.env.*`（例と見本を除く）、鍵と証明書の形、`.ssh`・`.gnupg`・`.aws`・`.netrc`・`.git-credentials`）のファイルとディレクトリを、読ませない場所に加える。名前の判定は道具と同じ関数（`src/tools/exclude.rs` の `secret_component`）を使う。
+
+- 探す深さは、入れ子の守る場所と同じく根から 3 段（`a/b/.env` まで）とし、`.git` は辿らない。
+- 名前がシンボリックリンクなら、指す先を塞ぐ。通常のファイルとディレクトリでない先は塞がない。
+- Benitoite のソース（`.env.bnt` など）は塞がない。最初の版は塞いでいたが、全体のテストで、`tests/.env.bnt` のテストが動かなくなり、処理系の「読めない」という診断にそのパスが載ることが分かった（`sandbox_benitoite_test.rs::excluded_test_names_values_output_and_diagnostics_never_reach_results_or_spill`、`sandbox_exec_restricted.rs::restricted_check_limit_emits_full_safe_diagnostics_and_flat_summary` が失敗した）。このようなソースは、取り込みの確認と、診断を件数だけ示す今までの規則で扱う。スクリプトが `File.Read` で `.env.bnt` を読むことは防がない。
+- 利用者が `read.exclude` で足した規則は、まだ加えていない。
+- 問い合わせ・実行・テスト・一時的なスクリプトの、制限モードのどの起動にも効く。
+
+問いの選択肢では「macOS はどの深さも」と示したが、macOS も Linux と同じく探す形にした。Seatbelt の正規表現の規則は、macOS で確かめられないまま入れると、壊れた規則で制限モードの起動がすべて止まるおそれがあるからである。macOS での確かめのときに、正規表現の形に改めるかを決める。
+
+代償として、`.env` を読む正当なスクリプトは制限モードでは動かず、塞いだファイルには書けない。子プロセスが動いている間に作られたファイルと、4 段より深いファイルは塞がない。
+
+テストは、`tests/sandbox_benitoite_run.rs` に `restricted_scripts_cannot_read_project_secret_names` を加えた。本物の処理系とサンドボックスで、`File.Read` を確認したスクリプトが `.env`・`config/.env.local`・`a/b/id_ed25519`・`keys/server.pem` を読めず（`PermissionDenied`）、`.env.example`・`notes.txt`・`.env.bnt` と 4 段目の `a/b/c/.env` は読めることを確かめる。探さない版と、根の直下だけを探す版では、このテストが失敗した。
+
+### シェルの起動の設定
+
+読ませないホームの場所に、`~/.bashrc`・`~/.bash_profile`・`~/.bash_login`・`~/.bash_logout`・`~/.profile`・`~/.zshrc`・`~/.zprofile`・`~/.zlogin`・`~/.zlogout`・`~/.config/fish` を加えた。`~/.zshenv` は、zsh が対話でない起動でも読み、`PATH` の設定に使われるので、読めるままにした。
+
+判断の前に、root でない利用者で確かめた（Alpine 3.22.7 の bash と dash）。
+
+- `bash -c`: 起動の設定を読まないので、影響はなかった。
+- `bash -l`・`bash -i`: `Permission denied` の警告を出して続いた。
+- `sh -l`（dash）: 警告なしで続いた。
+
+前の節で「ログインのシェルが失敗する」としたのは誤りで、実際は警告を出して続き、その設定の `PATH` などが効かなくなる。
+
+テストは、`redirected_xdg_keeps_default_home_paths_unreadable_from_normal_bash` に `~/.bashrc`・`~/.profile`・`~/.zshrc`・`~/.config/fish/config.fish` の行と、`~/.zshenv` が読めることの行を足した。`~/.zshrc` を外した版と、`~/.zshenv` も読ませない版で、このテストが失敗した。
+
+### macOS の主のプロセス（BH-118）
+
+BH-118 は【要検証】のまま残し、設計者の決定を書き足した。macOS で確かめるときに、同じ利用者のほかのプロセスから主のプロセスの環境（`KERN_PROCARGS2` など）と記憶を読めるかを試し、対策を決める。
