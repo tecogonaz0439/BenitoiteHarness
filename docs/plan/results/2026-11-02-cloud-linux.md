@@ -101,3 +101,65 @@ root で失敗しないのは、少なくとも `cleanup_reports_failures_contin
 | 直した後 | 40 回のうち 0 回 |
 
 直した後に、`cargo test --workspace --target x86_64-unknown-linux-musl`（754 件が通り、失敗 0）、`cargo fmt --all --check`、`cargo clippy -p benitoiteh --all-targets`（ホスト、`x86_64-unknown-linux-musl`、`aarch64-apple-darwin`）が通った。`aarch64-apple-darwin` は Linux からの検査だけで、macOS での実行は別途とする。
+
+## ほかのテストのファイルの同じ競合
+
+`tests/session.rs` を直した後に、ほかのテストのファイルと `src/` の単体テストに、同じ競合（同じテストのプロセスの別のスレッドが起こした子が、`exec` するまで記述子の複製を持つこと）で結果が変わる箇所がないかを調べた。直していない。
+
+### 調べ方
+
+1. 本番のコードで `flock` を使う場所を探し、複製が結果を変えうるものを選んだ。
+2. テストで、錠を持つ記述子を落とした直後に、別の記述子で非待機の錠を取る処理（後始末、回収、再開）の結果を確かめる箇所を探した。
+3. 候補のテストに、上の「確かめ」と同じ差し込み（`benitoiteh --version` を起こし続ける 4 スレッド。`src/` の単体テストでは `/bin/true`）を、別の git の worktree で一時的に加え、一つだけ（`--exact`）を 15 回ずつ走らせた。差し込みのない同じ回数を対照とした。書き換えはコミットしていない。
+4. 差し込みなしの全体のテスト（`cargo test --workspace --target x86_64-unknown-linux-musl`、Alpine、非 root）を 20 回繰り返し、自然に起きる失敗を数えた。この 20 回は、上の直し（`tests/session.rs`）を含むコードで走らせた。
+
+### 本番のコードの flock
+
+| 場所 | 錠の取り方 | 複製の影響 |
+|---|---|---|
+| `src/session/mod.rs` | 非待機の排他。取れなければ使用中と見る | 結果が変わる（上の節） |
+| `src/sandbox/linux/mounts/placeholders.rs` の回収（`reap`） | 非待機の排他。取れなければ、その記録と塞ぐ場所を回収しない | 結果が変わる |
+| `src/auth/store.rs`、`src/ui/tui/history.rs` | 待機する排他（`auth/store.rs` の `lock_cancellable` は 20 ms ごとに取り直す） | 子が `exec` するまで待つだけで、結果は変わらない |
+
+### すでに取り直しで扱っている箇所
+
+次の箇所は、この競合を注記したうえで、`Locked` のときだけ取り直している。今回の調べの対象から外した。
+
+- `tests/support/session.rs` の `open_created_session`（10 ms ごとに最大 100 回）
+- `src/agent/resume_tests.rs`（最大 2 秒）
+- `src/cli/exec/tests.rs` の再開の準備（最大 2 秒）
+
+`tests/rewind.rs` と `tests/tui.rs` の再開は、持ったままの `Session` を `Agent::resume` に渡し、錠を取り直さないので、影響しない。
+
+### 候補と結果
+
+| テスト | 錠を落とした後の処理 | 差し込みあり | 対照 | 差し込みなしの全体の 20 回 |
+|---|---|---|---|---|
+| `tests/sandbox_linux.rs::stale_placeholder_records_are_reaped_without_removing_user_data_or_locked_paths` | `drop(lock)` の直後に次のサンドボックスを準備し、回収で `!locked.exists()` を確かめる | 15 回のうち 3 回（すべて `!locked.exists()`） | 15 回のうち 0 回 | 20 回のうち 1 回（同じ箇所） |
+| `src/cli/exec/tests.rs::fork_retains_copy_when_current_provider_was_removed` | 失敗したフォークが残した写しを、取り直しなしの `Session::open` で開く | 15 回のうち 2 回（`Error: Locked`） | 15 回のうち 0 回 | 0 回 |
+| `tests/sandbox_exec_restricted.rs::continue_selects_latest_matching_readable_inactive_session` | `saved` で作って落としたセッションを、子の `--continue` が選ぶ | 15 回のうち 1 回（`Kind(TimedOut)`。錠の症状ではなく、4 コアを差し込みが占めたための遅れと見る） | 調べていない | 0 回 |
+| `tests/sandbox_exec_restricted.rs::resume_errors_preserve_records_and_never_escalate_or_follow_links` | `drop(lock)` の後に子の `--resume` が形式の誤りを報告する | 15 回のうち 0 回 | — | 0 回 |
+| `tests/sandbox_exec_restricted.rs::sessions_lists_last_mode_filters_projects_and_survives_unreadable_records` | `saved` で作って落としたセッションを、子の `sessions` が一覧にする | 15 回のうち 0 回 | — | 0 回 |
+| `src/sandbox/linux/mounts/tests.rs::placeholder_records_preserve_path_bytes_and_validate_record_identity` | 回収を続けて呼び、記録が消えたことを確かめる | 15 回のうち 0 回 | — | 0 回 |
+
+`stale_placeholder_records_are_reaped_without_removing_user_data_or_locked_paths` は、P5-37 の「時々失敗したテスト」の 5 行目（P5-04 の x86_64 の全体の検査で、錠のあるパスの存在の確かめが一度失敗した）に当たる。差し込みで同じ箇所が失敗し、差し込みなしでも同じ箇所が 20 回のうち 1 回失敗したので、`tests/session.rs` と同じ原因と見る。
+
+`fork_retains_copy_when_current_provider_was_removed` は、差し込みで `Locked` になった。差し込みなしの 20 回では失敗しなかったが、同じ形の箇所で取り直しを入れたテスト（上の「すでに取り直しで扱っている箇所」）と並ぶ、取り直しのない箇所である。
+
+錠の症状が出なかった候補は、錠を落としてから錠を取り直すまでに子プロセスの起動などがはさまり、窓が狭いためと見るが、確かめていない。
+
+### ほかの失敗（同じ競合と確かめていないもの）
+
+差し込みなしの全体の 20 回で、ほかに次の 2 件が 1 回ずつ失敗した。
+
+| テスト | 症状 | 見立て |
+|---|---|---|
+| `tests/exec.rs::closed_event_output_still_finishes_the_session_record` | `Error: Kind(UnexpectedEof)`（P5-37 の記録では `BrokenPipe`） | テストが子の標準出力の読み口を閉じ、子が書き込みの失敗を受けることを前提とする。別のスレッドの子が読み口の複製を持つと閉じたと見えない、という道筋はありうるが、`?` で返った誤りの場所を特定していない |
+| `tests/tui/commands.rs` の `accepted_rewind_finishes_before_quit_and_repeated_keyboard_interrupts` | 画面の出力に `Waiting for rewind to finish` が現れなかった | 時刻に依る表示の確かめであり、上の差し込みの実験と同時に走った回で起きた。負荷による遅れと見るが、確かめていない |
+
+`tests/session.rs` は、直した後のコードで 20 回とも通った。
+
+### 考えられる直し方（決めていない）
+
+- `stale_placeholder_records_are_reaped_without_removing_user_data_or_locked_paths`: `tests/sandbox_linux.rs` のほかのテストの多くは子プロセスを起こすので、`tests/session.rs` と同じ読み書きの錠では、このテストを排他にして、ほかのテストに共有の側を持たせることになる。代わりに、`!locked.exists()` の確かめの前の回収を、短い間を置いて数回試す形もある。
+- `fork_retains_copy_when_current_provider_was_removed`: 同じファイルの再開の準備と同じく、`Locked` のときだけ短く取り直す。
