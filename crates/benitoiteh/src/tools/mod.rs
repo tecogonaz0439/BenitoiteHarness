@@ -20,6 +20,8 @@ mod search_notices;
 pub(crate) mod text;
 pub mod truncate;
 mod web_fetch;
+/// `web_fetch` と通信の中継が共有する、私的なアドレスの判定（設計書 01-03「web_fetch」）。
+pub(crate) use web_fetch::address_allowed;
 mod write;
 mod write_path;
 
@@ -866,7 +868,8 @@ impl ConfirmKey {
             | ApprovalKind::WriteScope
             | ApprovalKind::Command
             | ApprovalKind::Escalate
-            | ApprovalKind::WebFetch => None,
+            | ApprovalKind::WebFetch
+            | ApprovalKind::Network => None,
         }
     }
 }

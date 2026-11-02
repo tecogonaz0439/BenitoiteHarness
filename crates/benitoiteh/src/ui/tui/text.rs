@@ -143,6 +143,7 @@ pub fn approval_title(kind: crate::approval::ApprovalKind) -> &'static str {
         ApprovalKind::Escalate => "╭─ Run outside the sandbox?",
         ApprovalKind::WriteScope => "╭─ Write outside the allowed scope?",
         ApprovalKind::WebFetch => "╭─ Fetch web page?",
+        ApprovalKind::Network => "╭─ Allow network access?",
         ApprovalKind::Effects => "╭─ Run Benitoite script?",
         ApprovalKind::TestEffects => "╭─ Run Benitoite tests?",
     }
@@ -166,6 +167,9 @@ pub fn answer_keys(kind: Option<crate::approval::ApprovalKind>) -> &'static str 
         Some(ApprovalKind::WriteScope) => "[y] write  [n] decline  [m] decline with a message",
         Some(ApprovalKind::WebFetch) => {
             "[y] fetch once  [s] allow this domain for this session  [n] decline  [m] decline with a message"
+        }
+        Some(ApprovalKind::Network) => {
+            "[y] allow for this command  [s] allow this domain for this session  [n] decline"
         }
         None => "[y] resume in normal mode  [n] decline",
     }

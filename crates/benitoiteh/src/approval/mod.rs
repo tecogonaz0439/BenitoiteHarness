@@ -30,6 +30,8 @@ pub enum ApprovalKind {
     Effects,
     /// テストのエフェクトの確認。
     TestEffects,
+    /// サンドボックスの中のコマンドの、ドメインへの通信（設計書 03-02「通信の中継」）。
+    Network,
 }
 
 /// ハーネスが確かめた操作の事実。LLM の説明とは別に渡す。
@@ -130,6 +132,11 @@ pub fn decide(
                 Approval::OnRequest | Approval::Untrusted => Decision::Ask,
             }
         }
+        // 通信の中継は、ループを通さずに自分で決めてから尋ねる（設計書 03-02「通信の中継」）。
+        ApprovalKind::Network => match policy.approval {
+            Approval::Never => Decision::Deny,
+            Approval::OnRequest | Approval::Untrusted => Decision::Ask,
+        },
         ApprovalKind::WebFetch => {
             if facts
                 .domain
@@ -275,7 +282,7 @@ pub fn policy_denial_message(kind: ApprovalKind) -> &'static str {
         ApprovalKind::WriteScope => text::POLICY_WRITE_DENIED,
         ApprovalKind::Command => text::POLICY_COMMAND_DENIED,
         ApprovalKind::Escalate => text::POLICY_ESCALATE_DENIED,
-        ApprovalKind::WebFetch => text::POLICY_WEB_DENIED,
+        ApprovalKind::WebFetch | ApprovalKind::Network => text::POLICY_WEB_DENIED,
         ApprovalKind::Effects => text::POLICY_EFFECTS_DENIED,
         ApprovalKind::TestEffects => text::POLICY_TEST_EFFECTS_DENIED,
     }
@@ -293,7 +300,7 @@ pub fn user_denial_message(
         ApprovalKind::WriteScope => text::USER_WRITE_DENIED.to_owned(),
         ApprovalKind::Command => text::USER_COMMAND_DENIED.to_owned(),
         ApprovalKind::Escalate => text::USER_ESCALATE_DENIED.to_owned(),
-        ApprovalKind::WebFetch => text::USER_WEB_DENIED.to_owned(),
+        ApprovalKind::WebFetch | ApprovalKind::Network => text::USER_WEB_DENIED.to_owned(),
         ApprovalKind::Effects | ApprovalKind::TestEffects => {
             text::effects_denied(kind, facts, project)
         }

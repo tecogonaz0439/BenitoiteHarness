@@ -1090,7 +1090,10 @@ impl Screen {
                 self.answer(ApprovalOutcome::ApprovedForSession, None)
             }
             's' if confirmation.fits(self.size)
-                && confirmation.kind() == Some(ApprovalKind::WebFetch) =>
+                && matches!(
+                    confirmation.kind(),
+                    Some(ApprovalKind::WebFetch | ApprovalKind::Network)
+                ) =>
             {
                 self.answer(ApprovalOutcome::ApprovedForSession, None)
             }

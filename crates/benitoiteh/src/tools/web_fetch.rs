@@ -1,6 +1,7 @@
 //! 承認後に名前を解き、検査したアドレスからだけ文字を取得する（設計書 01-03「web_fetch」）。
 
 mod address;
+pub(crate) use address::allowed as address_allowed;
 mod content;
 mod html;
 #[cfg(test)]
