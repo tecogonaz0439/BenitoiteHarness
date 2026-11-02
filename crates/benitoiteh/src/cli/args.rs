@@ -42,6 +42,8 @@ pub struct ExecArgs {
     pub allow: Option<BTreeSet<crate::benitoite::Effect>>,
     /// 非対話で、.agents に書く要求を確認なしに許す（設計書 03-03「.agents への書き込み」）。
     pub allow_agents_write: bool,
+    /// 非対話で、この一回だけプロジェクトを信頼する（設計書 03-01「プロジェクトの信頼」）。
+    pub trust_project: bool,
     pub resume: Option<String>,
     pub continue_session: bool,
     pub sandbox: Option<Sandbox>,
@@ -106,6 +108,7 @@ impl ExecArgs {
             approval: None,
             no_sandbox: false,
             allow_agents_write: false,
+            trust_project: false,
             mode: None,
             project: None,
             provider: None,
@@ -151,7 +154,11 @@ impl ExecArgs {
             }
             let flag = matches!(
                 option,
-                "--json" | "--continue" | "--no-sandbox" | "--allow-agents-write"
+                "--json"
+                    | "--continue"
+                    | "--no-sandbox"
+                    | "--allow-agents-write"
+                    | "--trust-project"
             );
             let known = matches!(
                 option,
@@ -173,6 +180,7 @@ impl ExecArgs {
                     | "--continue"
                     | "--no-sandbox"
                     | "--allow-agents-write"
+                    | "--trust-project"
             );
             if !known || (flag && attached.is_some()) {
                 return Err(ArgsError::Invalid);
@@ -241,6 +249,7 @@ impl ExecArgs {
                 "--continue" => result.continue_session = true,
                 "--no-sandbox" => result.no_sandbox = true,
                 "--allow-agents-write" => result.allow_agents_write = true,
+                "--trust-project" => result.trust_project = true,
                 _ => return Err(ArgsError::Invalid),
             }
         }
@@ -251,6 +260,7 @@ impl ExecArgs {
             if result.project_parent.is_some()
                 || result.allow.is_some()
                 || result.allow_agents_write
+                || result.trust_project
                 || result.json
                 || result.output_last_message.is_some()
                 || request == Some(Request::Stdin)

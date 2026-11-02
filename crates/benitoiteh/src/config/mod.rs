@@ -6,6 +6,7 @@ mod environment;
 pub use environment::{child_environment, remark_child_environment};
 pub mod paths;
 mod text;
+pub mod trust;
 pub mod writable;
 
 use std::collections::{BTreeMap, BTreeSet};

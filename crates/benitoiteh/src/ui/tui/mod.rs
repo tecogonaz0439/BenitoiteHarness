@@ -6,7 +6,7 @@ mod selection;
 pub use commands::{Command, NewSession};
 mod control;
 pub mod history;
-pub use confirmation::ConfirmationGuard;
+pub use confirmation::{ConfirmationGuard, TrustChoice};
 mod format;
 mod input;
 mod runtime;
@@ -61,6 +61,7 @@ pub struct Screen {
     rows_below: u16,
     confirmation: Option<confirmation::Confirmation>,
     confirmation_result: Option<bool>,
+    trust_result: Option<confirmation::TrustChoice>,
     secret_resume_after: Option<Instant>,
     discard_secret_input: bool,
     pending_secret_results: Vec<crate::askpass::Prompt>,
@@ -102,6 +103,7 @@ impl Screen {
             rows_below: 0,
             confirmation: None,
             confirmation_result: None,
+            trust_result: None,
             secret_resume_after: None,
             discard_secret_input: false,
             pending_secret_results: Vec::new(),

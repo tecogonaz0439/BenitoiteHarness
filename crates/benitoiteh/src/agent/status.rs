@@ -39,6 +39,9 @@ pub struct AgentStatus {
     pub plugin_notices: Vec<SkippedInstruction>,
     pub skills: Vec<RecordedSkill>,
     pub skipped_skills: Vec<SkippedInstruction>,
+    /// 信頼を要する資源があったときの、探す範囲の根と決定。
+    pub project_trust: Option<std::path::PathBuf>,
+    pub project_trusted: bool,
 }
 
 impl Agent {
@@ -87,6 +90,11 @@ impl Agent {
             plugin_notices: self.environment.skills().plugin_notices.clone(),
             skills: self.environment.skills().recorded(),
             skipped_skills: self.environment.skills().skipped.clone(),
+            project_trust: self.project_trust.as_ref().map(|(root, _)| root.clone()),
+            project_trusted: self
+                .project_trust
+                .as_ref()
+                .is_some_and(|(_, trusted)| *trusted),
         }
     }
 

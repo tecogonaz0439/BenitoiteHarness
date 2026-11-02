@@ -241,6 +241,8 @@ fn exec_completes_tools_and_preserves_output_records_and_original_items() -> Tes
                     "danger-full-access",
                     "--max-turns",
                     "4",
+                    // プロジェクトのモデルの指定は、信頼したときだけ使う（設計書 03-01「プロジェクトの信頼」）。
+                    "--trust-project",
                 ])
                 .arg("--output-last-message")
                 .arg(f.root.join("last-message.txt"));

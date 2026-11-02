@@ -96,7 +96,7 @@
 1. 利用者の Skill: `~/.agents/skills/<名前>/SKILL.md`
 2. プロジェクトの Skill: プロジェクトの指示のファイルと同じ範囲（プロジェクトのディレクトリから git のリポジトリの根まで。リポジトリの外ならプロジェクトのディレクトリだけ）の各ディレクトリの `.agents/skills/<名前>/SKILL.md`
 
-制限モードでも、プロジェクトの Skill を読み、読んだことを画面に示す（2026-10-19 に設計者が決めた）。理由: Benitoite で書いた道具（スクリプト）を Skill として配り、その使い方を LLM に伝えられるようにする。置き場所は、DeepSeek Harness（`<プロジェクトの根>/.agents/skills`。2026-10-18 の P5-04 の調べ）と Antigravity（作業ディレクトリから上の `.agents/`。同梱の文書の `json_configs.md`）と同じにし、一つの Skill を各ハーネスで共有できるようにする。制限モードでプロジェクトの Skill を読んでも、`sh` や Python の起動は、後述のとおり道具の作りと OS のサンドボックスで止まる。
+制限モードでも、プロジェクトの Skill を読み、読んだことを画面に示す（2026-10-19 に設計者が決めた）。どちらのモードでも、プロジェクトの Skill は、利用者がプロジェクトを信頼したときだけ読む（[セキュリティモデル](../03-safety/03-01-security-model.md)の「プロジェクトの信頼」）。理由: Benitoite で書いた道具（スクリプト）を Skill として配り、その使い方を LLM に伝えられるようにする。置き場所は、DeepSeek Harness（`<プロジェクトの根>/.agents/skills`。2026-10-18 の P5-04 の調べ）と Antigravity（作業ディレクトリから上の `.agents/`。同梱の文書の `json_configs.md`）と同じにし、一つの Skill を各ハーネスで共有できるようにする。制限モードでプロジェクトの Skill を読んでも、`sh` や Python の起動は、後述のとおり道具の作りと OS のサンドボックスで止まる。
 
 【方針】Skill の読み方は、Agent Skills の段階的な読み込みに倣う（BH-102）。
 
@@ -121,8 +121,9 @@
 
 ### Agent Plugins のプラグイン
 
-【決定】Agent Plugins 1.0.0（<https://agent-plugins.org/specification>。2026-10-19 に読んだ）のプラグインのうち、Skill の部品を、制限モードと通常モードの両方で読む（2026-10-19 に設計者が決めた）。MCP サーバの部品（`mcp.json`）は読まず、将来の対応とする（BH-116）。理由: 仕様は、部品の種類を Skill と MCP サーバの二つだけと定め（「Agent Plugins v1 defines exactly two component types: skills and MCP servers.」）、Skill だけに対応するクライアントも仕様に合うとする（§11.2「a skills-only client can conform without supporting MCP servers」）。Skill は前節の利用者の Agent Skill と同じ形（Agent Skills の仕様）なので、同じ規則で読める。MCP サーバは、制限モードの保証（Benitoite 以外の言語の処理系を起動させない）と、型とエフェクトの検査を崩しうる（[目的と設計原則](../00-overview/00-01-goals.md)の「範囲の外」）。
+【決定】Agent Plugins 1.0.0（<https://agent-plugins.org/specification>。2026-10-19 に読んだ）のプラグインのうち、Skill の部品を、制限モードと通常モードの両方で読む（2026-10-19 に設計者が決めた）。MCP サーバの部品（`mcp.json`）は読まず、将来の対応とする（BH-116）。理由: 仕様は、部品の種類を Skill と MCP サーバの二つだけと定め（「Agent Plugins v1 defines exactly two component types: skills and MCP servers.」）、Skill だけに対応するクライアントも仕様に合うとする（§11.2「a skills-only client can conform without supporting MCP servers」）。Skill は前節の利用者の Agent Skill と同じ形（Agent Skills の仕様）なので、同じ規則で読める。MCP サーバは、制限モードの保証（Benitoite 以外の言語の処理系を起動させない）と、型とエフェクトの検査を崩しうる（[目的と設計原則](../00-overview/00-01-goals.md)の「範囲」）。
 
+- **信頼**: プロジェクトのプラグインは、利用者がプロジェクトを信頼したときだけ読む（[セキュリティモデル](../03-safety/03-01-security-model.md)の「プロジェクトの信頼」）。
 - **置き場所**: 仕様は置き場所と有効にする方法を定めない。【方針】利用者のプラグインを `~/.agents/plugins/<名前>/`、プロジェクトのプラグインを、プロジェクトの Skill と同じ探す範囲の各ディレクトリの `.agents/plugins/<名前>/` に置く。理由: 前節の Agent Skill と同じ `.agents` の下に揃える。
 - **`plugin.json` の検査**（仕様 §5、§11.1）: プラグインの根に `plugin.json` がなければプラグインとして扱わない。`$schema` が `https://agent-plugins.org/schemas/1.0.0/plugin.schema.json` でなければ、プラグインを断り、対応しない版であることを画面に示す。`name` は 1〜64 文字の英小文字・数字・`-`・`.` で、先頭と末尾が英数字で、`--` と `..` を含まないもの（仕様の JSON Schema の規則）とし、【方針】置き場所の直下の項目の名前と、その実のパスの最後の要素の名前も `name` と同じでなければならない（前節の Skill と同じ規則）。仕様の欄（`$schema`、`name`、`version`、`description`、`author`、`homepage`、`repository`、`license`、`keywords`、`extensions`）のほかの最上位の欄は、画面に示して無視する。ほかの形の誤りは、プラグインを断り、その部品を一つも読まない。`extensions` は使わない（対象でない形なら示して無視する）。仕様の拡張のディレクトリ（逆順のドメインの名前の最上位のディレクトリ）も読まない。
 - **Skill の部品**（仕様 §7.1）: プラグインの `skills/` の直下の各ディレクトリの `SKILL.md` を、前節の規則（名前、大きさ、開き方、読む条件、Skill のディレクトリの読み取り、制限モードでの `.bnt` の扱い）で読む。規則に合わない Skill は、その Skill だけを飛ばし、理由を画面に示して、ほかを読み続ける。

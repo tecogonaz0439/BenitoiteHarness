@@ -31,6 +31,7 @@ Options (exec only):
     --output-last-message <file>
     --allow <effects>
     --allow-agents-write
+    --trust-project
     --project-parent <dir>
 
 Use - as the exec request to read standard input.
@@ -108,6 +109,44 @@ pub fn agent_error(error: &crate::agent::AgentError) -> String {
 }
 
 /// 読んだプロジェクト設定の場所を示す。
+/// 信頼しないプロジェクトで読まなかったものと、信頼する方法。
+pub fn project_untrusted(
+    root: &std::path::Path,
+    skills: bool,
+    plugins: bool,
+    model: bool,
+) -> String {
+    let parts = [
+        (skills, "project skills"),
+        (plugins, "project plugins"),
+        (model, "the project model setting"),
+    ]
+    .into_iter()
+    .filter_map(|(present, name)| present.then_some(name))
+    .collect::<Vec<_>>()
+    .join(", ");
+    format!(
+        "Not loaded because {} is not trusted: {parts}. Start benitoiteh interactively in it to choose whether to trust it, or pass --trust-project to exec for one run.",
+        root.display()
+    )
+}
+
+/// 保存した信頼の決定を読めなかった。
+pub fn trust_unreadable(root: &std::path::Path, error: &std::io::Error) -> String {
+    format!(
+        "Could not read the saved trust decision for {}: {error}",
+        root.display()
+    )
+}
+
+/// 信頼の決定を保存できなかった。この起動の答えは使う。
+pub fn trust_unsaved(root: &std::path::Path, error: &std::io::Error) -> String {
+    format!(
+        "Could not save the trust decision for {}; it applies to this session only: {error}",
+        root.display()
+    )
+}
+
 pub fn project_loaded(root: &std::path::Path) -> String {
     format!(
         "Loaded project configuration: {}",

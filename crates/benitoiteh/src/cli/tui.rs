@@ -75,9 +75,42 @@ fn run_interactive(args: ExecArgs, signals: &mut Signals) -> Result<u8, CliError
     let mut interrupted_before = None;
     let result = (|| {
         let _terminal = TerminalGuard::enter(Arc::clone(&restore)).map_err(CliError::Output)?;
-        let mut output = restore.output().map_err(CliError::Output)?;
+        let output = restore.output().map_err(CliError::Output)?;
         let terminated = Arc::clone(&signals.cancelled);
-        let mut confirmation_error = None;
+        // 起動のときの二つの確認（モードの変更とプロジェクトの信頼）が、同じ端末を順に使う。
+        let shared = std::cell::RefCell::new((signals, output, None::<io::Error>));
+        let startup_screen = || {
+            Screen::new(
+                crossterm::terminal::size().unwrap_or((80, 24)),
+                crate::ui::tui::Status {
+                    mode: crate::config::Mode::Normal,
+                    provider: String::new(),
+                    model: String::new(),
+                    host: String::new(),
+                    sandbox: String::new(),
+                    sandbox_disabled: false,
+                    context_window: None,
+                    estimate: 0,
+                },
+            )
+        };
+        let ask = |screen: &mut Screen| {
+            let mut shared = shared.borrow_mut();
+            let (signals, output, error) = &mut *shared;
+            match crate::ui::tui::confirm(
+                screen,
+                &mut TerminalInput { signals },
+                output,
+                &terminated,
+                |rows| restore.set_rows_below(rows),
+            ) {
+                Ok(answer) => answer,
+                Err(failure) => {
+                    *error = Some(failure);
+                    false
+                }
+            }
+        };
         let prepared = exec::prepare(
             &args,
             None,
@@ -85,36 +118,33 @@ fn run_interactive(args: ExecArgs, signals: &mut Signals) -> Result<u8, CliError
             crate::sandbox::check_availability,
             crate::benitoite::QueryLauncher::Sandboxed,
             &mut |change| {
-                let mut screen = Screen::new(
-                    crossterm::terminal::size().unwrap_or((80, 24)),
-                    crate::ui::tui::Status {
-                        mode: crate::config::Mode::Normal,
-                        provider: String::new(),
-                        model: String::new(),
-                        host: String::new(),
-                        sandbox: String::new(),
-                        sandbox_disabled: false,
-                        context_window: None,
-                        estimate: 0,
-                    },
-                );
+                let mut screen = startup_screen();
                 screen.notice(change.session_id.as_str());
                 screen.open_mode_change();
-                match crate::ui::tui::confirm(
-                    &mut screen,
-                    &mut TerminalInput { signals },
-                    &mut output,
-                    &terminated,
-                    |rows| restore.set_rows_below(rows),
-                ) {
-                    Ok(answer) => answer,
-                    Err(error) => {
-                        confirmation_error = Some(error);
-                        false
-                    }
+                ask(&mut screen)
+            },
+            &mut |request| {
+                let mut screen = startup_screen();
+                screen.open_trust(&request.root, &trust_loads(request));
+                let _answered = ask(&mut screen);
+                if terminated.load(std::sync::atomic::Ordering::Acquire)
+                    || shared.borrow().2.is_some()
+                {
+                    return None;
                 }
+                // 断った答えと取り消し（Esc）は、この起動だけ信頼しない（設計書 03-01「プロジェクトの信頼」）。
+                Some(match screen.take_trust_result() {
+                    Some(crate::ui::tui::TrustChoice::Remember(trusted)) => {
+                        exec::TrustAnswer::Remember(trusted)
+                    }
+                    Some(crate::ui::tui::TrustChoice::Session(trusted)) => {
+                        exec::TrustAnswer::Session(trusted)
+                    }
+                    None => exec::TrustAnswer::Session(false),
+                })
             },
         );
+        let (signals, mut output, confirmation_error) = shared.into_inner();
         if let Some(error) = confirmation_error {
             return Err(CliError::Output(error));
         }
@@ -230,4 +260,19 @@ fn run_interactive(args: ExecArgs, signals: &mut Signals) -> Result<u8, CliError
             .map_err(CliError::Output)?;
     }
     result
+}
+
+/// 信頼の確認に示す、確かめた置き場所（設計書 03-01「プロジェクトの信頼」）。
+fn trust_loads(request: &exec::TrustRequest) -> Vec<&'static str> {
+    [
+        (request.skills, "project skills (.agents/skills)"),
+        (request.plugins, "project plugins (.agents/plugins)"),
+        (
+            request.model,
+            "the model setting in .benitoiteh/config.toml",
+        ),
+    ]
+    .into_iter()
+    .filter_map(|(present, name)| present.then_some(name))
+    .collect()
 }

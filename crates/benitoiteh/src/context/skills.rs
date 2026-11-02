@@ -237,6 +237,41 @@ impl From<SafeFsError> for SkillError {
     }
 }
 
+/// 信頼の確認を要するプロジェクトの資源と、信頼を覚える根（設計書 03-01「プロジェクトの信頼」）。
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ProjectResources {
+    /// 探す範囲の根。git のリポジトリの根か、リポジトリの外ならプロジェクトのディレクトリ。
+    pub root: PathBuf,
+    /// 範囲の中に `.agents/skills` がある（読む設定のとき）。
+    pub skills: bool,
+    /// 範囲の中に `.agents/plugins` がある（読む設定のとき）。
+    pub plugins: bool,
+}
+
+/// [`collect`] と同じ範囲で、プロジェクトの Skill とプラグインの置き場所があるかだけを見る。
+/// 中身は開かない。ホームの `.agents` は利用者の段なので数えない。
+pub fn project_resources(
+    project: &Path,
+    home: &Path,
+    config: &UserSkillsConfig,
+    plugins_config: &UserPluginsConfig,
+) -> ProjectResources {
+    let home = std::fs::canonicalize(home).unwrap_or_else(|_| home.to_path_buf());
+    let scope = super::instructions::search_root(project, &home);
+    let exists = |name: &str| {
+        project
+            .ancestors()
+            .take_while(|path| path.starts_with(scope))
+            .filter(|directory| *directory != home)
+            .any(|directory| std::fs::symlink_metadata(directory.join(name)).is_ok())
+    };
+    ProjectResources {
+        root: scope.to_path_buf(),
+        skills: config.project && exists(".agents/skills"),
+        plugins: plugins_config.project && exists(".agents/plugins"),
+    }
+}
+
 /// 両方のモードで探索し、採用したディレクトリの記述子を道具へ移す。
 /// home は設定で指定されたパスを受け取り、この関数で実のパスを確かめる。
 pub fn collect(

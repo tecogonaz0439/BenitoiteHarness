@@ -2,6 +2,63 @@
 
 use super::*;
 
+// 関門: 非対話の exec は尋ねられないので、決めていないプロジェクトの Skill を読まず、理由を示す。
+// 利用者の Skill は読み続け、信頼の決定は保存しない（設計書 03-01「プロジェクトの信頼」）。
+#[test]
+fn exec_skips_project_skills_of_an_undecided_project_and_says_why() -> TestResult {
+    let mut server = MockProvider::start(vec![ResponseScript::sse(
+        Protocol::Chat.response(None, "Done.", false),
+    )])?;
+    let f = Fixture::new(Protocol::Chat, &server)?;
+    for (path, name) in [
+        ("home/.agents/skills/user-tool/SKILL.md", "user-tool"),
+        (
+            "project/.agents/skills/project-tool/SKILL.md",
+            "project-tool",
+        ),
+    ] {
+        let path = f.root.join(path);
+        fs::create_dir_all(path.parent().ok_or("skill directory")?)?;
+        fs::write(
+            &path,
+            format!("---\nname: {name}\ndescription: Tool\n---\nBody\n"),
+        )?;
+    }
+    let output = Running::start(f.command("Use the skills.").args([
+        "--mode",
+        "normal",
+        "--sandbox",
+        "danger-full-access",
+    ]))?
+    .finish()?;
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(output.status.success(), "{stderr}");
+    assert!(
+        stderr.contains("is not trusted: project skills"),
+        "{stderr}"
+    );
+    assert!(stderr.contains("--trust-project"), "{stderr}");
+    let (_, records) = f.records()?;
+    let names = records
+        .first()
+        .and_then(|header| header.get("skills"))
+        .and_then(Value::as_array)
+        .ok_or("header skills")?
+        .iter()
+        .filter_map(|skill| skill.get("name").and_then(Value::as_str))
+        .map(str::to_owned)
+        .collect::<Vec<_>>();
+    assert_eq!(names, ["user-tool"]);
+    assert!(
+        !f.root
+            .join("state/benitoiteh/trust")
+            .read_dir()
+            .is_ok_and(|mut entries| entries.next().is_some())
+    );
+    server.shutdown()?;
+    Ok(())
+}
+
 // 関門: 収集・索引・開始通知・ヘッダの転記漏れと、再開時に一覧を再探索しない退行を守る。
 #[test]
 fn exec_sends_displays_records_and_rereads_user_and_project_skills() -> TestResult {
@@ -42,7 +99,13 @@ fn exec_sends_displays_records_and_rereads_user_and_project_skills() -> TestResu
         fs::create_dir_all(f.root.join("home/.agents/plugins/bad"))?;
         fs::write(f.root.join("home/.agents/plugins/bad/plugin.json"), "[]")?;
         let mut command = f.command("Use the skills.");
-        command.args(["--mode", "normal", "--sandbox", "danger-full-access"]);
+        command.args([
+            "--mode",
+            "normal",
+            "--sandbox",
+            "danger-full-access",
+            "--trust-project",
+        ]);
         if json_output {
             command.arg("--json");
         }
@@ -182,6 +245,7 @@ fn exec_sends_displays_records_and_rereads_user_and_project_skills() -> TestResu
                     .ok_or("id")?,
                 "--sandbox",
                 "danger-full-access",
+                "--trust-project",
             ]),
         )?
         .finish()?;
@@ -265,10 +329,11 @@ fn long_versions_in_many_project_plugins_keep_the_session_listable_and_resumable
             }))?,
         )?;
     }
-    let output = Running::start(
-        f.command("Start.")
-            .args(["--sandbox", "danger-full-access"]),
-    )?
+    let output = Running::start(f.command("Start.").args([
+        "--sandbox",
+        "danger-full-access",
+        "--trust-project",
+    ]))?
     .finish()?;
     assert!(
         output.status.success(),
@@ -314,6 +379,7 @@ fn long_versions_in_many_project_plugins_keep_the_session_listable_and_resumable
                 .ok_or("id")?,
             "--sandbox",
             "danger-full-access",
+            "--trust-project",
         ]),
     )?
     .finish()?;
@@ -370,10 +436,11 @@ fn many_bad_or_shadowed_plugin_skill_candidates_keep_output_and_records_small() 
                 }
             }
         }
-        let output = Running::start(
-            f.command("First request.")
-                .args(["--sandbox", "danger-full-access"]),
-        )?
+        let output = Running::start(f.command("First request.").args([
+            "--sandbox",
+            "danger-full-access",
+            "--trust-project",
+        ]))?
         .finish()?;
         assert!(
             output.status.success(),
@@ -502,7 +569,7 @@ fn long_plugin_paths_keep_listed_notices_and_skips_within_64_kib_per_stage() -> 
     // 標準エラー出力はパイプの容量を超えるので、終わりを待たずに読み続ける。
     let output = f
         .command("First request.")
-        .args(["--sandbox", "danger-full-access"])
+        .args(["--sandbox", "danger-full-access", "--trust-project"])
         .output()?;
     assert!(
         output.status.success(),

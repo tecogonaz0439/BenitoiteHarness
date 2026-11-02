@@ -152,6 +152,14 @@ fn exec_arguments_reject_duplicates_invalid_values_and_unavailable_options() {
         ExecArgs::parse_interactive(["--allow-agents-write"]),
         Err(ArgsError::Invalid)
     ));
+    // 信頼は対話では確認で決めるので、--trust-project も exec の非対話の形だけで受け付ける。
+    assert!(ExecArgs::parse(["--trust-project", "request"]).is_ok_and(|args| args.trust_project));
+    assert!(ExecArgs::parse(["--trust-project=yes", "request"]).is_err());
+    assert!(ExecArgs::parse(["--trust-project", "--trust-project", "request"]).is_err());
+    assert!(matches!(
+        ExecArgs::parse_interactive(["--trust-project"]),
+        Err(ArgsError::Invalid)
+    ));
 }
 
 // 関門: --allow の名前の検査を CLI の境界で守る。集合の比較だけでは不正な指定の受理を捕まえない。

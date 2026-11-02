@@ -251,6 +251,8 @@ pub struct Agent {
     approver: Box<dyn Approver>,
     approval_policy: ApprovalPolicy,
     session_safety: SessionSafety,
+    /// 起動のときに決めたプロジェクトの信頼。/new と /fork が同じ根で使い回す（設計書 03-01「プロジェクトの信頼」）。
+    project_trust: Option<(std::path::PathBuf, bool)>,
     allowed_commands: BTreeSet<String>,
     session_domains: BTreeSet<String>,
     confirmed_effects: BTreeMap<crate::tools::ConfirmKey, BTreeSet<crate::benitoite::Effect>>,
@@ -432,6 +434,7 @@ impl Agent {
             approver: Box::new(NonInteractiveApprover),
             approval_policy,
             session_safety: SessionSafety::default(),
+            project_trust: None,
             allowed_commands: BTreeSet::new(),
             session_domains: BTreeSet::new(),
             confirmed_effects: BTreeMap::new(),
@@ -609,6 +612,12 @@ impl Agent {
             .askpass
             .as_ref()?
             .take_requests()
+    }
+
+    /// 起動のときに決めたプロジェクトの信頼を持たせる。
+    pub fn with_project_trust(mut self, trust: Option<(std::path::PathBuf, bool)>) -> Self {
+        self.project_trust = trust;
+        self
     }
 
     /// 準備で決めた方針を保ち、対話の確認の受け手だけを接続する。

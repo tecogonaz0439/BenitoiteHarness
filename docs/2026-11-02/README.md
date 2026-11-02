@@ -54,6 +54,9 @@
 | `crates/benitoiteh/src/cli/mod.rs` | 変更 | 読ませないホームの場所に、`~/.zshenv` を除くシェルの起動の設定を加えた | [05](05-stage1.md) |
 | `crates/benitoiteh/tests/sandbox_benitoite_run.rs`、`tests/sandbox_exec_restricted.rs` | 変更 | 上の二つのテストを加え、行を足した | [05](05-stage1.md) |
 | `docs/design/01-agent/01-03-tools.md`、`03-safety/03-01-security-model.md`、`03-safety/03-02-sandbox.md`、`open-issues.md` | 変更 | BH-100 を閉じ、起動の設定と BH-118 の決定を書いた | [05](05-stage1.md) |
+| `crates/benitoiteh/src/config/trust.rs`（追加）、`src/context/skills.rs`、`src/cli/exec.rs`、`src/cli/tui.rs`、`src/cli/args.rs`、`src/agent/`、`src/ui/tui/` | 変更 | プロジェクトの Skill・プラグイン・`model` を、信頼の確認の後にだけ使う。決定を根ごとに保存し、`exec --trust-project` を加えた | [05](05-stage1.md) |
+| `crates/benitoiteh/tests/exec.rs`、`tests/exec/skills.rs`、`tests/args.rs` と単体テスト | 変更 | 信頼のテストを加え、プロジェクトの資源を読む既存のテストに `--trust-project` を付けた | [05](05-stage1.md) |
+| `docs/design/03-safety/03-01-security-model.md`、`01-agent/01-04-context.md`、`05-interface/05-01-cli.md` | 変更 | 「プロジェクトの信頼」を加え、オプション、データの置き場所、Skill とプラグインの読む条件を書いた | [05](05-stage1.md) |
 | `docs/2026-11-02/` | 追加 | 本ディレクトリ | — |
 | `docs/README.md` | 変更 | 本ディレクトリへの案内を加えた | — |
 

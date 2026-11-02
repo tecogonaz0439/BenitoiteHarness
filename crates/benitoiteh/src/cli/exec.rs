@@ -130,6 +130,22 @@ pub(super) struct Prepared {
     pub panic_record: std::fs::File,
 }
 
+/// 起動のときに利用者へ尋ねる、プロジェクトの信頼（設計書 03-01「プロジェクトの信頼」）。
+pub(super) struct TrustRequest {
+    /// 決定を覚える根（git のリポジトリの根か、リポジトリの外ならプロジェクトのディレクトリ）。
+    pub root: PathBuf,
+    pub skills: bool,
+    pub plugins: bool,
+    pub model: bool,
+}
+
+/// 信頼の確認への答え。真が信頼する。`Remember` は保存し、`Session` はこの起動だけに使う。
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) enum TrustAnswer {
+    Remember(bool),
+    Session(bool),
+}
+
 /// 記録した制限モードから通常モードへの変更。
 pub(super) struct ModeChange {
     pub session_id: SessionId,
@@ -149,6 +165,8 @@ pub(super) struct SessionOverrides {
     // URL とキーを別の時点から組み合わせないよう、固定するのは名前だけとする。
     provider_model: Option<(String, String)>,
     fork_session: Option<Session>,
+    /// 同じ画面の前の起動で決めた信頼。根が同じときだけ使う。
+    project_trust: Option<(PathBuf, bool)>,
 }
 
 impl From<&crate::agent::AgentStatus> for SessionOverrides {
@@ -164,6 +182,10 @@ impl From<&crate::agent::AgentStatus> for SessionOverrides {
             forked_from: None,
             provider_model: None,
             fork_session: None,
+            project_trust: current
+                .project_trust
+                .clone()
+                .map(|root| (root, current.project_trusted)),
         }
     }
 }
@@ -209,6 +231,7 @@ pub(super) fn prepare(
     check_sandbox: impl FnOnce(&Path, &Path) -> Result<(), SandboxError>,
     query_launcher: QueryLauncher,
     confirm_mode_change: &mut dyn FnMut(&ModeChange) -> bool,
+    confirm_trust: &mut dyn FnMut(&TrustRequest) -> Option<TrustAnswer>,
 ) -> Result<Prepared, PreparationError> {
     let mut diagnostics = Vec::new();
     let result = (|| {
@@ -280,13 +303,47 @@ pub(super) fn prepare(
             .or(args.project.as_deref())
             .unwrap_or(&cwd);
         let root = ScopeRoot::open(requested).map_err(StartupError::SafeFs)?;
-        let project = ProjectConfig::load(&root);
+        let mut project = ProjectConfig::load(&root);
         if project.read {
             diagnostics.push(text::project_loaded(root.real_path()));
         }
         if let Some(error) = &project.error {
             diagnostics.push(text::project_ignored(error));
         }
+        // プロジェクトの Skill・プラグイン・モデルの指定は、信頼の確認の後にだけ使う。
+        // 除外を足すだけの read.exclude は守りを強める向きなので、いつも使う（設計書 03-01「プロジェクトの信頼」）。
+        let resources =
+            skills::project_resources(root.real_path(), &paths.home, &user.skills, &user.plugins);
+        let request = TrustRequest {
+            root: resources.root.clone(),
+            skills: resources.skills,
+            plugins: resources.plugins,
+            model: project.config.model.is_some(),
+        };
+        let project_trust = if request.skills || request.plugins || request.model {
+            let trusted = decide_trust(
+                args,
+                overrides,
+                paths,
+                &request,
+                confirm_trust,
+                &mut diagnostics,
+            )?;
+            if !trusted {
+                diagnostics.push(text::project_untrusted(
+                    &request.root,
+                    request.skills,
+                    request.plugins,
+                    request.model,
+                ));
+                project.config.model = None;
+                user.skills.project = false;
+                user.plugins.project = false;
+            }
+            Some((request.root.clone(), trusted))
+        } else {
+            None
+        };
         let resolved = match &resume {
             Some(state) => {
                 user.resolve_resume(args, &project.config, &cwd, state, args.interactive)
@@ -773,6 +830,7 @@ pub(super) fn prepare(
                 .map_err(StartupError::Agent)?;
         }
         agent = agent
+            .with_project_trust(project_trust)
             .with_approvals(Box::new(NonInteractiveApprover), approval_policy)
             .with_session_safety(crate::agent::SessionSafety {
                 scratch_auto_effects: if status.mode == Mode::Restricted {
@@ -841,6 +899,8 @@ pub(super) fn run(args: ExecArgs) -> Result<u8, CliError> {
         sandbox::check_availability,
         QueryLauncher::Sandboxed,
         &mut |_| false,
+        // 非対話では尋ねられないので、決めていなければこの一回は信頼しない。
+        &mut |_| Some(TrustAnswer::Session(false)),
     )
     .map_err(CliError::Preparation)?;
     panic::install(Some(panic_record), None);
@@ -923,6 +983,50 @@ pub(super) fn run(args: ExecArgs) -> Result<u8, CliError> {
     })
 }
 
+/// オプション、同じ画面の前の決定、保存した決定、利用者への確認の順で信頼を決める。
+/// 保存できなくても、その起動の答えは使う（設計書 03-01「プロジェクトの信頼」）。
+fn decide_trust(
+    args: &ExecArgs,
+    overrides: Option<&SessionOverrides>,
+    paths: &DataPaths,
+    request: &TrustRequest,
+    confirm_trust: &mut dyn FnMut(&TrustRequest) -> Option<TrustAnswer>,
+    diagnostics: &mut Vec<String>,
+) -> Result<bool, StartupError> {
+    if args.trust_project {
+        return Ok(true);
+    }
+    if let Some((_, trusted)) = overrides
+        .and_then(|fixed| fixed.project_trust.as_ref())
+        .filter(|(root, _)| *root == request.root)
+    {
+        return Ok(*trusted);
+    }
+    let store = crate::config::trust::TrustStore::open(paths);
+    let stored = match &store {
+        Ok(store) => store.get(&request.root).unwrap_or_else(|error| {
+            diagnostics.push(text::trust_unreadable(&request.root, &error));
+            None
+        }),
+        Err(error) => {
+            diagnostics.push(text::trust_unreadable(&request.root, error));
+            None
+        }
+    };
+    if let Some(trusted) = stored {
+        return Ok(trusted);
+    }
+    match confirm_trust(request).ok_or(StartupError::Declined)? {
+        TrustAnswer::Session(trusted) => Ok(trusted),
+        TrustAnswer::Remember(trusted) => {
+            if let Err(error) = store.and_then(|store| store.set(&request.root, trusted)) {
+                diagnostics.push(text::trust_unsaved(&request.root, &error));
+            }
+            Ok(trusted)
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests;
 
@@ -945,6 +1049,8 @@ pub(super) fn prepare_new(
         check_sandbox,
         query_launcher,
         &mut |_| false,
+        // 画面の途中では尋ねない。前の決定と保存した決定がなければ、信頼しない。
+        &mut |_| Some(TrustAnswer::Session(false)),
     )
 }
 
@@ -984,6 +1090,7 @@ pub(super) fn prepare_fork(
         check_sandbox,
         query_launcher,
         &mut |_| false,
+        &mut |_| Some(TrustAnswer::Session(false)),
     )
     .map(|prepared| (prepared, request))
     .map_err(|mut error| {

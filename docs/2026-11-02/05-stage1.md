@@ -301,3 +301,53 @@ macOS では手当てしていない。同じ利用者のほかのプロセス�
 ### macOS の主のプロセス（BH-118）
 
 BH-118 は【要検証】のまま残し、設計者の決定を書き足した。macOS で確かめるときに、同じ利用者のほかのプロセスから主のプロセスの環境（`KERN_PROCARGS2` など）と記憶を読めるかを試し、対策を決める。
+
+## プロジェクトの信頼
+
+04 の案の 7 に当たる。設計者が 2026-11-02 に、次の四つを決めた。
+
+| 問い | 決定 |
+|---|---|
+| 信頼の後にだけ読むもの | プロジェクトの Skill、プロジェクトのプラグイン、プロジェクトの設定の `model`。`read.exclude` は守りを強める向きなのでいつも使い、`AGENTS.md` は今までどおり信頼しない内容として読む |
+| 決定の覚え方 | 確かめて保存する（根ごと） |
+| 内容が変わったとき | 場所の信頼のまま、外さない |
+| 非対話 | 保存した決定を使い、なければ信頼しない。`--trust-project` でその一回だけ信頼する |
+
+### 直し方
+
+| 場所 | 変更 |
+|---|---|
+| `src/config/trust.rs`（追加） | 決定を、状態のディレクトリの `trust/` に、探す範囲の根の実のパスの SHA-256 を名前にしたファイルとして置く。ディレクトリは 700、ファイルは 600。持ち主、権限、リンク、ハードリンクの数、記録の中の根のパスが合わなければ使わない。置き換えは一時のファイルに書いてから名前を付け替える。根ごとにファイルを分けるので、並んで動く起動が一つのファイルを読み書きし合う競合は起きない |
+| `src/context/skills.rs` | `project_resources` を加えた。Skill の探す範囲と同じ範囲で、`.agents/skills` と `.agents/plugins` があるかだけを見る（中身は開かない。ホームの `.agents` は数えない） |
+| `src/cli/exec.rs` | 起動のとき、信頼を要するものがあれば、`--trust-project`、同じ画面の前の決定、保存した決定、確認の順で決める。信頼しなければ、プロジェクトの Skill・プラグイン・`model` を使わず、読まなかったものと信頼する方法を示す |
+| `src/agent/` | 起動の決定を `Agent` に持たせ、`/new` と `/fork` が同じ根で尋ねずに使い回す |
+| `src/cli/tui.rs`、`src/ui/tui/` | 対話の起動で、最初の要求の前に確かめる。`[y]` 信頼して覚える、`[s]` この起動だけ信頼する、`[n]` この起動だけ信頼しない、`[d]` 信頼せず、もう尋ねない。`Esc` は `[n]`。信頼する答えは確認の全体が見えるときだけ受け付け、先行入力の守りを掛ける。モードの変更の確認と同じ端末を順に使う |
+| `src/cli/args.rs`、`src/cli/text.rs` | `exec --trust-project` を加えた。対話の形では使い方の誤りとする |
+
+問いの選択肢で「信頼しない（覚える）」と示したものは、`[d]` にした。覚えた「信頼しない」を後から改めるには、`trust/` の下のファイルを消す。改めるコマンドは、まだない。
+
+### テスト
+
+| テスト | 確かめること |
+|---|---|
+| `src/config/trust/tests.rs` の `decisions_are_kept_per_root_and_rejected_when_tampered`（追加） | 根ごとの保存と置き換え、権限、一時のファイルが残らないこと、別の根の記録・リンク・広い権限の記録を使わないこと |
+| `src/cli/exec/tests.rs` の `project_skills_and_model_follow_the_trust_decision`（追加） | 信頼を要するものがなければ尋ねないこと、この起動だけの答えは保存せず毎回尋ねること、信頼しないときは Skill と `model` を使わず理由を示すこと、`/new` が尋ねずに使い回すこと、覚えた答えでは次に尋ねないこと、`--trust-project` はその一回だけ信頼して保存した決定を変えないこと |
+| `src/ui/tui/tests.rs` の `trust_confirmation_maps_keys_and_rejects_early_or_hidden_trust`（追加） | 四つの答えと `Esc` の区別、先行入力を受け付けないこと、狭い端末では信頼する答えを受け付けず断る答えは受け付けること、画面に根と読むものが出ること |
+| `tests/exec/skills.rs` の `exec_skips_project_skills_of_an_undecided_project_and_says_why`（追加） | 非対話の `exec` が、決めていないプロジェクトの Skill を読まず理由を示し、利用者の Skill は読み、決定を保存しないこと |
+| `tests/args.rs`（行を足した） | `--trust-project` を受け付け、値の付いた形・重複・対話の形を拒むこと |
+
+既存の `tests/exec.rs` の `exec_completes_tools_and_preserves_output_records_and_original_items` と、`tests/exec/skills.rs` の 4 件は、プロジェクトのモデルの指定や Skill を読むことを確かめるテストなので、`--trust-project` を付けた。
+
+一部を壊した版で、次のように確かめた。
+
+| 壊した箇所 | 失敗したテスト |
+|---|---|
+| 信頼しないときも読む | `project_skills_and_model_follow…`、`exec_skips_project_skills…` |
+| 覚える答えを保存しない | `project_skills_and_model_follow…` |
+| `--trust-project` を無視する | `project_skills_and_model_follow…` |
+| `/new` が前の決定を使わない | `project_skills_and_model_follow…` |
+
+### そのほか
+
+- 01-04 の「Agent Plugins のプラグイン」の、00-01 への見出しの参照（「範囲の外」）が切れていたので、「範囲」に直した。
+- 対話の画面で、実際に確認を出して答える流れ（端末を使う試し）は、画面の部品の単体テストと起動の単体テストで分けて確かめた。端末を通した通しの試しは行っていない。

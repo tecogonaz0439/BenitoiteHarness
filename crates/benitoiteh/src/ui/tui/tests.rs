@@ -548,6 +548,85 @@ fn checkpoint_selection_scrolls_esc_cancels_and_unavailable_conversation_has_onl
     Ok(())
 }
 
+// 関門: 信頼の確認の四つの答えを区別し、先行入力と、事実が見えない狭い端末では信頼しない。
+// 断る答えと Esc は、いつでも信頼しない側になる（設計書 03-01「プロジェクトの信頼」）。
+#[test]
+fn trust_confirmation_maps_keys_and_rejects_early_or_hidden_trust() -> io::Result<()> {
+    use super::TrustChoice;
+    let root = std::path::Path::new("/work/repo");
+    let loads = ["project skills (.agents/skills)"];
+    for (pressed, size, expected, accepted) in [
+        (
+            KeyCode::Char('y'),
+            (200, 40),
+            Some(TrustChoice::Remember(true)),
+            Some(true),
+        ),
+        (
+            KeyCode::Char('s'),
+            (200, 40),
+            Some(TrustChoice::Session(true)),
+            Some(true),
+        ),
+        (
+            KeyCode::Char('n'),
+            (200, 40),
+            Some(TrustChoice::Session(false)),
+            Some(false),
+        ),
+        (
+            KeyCode::Char('d'),
+            (200, 40),
+            Some(TrustChoice::Remember(false)),
+            Some(false),
+        ),
+        (KeyCode::Esc, (200, 40), None, Some(false)),
+        (KeyCode::Char('y'), (40, 4), None, None),
+        (
+            KeyCode::Char('n'),
+            (40, 4),
+            Some(TrustChoice::Session(false)),
+            Some(false),
+        ),
+    ] {
+        let mut screen = Screen::new(size, status());
+        screen.open_trust(root, &loads);
+        let shown = Instant::now();
+        let mut bytes = Vec::new();
+        screen.draw(&mut bytes, None)?;
+        screen.presented(shown);
+        // 示した直後の先行入力は、答えとして受け付けない。
+        screen.input_at(
+            key(KeyCode::Char('y'), KeyModifiers::NONE),
+            shown + Duration::from_millis(100),
+            Duration::ZERO,
+            false,
+        );
+        assert_eq!(screen.take_trust_result(), None);
+        assert_eq!(screen.take_confirmation_result(), None);
+        screen.input_at(
+            key(pressed, KeyModifiers::NONE),
+            shown + Duration::from_secs(1),
+            Duration::ZERO,
+            false,
+        );
+        assert_eq!(screen.take_trust_result(), expected, "{pressed:?} {size:?}");
+        assert_eq!(
+            screen.take_confirmation_result(),
+            accepted,
+            "{pressed:?} {size:?}"
+        );
+        if size == (200, 40) {
+            let output = String::from_utf8_lossy(&bytes);
+            assert!(output.contains("Trust this project?"), "{output}");
+            assert!(output.contains("/work/repo"), "{output}");
+            assert!(output.contains(".agents/skills"), "{output}");
+            assert!(output.contains("[d] do not trust"), "{output}");
+        }
+    }
+    Ok(())
+}
+
 // 関門: 巻き戻しの種類を足しても先行入力・貼り付け・縮小した端末で許可されないことを守る。
 #[test]
 fn rewind_confirmations_reject_queued_and_early_keys_paste_and_hidden_facts() -> io::Result<()> {
@@ -682,6 +761,8 @@ fn status_prints_all_fields_and_sanitizes_values_without_a_base_url() {
             path: "/project/secret".into(),
             reason: "denied\x1b".into(),
         }],
+        project_trust: None,
+        project_trusted: false,
     };
     let value = text::session_status(
         &status,
