@@ -10,6 +10,7 @@ use std::fs::{self, OpenOptions};
 use std::io::{self, Write};
 use std::os::unix::fs::{DirBuilderExt, PermissionsExt, symlink};
 use std::path::PathBuf;
+use std::sync::{PoisonError, RwLock, RwLockReadGuard, RwLockWriteGuard};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use benitoiteh::config::Mode;
@@ -106,13 +107,47 @@ fn tree_rows_preserve_preorder_branch_depth_and_combined_marks() -> TestResult {
     Ok(())
 }
 
+// 子プロセスを起こすテストを、セッションの錠を扱うほかのテストと同じプロセスの中で重ねない。
+// flock の錠は複製した記述子にも及ぶので、別のスレッドが起こした子が exec するまで、
+// 落とした Session の錠が残り、後始末や再開がその項目を使用中と見る
+// （実装プランの結果 2026-11-02-cloud-linux「時々失敗するセッションのテスト」）。
+// 子プロセスを起こすテストは Fixture::spawning() で準備する。
+static CHILD_PROCESSES: RwLock<()> = RwLock::new(());
+
 struct Fixture {
     root: PathBuf,
     paths: DataPaths,
+    // 錠はフィールドとして Drop の本体の後に落ちるので、根を消してから手放す。
+    _shared: Option<RwLockReadGuard<'static, ()>>,
+    _exclusive: Option<RwLockWriteGuard<'static, ()>>,
 }
 
 impl Fixture {
     fn new() -> Result<Self, Box<dyn Error>> {
+        let shared = CHILD_PROCESSES
+            .read()
+            .unwrap_or_else(PoisonError::into_inner);
+        Self::with_guards(Some(shared), None)
+    }
+
+    /// 子プロセスを起こすテストの準備。テストの間、ほかの Fixture を待たせる。
+    fn spawning() -> Result<Self, Box<dyn Error>> {
+        let exclusive = CHILD_PROCESSES
+            .write()
+            .unwrap_or_else(PoisonError::into_inner);
+        Self::with_guards(None, Some(exclusive))
+    }
+
+    /// 同じテストの二つ目の準備。同じスレッドで読みの錠を重ねて取ると、待っている書きの錠と
+    /// 互いに待ち合うので、錠を持つ `self` より先に落とす前提で、錠を取らない。
+    fn sibling(&self) -> Result<Self, Box<dyn Error>> {
+        Self::with_guards(None, None)
+    }
+
+    fn with_guards(
+        shared: Option<RwLockReadGuard<'static, ()>>,
+        exclusive: Option<RwLockWriteGuard<'static, ()>>,
+    ) -> Result<Self, Box<dyn Error>> {
         let id = SessionId::generate(SystemTime::now())?;
         let root = std::env::temp_dir().join(format!("benitoiteh-session-test-{id}"));
         fs::create_dir(&root)?;
@@ -125,7 +160,12 @@ impl Fixture {
             Some(&root.join("state")),
             Some(&root.join("tmp")),
         )?;
-        Ok(Self { root, paths })
+        Ok(Self {
+            root,
+            paths,
+            _shared: shared,
+            _exclusive: exclusive,
+        })
     }
 
     fn session(&self) -> Result<Session, Box<dyn Error>> {
@@ -1029,7 +1069,7 @@ fn cleanup_reports_failures_continues_and_retries_without_losing_locks() -> Test
             }
         }
     }
-    let fixture = Fixture::new()?;
+    let fixture = Fixture::spawning()?;
     let blocked = fixture.session()?;
     let id = blocked.id().clone();
     let directory = blocked.directory().to_owned();
@@ -1133,7 +1173,7 @@ fn deep_cleanup_and_session_drop_do_not_depend_on_thread_stack_depth() -> TestRe
     use rustix::process::{Resource, getrlimit, setrlimit};
     const CHILD: &str = "BENITOITEH_DEEP_CLEANUP_CHILD";
     const DEPTH: usize = 750;
-    let fixture = Fixture::new()?;
+    let fixture = Fixture::spawning()?;
     if std::env::var_os(CHILD).is_none() {
         let output = std::process::Command::new(std::env::current_exe()?)
             .args([
@@ -1322,7 +1362,7 @@ fn pinned_temporary_directory_uses_an_alternate_name_on_resume() -> TestResult {
         ),
     ];
     for (program, args, undo_program, undo_args) in cases {
-        let fixture = Fixture::new()?;
+        let fixture = Fixture::spawning()?;
         let session = fixture.session()?;
         session.writer()?.append(&header(&session))?;
         let id = session.id().clone();
@@ -2193,7 +2233,7 @@ fn fork_failures_leave_no_destination_and_preserve_the_source() -> TestResult {
 #[test]
 fn fork_copies_more_references_than_the_descriptor_limit() -> TestResult {
     const CHILD: &str = "BENITOITEH_FORK_FD_CHILD";
-    let f = Fixture::new()?;
+    let f = Fixture::spawning()?;
     if std::env::var_os(CHILD).is_none() {
         let output = std::process::Command::new(std::env::current_exe()?)
             .args([
@@ -2361,7 +2401,7 @@ fn fork_origin_ids_are_checked_by_both_listing_and_opening() -> TestResult {
 #[test]
 fn shared_temporary_cleanup_preserves_foreign_live_entries_and_unrecorded_helpers() -> TestResult {
     let first = Fixture::new()?;
-    let second = Fixture::new()?;
+    let second = first.sibling()?;
     let mut second_paths = second.paths.clone();
     second_paths.temporary_root = first.paths.temporary_root.clone();
     let foreign = Session::create(&second_paths, SessionId::generate(SystemTime::now())?)?;
