@@ -50,6 +50,21 @@ fn prepare(
         }
     }
 }
+
+/// テストが手放したセッションを開く。prepare と同じく、ほかのテストの fork が継承した錠は
+/// exec まで残るので、Locked だけを短時間待つ（実装プランの結果 2026-11-02-cloud-linux
+/// 「ほかのテストのファイルの同じ競合」）。
+fn open_released(paths: &DataPaths, id: &SessionId) -> Result<Session, SessionError> {
+    let started = Instant::now();
+    loop {
+        match Session::open(paths, id) {
+            Err(SessionError::Locked) if started.elapsed() < Duration::from_secs(2) => {
+                thread::sleep(Duration::from_millis(20));
+            }
+            result => return result,
+        }
+    }
+}
 fn prepare_new(
     args: &ExecArgs,
     current: &crate::agent::AgentStatus,
@@ -420,17 +435,7 @@ fn declined_normal_resume_preserves_record_bytes_and_releases_lock() -> Result<(
     ));
     assert!(confirmed.get());
     assert_eq!(fs::read(&record)?, before);
-    // prepare と同じく、ほかのテストの fork が継承した錠だけを短時間待つ。
-    let started = Instant::now();
-    let reopened = loop {
-        match Session::open(&paths, &id) {
-            Err(SessionError::Locked) if started.elapsed() < Duration::from_secs(2) => {
-                thread::sleep(Duration::from_millis(20));
-            }
-            result => break result?,
-        }
-    };
-    drop(reopened);
+    drop(open_released(&paths, &id)?);
     assert_eq!(fs::read(&record)?, before);
     args.interactive = false;
     let result = prepare(&args, None, &paths, |_, _| Ok(()), &mut |_| {
@@ -1612,7 +1617,7 @@ fn fork_retains_copy_when_current_provider_was_removed() -> Result<(), Box<dyn E
     assert!(copied.error.is_none());
     let id = copied.id.parse::<SessionId>()?;
     assert!(error.diagnostics.contains(&text::fork_retained(&id)));
-    let retained = Session::open(&paths, &id)?;
+    let retained = open_released(&paths, &id)?;
     assert_eq!(retained.take_resume_state()?.destination.provider, "mock");
     assert_eq!(
         copied

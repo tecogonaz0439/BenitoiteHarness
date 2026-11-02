@@ -1571,7 +1571,17 @@ fn stale_placeholder_records_are_reaped_without_removing_user_data_or_locked_pat
     }
     drop(prepared);
     drop(lock);
-    drop(f.command(f.config(), &[OsStr::new("socketpair")])?);
+    // ほかのテストの fork が継承した錠は exec まで残るので、回収されるまで短時間だけ準備を
+    // やり直す。錠を放さない退行は 2 秒で失敗にする（実装プランの結果
+    // 2026-11-02-cloud-linux「ほかのテストのファイルの同じ競合」）。
+    let started = std::time::Instant::now();
+    loop {
+        drop(f.command(f.config(), &[OsStr::new("socketpair")])?);
+        if !locked.exists() || started.elapsed() >= std::time::Duration::from_secs(2) {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
     assert!(!locked.exists());
     assert!(!locked_record.exists());
     Ok(())

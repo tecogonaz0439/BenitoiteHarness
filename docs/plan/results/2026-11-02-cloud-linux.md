@@ -159,7 +159,16 @@ root で失敗しないのは、少なくとも `cleanup_reports_failures_contin
 
 `tests/session.rs` は、直した後のコードで 20 回とも通った。
 
-### 考えられる直し方（決めていない）
+### 直し方と確かめ
 
-- `stale_placeholder_records_are_reaped_without_removing_user_data_or_locked_paths`: `tests/sandbox_linux.rs` のほかのテストの多くは子プロセスを起こすので、`tests/session.rs` と同じ読み書きの錠では、このテストを排他にして、ほかのテストに共有の側を持たせることになる。代わりに、`!locked.exists()` の確かめの前の回収を、短い間を置いて数回試す形もある。
-- `fork_retains_copy_when_current_provider_was_removed`: 同じファイルの再開の準備と同じく、`Locked` のときだけ短く取り直す。
+2026-11-02 に、設計者が次の 2 件を直すと決めた。どちらも、このリポジトリで同じ競合に使ってきた形（`Locked` や回収の残りだけを短時間待ち、錠を放さない退行は 2 秒で失敗にする）に揃えた。読み書きの錠（`tests/session.rs` の形）にしなかったのは、確かめる箇所が一つであり、`tests/sandbox_linux.rs` の 36 件のテストのすべてに共有の側を持たせる変更が要るためである。本番のコードは変えていない。
+
+- `stale_placeholder_records_are_reaped_without_removing_user_data_or_locked_paths`: `drop(lock)` の後の準備（回収を含む）を、`locked` が消えるまで 20 ms ごとに最大 2 秒やり直す。
+- `fork_retains_copy_when_current_provider_was_removed`: `src/cli/exec/tests.rs` の再開の後の取り直し（`declined_normal_resume_preserves_record_bytes_and_releases_lock` の中にあった）を `open_released` にまとめ、このテストの `Session::open` にも使う。
+
+| テスト | 直す前の差し込みあり | 直した後の差し込みあり |
+|---|---|---|
+| `stale_placeholder_records_are_reaped_without_removing_user_data_or_locked_paths` | 15 回のうち 3 回 | 15 回のうち 0 回 |
+| `fork_retains_copy_when_current_provider_was_removed` | 15 回のうち 2 回 | 15 回のうち 0 回 |
+
+直した後に、`cargo test --workspace --target x86_64-unknown-linux-musl`（754 件が通り、失敗 0）、`cargo fmt --all --check`、`cargo clippy -p benitoiteh --all-targets`（ホスト、`x86_64-unknown-linux-musl`、`aarch64-apple-darwin`）が通った。
