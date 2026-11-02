@@ -20,6 +20,7 @@
 | [03-other-test-files.md](03-other-test-files.md) | 同じ競合が、ほかのテストのファイルと `src/` の単体テストにないかの調べと、見つかった 2 件の修正 |
 | [04-oss-feature-review.md](04-oss-feature-review.md) | Codex CLI、Pi Coding Agent、Hermes Agent、DeepSeek Harness、nono、sandbox-runtime のソースコードとの機能の比べと、キャッチアップの案 |
 | [05-stage1.md](05-stage1.md) | キャッチアップの案の段 1（安全の穴を塞ぐ）の確かめと修正 |
+| [06-stage3.md](06-stage3.md) | キャッチアップの案の段 3（通信の制限）の設計と実装 |
 
 ## 変更したファイル
 
@@ -57,6 +58,9 @@
 | `crates/benitoiteh/src/config/trust.rs`（追加）、`src/context/skills.rs`、`src/cli/exec.rs`、`src/cli/tui.rs`、`src/cli/args.rs`、`src/agent/`、`src/ui/tui/` | 変更 | プロジェクトの Skill・プラグイン・`model` を、信頼の確認の後にだけ使う。決定を根ごとに保存し、`exec --trust-project` を加えた | [05](05-stage1.md) |
 | `crates/benitoiteh/tests/exec.rs`、`tests/exec/skills.rs`、`tests/args.rs` と単体テスト | 変更 | 信頼のテストを加え、プロジェクトの資源を読む既存のテストに `--trust-project` を付けた | [05](05-stage1.md) |
 | `docs/design/03-safety/03-01-security-model.md`、`01-agent/01-04-context.md`、`05-interface/05-01-cli.md` | 変更 | 「プロジェクトの信頼」を加え、オプション、データの置き場所、Skill とプラグインの読む条件を書いた | [05](05-stage1.md) |
+| `crates/benitoiteh/src/sandbox/proxy.rs`（追加）、`proxy/http.rs`（追加）ほか、`src/sandbox/`、`src/tools/bash.rs`、`src/config/`、`src/cli/exec.rs`、`src/agent/`、`src/approval/`、`src/ui/tui/`、`crates/sandbox-probe/` | 変更 | 通常モードの通信の中継（`network = "proxy"`） | [06](06-stage3.md) |
+| `crates/benitoiteh/tests/`（Linux のサンドボックス、bash、exec、設定、方針、画面） | 変更 | 中継のテストを加えた | [06](06-stage3.md) |
+| `docs/design/03-safety/03-02-sandbox.md`、`03-03-approval.md`、`04-benitoite/04-01-benitoite-integration.md`、`05-interface/05-01-cli.md`、`open-issues.md` | 変更 | 「通信の中継」「通信の確認」と処理系への要望の 7 を加え、BH-046 を閉じ、BH-040 に方針を書き、BH-119 を加えた | [06](06-stage3.md) |
 | `docs/2026-11-02/` | 追加 | 本ディレクトリ | — |
 | `docs/README.md` | 変更 | 本ディレクトリへの案内を加えた | — |
 
@@ -92,6 +96,6 @@
 
 - macOS での実行。`aarch64-apple-darwin` の確かめは Linux からのコンパイルと lint だけである。macOS だけで走る `pinned_temporary_directory_uses_an_alternate_name_on_resume` も、`Fixture::spawning()` に変えた。
 - aarch64 の Linux（Apple の `container`）での実行。
-- macOS で確かめる項目に加えたもの: 主のプロセスの環境と記憶をほかのプロセスから読めるか（BH-118）、Seatbelt で `.agents` が守られること、制限モードのプロジェクトの秘密の名前をどの深さでも塞ぐ正規表現の規則にするか、`PATH` の判定のデバイスと inode の比べ、`~/Library/Keychains` を読ませないことの影響。
+- macOS で確かめる項目に加えたもの: 通信の中継（BH-119）、 主のプロセスの環境と記憶をほかのプロセスから読めるか（BH-118）、Seatbelt で `.agents` が守られること、制限モードのプロジェクトの秘密の名前をどの深さでも塞ぐ正規表現の規則にするか、`PATH` の判定のデバイスと inode の比べ、`~/Library/Keychains` を読ませないことの影響。
 - 原因を確かめていない失敗 2 件（`tests/exec.rs::closed_event_output_still_finishes_the_session_record`、`tests/tui/commands.rs` の `accepted_rewind_finishes_before_quit_and_repeated_keyboard_interrupts`）。[03](03-other-test-files.md)の「ほかの失敗」に記した。
 - 評価の道具の Python のテストのうち、macOS の判定を要しない 4 件の失敗の原因（[01](01-cloud-linux-check.md)の「結果」）。
