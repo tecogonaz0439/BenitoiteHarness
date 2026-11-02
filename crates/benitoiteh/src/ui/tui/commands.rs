@@ -21,6 +21,8 @@ pub enum Command {
     PreviewBranch(crate::agent::BranchTarget, crate::rewind::RewindScope),
     /// `AGENTS.md` を書く依頼を送る（設計書 05-02「`/` で始まるコマンド」）。
     Init,
+    /// 入力欄を外部のエディタで書く（設計書 05-02「入力の操作」）。
+    Editor,
     /// 今の枝を Markdown に書き出す。パスがなければプロジェクトの下に決まった名前で書く。
     Export(Option<String>),
 }

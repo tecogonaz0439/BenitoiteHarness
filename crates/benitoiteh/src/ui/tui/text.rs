@@ -290,6 +290,7 @@ Alt+Enter: queue a follow-up while processing.
 Shift+Enter or Ctrl+J: insert a newline.
 ESC: cancel the current step; twice: cancel the run.
 Ctrl+C: clear input; twice on empty input: quit.
+Ctrl+G: edit the input in $VISUAL or $EDITOR.
 Up/Down: browse input history when input is one line.
 //: send a literal leading slash.";
 
@@ -712,4 +713,14 @@ pub fn exported(path: &std::path::Path) -> String {
 }
 pub fn export_failed(error: &str) -> String {
     format!("Could not export the conversation: {error}")
+}
+
+/// 外部のエディタの知らせ（設計書 05-02「入力の操作」）。
+pub const EDITOR_UNSET: &str = "Set VISUAL or EDITOR to edit the input in an external editor.";
+pub const EDITOR_UNAVAILABLE: &str =
+    "The external editor is unavailable because the input history directory could not be opened.";
+pub const EDITOR_EXITED: &str = "The editor exited with an error; the input was kept.";
+pub const EDITOR_TOO_LARGE: &str = "The edited input is larger than 1 MiB; the input was kept.";
+pub fn editor_failed(error: &str) -> String {
+    format!("Could not use the external editor: {error}")
 }

@@ -1941,3 +1941,129 @@ fn export_command_writes_new_private_files_only() -> TestResult {
     assert_eq!(fs::read_to_string(f.project.join("taken.md"))?, "keep me");
     Ok(())
 }
+
+// 作成時の関門: Ctrl+G は入力欄を外部のエディタで書き、書いた文で入力欄を置き換える。下書きは
+// 入力の履歴のディレクトリに置いて終えたら消し、エディタが失敗したら入力を保つ。エディタがなければ
+// 知らせる（設計書 05-02「入力の操作」）。
+#[test]
+fn external_editor_replaces_the_input_and_removes_the_draft() -> TestResult {
+    let mut server = MockProvider::start(vec![ResponseScript::sse(response(
+        json!({"content":"LLM done"}),
+        "stop",
+    ))])?;
+    let f = Fixture::new()?;
+    let ctrl_g = key(KeyCode::Char('g'), KeyModifiers::CONTROL);
+    let editor = |script: &str| {
+        Some(vec![
+            "/bin/sh".to_owned(),
+            "-c".to_owned(),
+            script.to_owned(),
+            "sh".to_owned(),
+        ])
+    };
+    // 失敗するエディタ、書き換えるエディタ、エディタなしの順に確かめる。
+    for (command, expected) in [
+        (editor("exit 3"), "The editor exited with an error"),
+        (
+            editor("printf 'edited %s\\n' \"$(cat \"$1\")\" > \"$1\""),
+            "LLM done",
+        ),
+        (None, "Set VISUAL or EDITOR"),
+    ] {
+        let (worker, _directory) = f.worker(&server)?;
+        let mut screen = Screen::new((160, 30), status()).with_editor(command.clone());
+        screen.load_history(&f.paths, &f.project);
+        let mut output = Output::default();
+        let edits = command
+            .as_ref()
+            .is_some_and(|c| c.get(2).is_some_and(|s| s.starts_with("printf")));
+        let mut first = vec![Event::Paste("draft".into()), ctrl_g.clone()];
+        let mut last = Vec::new();
+        if edits {
+            first.push(key(KeyCode::Enter, KeyModifiers::NONE));
+        } else {
+            // 保った入力を Ctrl+C で空にしてから終える。
+            last.push(key(KeyCode::Char('c'), KeyModifiers::CONTROL));
+        }
+        last.extend(send("/quit"));
+        let mut input = Driver::new(output.clone(), vec![("", first), (expected, last)]);
+        assert_eq!(
+            run(
+                &mut screen,
+                worker,
+                &mut input,
+                &mut output,
+                &AtomicBool::new(false),
+                |_| {},
+                &mut |_, _, _| Err("should not prepare".into())
+            )?,
+            0
+        );
+        let drafts = fs::read_dir(&f.paths.history_dir)?
+            .filter_map(Result::ok)
+            .filter(|entry| entry.file_name().to_string_lossy().starts_with(".draft-"))
+            .count();
+        assert_eq!(drafts, 0);
+    }
+    let requests = server.requests()?;
+    assert_eq!(requests.len(), 1);
+    let sent = requests
+        .first()
+        .and_then(|request| request.body.pointer("/messages"))
+        .map(serde_json::Value::to_string)
+        .unwrap_or_default();
+    assert!(sent.contains("edited draft"), "{sent}");
+    assert!(!sent.contains("edited draft\\n"), "{sent}");
+    server.shutdown()?;
+    Ok(())
+}
+
+// 作成時の関門: `@` の後の Tab はプロジェクトのファイルのパスに替え、続けて押すと次の候補に替える。
+// `.` で始まる名前、根の .gitignore が除くもの、リンクは候補にしない（設計書 05-02「入力の操作」）。
+#[test]
+fn tab_completes_project_paths_after_at_signs() -> TestResult {
+    let f = Fixture::new()?;
+    fs::create_dir_all(f.project.join("src"))?;
+    fs::create_dir_all(f.project.join(".hidden"))?;
+    fs::write(f.project.join("src/main.rs"), "")?;
+    fs::write(f.project.join("src/mapping.rs"), "")?;
+    fs::write(f.project.join(".hidden/secret.rs"), "")?;
+    fs::write(f.project.join(".gitignore"), "*.log\n")?;
+    fs::write(f.project.join("build.log"), "")?;
+    std::os::unix::fs::symlink("/etc/hostname", f.project.join("linked.txt"))?;
+    let tab = || key(KeyCode::Tab, KeyModifiers::NONE);
+    let enter = || key(KeyCode::Enter, KeyModifiers::NONE);
+    for (typed, tabs, expected) in [
+        ("look at @main", 1, "look at @src/main.rs"),
+        ("look at @ma", 2, "look at @src/mapping.rs"),
+        ("look at @ma", 3, "look at @src/main.rs"),
+        ("@secret", 1, "@secret"),
+        ("@build", 1, "@build"),
+        ("@linked", 1, "@linked"),
+        ("no mention", 1, "no mention"),
+    ] {
+        let mut screen = Screen::new((120, 24), status());
+        screen.load_history(&f.paths, &f.project);
+        screen.input(Event::Paste(typed.into()), Duration::ZERO, false);
+        for _ in 0..tabs {
+            assert_eq!(screen.input(tab(), Duration::ZERO, false), Action::None);
+        }
+        assert_eq!(
+            screen.input(enter(), Duration::ZERO, false),
+            Action::Submit(expected.into()),
+            "{typed} with {tabs} tab(s)"
+        );
+    }
+    // ほかのキーを挟むと、次の Tab は候補を選び直す。
+    let mut screen = Screen::new((120, 24), status());
+    screen.load_history(&f.paths, &f.project);
+    screen.input(Event::Paste("@ma".into()), Duration::ZERO, false);
+    screen.input(tab(), Duration::ZERO, false);
+    screen.input(Event::Paste(" @map".into()), Duration::ZERO, false);
+    screen.input(tab(), Duration::ZERO, false);
+    assert_eq!(
+        screen.input(enter(), Duration::ZERO, false),
+        Action::Submit("@src/main.rs @src/mapping.rs".into())
+    );
+    Ok(())
+}

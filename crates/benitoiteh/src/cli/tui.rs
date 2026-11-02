@@ -18,6 +18,15 @@ impl InputSource for TerminalInput<'_> {
     fn termination_count(&mut self) -> io::Result<usize> {
         self.signals.termination_count()
     }
+    /// raw のモードを戻してエディタを動かし、終えたら raw に戻して残った入力を捨てる
+    /// （設計書 05-02「入力の操作」）。
+    fn suspend(&mut self, task: &mut dyn FnMut() -> io::Result<bool>) -> io::Result<bool> {
+        crossterm::terminal::disable_raw_mode()?;
+        let result = task();
+        crossterm::terminal::enable_raw_mode()?;
+        rustix::termios::tcflush(io::stdin(), rustix::termios::QueueSelector::IFlush)?;
+        result
+    }
     fn poll(&mut self, wait: std::time::Duration) -> io::Result<Vec<crossterm::event::Event>> {
         Ok(self
             .poll_timed(wait)?
@@ -173,7 +182,8 @@ fn run_interactive(args: ExecArgs, signals: &mut Signals) -> Result<u8, CliError
             crossterm::terminal::size().map_err(CliError::Output)?,
             status,
         )
-        .with_notifier(crate::ui::tui::Notifier::new(&notifications));
+        .with_notifier(crate::ui::tui::Notifier::new(&notifications))
+        .with_editor(editor_command());
         screen.startup(diagnostics);
         // 再開でも記録したプロジェクトを使う。Agent の環境は prepare が実のパスで作る。
         screen.load_history(&paths, agent.project_dir());
@@ -284,4 +294,16 @@ fn trust_loads(request: &exec::TrustRequest) -> Vec<&'static str> {
     .into_iter()
     .filter_map(|(present, name)| present.then_some(name))
     .collect()
+}
+
+/// `VISUAL`、なければ `EDITOR` を空白で分けたもの（`code -w` のような引数を許す）。
+fn editor_command() -> Option<Vec<String>> {
+    ["VISUAL", "EDITOR"].into_iter().find_map(|name| {
+        let value = std::env::var(name).ok()?;
+        let command = value
+            .split_whitespace()
+            .map(str::to_owned)
+            .collect::<Vec<_>>();
+        (!command.is_empty()).then_some(command)
+    })
 }

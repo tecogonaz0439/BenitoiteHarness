@@ -9,6 +9,7 @@ pub mod history;
 pub use confirmation::{ConfirmationGuard, TrustChoice};
 mod format;
 mod input;
+mod mention;
 mod notify;
 mod runtime;
 mod terminal;
@@ -84,6 +85,15 @@ pub struct Screen {
     focused: Option<bool>,
     notifier: Notifier,
     notification: Option<Notification>,
+    /// 外部のエディタのコマンドと引数（設計書 05-02「入力の操作」）。
+    editor: Option<Vec<String>>,
+    /// 下書きを置く、サンドボックスから読めない場所（入力の履歴のディレクトリ）。
+    private_dir: Option<std::path::PathBuf>,
+    /// `@` の補完で探すプロジェクトのディレクトリ。
+    project_dir: Option<std::path::PathBuf>,
+    /// 補完の候補にするファイル。初めて補うときに集める。
+    files: Option<Vec<String>>,
+    mention: Option<mention::Mention>,
 }
 
 // 送る文と復元する原文を分け、// を外した文が取り消し後にコマンドにならないようにする。
@@ -129,7 +139,30 @@ impl Screen {
             focused: None,
             notifier: Notifier::default(),
             notification: None,
+            editor: None,
+            private_dir: None,
+            project_dir: None,
+            files: None,
+            mention: None,
         }
+    }
+
+    /// 外部のエディタのコマンドを使う。`VISUAL`、なければ `EDITOR` を空白で分けたもの。
+    pub fn with_editor(mut self, editor: Option<Vec<String>>) -> Self {
+        self.editor = editor.filter(|command| !command.is_empty());
+        self
+    }
+
+    /// 描いた入力欄と状態の行を消し、次の描画を今のカーソルの位置から始める。
+    /// 外部のプログラムに端末を渡す前に呼ぶ。
+    pub(super) fn detach(&mut self, writer: &mut impl Write) -> io::Result<()> {
+        let mut frame = Frame::default();
+        frame.begin()?;
+        frame.clear(self.rows_above)?;
+        frame.finish(writer)?;
+        self.rows_above = 0;
+        self.rows_below = 0;
+        Ok(())
     }
 
     /// 利用者の設定で選んだ知らせ方を使う（設計書 05-02「通知」）。
@@ -220,6 +253,18 @@ impl Screen {
         }
         if self.selection.is_some() {
             return self.selection_input(event);
+        }
+        // `@` の後の Tab はパスを補う。ほかの入力は補う途中の状態を捨てる（設計書 05-02「入力の操作」）。
+        if let Event::Key(key) = &event
+            && key.kind == crossterm::event::KeyEventKind::Press
+            && key.code == crossterm::event::KeyCode::Tab
+            && key.modifiers.is_empty()
+        {
+            if self.complete_mention() {
+                return Action::None;
+            }
+        } else {
+            self.mention = None;
         }
         let action = self.input.event(event, now, running);
         self.command_action(action, running)
@@ -464,6 +509,8 @@ impl Screen {
         paths: &crate::config::paths::DataPaths,
         project: &std::path::Path,
     ) {
+        self.private_dir = Some(paths.history_dir.clone());
+        self.project_dir = Some(project.to_path_buf());
         match history::History::open(paths, project) {
             Ok((file, entries)) => {
                 for entry in entries {
