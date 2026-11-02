@@ -34,6 +34,10 @@
 | `crates/benitoiteh/src/sandbox/linux/mounts/tests.rs` | 変更 | 引数列の期待値に祖先の留めを加えた | [05](05-stage1.md) |
 | `crates/benitoiteh/tests/sandbox_linux.rs` | 変更 | 否定のテスト `existing_nested_metadata_ancestors_cannot_be_renamed_away` を加えた | [05](05-stage1.md) |
 | `docs/design/03-safety/03-02-sandbox.md` | 変更 | 「Linux のファイルシステムの見え方」に「守る場所の祖先」を加えた | [05](05-stage1.md) |
+| `crates/benitoiteh/src/config/environment.rs`、`src/config/mod.rs`、`src/config/text.rs` | 変更 | 子プロセスの環境から秘密に見える名前を除き、`[secrets] pass_env` で通す名前を選べるようにした | [05](05-stage1.md) |
+| `crates/benitoiteh/src/tools/benitoite_process.rs` | 変更 | 制限モードの実行で、印の付け直しだけを `remark_child_environment` で行う | [05](05-stage1.md) |
+| `crates/benitoiteh/tests/config.rs` ほか、`child_environment` の呼び出し元 | 変更 | 環境と設定のテストに行を足し、ほかの呼び出し元に引数を足した | [05](05-stage1.md) |
+| `docs/design/03-safety/03-01-security-model.md`、`03-02-sandbox.md`、`04-benitoite/04-01-benitoite-integration.md`、`05-interface/05-01-cli.md` | 変更 | 子プロセスの環境の方針と `pass_env` を書いた | [05](05-stage1.md) |
 | `docs/2026-11-02/` | 追加 | 本ディレクトリ | — |
 | `docs/README.md` | 変更 | 本ディレクトリへの案内を加えた | — |
 

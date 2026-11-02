@@ -338,6 +338,7 @@ impl Fixture {
         let mut env = benitoiteh::config::child_environment(
             [("PATH".into(), "/bin:/usr/bin".into())],
             &Default::default(),
+            &Default::default(),
             session.temporary_dir(),
             None,
         );

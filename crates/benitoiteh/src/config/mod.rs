@@ -3,7 +3,7 @@
 pub mod credentials;
 pub(crate) mod domain;
 mod environment;
-pub use environment::child_environment;
+pub use environment::{child_environment, remark_child_environment};
 pub mod paths;
 mod text;
 pub mod writable;
@@ -344,15 +344,21 @@ impl Default for SessionsConfig {
     }
 }
 
-/// 利用者だけが選べる秘密の仲介の設定（設計書 03-04「段 2」）。
+/// 利用者だけが選べる秘密の仲介と、子プロセスへ通す秘密の名前の設定
+/// （設計書 03-04「段 2」、03-02「子プロセスの環境」）。
 #[derive(Clone, Debug, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct SecretsConfig {
     pub askpass: bool,
+    /// 秘密に見える名前でも子プロセスへ通す環境変数の名前。完全に一致する名前だけを通す。
+    pub pass_env: BTreeSet<String>,
 }
 impl Default for SecretsConfig {
     fn default() -> Self {
-        Self { askpass: true }
+        Self {
+            askpass: true,
+            pass_env: BTreeSet::new(),
+        }
     }
 }
 
@@ -474,6 +480,17 @@ impl UserConfig {
             if let Some(reference) = &provider.api_key {
                 reference.validate()?;
             }
+        }
+        // 提供者のキーは、通す名前に書いても通さない。黙って除くと、利用者は通したつもりになる。
+        // （設計書 03-02「子プロセスの環境」）
+        let referenced = config.referenced_env_vars();
+        if config.secrets.pass_env.iter().any(|name| {
+            name.is_empty()
+                || name.contains(['=', '\0'])
+                || PROVIDER_KEY_ENV_VARS.contains(&name.as_str())
+                || referenced.contains(name)
+        }) {
+            return Err(ConfigError::Invalid(text::INVALID_PASS_ENV));
         }
         Ok(config)
     }

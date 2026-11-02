@@ -49,6 +49,7 @@ pub const RESUME_MODE: &str =
 pub const INVALID_DOMAIN: &str = "Invalid web_fetch.allowed_domains entry. Use an ASCII domain name of at least two labels (punycode xn-- for international names), without a scheme, port, wildcard, or IP address.";
 
 pub const INVALID_BENITOITE_PATH: &str = "benitoite.path must be an absolute path";
+pub const INVALID_PASS_ENV: &str = "Invalid secrets.pass_env entry. Use a non-empty environment variable name without = or NUL that is not a provider API key variable.";
 pub const CHECK_FIX_POSITIVE: &str = "--max-check-fix and limits.max_check_fix must be at least 1.";
 
 pub const WRITABLE_PROTECTED_NAME: &str =

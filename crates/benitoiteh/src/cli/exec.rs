@@ -474,6 +474,7 @@ pub(super) fn prepare(
                     env: child_environment(
                         std::env::vars_os(),
                         &user.referenced_env_vars(),
+                        &user.secrets.pass_env,
                         &locations.temporary,
                         launcher.environment_policy(),
                     ),
@@ -531,6 +532,7 @@ pub(super) fn prepare(
             let mut env = child_environment(
                 std::env::vars_os(),
                 &user.referenced_env_vars(),
+                &user.secrets.pass_env,
                 &locations.temporary,
                 policy
                     .as_ref()
@@ -690,6 +692,7 @@ pub(super) fn prepare(
                 env: child_environment(
                     std::env::vars_os(),
                     &user.referenced_env_vars(),
+                    &user.secrets.pass_env,
                     &locations.temporary,
                     Some(("restricted", false)),
                 ),

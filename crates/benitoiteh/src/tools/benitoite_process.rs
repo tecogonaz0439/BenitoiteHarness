@@ -78,9 +78,10 @@ pub(super) fn prepare(
         program: run.processor.clone(),
         args,
         cwd: run.locations.project.clone(),
-        env: crate::config::child_environment(
+        // run.env は起動のときに child_environment で作ってあるので、印だけを付け直す。
+        // 秘密の名前を除き直すと、利用者が通した名前まで落ちる（設計書 03-02「子プロセスの環境」）。
+        env: crate::config::remark_child_environment(
             run.env.clone(),
-            &BTreeSet::new(),
             &run.locations.temporary,
             Some(("restricted", access.allow_ip)),
         ),

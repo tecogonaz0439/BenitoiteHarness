@@ -74,6 +74,7 @@ impl Fixture {
             env: benitoiteh::config::child_environment(
                 [("PATH".into(), "/bin:/usr/bin".into())],
                 &Default::default(),
+                &Default::default(),
                 self.session.temporary_dir(),
                 None,
             ),

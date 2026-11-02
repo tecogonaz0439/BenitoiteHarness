@@ -217,6 +217,13 @@ Linux の守る場所の保証は macOS より狭い。子プロセスが新し�
 - `BENITOITEH_SANDBOX` に方針の名前を、`BENITOITEH_SANDBOX_NETWORK_DISABLED=1`（ネットワークを使えないとき）を設定する。Codex CLI の同じ働きの変数に倣う。理由: テストなどがサンドボックスの中で動いていることを知り、ネットワークを要するテストを飛ばせる。
 - 通常モードの `bash` では、`NO_COLOR=1`・`TERM=dumb`・`PAGER=cat`・`GIT_PAGER=cat` を設定する。理由: 色の制御の文字とページャの待ちは、LLM に返す出力を読みにくくし、コマンドを止める。Codex CLI も同じ値を設定する。
 
+【方針】`benitoiteh` が起動するすべての子プロセス（処理系、`bash`、`escalate` で外で動かすコマンド、`doctor` の確かめ）の環境は、`benitoiteh` の環境から次の変数を除いて作る。
+
+- LLM の提供者のキーの変数（[Benitoite の処理系との連携](../04-benitoite/04-01-benitoite-integration.md)の「処理系の起動」）。
+- 秘密に見える名前の変数。名前が `KEY`・`SECRET`・`TOKEN`・`PASSWORD`・`PASSWD`・`CREDENTIAL` のどれかを含むもの（ASCII の大文字と小文字を区別しない）とする。ただし、利用者の設定ファイルの `[secrets]` の `pass_env` に書いた名前（完全に一致するもの）は除かない（[CLI と設定ファイル](../05-interface/05-01-cli.md)の「利用者の設定ファイル」）。理由: サンドボックスの中のコマンドは、`env` を打つだけで環境を LLM へ返せる。`GITHUB_TOKEN` や `AWS_SECRET_ACCESS_KEY` を LLM の提供者へ送らないことを既定とし、`gh` などに要る名前だけを利用者が選んで通す。語の組は Codex CLI の既定の除外（`*KEY*`・`*SECRET*`・`*TOKEN*`。<https://github.com/openai/codex> のコミット `3026a8e54e0f48c4d8074cd700f35b0697abc329` の `codex-rs/protocol/src/shell_environment.rs`）に、パスワードと資格情報の語を足したものである。Codex CLI はこの除外を既定では使わないが、`benitoiteh` は安全の性質を既定とするため使う。秘密を名前に表さない変数（URL に埋め込んだパスワードなど）は除けない。`SSH_AUTH_SOCK` などのエージェントの場所は秘密そのものではないので残る（[秘密の入力](03-04-secrets.md)の「段 1: すでにある秘密の仲介役を使う」）。
+
+ローダとインタプリタに働く変数（`LD_PRELOAD`・`DYLD_INSERT_LIBRARIES`・`NODE_OPTIONS`・`PYTHONPATH` など）は、親の環境から除かない。理由: 親の環境は利用者が設定したものであり、信頼の前提では信頼する側にある。nono はこれらを必ず除くが、nono は親の環境も信頼しない前提に立つ。LLM が子の環境にこれらを設定する道筋（Benitoite の `Process.Command` の `environment`）は、処理系が `LD_`・`DYLD_` で始まる名前を拒む（BH-026）。
+
 ### 端末からの切り離し
 
 【方針】道具が起動する子プロセスは、サンドボックスを掛けるかによらず、どの OS でも、新しいセッションで起動し、制御の端末を持たせない。Linux のサンドボックスの中では、bubblewrap の `--new-session` で切り離す（前述の「Linux のファイルシステムの見え方」）。macOS と、サンドボックスを掛けない Linux では、`benitoiteh` 自身を小さな補助として起動し、補助が `setsid` を呼んでから、目的のコマンド（macOS のサンドボックスでは `/usr/bin/sandbox-exec`）を `exec` する。

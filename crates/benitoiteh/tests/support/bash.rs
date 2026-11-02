@@ -60,6 +60,7 @@ impl Fixture {
             .into_iter()
             .map(|(k, v)| (k.into(), v.into())),
             &["CUSTOM_PROVIDER_KEY".into()].into_iter().collect(),
+            &Default::default(),
             session.temporary_dir(),
             policy.as_ref().map(|_| (sandbox.name(), false)),
         );

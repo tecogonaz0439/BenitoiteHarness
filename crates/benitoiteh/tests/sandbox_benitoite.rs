@@ -63,6 +63,7 @@ impl Fixture {
                 ("QUERY_SENTINEL".into(), "kept".into()),
             ],
             &["CUSTOM_PROVIDER_KEY".into()].into_iter().collect(),
+            &Default::default(),
             &locations.temporary,
             Some(("restricted", false)),
         );

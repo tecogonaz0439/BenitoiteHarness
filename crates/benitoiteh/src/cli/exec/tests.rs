@@ -1031,6 +1031,7 @@ fn query_launcher_and_environment_follow_actual_sandbox_state() -> Result<(), Bo
                 ("OPENAI_API_KEY".into(), "secret".into()),
             ],
             &Default::default(),
+            &Default::default(),
             Path::new("/temporary"),
             launcher.environment_policy(),
         );

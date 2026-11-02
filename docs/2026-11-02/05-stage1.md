@@ -45,3 +45,48 @@
 | 直す前 | `a` の付け替えが通り、テストが失敗した |
 | gitdir の祖先だけを留めない版 | `meta` の付け替えが通り、テストが失敗した |
 | 直した後 | 通った |
+
+## 子プロセスの環境
+
+04 の案の 1 に当たる。
+
+### 直し方
+
+`crates/benitoiteh/src/config/environment.rs` の `child_environment` で、提供者のキーに加えて、秘密に見える名前の変数を除く。名前が `KEY`・`SECRET`・`TOKEN`・`PASSWORD`・`PASSWD`・`CREDENTIAL` のどれかを含むもの（ASCII の大文字と小文字を区別しない）とする。Codex CLI の既定の除外（`*KEY*`・`*SECRET*`・`*TOKEN*`）に、パスワードと資格情報の語を足した。Codex CLI はこの除外を既定では使わないが、`benitoiteh` は既定で使う。
+
+利用者の設定ファイルの `[secrets] pass_env` に書いた名前（完全に一致するもの）は除かない。空の名前、`=` か NUL を含む名前、提供者のキーの変数（設定で参照したものを含む）を書いたら、設定の誤りとして起動を止める。プロジェクトの設定ファイルは `[secrets]` を受け付けないので、信頼しないリポジトリから秘密を通させることはできない。
+
+制限モードの実行（`crates/benitoiteh/src/tools/benitoite_process.rs`）は、起動のときに作った環境を受け取り、方針の印を付け直すために `child_environment` を二度目に呼んでいた。二度目に秘密の名前を除くと、利用者が通した名前まで落ちるので、印の付け直しだけを `remark_child_environment` に分けた。提供者のキーは、ここでも念のため改めて除く。
+
+### 04 の案から変えたこと
+
+04 の案は、`LD_PRELOAD`・`DYLD_*`・`NODE_OPTIONS`・`PYTHONPATH` などを必ず除くとしていたが、採らなかった。親の環境は利用者が設定したものであり、`benitoiteh` の信頼の前提では信頼する側にある。nono は親の環境も信頼しない前提に立つので、これらを必ず除く（`crates/nono-cli/src/exec_strategy/env_sanitization.rs` の `is_dangerous_env_var`、コミット `c657265f65457efbd0b4e9e2cf246bdeb45cbe22`）。LLM が子の環境にこれらを設定する道筋（Benitoite の `Process.Command` の `environment`）は、処理系が `LD_`・`DYLD_` で始まる名前を拒む（BH-026）。除くと、利用者の `GOFLAGS` や `GEM_HOME` などの設定が効かなくなる。
+
+nono は、継いだ環境の秘密の名前を既定では除かない（既定はすべて通す。`docs/cli/features/environment.mdx` の「Security Properties」）。`benitoiteh` の既定は、nono と Codex CLI の既定より狭い。
+
+### 代償
+
+`GITHUB_TOKEN`・`NPM_TOKEN`・`AWS_ACCESS_KEY_ID` などに頼るコマンドは、サンドボックスの中でも外（`escalate`）でも、利用者が `pass_env` に書くまで認証に失敗する。秘密を名前に表さない変数（URL に埋め込んだパスワードなど）は除けない。
+
+### テストと確かめ
+
+| 変更 | 内容 |
+|---|---|
+| `tests/config.rs` の `child_process_environment_removes_all_provider_keys_and_replaces_inherited_markers` | 語ごとの例（大小文字の違いと、語が名前の途中にある形を含む）が除かれること、`pass_env` の名前と `SSH_AUTH_SOCK` が残ることを、実際の子（`/usr/bin/env`）に渡して確かめる行を足した。過去の結果の文書が名前で引くので、名前は変えていない |
+| `tests/config.rs` の `askpass_is_enabled_by_default_and_only_user_config_can_disable_it` | `pass_env` に提供者のキー、設定で参照したキー、空の名前、`=` を含む名前を書くと誤りになること、プロジェクトの設定では受け付けないことを足した |
+| ほかの呼び出し元のテストと例 | 引数を一つ足した（通す名前は空） |
+
+作成時の関門の答えは次のとおりである。
+
+1. 守る契約: 子プロセスの環境に、利用者が通すと決めていない秘密に見える名前の変数が届かない。提供者のキーは、利用者の設定でも通せない。
+2. 捕まえる退行: 判定の語の漏れ、大小文字の扱い、通す名前の無視、通す名前の検証の漏れ。
+3. 既存のテストとの違い: 既存の行は提供者のキーだけを確かめていた。同じ持ち主の境界（環境を作る公開の関数と、設定の解釈）に行を足し、新しいテストは加えていない。
+4. 本番のコードに差し込み口を加えていない。`remark_child_environment` は本番の呼び出し元（制限モードの実行）が使う。
+
+直す前と後で、次のように確かめた。
+
+| コード | 結果 |
+|---|---|
+| 秘密の名前の判定がいつも偽を返す版 | 環境のテストが失敗した |
+| `pass_env` の検証を外した版 | 設定のテストが失敗した |
+| 直した後 | 通った |

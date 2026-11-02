@@ -100,6 +100,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         let env = child_environment(
             std::env::vars_os(),
             &Default::default(),
+            &Default::default(),
             &locations.temporary,
             Some(("restricted", false)),
         );
