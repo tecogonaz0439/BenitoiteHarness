@@ -66,6 +66,7 @@ fn exec_arguments_preserve_explicit_values_and_the_request_source() -> Result<()
         Some("id")
     );
     assert!(ExecArgs::parse(["--continue", "request"])?.continue_session);
+    assert!(ExecArgs::parse(["--ephemeral", "request"])?.ephemeral);
     let path = OsString::from_vec(vec![b'p', 0xff]);
     let args = ExecArgs::parse([
         OsString::from("--project"),
@@ -126,6 +127,10 @@ fn exec_arguments_reject_duplicates_invalid_values_and_unavailable_options() {
         vec!["--json=true", "request"],
         vec!["one", "two"],
         vec!["--resume", "id", "--continue", "request"],
+        // 記録を残さないセッションは、既存の記録を続けない。
+        vec!["--ephemeral", "--resume", "id", "request"],
+        vec!["--ephemeral", "--continue", "request"],
+        vec!["--ephemeral=true", "request"],
     ] {
         assert!(ExecArgs::parse(args.clone()).is_err(), "{args:?}");
     }

@@ -59,6 +59,8 @@ pub struct ExecArgs {
     pub max_run_tokens: Option<u64>,
     pub json: bool,
     pub output_last_message: Option<PathBuf>,
+    /// セッションの記録を残さない（設計書 01-05「記録を残さないセッション」）。
+    pub ephemeral: bool,
     pub request: Request,
 }
 
@@ -119,6 +121,7 @@ impl ExecArgs {
             max_run_tokens: None,
             json: false,
             output_last_message: None,
+            ephemeral: false,
             request: Request::Stdin,
         };
         let mut seen = BTreeSet::new();
@@ -159,6 +162,7 @@ impl ExecArgs {
                     | "--no-sandbox"
                     | "--allow-agents-write"
                     | "--trust-project"
+                    | "--ephemeral"
             );
             let known = matches!(
                 option,
@@ -181,6 +185,7 @@ impl ExecArgs {
                     | "--no-sandbox"
                     | "--allow-agents-write"
                     | "--trust-project"
+                    | "--ephemeral"
             );
             if !known || (flag && attached.is_some()) {
                 return Err(ArgsError::Invalid);
@@ -250,10 +255,14 @@ impl ExecArgs {
                 "--no-sandbox" => result.no_sandbox = true,
                 "--allow-agents-write" => result.allow_agents_write = true,
                 "--trust-project" => result.trust_project = true,
+                "--ephemeral" => result.ephemeral = true,
                 _ => return Err(ArgsError::Invalid),
             }
         }
-        if result.resume.is_some() && result.continue_session {
+        // 記録を残さないセッションは、既存の記録を続けない。
+        if (result.resume.is_some() && result.continue_session)
+            || (result.ephemeral && (result.resume.is_some() || result.continue_session))
+        {
             return Err(ArgsError::Invalid);
         }
         if interactive {
@@ -263,6 +272,7 @@ impl ExecArgs {
                 || result.trust_project
                 || result.json
                 || result.output_last_message.is_some()
+                || result.ephemeral
                 || request == Some(Request::Stdin)
             {
                 return Err(ArgsError::Invalid);

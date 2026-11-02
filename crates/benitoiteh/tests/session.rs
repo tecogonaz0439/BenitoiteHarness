@@ -2580,3 +2580,52 @@ fn cleanup_uses_cleanup_specific_diagnostic_for_nonprivate_parent() -> TestResul
     assert_eq!(fs::read(parent.join("keep"))?, b"keep");
     Ok(())
 }
+
+// 作成時の関門: 記録を残さないセッションは、使う間も ID で開けず一覧に出ず、手放すと記録と
+// 一時ディレクトリが消える。落ちて残ったものは、次の起動の掃除が消す（設計書 01-05「記録を残さないセッション」）。
+#[test]
+fn ephemeral_sessions_are_hidden_while_used_and_removed_when_released() -> TestResult {
+    let fixture = Fixture::new()?;
+    let session =
+        Session::create_ephemeral(&fixture.paths, SessionId::generate(SystemTime::now())?)?;
+    let id = session.id().clone();
+    session.writer()?.append(&header(&session))?;
+    let directory = session.directory().to_owned();
+    let temporary = session.temporary_dir().to_owned();
+    assert!(directory.join("session.jsonl").is_file());
+    assert!(
+        directory
+            .file_name()
+            .and_then(|name| name.to_str())
+            .is_some_and(|name| name.starts_with(&format!(".removing-{id}-")))
+    );
+    assert!(session_support::open_created_session(&fixture.paths, &id).is_err());
+    assert!(benitoiteh::session::list_sessions(&fixture.paths)?.is_empty());
+    // 使っている間は錠を持つので、ほかの起動の掃除は消さない。
+    let report = cleanup(&fixture.paths, DEFAULT_RETENTION_DAYS, SystemTime::now())?;
+    assert!(report.failures.is_empty(), "{:?}", report.failures);
+    assert!(directory.join("session.jsonl").is_file());
+    assert!(temporary.is_dir());
+    drop(session);
+    assert_eq!(fs::read_dir(&fixture.paths.sessions_dir)?.count(), 0);
+    assert!(!temporary.exists());
+    // 手放す処理を経ずに残った場合（強制の終了）を、錠のない墓標と一時ディレクトリで作る。
+    let leftover =
+        Session::create_ephemeral(&fixture.paths, SessionId::generate(SystemTime::now())?)?;
+    leftover.writer()?.append(&header(&leftover))?;
+    let leftover_directory = leftover.directory().to_owned();
+    let leftover_temporary = leftover.temporary_dir().to_owned();
+    std::mem::forget(leftover);
+    // forget した錠の記述子はこのプロセスに残るので、錠のファイルを替えて錠のない状態にする。
+    fs::remove_file(leftover_directory.join("lock"))?;
+    fs::write(leftover_directory.join("lock"), b"")?;
+    fs::set_permissions(
+        leftover_directory.join("lock"),
+        fs::Permissions::from_mode(0o600),
+    )?;
+    let report = cleanup(&fixture.paths, DEFAULT_RETENTION_DAYS, SystemTime::now())?;
+    assert!(report.failures.is_empty(), "{:?}", report.failures);
+    assert_eq!(fs::read_dir(&fixture.paths.sessions_dir)?.count(), 0);
+    assert!(!leftover_temporary.exists());
+    Ok(())
+}

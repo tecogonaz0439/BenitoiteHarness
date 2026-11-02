@@ -481,6 +481,9 @@ pub(super) fn prepare(
                 }
                 session
             }
+            None if args.ephemeral => {
+                Session::create_ephemeral(paths, id).map_err(StartupError::Session)?
+            }
             None => Session::create(paths, id).map_err(StartupError::Session)?,
         };
         let usage =

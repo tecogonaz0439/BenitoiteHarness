@@ -1294,3 +1294,61 @@ fn chatgpt_exec_without_saved_tokens_stops_at_startup() -> TestResult {
     }
     Ok(())
 }
+
+// 作成時の関門: `--ephemeral` の exec は、長い出力を置く記録の場所を使って道具を動かし、
+// 終えた後に記録と一時ディレクトリを残さない（設計書 01-05「記録を残さないセッション」）。
+#[test]
+fn ephemeral_exec_runs_tools_and_leaves_no_session_record() -> TestResult {
+    let protocol = Protocol::Chat;
+    let mut server = MockProvider::start(vec![
+        ResponseScript::sse(protocol.response(
+            Some(("large", "bash", json!({"command":"cat input"}))),
+            "",
+            false,
+        )),
+        ResponseScript::sse(protocol.response(None, "Done.", false)),
+    ])?;
+    let f = Fixture::new(protocol, &server)?;
+    let all = (1..=2001)
+        .map(|n| format!("line-{n}\n"))
+        .collect::<String>();
+    fs::write(f.root.join("project/input"), &all)?;
+    let mut command = f.command("Run the command.");
+    command.args([
+        "--mode",
+        "normal",
+        "--sandbox",
+        "danger-full-access",
+        "--json",
+        "--ephemeral",
+    ]);
+    let output = Running::start(&mut command)?.finish()?;
+    assert_eq!(
+        output.status.code(),
+        Some(0),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let events = lines(&output.stdout)?;
+    assert!(
+        events
+            .iter()
+            .any(|event| event.get("type") == Some(&json!("tool_result"))
+                && event.get("is_error") == Some(&json!(false)))
+    );
+    assert_eq!(
+        fs::read_dir(f.root.join("state/benitoiteh/sessions"))?.count(),
+        0
+    );
+    let leftovers = fs::read_dir(f.root.join("tmp"))?
+        .map(|entry| entry.map(|entry| entry.file_name()))
+        .collect::<Result<Vec<_>, _>>()?;
+    assert!(
+        !leftovers
+            .iter()
+            .any(|name| name.to_string_lossy().starts_with("benitoiteh-")),
+        "{leftovers:?}"
+    );
+    server.shutdown()?;
+    Ok(())
+}

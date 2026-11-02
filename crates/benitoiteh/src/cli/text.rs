@@ -29,6 +29,7 @@ Options (interactive and exec):
 Options (exec only):
     --json
     --output-last-message <file>
+    --ephemeral
     --allow <effects>
     --allow-agents-write
     --trust-project
