@@ -918,3 +918,25 @@ fn normal_network_accepts_flags_and_proxy_and_normalizes_allowed_domains() -> Te
     }
     Ok(())
 }
+
+// 作成時の関門: 通知の設定は利用者の設定だけで選べ、端末への知らせを既定で使い、プログラムの名前が
+// 空のコマンドを拒む（設計書 05-02「通知」）。
+#[test]
+fn notifications_default_to_the_terminal_and_reject_an_empty_program() -> TestResult {
+    use benitoiteh::config::{NotificationsConfig, UserConfig};
+    assert_eq!(
+        UserConfig::parse("")?.notifications,
+        NotificationsConfig {
+            terminal: true,
+            command: Vec::new(),
+        }
+    );
+    let config = UserConfig::parse(
+        "[notifications]\nterminal = false\ncommand = [\"notify-send\", \"benitoiteh\"]\n",
+    )?;
+    assert!(!config.notifications.terminal);
+    assert_eq!(config.notifications.command, ["notify-send", "benitoiteh"]);
+    assert!(UserConfig::parse("[notifications]\ncommand = [\"\"]\n").is_err());
+    assert!(UserConfig::parse("[notifications]\nsound = true\n").is_err());
+    Ok(())
+}

@@ -9,6 +9,7 @@ pub mod history;
 pub use confirmation::{ConfirmationGuard, TrustChoice};
 mod format;
 mod input;
+mod notify;
 mod runtime;
 mod terminal;
 mod text;
@@ -17,6 +18,7 @@ mod worker;
 
 pub use control::restoration;
 pub use input::Action;
+pub use notify::{Notification, Notifier};
 pub use runtime::{InputSource, TuiError, confirm, run};
 pub use terminal::{TerminalGuard, TerminalOutput, TerminalRestore};
 pub use worker::{RunControl, Worker};
@@ -78,6 +80,10 @@ pub struct Screen {
     operation: Option<&'static str>,
     before_rewind: Option<String>,
     interrupted_rewind: Option<String>,
+    /// 端末の前面の報告。報告がなければ None（設計書 05-02「通知」）。
+    focused: Option<bool>,
+    notifier: Notifier,
+    notification: Option<Notification>,
 }
 
 // 送る文と復元する原文を分け、// を外した文が取り消し後にコマンドにならないようにする。
@@ -120,6 +126,48 @@ impl Screen {
             operation: None,
             before_rewind: None,
             interrupted_rewind: None,
+            focused: None,
+            notifier: Notifier::default(),
+            notification: None,
+        }
+    }
+
+    /// 利用者の設定で選んだ知らせ方を使う（設計書 05-02「通知」）。
+    pub fn with_notifier(mut self, notifier: Notifier) -> Self {
+        self.notifier = notifier;
+        self
+    }
+
+    /// 端末が前面を離れたと報告したときだけ、次に描いた後で知らせる。報告のない端末では知らせない。
+    /// 理由: 前面にあるかを推し量って、利用者の見ている画面に余計な知らせを出さない。
+    pub(super) fn notify(&mut self, notification: Notification) {
+        if self.focused == Some(false) && self.notification.is_none() {
+            self.notification = Some(notification);
+        }
+    }
+
+    /// 溜めた知らせを送る。描いた後に呼ぶ。
+    pub fn deliver_notification(&mut self, output: &mut impl Write) -> io::Result<()> {
+        match self.notification.take() {
+            Some(notification) => self.notifier.send(output, notification),
+            None => Ok(()),
+        }
+    }
+
+    /// 端末の前面の報告を覚える。ほかの入力としては扱わない。
+    pub(super) fn focus(&mut self, event: &Event) -> bool {
+        match event {
+            Event::FocusGained => {
+                self.focused = Some(true);
+                // 前面に戻ったら、まだ送っていない知らせは要らない。
+                self.notification = None;
+                true
+            }
+            Event::FocusLost => {
+                self.focused = Some(false);
+                true
+            }
+            Event::Key(_) | Event::Mouse(_) | Event::Paste(_) | Event::Resize(..) => false,
         }
     }
 
@@ -149,6 +197,9 @@ impl Screen {
         now: Duration,
         running: bool,
     ) -> Action {
+        if self.focus(&event) {
+            return Action::None;
+        }
         if let Event::Resize(width, height) = event {
             if self.size != (width, height)
                 && let Some(confirmation) = &mut self.confirmation

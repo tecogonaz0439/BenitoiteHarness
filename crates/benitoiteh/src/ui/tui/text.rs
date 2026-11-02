@@ -700,3 +700,7 @@ pub fn secret_history(call_id: &str, outcome: &str) -> String {
 
 pub const SECRET_CLOSED: &str =
     "Secret input closed by the command; typed characters were discarded. [Esc] continue";
+
+/// 通知の文（設計書 05-02「通知」）。
+pub const NOTIFY_APPROVAL: &str = "benitoiteh is waiting for your confirmation.";
+pub const NOTIFY_FINISHED: &str = "benitoiteh finished the request.";

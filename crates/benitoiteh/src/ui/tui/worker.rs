@@ -444,10 +444,13 @@ impl Worker {
                 screen.before_rewind = None;
                 screen.operation = None;
                 match completion.result {
-                    Ok(Reply::Run(report)) => screen.finished(
-                        report.outcome == Outcome::Cancelled,
-                        self.pending_steering.drain(..).collect(),
-                    ),
+                    Ok(Reply::Run(report)) => {
+                        screen.notify(super::Notification::Finished);
+                        screen.finished(
+                            report.outcome == Outcome::Cancelled,
+                            self.pending_steering.drain(..).collect(),
+                        )
+                    }
                     Ok(Reply::Compact(report)) => {
                         if report.outcome == CompactOutcome::Cancelled {
                             screen.finished(true, Vec::new());

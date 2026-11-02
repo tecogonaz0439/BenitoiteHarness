@@ -206,6 +206,12 @@ pub fn run(
                     exiting = true;
                     worker.cancel();
                 }
+                if !output_failed && let Err(failure) = screen.deliver_notification(output) {
+                    error = Some(TuiError::Io(failure));
+                    output_failed = true;
+                    exiting = true;
+                    worker.cancel();
+                }
                 if !output_failed && screen.presented(Instant::now()) {
                     pending_input.retain(|(event, _)| {
                         matches!(event, Event::Resize(_, _))
@@ -281,11 +287,10 @@ pub fn run(
                         }
                         screen.operation = Some(super::text::WAIT_REWIND);
                     }
-                    Event::Key(_)
-                    | Event::Paste(_)
-                    | Event::FocusGained
-                    | Event::FocusLost
-                    | Event::Mouse(_) => {}
+                    Event::FocusGained | Event::FocusLost => {
+                        screen.focus(&event);
+                    }
+                    Event::Key(_) | Event::Paste(_) | Event::Mouse(_) => {}
                 }
                 continue;
             }

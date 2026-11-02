@@ -364,6 +364,24 @@ impl Default for UserPluginsConfig {
     }
 }
 
+/// 端末が前面にないときの通知（設計書 05-02「通知」）。利用者の設定だけで選ぶ。
+#[derive(Clone, Debug, Deserialize, PartialEq, Eq)]
+#[serde(default, deny_unknown_fields)]
+pub struct NotificationsConfig {
+    /// 端末に OSC 9 の通知と BEL を送る。
+    pub terminal: bool,
+    /// 起動するコマンドと引数。知らせの文を最後の引数に加える。空なら起動しない。
+    pub command: Vec<String>,
+}
+impl Default for NotificationsConfig {
+    fn default() -> Self {
+        Self {
+            terminal: true,
+            command: Vec::new(),
+        }
+    }
+}
+
 /// セッションを残す期間。
 #[derive(Clone, Debug, Deserialize)]
 #[serde(default, deny_unknown_fields)]
@@ -439,6 +457,7 @@ pub struct UserConfig {
     pub plugins: UserPluginsConfig,
     pub sessions: SessionsConfig,
     pub secrets: SecretsConfig,
+    pub notifications: NotificationsConfig,
 }
 
 impl UserConfig {
@@ -459,6 +478,14 @@ impl UserConfig {
         let mut config: Self = parse(input)?;
         if config.limits.max_check_fix == 0 {
             return Err(ConfigError::Invalid(text::CHECK_FIX_POSITIVE));
+        }
+        if config
+            .notifications
+            .command
+            .first()
+            .is_some_and(|program| program.is_empty())
+        {
+            return Err(ConfigError::Invalid(text::INVALID_NOTIFY_COMMAND));
         }
         for domain in &mut config.web_fetch.allowed_domains {
             *domain = self::domain::normalize(domain)

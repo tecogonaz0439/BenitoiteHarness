@@ -1567,3 +1567,64 @@ fn create_project_confirmation_shows_only_path_and_requires_visible_facts() -> T
     }
     Ok(())
 }
+
+// 作成時の関門: 確認を開いたときの知らせは、端末が前面を離れたと報告したときだけ送り、決まった文だけを
+// OSC 9 と BEL で書く。報告のない端末と、前面に戻った後では送らない。確認の中身は知らせに入れない
+// （設計書 05-02「通知」）。
+#[test]
+fn approval_notifications_follow_focus_reports_and_carry_no_request_text() -> TestResult {
+    use benitoiteh::config::NotificationsConfig;
+    use benitoiteh::ui::tui::Notifier;
+    let notifier = || Notifier::new(&NotificationsConfig::default());
+    for (focus, expected) in [
+        (vec![], false),
+        (vec![Event::FocusLost], true),
+        (vec![Event::FocusLost, Event::FocusGained], false),
+    ] {
+        let mut screen = Screen::new((120, 24), status()).with_notifier(notifier());
+        for event in focus.clone() {
+            assert_eq!(
+                screen.input(event, Duration::ZERO, true),
+                benitoiteh::ui::tui::Action::None
+            );
+        }
+        let (prompt, _receiver) = prompt(ApprovalKind::Command, "rm -rf \x1b]9;spoof\x07");
+        screen.open_approval(prompt);
+        let mut bytes = Vec::new();
+        screen.draw(&mut bytes, None)?;
+        let drawn = bytes.len();
+        screen.deliver_notification(&mut bytes)?;
+        let written = bytes.get(drawn..).unwrap_or_default();
+        if expected {
+            assert_eq!(
+                written, b"\x1b]9;benitoiteh is waiting for your confirmation.\x07\x07",
+                "{focus:?}"
+            );
+        } else {
+            assert!(written.is_empty(), "{focus:?}");
+        }
+        // 一度送った知らせは繰り返さない。
+        let mut again = Vec::new();
+        screen.deliver_notification(&mut again)?;
+        assert!(again.is_empty());
+    }
+    // 端末への書き込みを切った設定では、端末に何も書かない。
+    let mut screen =
+        Screen::new((120, 24), status()).with_notifier(Notifier::new(&NotificationsConfig {
+            terminal: false,
+            command: Vec::new(),
+        }));
+    screen.input(Event::FocusLost, Duration::ZERO, true);
+    let (prompt, _receiver) = prompt(ApprovalKind::Command, "echo");
+    screen.open_approval(prompt);
+    let mut bytes = Vec::new();
+    screen.deliver_notification(&mut bytes)?;
+    assert!(bytes.is_empty());
+    // 終えるときは、前面の報告を戻す。戻さないと、端末のシェルに報告の列が残る。
+    let restored = restoration(0)?;
+    assert!(
+        restored.windows(8).any(|window| window == b"\x1b[?1004l"),
+        "{restored:?}"
+    );
+    Ok(())
+}

@@ -128,6 +128,8 @@ pub(super) struct Prepared {
     pub status: crate::ui::tui::Status,
     pub diagnostics: Vec<String>,
     pub panic_record: std::fs::File,
+    /// 対話の画面の知らせ方（設計書 05-02「通知」）。
+    pub notifications: crate::config::NotificationsConfig,
 }
 
 /// 起動のときに利用者へ尋ねる、プロジェクトの信頼（設計書 03-01「プロジェクトの信頼」）。
@@ -900,6 +902,7 @@ pub(super) fn prepare(
             status,
             diagnostics: std::mem::take(&mut diagnostics),
             panic_record,
+            notifications: user.notifications.clone(),
         })
     })();
     result.map_err(|error| PreparationError { error, diagnostics })

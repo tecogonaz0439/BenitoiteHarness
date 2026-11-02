@@ -1825,3 +1825,64 @@ fn prompt_templates_and_init_send_requests_from_the_input_only() -> TestResult {
     server.shutdown()?;
     Ok(())
 }
+
+// 作成時の関門: 一連の処理を終えたときの知らせは、前面を離れた端末でだけ、設定のコマンドを
+// 決まった文を最後の引数にして起動する。前面にあるときは起動しない（設計書 05-02「通知」）。
+#[test]
+fn finished_runs_start_the_notification_command_only_when_unfocused() -> TestResult {
+    use benitoiteh::config::NotificationsConfig;
+    use benitoiteh::ui::tui::Notifier;
+    let f = Fixture::new()?;
+    let log = f.root.join("notified.log");
+    let notifier = Notifier::new(&NotificationsConfig {
+        terminal: false,
+        command: vec![
+            "/bin/sh".into(),
+            "-c".into(),
+            format!("printf '%s\\n' \"$1\" >> '{}'", log.display()),
+            "sh".into(),
+        ],
+    });
+    for focus in [Event::FocusGained, Event::FocusLost] {
+        let mut server = MockProvider::start(vec![ResponseScript::sse(response(
+            json!({"content":"LLM done"}),
+            "stop",
+        ))])?;
+        let (worker, _directory) = f.worker(&server)?;
+        let mut screen = Screen::new((160, 30), status()).with_notifier(notifier.clone());
+        let mut output = Output::default();
+        let mut first = vec![focus.clone()];
+        first.extend(send("ordinary request"));
+        let mut input = Driver::new(
+            output.clone(),
+            vec![("", first), ("LLM done", send("/quit"))],
+        );
+        assert_eq!(
+            run(
+                &mut screen,
+                worker,
+                &mut input,
+                &mut output,
+                &AtomicBool::new(false),
+                |_| {},
+                &mut |_, _, _| Err("should not prepare".into())
+            )?,
+            0
+        );
+        server.shutdown()?;
+        if focus == Event::FocusGained {
+            // 起動していないことは、次の起動の知らせが一行だけであることで確かめる。
+            continue;
+        }
+        let started = Instant::now();
+        while !fs::read_to_string(&log).is_ok_and(|text| text.ends_with('\n')) {
+            assert!(started.elapsed() < Duration::from_secs(5));
+            thread::sleep(Duration::from_millis(10));
+        }
+        assert_eq!(
+            fs::read_to_string(&log)?,
+            "benitoiteh finished the request.\n"
+        );
+    }
+    Ok(())
+}

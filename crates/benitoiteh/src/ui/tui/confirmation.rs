@@ -643,6 +643,7 @@ fn fact(label: &str, value: &str, width: u16, compact: bool) -> Vec<FactRow> {
 impl Screen {
     /// 値を通常の入力と履歴から切り離して、同じ入力の守りを掛ける。
     pub fn open_secret(&mut self, prompt: crate::askpass::Prompt) {
+        self.notify(super::Notification::Approval);
         self.flush_pending();
         self.confirmation = Some(Confirmation {
             prompt: None,
@@ -720,6 +721,7 @@ impl Screen {
 
     /// 確認前のイベントを読み終えた画面に要求を渡す。
     pub fn open_approval(&mut self, prompt: ApprovalPrompt) {
+        self.notify(super::Notification::Approval);
         self.flush_pending();
         self.confirmation = Some(Confirmation {
             prompt: Some(prompt),

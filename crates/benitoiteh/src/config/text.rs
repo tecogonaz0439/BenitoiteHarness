@@ -55,6 +55,7 @@ pub const INVALID_TRUST_RECORD: &str =
     "The saved project trust decision is not valid; benitoiteh treats the project as undecided.";
 pub const INVALID_PASS_ENV: &str = "Invalid secrets.pass_env entry. Use a non-empty environment variable name without = or NUL that is not a provider API key variable.";
 pub const CHECK_FIX_POSITIVE: &str = "--max-check-fix and limits.max_check_fix must be at least 1.";
+pub const INVALID_NOTIFY_COMMAND: &str = "notifications.command must name a program first.";
 
 pub const WRITABLE_PROTECTED_NAME: &str =
     "A project cannot be created inside .git or .benitoiteh (case-insensitive)";

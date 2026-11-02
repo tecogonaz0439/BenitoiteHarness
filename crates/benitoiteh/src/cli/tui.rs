@@ -155,6 +155,7 @@ fn run_interactive(args: ExecArgs, signals: &mut Signals) -> Result<u8, CliError
             agent,
             session,
             panic_record,
+            notifications,
         } = match prepared {
             Ok(prepared) => prepared,
             Err(exec::PreparationError {
@@ -171,7 +172,8 @@ fn run_interactive(args: ExecArgs, signals: &mut Signals) -> Result<u8, CliError
         let mut screen = Screen::new(
             crossterm::terminal::size().map_err(CliError::Output)?,
             status,
-        );
+        )
+        .with_notifier(crate::ui::tui::Notifier::new(&notifications));
         screen.startup(diagnostics);
         // 再開でも記録したプロジェクトを使う。Agent の環境は prepare が実のパスで作る。
         screen.load_history(&paths, agent.project_dir());
@@ -228,12 +230,14 @@ fn run_interactive(args: ExecArgs, signals: &mut Signals) -> Result<u8, CliError
                         .collect::<Vec<_>>()
                         .join("\n")
                 })?;
+                // 知らせ方は起動のときの設定を使い続ける。
                 let exec::Prepared {
                     agent,
                     session,
                     status,
                     diagnostics,
                     panic_record,
+                    ..
                 } = prepared;
                 let restore = Arc::clone(&restore);
                 Ok(
