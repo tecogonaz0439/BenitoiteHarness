@@ -50,6 +50,7 @@ fn command_grammar_busy_rules_and_literal_slashes_apply_only_at_submission() -> 
         ),
         ("/fork before", Action::Command(Command::ForkBefore)),
         ("/fork x", Action::None),
+        ("/init", Action::Command(Command::Init)),
         ("/quit", Action::Quit),
         (
             "/compact keep names\nand paths",
@@ -65,7 +66,9 @@ fn command_grammar_busy_rules_and_literal_slashes_apply_only_at_submission() -> 
         let mut screen = Screen::new((120, 24), status());
         assert_eq!(submit(&mut screen, raw, false, false), expected, "{raw:?}");
     }
-    for command in ["/help", "/status", "/rewind", "/tree", "/new", "/quit"] {
+    for command in [
+        "/help", "/status", "/rewind", "/tree", "/new", "/quit", "/init",
+    ] {
         let mut screen = Screen::new((120, 24), status());
         assert_eq!(
             submit(&mut screen, &format!("{command} unwanted"), false, false),
@@ -1714,6 +1717,111 @@ fn fork_before_ignores_non_requests_and_restores_a_literal_slash_request() -> Te
         matches!(read_records(&old_dir)?.last(), Some(Record::SessionEnd { reason, .. }) if reason == "New session started.")
     );
     assert_eq!(server.requests()?.len(), 3);
+    server.shutdown()?;
+    Ok(())
+}
+
+// 作成時の関門: 利用者の定義するコマンドは、引数を埋めた文を依頼として送り、`/help` に説明とともに
+// 並ぶ。説明の制御の文字は目に見える形で示す。`/init` は AGENTS.md がなければ決まった依頼を送り、
+// あれば送らない（設計書 05-02「利用者の定義するコマンド」「`/` で始まるコマンド」）。
+#[test]
+fn prompt_templates_and_init_send_requests_from_the_input_only() -> TestResult {
+    let mut server = MockProvider::start(vec![
+        ResponseScript::sse(response(json!({"content":"reviewed"}), "stop")),
+        ResponseScript::sse(response(json!({"content":"initialized"}), "stop")),
+    ])?;
+    let f = Fixture::new()?;
+    let prompts = f.root.join("prompts");
+    fs::create_dir(&prompts)?;
+    fs::write(
+        prompts.join("review.md"),
+        "---\ndescription: Review \u{1b}[2J the change\n---\nReview $ARGUMENTS carefully.\n",
+    )?;
+    let exclude = ExcludeRules::new(
+        &f.project,
+        &f.paths,
+        &f.root.join("spill"),
+        &ReadConfig::default(),
+        &ReadConfig::default(),
+    )?;
+    let templates =
+        benitoiteh::context::prompts::collect(&prompts, &f.project, &f.paths.home, false, &exclude);
+    assert!(templates.notices.is_empty(), "{:?}", templates.notices);
+    let (worker, _directory) = f.worker(&server)?;
+    let mut with_templates = status();
+    with_templates.templates = std::sync::Arc::new(templates);
+    let mut screen = Screen::new((160, 30), with_templates);
+    let mut output = Output::default();
+    let mut input = Driver::new(
+        output.clone(),
+        vec![
+            ("", send("/help")),
+            ("Prompt templates:", send("/review src/a.rs")),
+            ("reviewed", send("/init")),
+            ("initialized", send("/quit")),
+        ],
+    );
+    assert_eq!(
+        run(
+            &mut screen,
+            worker,
+            &mut input,
+            &mut output,
+            &AtomicBool::new(false),
+            |_| {},
+            &mut |_, _, _| Err("should not prepare".into())
+        )?,
+        0
+    );
+    let visible = safe_output(&output.0.borrow())?;
+    assert!(visible.contains("/review"), "{visible}");
+    assert!(visible.contains("Review \\x1b[2J the change"), "{visible}");
+    let requests = server.requests()?;
+    let last_user = |index: usize| {
+        requests
+            .get(index)
+            .and_then(|request| request.body.pointer("/messages"))
+            .and_then(serde_json::Value::as_array)
+            .and_then(|messages| messages.last())
+            .map(serde_json::Value::to_string)
+            .unwrap_or_default()
+    };
+    assert!(
+        last_user(0).contains("Review src/a.rs carefully."),
+        "{}",
+        last_user(0)
+    );
+    assert!(
+        last_user(1).contains("Create an AGENTS.md file"),
+        "{}",
+        last_user(1)
+    );
+    assert_eq!(requests.len(), 2);
+    server.shutdown()?;
+
+    // AGENTS.md があるときは送らない。
+    fs::write(f.project.join("AGENTS.md"), "rules\n")?;
+    let mut server = MockProvider::start(vec![])?;
+    let (worker, _directory) = f.worker(&server)?;
+    let mut screen = Screen::new((160, 30), status());
+    let mut output = Output::default();
+    let mut input = Driver::new(
+        output.clone(),
+        vec![("", send("/init")), ("already exists", send("/quit"))],
+    );
+    assert_eq!(
+        run(
+            &mut screen,
+            worker,
+            &mut input,
+            &mut output,
+            &AtomicBool::new(false),
+            |_| {},
+            &mut |_, _, _| Err("should not prepare".into())
+        )?,
+        0
+    );
+    assert!(server.requests()?.is_empty());
     server.shutdown()?;
     Ok(())
 }

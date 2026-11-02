@@ -3,6 +3,7 @@
 mod environment;
 pub mod instructions;
 mod plugins;
+pub mod prompts;
 pub mod skills;
 mod text;
 

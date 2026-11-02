@@ -42,6 +42,8 @@ pub struct Status {
     pub sandbox_disabled: bool,
     pub context_window: Option<u64>,
     pub estimate: u64,
+    /// 利用者の定義するコマンド（設計書 05-02「利用者の定義するコマンド」）。
+    pub templates: std::sync::Arc<crate::context::prompts::PromptTemplates>,
 }
 
 /// 入力のイベント列と AgentEvent を受け、Write に一回の描画を出す芯。

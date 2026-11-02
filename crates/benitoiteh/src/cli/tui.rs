@@ -91,6 +91,7 @@ fn run_interactive(args: ExecArgs, signals: &mut Signals) -> Result<u8, CliError
                     sandbox_disabled: false,
                     context_window: None,
                     estimate: 0,
+                    templates: Default::default(),
                 },
             )
         };
@@ -267,6 +268,10 @@ fn trust_loads(request: &exec::TrustRequest) -> Vec<&'static str> {
     [
         (request.skills, "project skills (.agents/skills)"),
         (request.plugins, "project plugins (.agents/plugins)"),
+        (
+            request.prompts,
+            "project prompt templates (.agents/prompts)",
+        ),
         (
             request.model,
             "the model setting in .benitoiteh/config.toml",

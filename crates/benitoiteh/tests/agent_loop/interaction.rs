@@ -340,6 +340,7 @@ fn escape_declines_one_approval_and_remaining_calls_in_the_response_still_execut
             sandbox_disabled: true,
             context_window: None,
             estimate: 0,
+            templates: Default::default(),
         },
     );
     let (report, _) = controlled(

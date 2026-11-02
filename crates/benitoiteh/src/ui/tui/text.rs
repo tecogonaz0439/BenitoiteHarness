@@ -210,6 +210,23 @@ pub fn decline_keys(kind: Option<crate::approval::ApprovalKind>) -> &'static str
     }
 }
 
+pub const INIT_RESTRICTED: &str =
+    "/init is not available in restricted mode because it cannot write files.";
+pub fn init_exists(path: &std::path::Path) -> String {
+    format!(
+        "{} already exists; /init did not send a request.",
+        path.display()
+    )
+}
+/// 雛形の一覧の見出し。
+pub const TEMPLATES_HEADING: &str = "Prompt templates:";
+/// 雛形の一行。名前と説明は信頼しない文字列なので、示す前に制御の文字を替える。
+pub fn template_line(name: &str, description: Option<&str>) -> String {
+    match description {
+        Some(description) => format!("/{name:<22} {description}"),
+        None => format!("/{name}"),
+    }
+}
 pub const UNKNOWN_COMMAND: &str = "Unknown command. Type /help for available commands.";
 pub const COMMAND_ARGUMENTS: &str = "This command does not accept arguments. Type /help for usage.";
 pub const COMMAND_RUNNING: &str = "This command is unavailable while processing.";
@@ -265,6 +282,7 @@ pub const HELP: &str = "/help                  Show commands and input controls.
 /tree                  Show the session tree and move to a branch or request.
 /fork [before]         Copy a path into a new session.
 /new                   Start a new session.
+/init                  Ask the model to write AGENTS.md for this project.
 /quit                  Quit.
 Enter: send a request, or steer while processing.
 Alt+Enter: queue a follow-up while processing.

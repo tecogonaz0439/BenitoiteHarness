@@ -14,6 +14,7 @@ fn status() -> Status {
         sandbox_disabled: false,
         context_window: Some(1000),
         estimate: 100,
+        templates: Default::default(),
     }
 }
 

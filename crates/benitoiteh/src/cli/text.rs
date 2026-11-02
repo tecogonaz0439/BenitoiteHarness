@@ -116,11 +116,13 @@ pub fn project_untrusted(
     root: &std::path::Path,
     skills: bool,
     plugins: bool,
+    prompts: bool,
     model: bool,
 ) -> String {
     let parts = [
         (skills, "project skills"),
         (plugins, "project plugins"),
+        (prompts, "project prompt templates"),
         (model, "the project model setting"),
     ]
     .into_iter()

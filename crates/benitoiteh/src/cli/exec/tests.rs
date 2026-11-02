@@ -225,6 +225,66 @@ fn project_skills_and_model_follow_the_trust_decision() -> Result<(), Box<dyn Er
     Ok(())
 }
 
+// 作成時の関門: プロジェクトの雛形だけでも信頼を尋ね、信頼したときだけ読む。利用者の雛形はいつも読み、
+// exec（非対話）ではどちらも読まない（設計書 05-02「利用者の定義するコマンド」）。
+#[test]
+fn project_prompt_templates_follow_the_trust_decision() -> Result<(), Box<dyn Error>> {
+    let f = Fixture::new()?;
+    let paths = f.paths("sandbox = 'danger-full-access'")?;
+    let project = f.0.join("project");
+    fs::create_dir_all(paths.config_dir.join("prompts"))?;
+    fs::write(paths.config_dir.join("prompts/mine.md"), "Mine.")?;
+    fs::create_dir_all(project.join(".agents/prompts"))?;
+    fs::write(project.join(".agents/prompts/plan.md"), "Plan.")?;
+    let asked = Cell::new(0_u32);
+    for (interactive, answer, expected) in [
+        (true, false, vec!["mine"]),
+        (true, true, vec!["mine", "plan"]),
+        (false, true, vec![]),
+    ] {
+        let mut args = if interactive {
+            ExecArgs::parse_interactive(["--mode", "normal"])?
+        } else {
+            f.args(&["--mode", "normal"])?
+        };
+        args.project = Some(project.clone());
+        let before = asked.get();
+        let prepared = prepare_with_trust(
+            &args,
+            None,
+            &paths,
+            |_, _| Ok(()),
+            &mut |_| false,
+            &mut |request| {
+                assert!(request.prompts && !request.skills && !request.plugins);
+                asked.set(asked.get().saturating_add(1));
+                Some(TrustAnswer::Session(answer))
+            },
+        )
+        .map_err(|error| error.to_string())?;
+        assert_eq!(asked.get(), before.saturating_add(1));
+        assert_eq!(
+            prepared
+                .status
+                .templates
+                .iter()
+                .map(|template| template.name.as_str())
+                .collect::<Vec<_>>(),
+            expected
+        );
+        assert_eq!(
+            prepared
+                .diagnostics
+                .iter()
+                .any(|line| line.contains("project prompt templates")),
+            !answer,
+            "{:?}",
+            prepared.diagnostics
+        );
+    }
+    Ok(())
+}
+
 // 関門: cleanup の報告だけでは起動処理による通知の取り落としを捕まえない。
 // 他の起動テストと同じ準備の入口から、成功と画面へ渡す診断を確かめる。
 #[test]

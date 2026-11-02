@@ -136,6 +136,8 @@ pub(super) struct TrustRequest {
     pub root: PathBuf,
     pub skills: bool,
     pub plugins: bool,
+    /// 範囲の中に `.agents/prompts` がある（設計書 05-02「利用者の定義するコマンド」）。
+    pub prompts: bool,
     pub model: bool,
 }
 
@@ -324,9 +326,12 @@ pub(super) fn prepare(
             root: resources.root.clone(),
             skills: resources.skills,
             plugins: resources.plugins,
+            prompts: crate::context::prompts::project_has_prompts(root.real_path(), &paths.home),
             model: project.config.model.is_some(),
         };
-        let project_trust = if request.skills || request.plugins || request.model {
+        let mut project_prompts = request.prompts;
+        let project_trust = if request.skills || request.plugins || request.prompts || request.model
+        {
             let trusted = decide_trust(
                 args,
                 overrides,
@@ -340,9 +345,11 @@ pub(super) fn prepare(
                     &request.root,
                     request.skills,
                     request.plugins,
+                    request.prompts,
                     request.model,
                 ));
                 project.config.model = None;
+                project_prompts = false;
                 user.skills.project = false;
                 user.plugins.project = false;
             }
@@ -724,6 +731,19 @@ pub(super) fn prepare(
             &resolved.plugins,
             &exclude,
         );
+        // 雛形は対話の画面のコマンドなので、exec では読まない。
+        let templates = if args.interactive {
+            crate::context::prompts::collect(
+                &paths.config_dir.join("prompts"),
+                root.real_path(),
+                &paths.home,
+                project_prompts,
+                &exclude,
+            )
+        } else {
+            crate::context::prompts::PromptTemplates::default()
+        };
+        diagnostics.extend(templates.notices.iter().cloned());
         let mut context = ToolContext::new(
             resolved.mode,
             root,
@@ -832,6 +852,7 @@ pub(super) fn prepare(
             sandbox_disabled,
             context_window: resolved.capabilities.context_window,
             estimate: 0,
+            templates: Arc::new(templates),
         };
         let normal_network = resolved.mode == Mode::Normal
             && user.normal.network == crate::config::NetworkAccess::On;

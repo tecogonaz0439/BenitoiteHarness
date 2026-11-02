@@ -321,8 +321,29 @@ pub fn run(
                             for line in super::text::HELP.lines() {
                                 screen.notice(line);
                             }
+                            let templates = std::sync::Arc::clone(&screen.status.templates);
+                            if !templates.is_empty() {
+                                screen.notice(super::text::TEMPLATES_HEADING);
+                                for template in templates.iter() {
+                                    screen.notice(&super::text::template_line(
+                                        &template.name,
+                                        template.description.as_deref(),
+                                    ));
+                                }
+                            }
                             Ok(())
                         }
+                        Command::Init => match init_request(worker.current_status()) {
+                            Ok(request) => {
+                                screen.original_submission = None;
+                                screen.show_request(&request);
+                                worker.submit(request, RunControl::default())
+                            }
+                            Err(notice) => {
+                                screen.notice(&notice);
+                                Ok(())
+                            }
+                        },
                         Command::Status => worker.status(),
                         Command::Compact(instructions) => {
                             screen.operation = Some(super::text::COMPACTING);
@@ -501,4 +522,17 @@ pub fn confirm(
             }
         }
     }
+}
+
+/// `/init` の依頼。制限モードと、`AGENTS.md` がすでにあるときは送らない
+/// （設計書 05-02「`/` で始まるコマンド」）。
+fn init_request(status: &crate::agent::AgentStatus) -> Result<String, String> {
+    if status.mode == crate::config::Mode::Restricted {
+        return Err(super::text::INIT_RESTRICTED.to_owned());
+    }
+    let path = status.project.join("AGENTS.md");
+    if std::fs::symlink_metadata(&path).is_ok() {
+        return Err(super::text::init_exists(&path));
+    }
+    Ok(include_str!("../../../prompts/init.md").to_owned())
 }

@@ -1222,6 +1222,7 @@ mod tests {
                 sandbox_disabled: false,
                 context_window: None,
                 estimate: 0,
+                templates: Default::default(),
             },
         );
         screen.open_secret(receiver.recv()?);
