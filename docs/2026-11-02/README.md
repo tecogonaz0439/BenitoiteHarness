@@ -44,6 +44,9 @@
 | `crates/benitoiteh/src/tools/bash.rs` | 変更 | `escalate` の一回の `PATH` から、書ける場所に届く項目を除く | [05](05-stage1.md) |
 | `crates/benitoiteh/tests/tools_bash.rs`、`tests/support/bash.rs` | 変更 | 外で動かす一回の `PATH` のテストと、`PATH` を差し替える準備を加えた | [05](05-stage1.md) |
 | `docs/design/03-safety/03-02-sandbox.md` | 変更 | 「通常モードの方針」に、外で動かす一回の `PATH` の扱いを加えた | [05](05-stage1.md) |
+| `crates/benitoiteh/src/cli/mod.rs`、`src/cli/text.rs` | 変更 | Linux で、主のプロセスを起動の直後にダンプできない形にする | [05](05-stage1.md) |
+| `crates/benitoiteh/tests/sandbox_exec_restricted.rs` | 変更 | 外で動く `bash` が主のプロセスの環境を読めないことを確かめるテストを加えた | [05](05-stage1.md) |
+| `docs/design/03-safety/03-02-sandbox.md`、`docs/design/open-issues.md` | 変更 | 「主のプロセスの守り」を加え、macOS の扱いを BH-118 とした | [05](05-stage1.md) |
 | `docs/2026-11-02/` | 追加 | 本ディレクトリ | — |
 | `docs/README.md` | 変更 | 本ディレクトリへの案内を加えた | — |
 

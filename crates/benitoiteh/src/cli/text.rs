@@ -40,6 +40,12 @@ exec only supports --approval never.
 /// 使い方の誤りに共通の案内。
 pub const INVALID_ARGUMENTS: &str = "benitoiteh: invalid arguments; use --help for usage";
 
+/// 主のプロセスをダンプできない形にできなかったときの文言。
+#[cfg(target_os = "linux")]
+pub fn not_dumpable(error: &dyn std::fmt::Display) -> String {
+    format!("benitoiteh: could not make the process non-dumpable: {error}")
+}
+
 /// 重複した指定を示す。
 pub fn duplicate_option(option: &str) -> String {
     format!("benitoiteh: duplicate option {option}; use --help for usage")

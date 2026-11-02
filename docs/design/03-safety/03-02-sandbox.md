@@ -1,7 +1,7 @@
 # OS のサンドボックス
 
 - 状態: 草稿
-- 未決事項: BH-041, BH-044, BH-045, BH-046, BH-091, BH-094
+- 未決事項: BH-041, BH-044, BH-045, BH-046, BH-091, BH-094, BH-118
 
 ## 目的と範囲
 
@@ -243,6 +243,12 @@ macOS で `~/Library/Keychains` などを読ませないことが、サンドボ
 - 秘密に見える名前の変数。名前が `KEY`・`SECRET`・`TOKEN`・`PASSWORD`・`PASSWD`・`CREDENTIAL` のどれかを含むもの（ASCII の大文字と小文字を区別しない）とする。ただし、利用者の設定ファイルの `[secrets]` の `pass_env` に書いた名前（完全に一致するもの）は除かない（[CLI と設定ファイル](../05-interface/05-01-cli.md)の「利用者の設定ファイル」）。理由: サンドボックスの中のコマンドは、`env` を打つだけで環境を LLM へ返せる。`GITHUB_TOKEN` や `AWS_SECRET_ACCESS_KEY` を LLM の提供者へ送らないことを既定とし、`gh` などに要る名前だけを利用者が選んで通す。語の組は Codex CLI の既定の除外（`*KEY*`・`*SECRET*`・`*TOKEN*`。<https://github.com/openai/codex> のコミット `3026a8e54e0f48c4d8074cd700f35b0697abc329` の `codex-rs/protocol/src/shell_environment.rs`）に、パスワードと資格情報の語を足したものである。Codex CLI はこの除外を既定では使わないが、`benitoiteh` は安全の性質を既定とするため使う。秘密を名前に表さない変数（URL に埋め込んだパスワードなど）は除けない。`SSH_AUTH_SOCK` などのエージェントの場所は秘密そのものではないので残る（[秘密の入力](03-04-secrets.md)の「段 1: すでにある秘密の仲介役を使う」）。
 
 ローダとインタプリタに働く変数（`LD_PRELOAD`・`DYLD_INSERT_LIBRARIES`・`NODE_OPTIONS`・`PYTHONPATH` など）は、親の環境から除かない。理由: 親の環境は利用者が設定したものであり、信頼の前提では信頼する側にある。nono はこれらを必ず除くが、nono は親の環境も信頼しない前提に立つ。LLM が子の環境にこれらを設定する道筋（Benitoite の `Process.Command` の `environment`）は、処理系が `LD_`・`DYLD_` で始まる名前を拒む（BH-026）。
+
+### 主のプロセスの守り
+
+【方針】Linux では、`benitoiteh` の主のプロセスは、起動の直後（補助の入口を分けた後、設定を読む前）に、自分をダンプできない形（`PR_SET_DUMPABLE` を 0）にする。できなければ起動しない。理由: 主のプロセスは、環境に LLM の提供者のキーを持ち、記憶に会話と認証のトークンを持つ。ダンプできない形のプロセスの `/proc/<pid>/environ`・`mem` などは root の持ち物になり、同じ利用者のほかのプロセスから読めず、ptrace でも接続できない（[proc_pid_environ(5)](https://man7.org/linux/man-pages/man5/proc_pid_environ.5.html) が `ptrace(2)` の `PTRACE_MODE_READ_FSCREDS` の確かめに従うとし、[ptrace(2)](https://man7.org/linux/man-pages/man2/ptrace.2.html) がダンプできない形のプロセスへの確かめを拒むとする）。サンドボックスの外で動くコマンド（`escalate` の一回と `danger-full-access`）は、主のプロセスと同じ利用者で動くので、これがないと `/proc/$PPID/environ` から提供者のキーを読める。2026-11-02 に、x86_64 の Linux 6.18.44 の root でない利用者で、これがない版ではこの読み取りが通り、ある版では拒まれることを確かめた。ダンプできない形は `execve` で起動したプログラムには継がれないので、利用者のプログラムのコアのダンプと解析の道具は変わらない。コアのダンプの上限（`RLIMIT_CORE`）は子に継がれるので使わない。
+
+macOS では同じ手当てをしていない。macOS で同じ利用者のほかのプロセスが、主のプロセスの環境や記憶を読めるか（`sysctl` の `KERN_PROCARGS2` や `task_for_pid` など）と、`unsafe` を書かずに防ぐ方法は、確かめていない【要検証】（BH-118）。
 
 ### 端末からの切り離し
 

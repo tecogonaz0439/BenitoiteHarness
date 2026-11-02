@@ -45,6 +45,16 @@ pub fn main() -> ExitCode {
     if argument.as_deref() == Some(std::ffi::OsStr::new("__image")) {
         return crate::tools::run_image_helper(args);
     }
+    // 主のプロセスは、環境に提供者のキーを持ち、記憶に会話と認証のトークンを持つ。ダンプできない形に
+    // して、同じ利用者のほかのプロセス（外で動かすコマンドを含む）から /proc/<pid>/environ・mem を
+    // 読ませず、ptrace で接続させない。execve の後の子には及ばない（設計書 03-02「主のプロセスの守り」）。
+    #[cfg(target_os = "linux")]
+    if let Err(error) =
+        rustix::process::set_dumpable_behavior(rustix::process::DumpableBehavior::NotDumpable)
+    {
+        let _shown = writeln!(io::stderr().lock(), "{}", text::not_dumpable(&error));
+        return ExitCode::from(2);
+    }
     panic::install(None, None);
     match run(argument, args) {
         Ok(status) => ExitCode::from(status),

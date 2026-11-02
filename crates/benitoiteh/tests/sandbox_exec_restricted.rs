@@ -93,6 +93,56 @@ fn redirected_xdg_keeps_default_home_configuration_and_state_unreadable() -> Tes
     Ok(())
 }
 
+// 関門: サンドボックスの外で動くコマンドも、主のプロセスの環境（提供者のキー）を /proc から読めない
+// （設計書 03-02「主のプロセスの守り」）。親が主のプロセスであることも確かめ、別の理由で通らないようにする。
+#[cfg(target_os = "linux")]
+#[test]
+fn unsandboxed_bash_cannot_read_the_main_process_environment() -> TestResult {
+    let protocol = Protocol::Chat;
+    let command = r#"printf 'parent=%s\n' "$(cat /proc/$PPID/comm)"
+if tr '\0' '\n' < /proc/$PPID/environ; then printf 'UNEXPECTED-READ\n'; else printf 'denied\n'; fi"#;
+    let mut server = MockProvider::start(vec![
+        ResponseScript::sse(protocol.response(
+            Some(("read-parent", "bash", json!({"command":command}))),
+            "",
+            false,
+        )),
+        ResponseScript::sse(protocol.response(None, "Done", false)),
+    ])?;
+    let f = Fixture::restricted(protocol, &server)?;
+    let output = Running::start(f.command("Read the parent").args([
+        "--mode",
+        "normal",
+        "--sandbox",
+        "danger-full-access",
+        "--approval",
+        "never",
+        "--json",
+    ]))?
+    .finish()?;
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let (_, records) = f.records()?;
+    let text = records
+        .iter()
+        .find(|record| {
+            record.get("type") == Some(&json!("tool_result"))
+                && record.get("name") == Some(&json!("bash"))
+        })
+        .and_then(|record| record.pointer("/result/text"))
+        .and_then(Value::as_str)
+        .ok_or("bash result")?;
+    assert!(text.contains("parent=benitoiteh"), "{text}");
+    assert!(text.contains("denied"), "{text}");
+    assert!(!text.contains(KEY), "{text}");
+    assert!(!text.contains("UNEXPECTED-READ"), "{text}");
+    server.shutdown()?;
+    Ok(())
+}
+
 // 関門: 通常モードの bash も同じ HOME の秘密を読めず、公開の読み取りと
 // プロジェクトへの書き込みは続けられることを、OS と exec の境界で確かめる。
 #[test]
