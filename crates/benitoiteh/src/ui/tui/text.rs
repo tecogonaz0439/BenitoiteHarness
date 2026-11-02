@@ -283,6 +283,7 @@ pub const HELP: &str = "/help                  Show commands and input controls.
 /fork [before]         Copy a path into a new session.
 /new                   Start a new session.
 /init                  Ask the model to write AGENTS.md for this project.
+/export [path]         Write the current branch to a new Markdown file.
 /quit                  Quit.
 Enter: send a request, or steer while processing.
 Alt+Enter: queue a follow-up while processing.
@@ -704,3 +705,11 @@ pub const SECRET_CLOSED: &str =
 /// 通知の文（設計書 05-02「通知」）。
 pub const NOTIFY_APPROVAL: &str = "benitoiteh is waiting for your confirmation.";
 pub const NOTIFY_FINISHED: &str = "benitoiteh finished the request.";
+
+/// 書き出しの結果（設計書 01-05「会話の書き出し」）。
+pub fn exported(path: &std::path::Path) -> String {
+    format!("Exported the conversation to {}", path.display())
+}
+pub fn export_failed(error: &str) -> String {
+    format!("Could not export the conversation: {error}")
+}

@@ -1,5 +1,6 @@
 //! セッションの記録、ロック、一時領域、保持期間の掃除（設計書 01-05、05-01「データの置き場所」）。
 
+mod export;
 mod files;
 mod fork;
 mod id;
@@ -15,6 +16,7 @@ mod temporary;
 pub(crate) mod text;
 mod tree;
 
+pub use export::export_markdown;
 pub use files::FileHistory;
 pub use fork::{ForkTarget, ForkedSession};
 pub use id::SessionId;

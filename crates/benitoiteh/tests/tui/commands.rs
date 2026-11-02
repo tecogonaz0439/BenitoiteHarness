@@ -1886,3 +1886,58 @@ fn finished_runs_start_the_notification_command_only_when_unfocused() -> TestRes
     }
     Ok(())
 }
+
+// 作成時の関門: `/export` は今の枝を、まだないファイルにだけ利用者だけが読める権限で書き、既にある
+// ファイルは上書きしない。パスがなければプロジェクトの下に決まった名前で書く（設計書 01-05「会話の書き出し」）。
+#[test]
+fn export_command_writes_new_private_files_only() -> TestResult {
+    use std::os::unix::fs::PermissionsExt;
+    let mut server = MockProvider::start(vec![ResponseScript::sse(response(
+        json!({"content":"LLM done"}),
+        "stop",
+    ))])?;
+    let f = Fixture::new()?;
+    fs::write(f.project.join("taken.md"), "keep me")?;
+    let (worker, directory) = f.worker(&server)?;
+    let id = directory
+        .file_name()
+        .ok_or("id")?
+        .to_string_lossy()
+        .into_owned();
+    let mut screen = Screen::new((160, 30), status());
+    let mut output = Output::default();
+    let mut input = Driver::new(
+        output.clone(),
+        vec![
+            ("", send("export me please")),
+            ("LLM done", send("/export out.md")),
+            ("Exported the conversation", send("/export taken.md")),
+            ("Could not export the conversation", send("/export")),
+            ("Exported the conversation", send("/quit")),
+        ],
+    );
+    assert_eq!(
+        run(
+            &mut screen,
+            worker,
+            &mut input,
+            &mut output,
+            &AtomicBool::new(false),
+            |_| {},
+            &mut |_, _, _| Err("should not prepare".into())
+        )?,
+        0
+    );
+    server.shutdown()?;
+    for path in [
+        f.project.join("out.md"),
+        f.project.join(format!("benitoiteh-{id}.md")),
+    ] {
+        let written = fs::read_to_string(&path)?;
+        assert!(written.contains("## User\n\nexport me please"), "{written}");
+        assert!(written.contains("## Assistant\n\nLLM done"), "{written}");
+        assert_eq!(fs::metadata(&path)?.permissions().mode() & 0o777, 0o600);
+    }
+    assert_eq!(fs::read_to_string(f.project.join("taken.md"))?, "keep me");
+    Ok(())
+}

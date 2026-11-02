@@ -148,3 +148,16 @@ pub fn cleanup_skipped(path: &std::path::Path, reason: &str) -> String {
     let reason = crate::benitoite::display::one_line(reason);
     format!("Skipped cleanup of {path}: {reason}")
 }
+
+/// 書き出しの見出しと注記（設計書 01-05「会話の書き出し」）。
+pub const EXPORT_USER: &str = "User";
+pub const EXPORT_STEERING: &str = "User (steering)";
+pub const EXPORT_SUMMARY: &str = "Summary of earlier conversation";
+pub const EXPORT_ENVIRONMENT: &str = "Environment";
+pub const EXPORT_TOOL_RESULT: &str = "Tool result";
+pub const EXPORT_TOOL_ERROR: &str = "Tool error";
+pub const EXPORT_COMPACTED: &str =
+    "The conversation was compacted here; the model saw the summary instead of the turns above.";
+pub fn export_images(count: usize) -> String {
+    format!("({count} image(s) omitted from the export.)")
+}

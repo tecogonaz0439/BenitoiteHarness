@@ -21,6 +21,8 @@ pub enum Command {
     PreviewBranch(crate::agent::BranchTarget, crate::rewind::RewindScope),
     /// `AGENTS.md` を書く依頼を送る（設計書 05-02「`/` で始まるコマンド」）。
     Init,
+    /// 今の枝を Markdown に書き出す。パスがなければプロジェクトの下に決まった名前で書く。
+    Export(Option<String>),
 }
 
 /// 新しいセッションの準備。端末と panic の書き先は CLI が設定する。
@@ -125,6 +127,9 @@ impl Screen {
             },
             "quit" => Action::Quit,
             "init" => Action::Command(Command::Init),
+            "export" => Action::Command(Command::Export(
+                (!arguments.trim().is_empty()).then(|| arguments.trim().to_owned()),
+            )),
             // 雛形は、引数を埋めた文を利用者の依頼として送る（設計書 05-02「利用者の定義するコマンド」）。
             _ => match self.status.templates.get(name) {
                 Some(template) => send(template.expand(arguments)),

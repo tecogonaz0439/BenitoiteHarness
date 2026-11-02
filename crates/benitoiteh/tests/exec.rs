@@ -1466,3 +1466,56 @@ fn without_session_directory(text: &str) -> String {
     result.push_str(rest);
     result
 }
+
+// 作成時の関門: `sessions export <ID>` は記録した会話を Markdown で標準出力に書き、誤った ID と
+// 余計な引数を使い方の誤りにする（設計書 05-01「sessions」）。
+#[test]
+fn sessions_export_prints_the_recorded_conversation() -> TestResult {
+    let protocol = Protocol::Chat;
+    let mut server = MockProvider::start(vec![ResponseScript::sse(protocol.response(
+        None,
+        "Answer text.",
+        false,
+    ))])?;
+    let f = Fixture::new(protocol, &server)?;
+    let output = Running::start(&mut f.command("Question text."))?.finish()?;
+    assert_eq!(output.status.code(), Some(0));
+    let (directory, _) = f.records()?;
+    let id = directory
+        .file_name()
+        .ok_or("id")?
+        .to_string_lossy()
+        .into_owned();
+    let sessions = |arguments: &[&str]| {
+        Command::new(env!("CARGO_BIN_EXE_benitoiteh"))
+            .arg("sessions")
+            .args(arguments)
+            .env("HOME", f.root.join("home"))
+            .env("XDG_CONFIG_HOME", f.root.join("config"))
+            .env("XDG_STATE_HOME", f.root.join("state"))
+            .env("TMPDIR", f.root.join("tmp"))
+            .output()
+    };
+    let exported = sessions(&["export", &id])?;
+    assert_eq!(exported.status.code(), Some(0));
+    let markdown = String::from_utf8(exported.stdout)?;
+    assert!(markdown.starts_with(&format!("# benitoiteh session {id}\n")));
+    assert!(markdown.contains("## User\n\nQuestion text."), "{markdown}");
+    assert!(
+        markdown.contains("## Assistant\n\nAnswer text."),
+        "{markdown}"
+    );
+    for arguments in [
+        vec!["export"],
+        vec!["export", "not-an-id"],
+        vec!["export", &id, "extra"],
+    ] {
+        assert_eq!(
+            sessions(&arguments)?.status.code(),
+            Some(2),
+            "{arguments:?}"
+        );
+    }
+    server.shutdown()?;
+    Ok(())
+}

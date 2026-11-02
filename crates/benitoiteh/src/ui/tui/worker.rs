@@ -102,6 +102,8 @@ pub struct Worker {
     status: AgentStatus,
     rewinding: bool,
     ended: bool,
+    /// 書き出しで記録を読むためのセッションのディレクトリ（設計書 01-05「会話の書き出し」）。
+    session_directory: std::path::PathBuf,
 }
 
 impl Worker {
@@ -111,6 +113,7 @@ impl Worker {
         let (events, receiver) = mpsc::sync_channel(64);
         let (done, completions) = mpsc::sync_channel(1);
         let status = agent.status();
+        let session_directory = session.directory().to_path_buf();
         let secrets = agent.take_secret_requests();
         let askpass = agent.askpass_broker();
         let thread = thread::Builder::new().name("agent".into()).spawn(move || {
@@ -224,6 +227,7 @@ impl Worker {
             status,
             rewinding: false,
             ended: false,
+            session_directory,
         })
     }
 
@@ -367,6 +371,11 @@ impl Worker {
     pub(super) fn end(&mut self) -> Result<(), AgentError> {
         self.command(Job::End, RunControl::default())
     }
+    /// セッションの記録のディレクトリ。
+    pub(super) fn session_directory(&self) -> &std::path::Path {
+        &self.session_directory
+    }
+
     pub(super) fn current_status(&self) -> &AgentStatus {
         &self.status
     }

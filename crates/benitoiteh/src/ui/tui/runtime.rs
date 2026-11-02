@@ -338,6 +338,17 @@ pub fn run(
                             }
                             Ok(())
                         }
+                        Command::Export(path) => {
+                            screen.notice(&match export(
+                                worker.session_directory(),
+                                worker.current_status(),
+                                path.as_deref(),
+                            ) {
+                                Ok(written) => super::text::exported(&written),
+                                Err(error) => super::text::export_failed(&error),
+                            });
+                            Ok(())
+                        }
                         Command::Init => match init_request(worker.current_status()) {
                             Ok(request) => {
                                 screen.original_submission = None;
@@ -540,4 +551,33 @@ fn init_request(status: &crate::agent::AgentStatus) -> Result<String, String> {
         return Err(super::text::init_exists(&path));
     }
     Ok(include_str!("../../../prompts/init.md").to_owned())
+}
+
+/// 今の枝を Markdown にして、まだないファイルに書く（設計書 01-05「会話の書き出し」）。
+/// 相対のパスはプロジェクトのディレクトリから数える。既にあるファイルは上書きしない。
+fn export(
+    directory: &std::path::Path,
+    status: &crate::agent::AgentStatus,
+    path: Option<&str>,
+) -> Result<std::path::PathBuf, String> {
+    use std::io::Write as _;
+    use std::os::unix::fs::OpenOptionsExt;
+    let markdown = crate::session::export_markdown(directory).map_err(|error| error.to_string())?;
+    let target = match path {
+        Some(path) => status.project.join(path),
+        None => status
+            .project
+            .join(format!("benitoiteh-{}.md", status.session_id)),
+    };
+    // 読んだファイルの中身を含みうるので、利用者だけが読める権限で作る。
+    let mut file = std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .mode(0o600)
+        .open(&target)
+        .map_err(|error| format!("{}: {error}", target.display()))?;
+    file.write_all(markdown.as_bytes())
+        .and_then(|()| file.sync_all())
+        .map_err(|error| format!("{}: {error}", target.display()))?;
+    Ok(target)
 }

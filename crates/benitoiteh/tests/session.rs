@@ -2629,3 +2629,93 @@ fn ephemeral_sessions_are_hidden_while_used_and_removed_when_released() -> TestR
     assert!(!leftover_temporary.exists());
     Ok(())
 }
+
+// 作成時の関門: 書き出しは今の枝だけを順に書き、圧縮の前の番も、圧縮の印と要約とともに残す。
+// 中身の囲みで書き出しの囲みを閉じさせず、推論の中身は書かない（設計書 01-05「会話の書き出し」）。
+#[test]
+fn export_writes_the_current_branch_with_compaction_and_safe_fences() -> TestResult {
+    use benitoiteh::session::export_markdown;
+    let fixture = Fixture::new()?;
+    let session = fixture.session()?;
+    let mut writer = session.writer()?;
+    writer.append(&header(&session))?;
+    let user = |node, kind, text: &str| Record::User {
+        node,
+        kind: UserKind::Request,
+        message: UserMessage {
+            parts: vec![UserPart {
+                kind,
+                text: text.into(),
+            }],
+        },
+    };
+    writer.append(&user(1, UserPartKind::Request, "Write the file."))?;
+    writer.append(&Record::Assistant {
+        node: 2,
+        turn: 1,
+        response: response(&[call("first")]),
+    })?;
+    writer.append(&Record::ToolResult {
+        node: 3,
+        turn: 1,
+        name: "write".into(),
+        result: ToolResult {
+            id: "first".into(),
+            provider_id: None,
+            text: "```\nclosing fence\n````".into(),
+            is_error: true,
+            images: Vec::new(),
+        },
+        spill: None,
+        stderr_spill: None,
+    })?;
+    writer.append(&Record::Compaction {
+        node: 4,
+        conversation: Conversation {
+            items: vec![Item::UserMessage(UserMessage {
+                parts: vec![UserPart {
+                    kind: UserPartKind::Summary,
+                    text: "Summary text.".into(),
+                }],
+            })],
+        },
+        reason: Default::default(),
+        summarized_items: 3,
+        kept_items: 0,
+        usage: None,
+        kept_estimate: None,
+    })?;
+    writer.append(&user(5, UserPartKind::Request, "Abandoned request."))?;
+    writer.append(&Record::Branch {
+        to: Some(4),
+        from: Some(5),
+        checkpoint: None,
+    })?;
+    writer.append(&user(6, UserPartKind::Request, "Final request."))?;
+    drop(writer);
+    let exported = export_markdown(session.directory())?;
+    assert!(exported.starts_with(&format!("# benitoiteh session {}\n", session.id())));
+    let order = [
+        "## User\n\nWrite the file.",
+        "## Assistant\n\nrunning tools",
+        "### Tool call: `write`",
+        "\"path\": \"a.bnt\"",
+        "### Tool error: `write`\n\n`````text\n```\nclosing fence\n````\n`````",
+        "> The conversation was compacted here",
+        "Summary text.",
+        "## User\n\nFinal request.",
+    ];
+    let mut position = 0;
+    for expected in order {
+        let found = exported
+            .get(position..)
+            .and_then(|rest| rest.find(expected))
+            .ok_or_else(|| format!("missing {expected:?} after {position} in:\n{exported}"))?;
+        position = position
+            .saturating_add(found)
+            .saturating_add(expected.len());
+    }
+    assert!(!exported.contains("Abandoned request."), "{exported}");
+    assert!(!exported.contains("opaque"), "{exported}");
+    Ok(())
+}
