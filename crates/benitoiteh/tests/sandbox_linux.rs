@@ -527,6 +527,65 @@ fn gitdir_targets_and_existing_nested_metadata_are_read_only() -> TestResult {
     Ok(())
 }
 
+// 作成時の関門: すでにある入れ子の守る場所を、祖先の名前の付け替えでその位置から外し、
+// 空いた位置に新しい .git を作らせない（設計書 03-02「Linux のファイルシステムの見え方」）。
+#[test]
+fn existing_nested_metadata_ancestors_cannot_be_renamed_away() -> TestResult {
+    let f = Fixture::new()?;
+    let other = f.writable.join("other");
+    fs::create_dir(&other)?;
+    // 根の .git が指す、書ける場所の中の gitdir の祖先も同じに留める。
+    fs::create_dir_all(f.writable.join("meta/repo"))?;
+    fs::write(f.writable.join(".git"), b"gitdir: meta/repo\n")?;
+    for (name, ancestor) in [
+        ("a/.git", "a"),
+        ("a/b/.git", "a"),
+        ("a/b/.git", "a/b"),
+        ("meta/repo", "meta"),
+    ] {
+        let target = f.writable.join(name);
+        fs::create_dir_all(&target)?;
+        let data = target.join("config");
+        fs::write(&data, b"protected")?;
+        let ancestor = f.writable.join(ancestor);
+        // 同じ親の中の付け替えと、ディレクトリをまたぐ付け替えの両方を試す。終了状態 11 は
+        // ほかの誤りでも返るので、留めたマウントによる拒否だと確かめる。祖先そのものがマウントの
+        // 場所なら EBUSY、移す先の親が別のマウントにあれば EXDEV になる（rename(2)）。
+        // Landlock の Refer の拒否も EXDEV だが、留めのない版ではこの付け替えが通った。
+        for moved in [f.writable.join("moved"), other.join("moved")] {
+            let args = [
+                OsStr::new("rename"),
+                ancestor.as_os_str(),
+                moved.as_os_str(),
+            ];
+            let output = f.command(f.config(), &args)?.output()?;
+            check(&output, 11, &format!("args={args:?}"));
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            assert!(
+                stderr.contains("ResourceBusy") || stderr.contains("CrossesDevices"),
+                "args={args:?} stderr={stderr}"
+            );
+            assert!(!moved.exists());
+            assert_eq!(fs::read(&data)?, b"protected");
+        }
+        // 留めを外してから付け替える道筋も塞がれている。
+        f.run(
+            f.config(),
+            &[OsStr::new("umount"), ancestor.as_os_str()],
+            10,
+        )?;
+        // 祖先の中には、これまでどおり書ける。
+        let sibling = ancestor.join("sibling");
+        f.run(f.config(), &[OsStr::new("write"), sibling.as_os_str()], 0)?;
+        assert_eq!(fs::read(&sibling)?, b"sandbox-probe\n");
+        fs::remove_dir_all(
+            f.writable
+                .join(name.split('/').next().ok_or("Missing name")?),
+        )?;
+    }
+    Ok(())
+}
+
 // 作成時の関門: 保証の範囲を広く見せない。未作成の入れ子と深さ 4 以上は範囲外（設計書 03-02）。
 #[test]
 fn uncreated_nested_and_deep_metadata_and_uncreated_uppercase_root_are_outside_guarantee()

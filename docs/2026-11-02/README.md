@@ -8,7 +8,8 @@
 
 - macOS が要る項目は、Linux での確かめだけを行う。macOS での確かめは別途とする。
 - 本物の LLM を呼ぶ項目は行わない。テストは模擬の提供者だけを使う。
-- 本番のコードを変えない（時々失敗するテストは、テストの側で直す）。
+- 時々失敗するテストは、テストの側で直し、本番のコードを変えない。
+- 段 1（[05](05-stage1.md)）は、安全の穴を塞ぐために本番のコードを変える。
 
 ## 文書
 
@@ -18,6 +19,7 @@
 | [02-session-flaky-tests.md](02-session-flaky-tests.md) | `tests/session.rs` の時々失敗するテストの再現、原因の推定と確かめ、テストの側の修正 |
 | [03-other-test-files.md](03-other-test-files.md) | 同じ競合が、ほかのテストのファイルと `src/` の単体テストにないかの調べと、見つかった 2 件の修正 |
 | [04-oss-feature-review.md](04-oss-feature-review.md) | Codex CLI、Pi Coding Agent、Hermes Agent、DeepSeek Harness、nono、sandbox-runtime のソースコードとの機能の比べと、キャッチアップの案 |
+| [05-stage1.md](05-stage1.md) | キャッチアップの案の段 1（安全の穴を塞ぐ）の確かめと修正 |
 
 ## 変更したファイル
 
@@ -28,10 +30,14 @@
 | `crates/benitoiteh/tests/session.rs` | 変更 | ファイルで共有する `RwLock`。`Fixture::new()` は共有の側、子プロセスを起こす 4 件は `Fixture::spawning()` で排他の側を持つ。二つ目の準備に `Fixture::sibling()` を加えた | [02](02-session-flaky-tests.md) |
 | `crates/benitoiteh/tests/sandbox_linux.rs` | 変更 | `stale_placeholder_records_are_reaped_without_removing_user_data_or_locked_paths` で、錠を手放した後の回収を最大 2 秒やり直す | [03](03-other-test-files.md) |
 | `crates/benitoiteh/src/cli/exec/tests.rs` | 変更 | `Locked` の取り直しを `open_released` にまとめ、`fork_retains_copy_when_current_provider_was_removed` でも使う | [03](03-other-test-files.md) |
+| `crates/benitoiteh/src/sandbox/linux/mounts.rs` | 変更 | 入れ子の守る場所と gitdir の指す先の祖先を、書ける形で自分自身へ重ねる | [05](05-stage1.md) |
+| `crates/benitoiteh/src/sandbox/linux/mounts/tests.rs` | 変更 | 引数列の期待値に祖先の留めを加えた | [05](05-stage1.md) |
+| `crates/benitoiteh/tests/sandbox_linux.rs` | 変更 | 否定のテスト `existing_nested_metadata_ancestors_cannot_be_renamed_away` を加えた | [05](05-stage1.md) |
+| `docs/design/03-safety/03-02-sandbox.md` | 変更 | 「Linux のファイルシステムの見え方」に「守る場所の祖先」を加えた | [05](05-stage1.md) |
 | `docs/2026-11-02/` | 追加 | 本ディレクトリ | — |
 | `docs/README.md` | 変更 | 本ディレクトリへの案内を加えた | — |
 
-本番のコード（`crates/benitoiteh/src/` のうちテストでないもの）は変えていない。結果の記録は、はじめ `docs/plan/results/2026-11-02-cloud-linux.md` に書いたが、設計者の指示で本ディレクトリへ移し、元のファイルを消した。
+段 1 より前は、本番のコード（`crates/benitoiteh/src/` のうちテストでないもの）を変えていない。結果の記録は、はじめ `docs/plan/results/2026-11-02-cloud-linux.md` に書いたが、設計者の指示で本ディレクトリへ移し、元のファイルを消した。
 
 ## コミット
 

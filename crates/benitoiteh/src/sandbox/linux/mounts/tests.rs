@@ -34,7 +34,7 @@ impl Drop for Fixture {
     }
 }
 
-// 作成時の関門: 後のマウントによる保護の上書き、親子順の逆転、過深の探索を捕まえる。
+// 作成時の関門: 後のマウントによる保護の上書き、親子順の逆転、過深の探索、祖先の留めの漏れを捕まえる。
 // 引数列の契約だけを比較する。OS の拒否そのものは sandbox_linux が確かめる。
 #[test]
 fn mount_order_keeps_masks_after_writable_roots() -> TestResult {
@@ -92,6 +92,14 @@ fn mount_order_keeps_masks_after_writable_roots() -> TestResult {
             ["--ro-bind", "/", "/", "--dev", "/dev", "--proc", "/proc"].map(OsString::from),
         );
         for path in [&w, &sub] {
+            expected.extend([
+                OsString::from("--bind"),
+                path.as_os_str().to_owned(),
+                path.as_os_str().to_owned(),
+            ]);
+        }
+        // 入れ子の守る場所の祖先は、守る場所より先に、書ける形で留める。
+        for path in [w.join("a"), w.join("a/b")] {
             expected.extend([
                 OsString::from("--bind"),
                 path.as_os_str().to_owned(),

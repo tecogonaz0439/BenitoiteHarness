@@ -139,6 +139,17 @@ pub(super) fn build(
             }
         }
     }
+    // 入れ子の守る場所と gitdir の指す先の祖先を、書ける形のまま自分自身へ重ねてマウントの場所にする。
+    // 祖先の名前の付け替えで守る場所をその位置から外し、空いた位置に新しい .git を作らせない
+    // （rename(2) の EBUSY。設計書 03-02「Linux のファイルシステムの見え方」）。
+    // 親が子より先に並ぶので、子の留めが親の留めに隠されない。
+    let mut pinned = BTreeSet::new();
+    for path in protected.iter().chain(&gitdirs) {
+        pin_ancestors(path, &roots, &mut pinned);
+    }
+    for path in &pinned {
+        bind(&mut plan.args, "--bind", path, path);
+    }
     for path in protected {
         bind(&mut plan.args, "--ro-bind", &path, &path);
     }
@@ -216,6 +227,19 @@ fn scan(
         }
     }
     Ok(())
+}
+
+/// `path` を含む最も深い書ける場所の根と `path` の間にある祖先を集める。根と、ほかの書ける場所の根は、
+/// すでにマウントの場所なので加えない。
+fn pin_ancestors(path: &Path, roots: &[PathBuf], pinned: &mut BTreeSet<PathBuf>) {
+    for ancestor in path.ancestors().skip(1) {
+        if roots.iter().any(|root| root == ancestor)
+            || !roots.iter().any(|root| ancestor.starts_with(root))
+        {
+            break;
+        }
+        pinned.insert(ancestor.to_path_buf());
+    }
 }
 
 fn check_links(path: &Path, writable: &[PathBuf]) -> Result<(), SandboxError> {

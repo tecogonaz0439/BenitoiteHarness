@@ -98,7 +98,7 @@ Codex、nono、srt は、いずれもホストの側の HTTP CONNECT（と SOCKS
 ### 守る場所と PATH
 
 - srt は、`.git` に加えて、シェルの設定、`.gitconfig`、`.gitmodules`、`.mcp.json`、`.vscode/`、`.idea/`、`.claude/commands`、`.claude/agents`、`.git/hooks`、`.git/config` を書かせない（`src/sandbox/sandbox-utils.ts:21-50`）。`benitoiteh` に当てはめると、次の起動の指示になる `.agents/`（プロジェクトの Skill）と、エディタが実行しうる `.vscode/` と `.idea/` が候補である。
-- srt は Linux で、書ける根から守る場所までの途中のディレクトリをマウントの場所にして、付け替えを `EBUSY` で止める（`src/sandbox/linux-sandbox-utils.ts:1917` の `ancestorPinArgs`）。`benitoiteh` にはこれがない。bubblewrap の読み取りだけの重ね（`--ro-bind`）だけで試すと、すでにある `sub/.git` の親の `sub` を名前を変えて動かし、新しい `sub/.git/hooks/pre-commit` を書けた（2026-11-02、本環境の bubblewrap 0.9.0、root でない利用者）。`benitoiteh` は書ける根に Landlock の `Refer` を許す（`crates/benitoiteh/src/sandbox/linux/filesystem.rs:114`）ので、実際のサンドボックスでも同じに通ると見るが、確かめていない【要検証】。設計書 03-02 は、子プロセスが新しく作った入れ子の守る場所を保証の外とするが、この手順は、すでにある入れ子の守る場所の保護を、付け替えで実質的に外す。
+- srt は Linux で、書ける根から守る場所までの途中のディレクトリをマウントの場所にして、付け替えを `EBUSY` で止める（`src/sandbox/linux-sandbox-utils.ts:1917` の `ancestorPinArgs`）。`benitoiteh` にはこれがない。bubblewrap の読み取りだけの重ね（`--ro-bind`）だけで試すと、すでにある `sub/.git` の親の `sub` を名前を変えて動かし、新しい `sub/.git/hooks/pre-commit` を書けた（2026-11-02、本環境の bubblewrap 0.9.0、root でない利用者）。`benitoiteh` は書ける根に Landlock の `Refer` を許す（`crates/benitoiteh/src/sandbox/linux/filesystem.rs:114`）ので、実際のサンドボックスでも同じに通ると見るが、確かめていない【要検証】。（追記: 段 1 で、実際のサンドボックスでも通ることを確かめ、祖先をマウントの場所にして塞いだ。同じ親の中の付け替えには `Refer` は関わらず、原因は祖先がマウントの場所でないことだった。[05](05-stage1.md)の「入れ子の守る場所の付け替え」）設計書 03-02 は、子プロセスが新しく作った入れ子の守る場所を保証の外とするが、この手順は、すでにある入れ子の守る場所の保護を、付け替えで実質的に外す。
 - nono は、サンドボックスの外で動かす補助のプログラムの `PATH` から、サンドボックスが書ける場所を、シンボリックリンクの各段まで調べて除く（`crates/nono/src/broker_path.rs`）。`benitoiteh` の `escalate` と秘密の入力の仲介は、サンドボックスの外で、継承した `PATH` のまま動く。サンドボックスの中のコマンドが、`PATH` にあるプロジェクトのディレクトリに偽の `git` を置ける場合がある（未確認）。
 - Codex は、`main` の前に、コアのダンプと ptrace の接続を止め、`LD_PRELOAD` と `DYLD_*` を除く（`codex-rs/process-hardening/src/lib.rs`）。`benitoiteh` は、サンドボックスの補助と画像の補助でダンプを止める（`crates/benitoiteh/src/sandbox/linux.rs:106`、`crates/benitoiteh/src/tools/read/image_helper.rs:67`）が、API のキーと OAuth のトークンを持つ主のプロセスでは止めていない。
 
@@ -164,7 +164,7 @@ Codex、nono、srt は、いずれもホストの側の HTTP CONNECT（と SOCKS
 2. サンドボックスで読ませない場所に、nono の組（クラウドの資格情報、`.netrc`、`.npmrc`、`.git-credentials`、シェルの履歴など）と、道具の「読まないファイル」（`.env*` と鍵の形の名前）を加え、`bash` でも読めないようにする（BH-100 と関わる）。
 3. `escalate` と秘密の入力の仲介の補助を起動する前に、`PATH` から書ける場所を除く。
 4. 主のプロセスで、起動の直後にコアのダンプと ptrace の接続を止める。
-5. Linux の入れ子の守る場所の付け替えを、実際のサンドボックスで確かめる【要検証】。通るなら、srt の方式（途中のディレクトリをマウントの場所にする）で塞ぐ。
+5. Linux の入れ子の守る場所の付け替えを、実際のサンドボックスで確かめる【要検証】。通るなら、srt の方式（途中のディレクトリをマウントの場所にする）で塞ぐ。（済み。[05](05-stage1.md)）
 6. 守る名前に `.agents` を加えるかを決める。
 7. プロジェクトの `.agents/skills` とプロジェクトの設定を、信頼の確認の後にだけ読む。
 
@@ -194,7 +194,7 @@ MCP（BH-116）、ACP、RPC、OS のキーストア（BH-033）、偽のトー�
 
 ## 要検証と未確認
 
-- Linux の入れ子の守る場所の付け替え（「守る場所と PATH」）。`benitoiteh` の実際のサンドボックスで、`sandbox_linux.rs` に否定のテストとして加えて確かめる。
+- Linux の入れ子の守る場所の付け替え（「守る場所と PATH」）。`benitoiteh` の実際のサンドボックスで、`sandbox_linux.rs` に否定のテストとして加えて確かめる。（済み。[05](05-stage1.md)）
 - `PATH` に偽のプログラムを置いて、`escalate` に拾わせる道筋。`benitoiteh` の `PATH` の組み立てを読んで確かめる。
 - 各対象の機能のうち「（未確認）」としたもの。
 - 効果の見込みは、どれも測っていない。
