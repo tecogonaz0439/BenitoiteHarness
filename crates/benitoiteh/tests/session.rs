@@ -110,7 +110,7 @@ fn tree_rows_preserve_preorder_branch_depth_and_combined_marks() -> TestResult {
 // 子プロセスを起こすテストを、セッションの錠を扱うほかのテストと同じプロセスの中で重ねない。
 // flock の錠は複製した記述子にも及ぶので、別のスレッドが起こした子が exec するまで、
 // 落とした Session の錠が残り、後始末や再開がその項目を使用中と見る
-// （実装プランの結果 2026-11-02-cloud-linux「時々失敗するセッションのテスト」）。
+// （docs/2026-11-02/02-session-flaky-tests.md「推定する原因」）。
 // 子プロセスを起こすテストは Fixture::spawning() で準備する。
 static CHILD_PROCESSES: RwLock<()> = RwLock::new(());
 
