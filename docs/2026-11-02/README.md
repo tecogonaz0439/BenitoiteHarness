@@ -64,9 +64,3 @@
 - aarch64 の Linux（Apple の `container`）での実行。
 - 原因を確かめていない失敗 2 件（`tests/exec.rs::closed_event_output_still_finishes_the_session_record`、`tests/tui/commands.rs` の `accepted_rewind_finishes_before_quit_and_repeated_keyboard_interrupts`）。[03](03-other-test-files.md)の「ほかの失敗」に記した。
 - 評価の道具の Python のテストのうち、macOS の判定を要しない 4 件の失敗の原因（[01](01-cloud-linux-check.md)の「結果」）。
-
-## 取り込むときに決めること
-
-- [P5-37](../plan/tasks/P5-37-post-release-followups.md) の「時々失敗したテスト」の表の扱い。一行目に挙がる `tests/session.rs` の 4 件のうち、`cleanup_reports_failures_continues_and_retries_without_losing_locks` と `expired_session_tombstone_outlives_its_unremovable_temporary_directory` は今回再現し、本ブランチで直した。残りの 2 件（`linked_storage_parents_allow_drop_resume_and_cleanup`、`unavailable_temporary_root_is_diagnosed_without_skipping_session_cleanup`）は今回再現しなかったが、同じ `Fixture` を使うので、同じ修正の範囲に入る。五行目（`stale_placeholder_records_are_reaped_without_removing_user_data_or_locked_paths`）も本ブランチで直した。作業の文書は書き換えていない。
-- 本ディレクトリの置き場所。`AGENTS.md` の「ディレクトリ構成」の表は、`docs/` の下に日付のディレクトリを置くことを定めていない。
-- `scripts/cloud-linux-*.sh` を `scripts/check.sh` から使える形にするか。今の `check.sh` は、macOS の上で Apple の `container` と ssh の先の podman を使う前提である。
