@@ -91,6 +91,7 @@ pub fn restricted_access(
         allow_ip: effects.contains(&Effect::HttpConnect) || effects.contains(&Effect::HttpListen),
         programs,
         readable: ReadAccess::All,
+        write_agents: false,
     }
 }
 

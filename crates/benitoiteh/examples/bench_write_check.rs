@@ -93,6 +93,7 @@ fn main() -> Result<(), Box<dyn Error>> {
                 allow_ip: false,
                 programs: vec![processor.clone()],
                 readable: ReadAccess::All,
+                write_agents: false,
             },
             &locations,
             &denied,

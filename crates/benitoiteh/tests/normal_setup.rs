@@ -99,7 +99,7 @@ fn normal_policies_use_validated_roots_and_existing_denied_candidates() -> Resul
         );
         assert_eq!(config.readable, ReadAccess::All);
         assert_eq!(config.programs, ProgramAccess::Unrestricted);
-        assert_eq!(config.protected_names, [".git", ".benitoiteh"]);
+        assert_eq!(config.protected_names, [".git", ".benitoiteh", ".agents"]);
         assert!(!config.deny_exec_in_writable);
     }
     assert!(normal_policy(Sandbox::DangerFullAccess, &locations, false, &candidates)?.is_none());

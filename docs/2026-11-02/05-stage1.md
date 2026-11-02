@@ -199,3 +199,61 @@ macOS では手当てしていない。同じ利用者のほかのプロセス�
 4. 本番のコードに差し込み口を加えていない。
 
 直す前のコードではこのテストが失敗し（親の環境を読めた）、直した後は通った。
+
+## .agents の守り
+
+04 の案の 6 に当たる。設計者が次の三つを決めた（2026-11-02）。
+
+- 守る範囲は `.agents` の全体とする（スキルのほか、ほかのハーネスが読む `hooks.json` などの設定も含む）。
+- Benitoite のスクリプトが `.agents` に書くときは、LLM が道具の引数 `write_agents` で求め、利用者が一回ごとに確認する。確認は覚えない。
+- 非対話（`exec`）では、新しいオプション `--allow-agents-write` を付けたときだけ許す。
+
+設計者は、プロジェクトのスキルを直せなくなると、Benitoite のスクリプトでスキルを作れなくなり、試作の目的の一つを果たせなくなると指摘した。そこで、守ったうえで、承認で書けるようにした。
+
+### 直し方
+
+| 場所 | 変更 |
+|---|---|
+| `src/sandbox/policy.rs` | 守る名前に `.agents` を加えた。サンドボックスの中からは、根の直下の `.agents` にあってもなくても書けず、深いところのすでにある `.agents` にも書けない |
+| `src/sandbox/restricted.rs`、`src/tools/benitoite_process.rs` | `RestrictedAccess` に `write_agents` を加え、真で `File.Write` があるときだけ、その一回の方針の守る名前から `.agents` を外す |
+| `src/tools/benitoite_run.rs`、`benitoite_test.rs`、`definitions.rs`、`text.rs` | `benitoite_run`・`benitoite_test`・`benitoite_scratch` に引数 `write_agents` を加えた。真のときは、前に同じエフェクトを確認していても毎回確認し、`File.Write` がなければ確認の前に断る。`benitoite_scratch` は確認なしの範囲に収まっても確認する |
+| `src/tools/write_path.rs` | `write`・`edit` は、`.agents` の下に書くたびに確認を求める（制限モードでも、`.bnt` だけに書けることは変わらない） |
+| `src/approval/` | 確認の事実に `agents_write` を加え、要約に `.agents` への書き込みを示す。制限モードでも、`.agents` の `.bnt` への書く道具の確認を通す |
+| `src/agent/execution.rs`、`src/cli/args.rs`、`src/cli/exec.rs` | `exec --allow-agents-write` を加えた。非対話では、付けたときだけ `.agents` への書き込みを許し、付けないときは理由を道具の結果で返す。対話の形では使い方の誤りとする |
+| `src/ui/tui/confirmation.rs` | 確認の画面に、この一回だけ `.agents` に書くことを別の行で示す |
+
+通常モードの `bash` からは、`.agents` に書くコマンドを `escalate` の承認を受けて外で動かす（新しい仕組みは足していない）。
+
+### テスト
+
+| テスト | 確かめること |
+|---|---|
+| `sandbox_benitoite_run.rs` の `agents_is_written_only_by_runs_confirmed_with_write_agents`（追加） | 本物の処理系とサンドボックスで、`File.Write` を確認したスクリプトも `.agents` に書けないこと、`write_agents` を付けると前の確認があっても確認を求め、承認の後に書けること、`File.Write` のないスクリプトの `write_agents` は確認の前に断ること |
+| `sandbox_benitoite_test.rs` の `tests_write_agents_only_after_a_write_agents_confirmation`（追加） | テストの実行の同じ契約。`benitoite_test` は確認の判定を別に持つので、別に確かめる |
+| `tools_write.rs` の `restricted_writes_to_agents_scripts_need_one_time_approval`（追加） | 制限モードの書く道具が、`.agents` の `.bnt` に確認を求め、承認の後に書けること、`.bnt` でないファイルは確認の前に拒むこと |
+| `tools_write.rs` の `normal_mode_requests_approval_before_any_mutation_and_accepts_trusted_approval`（行を足した） | 通常モードの書く道具が、`.agents` と `sub/.AGENTS` の下に確認を求め、確認の事実に `agents_write` を載せること |
+| `sandbox_exec_restricted.rs` の `exec_writes_agents_only_with_allow_agents_write`（追加） | `exec` の入口で、`--allow-agents-write` を付けたときだけ書けること、付けないときは理由を返すこと |
+| `sandbox_linux.rs` の `root_protection_blocks_creation_writing_removal_and_replacement`（行を足した） | 本物の Linux のサンドボックスで、根の直下の `.agents` を、作る・書く・消す・付け替えることができないこと |
+| `args.rs` の `exec_arguments_reject_duplicates_invalid_values_and_unavailable_options`（行を足した） | `--allow-agents-write` を受け付け、値の付いた形・重複・対話の形を拒むこと |
+
+既存のテストのうち、守る名前の一覧と引数列の期待（`normal_setup.rs`、`src/sandbox/linux/mounts/tests.rs`）を `.agents` に合わせて直した。LLM に見せる道具の定義が変わったので、期待のファイル（`tests/expected/tools-restricted.json`、`tools-restricted-read-plain.json`）を `examples/update_context_expected.rs` で作り直し、差分が三つの道具の `write_agents` の説明の追加だけであることを確かめた。
+
+一部を壊した版で、次のように確かめた。
+
+| 壊した箇所 | 失敗したテスト |
+|---|---|
+| 守る名前から `.agents` を外す | `agents_is_written_only…`、`root_protection…` |
+| `write_agents` の実行で確認を省く（`benitoite_run`） | `agents_is_written_only…` |
+| `write_agents` の実行で確認を省く（`benitoite_test`） | `tests_write_agents_only…` |
+| 承認した一回でも方針から `.agents` を外さない | `agents_is_written_only…` |
+| 非対話の判定を外す | `exec_writes_agents_only…` |
+| 制限モードの書く道具が `.agents` を確かめない | `restricted_writes_to_agents…` |
+| 通常モードの書く道具が `.agents` を確かめない | `normal_mode_requests_approval…` |
+
+`benitoite_scratch` の `write_agents` は `benitoite_run` と同じ処理を通るので、別のテストを加えていない。macOS の Seatbelt で `.agents` を守ることは、macOS での確かめとあわせて確かめる。
+
+### 代償
+
+- LLM が `.agents` に書くたびに確認が出る。非対話では `--allow-agents-write` が要る。
+- 通常モードの `bash` から `.agents` に書くには、`escalate` で外で動かす。
+- 子プロセスを起動するたびに、根の直下にまだない `.agents` を塞ぐ空のディレクトリが一時的にでき、子の終了の後に消える（`.git` と `.benitoiteh` と同じ）。

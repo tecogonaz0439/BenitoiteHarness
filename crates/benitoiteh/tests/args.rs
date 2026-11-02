@@ -137,6 +137,21 @@ fn exec_arguments_reject_duplicates_invalid_values_and_unavailable_options() {
         ExecArgs::parse_interactive(["--project-parent", "/project"]),
         Err(ArgsError::Invalid)
     ));
+    // 対話では、.agents への書き込みは一回ごとの確認で決めるので、許す指定を受け付けない。
+    assert!(
+        ExecArgs::parse(["--allow-agents-write", "request"])
+            .is_ok_and(|args| args.allow_agents_write)
+    );
+    for args in [
+        vec!["--allow-agents-write=yes", "request"],
+        vec!["--allow-agents-write", "--allow-agents-write", "request"],
+    ] {
+        assert!(ExecArgs::parse(args.clone()).is_err(), "{args:?}");
+    }
+    assert!(matches!(
+        ExecArgs::parse_interactive(["--allow-agents-write"]),
+        Err(ArgsError::Invalid)
+    ));
 }
 
 // 関門: --allow の名前の検査を CLI の境界で守る。集合の比較だけでは不正な指定の受理を捕まえない。

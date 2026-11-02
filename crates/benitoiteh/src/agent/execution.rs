@@ -208,6 +208,19 @@ impl Agent {
             return Ok(output);
         };
         summary.checks = summary.checks.saturating_add(output.processor_launches);
+        // 非対話の .agents への書き込みは、--allow-agents-write があるときだけ許す。エフェクトの確認は、
+        // 続けて許可の集合でも確かめる（設計書 03-03「.agents への書き込み」）。
+        if request.facts.agents_write
+            && (self.tool_context.noninteractive || self.config.allow_agents_write)
+        {
+            if !self.config.allow_agents_write {
+                summary.approvals.policy_denied = summary.approvals.policy_denied.saturating_add(1);
+                return Ok(ToolOutput::error(approval::AGENTS_WRITE_DENIED));
+            }
+            if request.kind == approval::ApprovalKind::WriteScope {
+                return Ok(self.execute_approved(call, validated, cancelled));
+            }
+        }
         if request.kind == approval::ApprovalKind::CreateProject && self.tool_context.noninteractive
         {
             let permitted = self.config.project_parent.as_deref().is_some_and(|parent| {
@@ -636,6 +649,7 @@ mod tests {
             agent: Default::default(),
             project_parent: None,
             allow_effects: None,
+            allow_agents_write: false,
             mode: Mode::Normal,
             destination: Destination {
                 provider: "mock".into(),

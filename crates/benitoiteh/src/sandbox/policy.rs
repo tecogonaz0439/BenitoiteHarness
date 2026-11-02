@@ -9,8 +9,12 @@ use serde::{Deserialize, Deserializer, Serialize};
 use super::{SandboxError, text};
 
 /// 既定の守る名前。一時ディレクトリの削除もこの名前の項目を残す
-/// （設計書 01-05「一時ディレクトリ」）。
-pub const PROTECTED_NAMES: [&str; 2] = [".git", ".benitoiteh"];
+/// （設計書 01-05「一時ディレクトリ」）。`.agents` は、利用者が一回ごとに承認した実行でだけ外す
+/// （設計書 03-02「.agents の守り」）。
+pub const PROTECTED_NAMES: [&str; 3] = [".git", ".benitoiteh", AGENTS];
+
+/// エージェントの設定とスキルを置く名前。承認した実行でだけ守りを外せる。
+pub const AGENTS: &str = ".agents";
 
 /// 読み取りを許す範囲。どちらも `denied_read` を除く。
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]

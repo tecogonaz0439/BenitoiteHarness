@@ -47,6 +47,9 @@
 | `crates/benitoiteh/src/cli/mod.rs`、`src/cli/text.rs` | 変更 | Linux で、主のプロセスを起動の直後にダンプできない形にする | [05](05-stage1.md) |
 | `crates/benitoiteh/tests/sandbox_exec_restricted.rs` | 変更 | 外で動く `bash` が主のプロセスの環境を読めないことを確かめるテストを加えた | [05](05-stage1.md) |
 | `docs/design/03-safety/03-02-sandbox.md`、`docs/design/open-issues.md` | 変更 | 「主のプロセスの守り」を加え、macOS の扱いを BH-118 とした | [05](05-stage1.md) |
+| `crates/benitoiteh/src/`（サンドボックス、道具、確認、ループ、CLI、画面） | 変更 | `.agents` を守る名前に加え、`write_agents` と `exec --allow-agents-write` で、一回ごとの確認の後にだけ書けるようにした | [05](05-stage1.md) |
+| `crates/benitoiteh/tests/`（実行、テスト、書く道具、exec、Linux のサンドボックス、引数）と `tests/expected/` | 変更 | `.agents` の守りと確認のテストを加え、道具の定義の期待を作り直した | [05](05-stage1.md) |
+| `docs/design/01-agent/01-03-tools.md`、`03-safety/03-02-sandbox.md`、`03-safety/03-03-approval.md`、`05-interface/05-01-cli.md` | 変更 | 「.agents の守り」と「.agents への書き込み」を加え、道具の引数とオプションを書いた | [05](05-stage1.md) |
 | `docs/2026-11-02/` | 追加 | 本ディレクトリ | — |
 | `docs/README.md` | 変更 | 本ディレクトリへの案内を加えた | — |
 

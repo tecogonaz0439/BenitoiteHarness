@@ -138,6 +138,7 @@ pub(super) fn definitions(mode: crate::config::Mode) -> Vec<ToolDefinition> {
                 arg_described("args", ArgumentType::StringArray, false, text::RUN_ARGS),
                 arg_described("stdin", String, false, text::RUN_STDIN),
                 arg("timeout", Integer, false),
+                arg_described("write_agents", Boolean, false, text::RUN_WRITE_AGENTS),
             ],
             false,
         ));
@@ -147,7 +148,10 @@ pub(super) fn definitions(mode: crate::config::Mode) -> Vec<ToolDefinition> {
             ToolId::BenitoiteTest,
             text::BENITOITE_TEST,
             &[text::BENITOITE_TEST.1],
-            vec![arg("paths", ArgumentType::StringArray, true)],
+            vec![
+                arg("paths", ArgumentType::StringArray, true),
+                arg_described("write_agents", Boolean, false, text::RUN_WRITE_AGENTS),
+            ],
             false,
         ));
     }
@@ -160,6 +164,7 @@ pub(super) fn definitions(mode: crate::config::Mode) -> Vec<ToolDefinition> {
                 arg("code", String, true),
                 arg_described("args", ArgumentType::StringArray, false, text::RUN_ARGS),
                 arg_described("stdin", String, false, text::RUN_STDIN),
+                arg_described("write_agents", Boolean, false, text::RUN_WRITE_AGENTS),
             ],
             false,
         ));

@@ -165,6 +165,7 @@ Benitoite の事前検討は、LLM に見せる道具の形を、サーバモー
 - 書く先の最後の要素がシンボリックリンクであれば、リンクの先がまだなくても拒否する。ファイルを開くときもリンクを辿らない指定（`O_NOFOLLOW`。Linux では親のディレクトリからの相対で開き、範囲の外へ出ない指定）を使う。理由: リポジトリに置かれた `x.bnt -> .git/hooks/pre-commit` のようなリンクに書かせて、範囲の外や守る場所にファイルを作らせる攻撃を防ぐ。
 - すでにあるファイルのハードリンクの数が 2 以上であれば拒否する。理由: サンドボックスの中のコマンドが、プロジェクトの外のファイル（`~/.zshrc` など）へのハードリンクをプロジェクトの中に作り、主のプロセスにそれを書き換えさせる道を塞ぐ。2026-10-17 に、試作の P2-02 で、サンドボックスの中から、書ける場所の外のファイル、読ませない場所のファイル、守る場所（`.git/config`）へのハードリンクを書ける場所の中に作れないことを、macOS 27.0.1 の Seatbelt（`EPERM`）と、x86_64 の Linux 7.2.9 の bubblewrap（マウントの境を越えるので `EXDEV`、読ませないディレクトリの中は `EACCES`）で確かめた（BH-092 を閉じた）。この拒否は、前からあるハードリンクを残すので、書く道具の拒否はそのまま要る。
 - 書くときは、同じディレクトリの一時ファイルに書いてから名前を付け替える。
+- 【方針】`.agents` の下（どの深さの `.agents` も、ASCII の大文字と小文字を区別しない）には、どちらのモードでも、書くたびに利用者の確認を受けてから書く（[利用者の確認](../03-safety/03-03-approval.md)の「.agents への書き込み」）。確認の要求には、`.agents` への書き込みであることを事実として載せる。制限モードでも `.bnt` だけに書けることは変わらず、`.bnt` でないファイルは確認を求める前に拒む。理由: `.agents` のスキルと設定は、次のセッションと、ほかのエージェントハーネスが読み込む。LLM が利用者の知らないうちに書き換えると、プロンプトインジェクションが残り続ける。スキルを作ることは試作の目的の一つなので、拒まずに確認で許す。
 - 書ける場所の中の守る場所（`.git` と `.benitoiteh`。[OS のサンドボックス](../03-safety/03-02-sandbox.md)の「方針の要素」）の下には、道具でも書かない。制限モードでは拒否し、通常モードでは確認を受ける（`danger-full-access` を除く）。理由: 守る場所をサンドボックスだけで守ると、サンドボックスの外で動く道具が穴になる。
 
 これらの規則が働くことは、安全の性質のテストで確かめる（[テスト](../07-quality/07-01-testing.md)の「安全の性質のテスト」）。
@@ -247,8 +248,10 @@ Benitoite の事前検討は、LLM に見せる道具の形を、サーバモー
 ### benitoite_run（制限モード）
 
 ```json
-{ "path": "string", "args": ["string (optional)"], "stdin": "string (optional)", "timeout": "integer (seconds, optional, max 600)" }
+{ "path": "string", "args": ["string (optional)"], "stdin": "string (optional)", "timeout": "integer (seconds, optional, max 600)", "write_agents": "boolean (optional)" }
 ```
+
+- 【方針】`write_agents` を真にすると、この一回だけ、スクリプトが `.agents` の下に書けるようにする（[OS のサンドボックス](../03-safety/03-02-sandbox.md)の「.agents の守り」）。報告のエフェクトに `File.Write` がなければ、確認を求めずに `write_agents requires a script whose effects include File.Write. Remove write_agents, or write the files from main.` を返す。真のときは、前に同じエフェクトを確認していても、実行の前の確認を毎回受ける（[利用者の確認](../03-safety/03-03-approval.md)の「.agents への書き込み」）。`benitoite_test` と `benitoite_scratch` も同じ引数を持ち、同じに扱う。`benitoite_scratch` は、`write_agents` が真なら確認なしの範囲に収まっても確認を受ける。
 
 1. `benitoite check --report=json <path>` で、実行の前の検査の報告を得る（[Benitoite の処理系との連携](../04-benitoite/04-01-benitoite-integration.md)の「実行の前の検査の報告」）。検査の誤りがあれば、実行せずに診断を返す。報告を確定した結果として使えなければ、実行せずに理由を返す。
 2. 報告のエフェクトについて、実行の前の確認を行う（[利用者の確認](../03-safety/03-03-approval.md)の「制限モードの確認」）。拒否されたら、`The user declined to run <path> with effects: <list>. Ask the user how to proceed, or change the script.` を返す。確認を受けたときは、実行の直前に報告を得直し、その集合が確認した範囲に収まるときだけ次に進む（[Benitoite の処理系との連携](../04-benitoite/04-01-benitoite-integration.md)の「実行の前の検査の報告」）。

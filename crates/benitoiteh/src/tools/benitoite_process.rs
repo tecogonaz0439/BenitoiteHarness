@@ -18,6 +18,16 @@ pub(super) struct ScriptRun {
     pub(super) timeout: u64,
     pub(super) reason: crate::rewind::CheckpointReason,
     pub(super) automatic: bool,
+    /// 利用者がこの一回に .agents への書き込みを承認した。
+    pub(super) write_agents: bool,
+}
+
+/// 道具の引数の `write_agents`。省略は偽とする（設計書 01-03「benitoite_run（制限モード）」）。
+pub(super) fn write_agents(arguments: &Value) -> bool {
+    arguments
+        .get("write_agents")
+        .and_then(Value::as_bool)
+        .unwrap_or(false)
 }
 
 fn failure(error: &dyn std::fmt::Display) -> ToolError {
@@ -65,8 +75,10 @@ pub(super) fn prepare(
     args: Vec<OsString>,
     piped: bool,
     automatic: bool,
+    write_agents: bool,
 ) -> Result<RunCommand, crate::sandbox::SandboxError> {
-    let access = effects::restricted_access(effects, &run.processor, &run.allowed_programs);
+    let mut access = effects::restricted_access(effects, &run.processor, &run.allowed_programs);
+    access.write_agents = write_agents;
     let policy = sandbox::restricted_policy(&access, &run.locations, &run.denied_candidates)?;
     let policy = if automatic {
         sandbox::scratch_policy(&policy, &run.locations, &run.processor)?
@@ -297,6 +309,7 @@ pub(super) fn execute_report(
         args,
         input.is_some(),
         options.automatic,
+        options.write_agents,
     )
     .map_err(|e| failure(&e))?;
     let stdout = Arc::new(Mutex::new(Output::new(

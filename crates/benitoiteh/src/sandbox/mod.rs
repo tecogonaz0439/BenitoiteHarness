@@ -36,7 +36,7 @@ pub use linux::{
     probe_linux, run_helper,
 };
 pub use macos::SeatbeltProfile;
-pub use policy::{PROTECTED_NAMES, PolicyConfig, ProgramAccess, ReadAccess, SandboxPolicy};
+pub use policy::{AGENTS, PROTECTED_NAMES, PolicyConfig, ProgramAccess, ReadAccess, SandboxPolicy};
 
 /// 補助の準備に失敗したときの共通の終了状態。目的のプログラムも同じ値を返せる。
 pub(crate) const SETUP_FAILURE: u8 = 125;

@@ -93,6 +93,7 @@ fn unbuildable_continuation_falls_back_and_summarizes_first_request_and_steering
         agent: Default::default(),
         project_parent: None,
         allow_effects: None,
+        allow_agents_write: false,
         mode: Mode::Normal,
         destination: Destination {
             provider: "mock".into(),

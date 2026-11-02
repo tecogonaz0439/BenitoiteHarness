@@ -293,19 +293,64 @@ fn final_links_including_dangling_hooks_and_multiple_hardlinks_are_never_written
     Ok(())
 }
 
+// 関門: 制限モードの .agents の .bnt は、エラーではなく一回ごとの確認を求め、承認後に書ける。
+// .bnt でないファイルは、確認を求める前に拒む（設計書 01-03「書く道具のパスの規則」）。
+#[test]
+fn restricted_writes_to_agents_scripts_need_one_time_approval() -> TestResult {
+    let f = Fixture::new(Mode::Restricted)?;
+    let script = f.project.join(".agents/skills/demo/helper.bnt");
+    for tool in ["write", "edit"] {
+        let output = f.tools.execute(&f.context, tool, args(tool, json!(script)));
+        let request = output.approval.as_ref().ok_or("approval")?;
+        assert!(request.facts.agents_write, "{tool}: {}", output.text);
+        assert!(!script.exists());
+    }
+    let call = f.tools.validate("write", args("write", json!(script)))?;
+    let output = f.tools.execute_validated(
+        &f.context,
+        &call,
+        ApprovalStatus::Approved,
+        Invocation {
+            confirmed_effects: &std::collections::BTreeMap::new(),
+            session_domains: &Default::default(),
+            call_id: "agents-write",
+            cancelled: &std::sync::atomic::AtomicBool::new(false),
+        },
+    );
+    assert!(!output.is_error, "{}", output.text);
+    assert_eq!(fs::read(&script)?, b"after\n");
+    let skill = f.project.join(".agents/skills/demo/SKILL.md");
+    let output = f
+        .tools
+        .execute(&f.context, "write", args("write", json!(skill)));
+    assert!(
+        output.is_error && output.approval.is_none(),
+        "{}",
+        output.text
+    );
+    assert!(!skill.exists());
+    Ok(())
+}
+
 #[test]
 fn normal_mode_requests_approval_before_any_mutation_and_accepts_trusted_approval() -> TestResult {
     let f = Fixture::new(Mode::Normal)?;
     fs::create_dir(f.project.join(".git"))?;
     symlink(".git", f.project.join("alias"))?;
-    for (path, protected) in [
-        (f.directory.join("outside/new.bnt"), false),
-        (f.project.join(".git/hooks/new.bnt"), true),
-        (f.project.join(".benitoiteh/new.bnt"), true),
-        (f.project.join("sub/.git/config"), true),
-        (f.project.join(".GIT/config"), true),
-        (f.project.join("alias/through-link"), true),
-        (f.temporary.join(".benitoiteh/config"), true),
+    let outside = "outside the writable roots";
+    let protected = "protected location";
+    // .agents は書くたびに確認し、その事実を確認の要求に載せる（設計書 01-03「書く道具のパスの規則」）。
+    let agents = "inside .agents";
+    for (path, reason) in [
+        (f.directory.join("outside/new.bnt"), outside),
+        (f.project.join(".git/hooks/new.bnt"), protected),
+        (f.project.join(".benitoiteh/new.bnt"), protected),
+        (f.project.join("sub/.git/config"), protected),
+        (f.project.join(".GIT/config"), protected),
+        (f.project.join("alias/through-link"), protected),
+        (f.temporary.join(".benitoiteh/config"), protected),
+        (f.project.join(".agents/skills/demo/SKILL.md"), agents),
+        (f.project.join("sub/.AGENTS/hooks.json"), agents),
     ] {
         let parent_existed = path.parent().is_some_and(|parent| parent.exists());
         for tool in ["write", "edit"] {
@@ -315,12 +360,15 @@ fn normal_mode_requests_approval_before_any_mutation_and_accepts_trusted_approva
                 "{}",
                 output.text
             );
-            let reason = if protected {
-                "protected location"
-            } else {
-                "outside the writable roots"
-            };
             assert!(output.text.contains(reason) && output.text.contains("Ask the user"));
+            assert_eq!(
+                output
+                    .approval
+                    .as_ref()
+                    .is_some_and(|request| request.facts.agents_write),
+                reason == agents,
+                "{path:?}"
+            );
             assert_eq!(
                 path.parent().is_some_and(|parent| parent.exists()),
                 parent_existed

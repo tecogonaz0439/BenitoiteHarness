@@ -443,7 +443,7 @@ fn dev_null_accepts_writes_without_allowing_other_outside_files() -> TestResult 
 #[test]
 fn root_protection_blocks_creation_writing_removal_and_replacement() -> TestResult {
     let f = Fixture::new()?;
-    for name in [".git", ".benitoiteh"] {
+    for name in [".git", ".benitoiteh", ".agents"] {
         let target = f.writable.join(name);
         for operation in ["write", "mkdir", "remove-dir"] {
             f.run(f.config(), &[OsStr::new(operation), target.as_os_str()], 11)?;

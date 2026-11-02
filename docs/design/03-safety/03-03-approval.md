@@ -82,6 +82,17 @@
 
 【決定】`web_fetch` の確認の答えは、「今回だけ取得する」「このセッションの間、このドメインを許す」「拒否する」の三つとし、利用者の設定の一覧には加えない（2026-10-17 に設計者が決めた。BH-047 を閉じた。ADR 0347 の残る点）。ドメインを恒久に許すときは、利用者が設定のファイルの一覧に書く。理由: `benitoiteh` が利用者の設定のファイルを書き換えずに済み、確認の画面での一度の操作で恒久の許可が増えることを避ける。
 
+### .agents への書き込み
+
+【方針】`.agents` の下に書く操作（[道具](../01-agent/01-03-tools.md)の「書く道具のパスの規則」の `write`・`edit`、`write_agents` を付けた `benitoite_run`・`benitoite_test`・`benitoite_scratch`）は、一回ごとに利用者の確認を受ける。
+
+- 確認の要求に `.agents` への書き込みであることを事実（`agents_write`）として載せ、画面には `This call may write agent skills and settings under .agents/. This approval covers this call only.` を別の行で示す。エフェクトの確認の要約には `, and let it write .agents/ (agent skills and settings) this time` を足す。
+- この確認は覚えない。同じスクリプトの同じエフェクトを前に確認していても、`write_agents` を付けた実行は毎回確認する。エフェクトの確認そのものは今までどおり覚える。
+- 制限モードでは、書く道具の確認は `.agents` の `.bnt` に書くときだけ求める。
+- 非対話（`benitoiteh exec`）では、`--allow-agents-write` を付けたときだけ、確認なしに許す。エフェクトの確認は、続けて `--allow` の範囲でも確かめる。付けないときは、`Writing under .agents/ (agent skills and settings) needs confirmation, and this non-interactive run does not allow it. Rerun exec with --allow-agents-write, or stop and report.` を道具の結果として返す。`--allow-agents-write` は対話の形では使い方の誤りとする。
+
+理由: [OS のサンドボックス](03-02-sandbox.md)の「.agents の守り」。覚えないのは、一度確認したスクリプトが、その後に利用者の知らないうちに `.agents` を書き換え続けることを防ぐためである。
+
 ### 非対話での扱い
 
 【方針】非対話（`benitoiteh exec`）では、対話の確認ができないので、次のように扱う。ADR 0345 の決定 4 を元にする。

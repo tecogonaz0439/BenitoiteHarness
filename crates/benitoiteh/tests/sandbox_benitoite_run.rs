@@ -23,6 +23,48 @@ fn permission_errno(message: &str) -> bool {
         .any(|error| message.contains(&format!("(os error {})", error.raw_os_error())))
 }
 
+// 関門: File.Write を確認したスクリプトからも .agents には書けず、write_agents を付けて利用者が
+// 承認した一回だけ書ける。前に確認したエフェクトでも、その一回の確認を省かない
+// （設計書 03-03「.agents への書き込み」）。
+#[test]
+fn agents_is_written_only_by_runs_confirmed_with_write_agents() -> TestResult {
+    let mut f = Fixture::new()?;
+    f.sandbox()?;
+    let skill = f.project.join(".agents/skills/demo");
+    fs::create_dir_all(&skill)?;
+    let target = skill.join("SKILL.md");
+    let source = "import Benitoite.Unofficial.IO.File\nfunction main() -> Unit uses File.Write\n bind _ <- File.writeText(path: \".agents/skills/demo/SKILL.md\", text: \"written\")\nend function\n";
+    let plain = run(&mut f, source, "plain", json!({}))?;
+    assert!(!target.exists(), "{plain:?}");
+    let stop = AtomicBool::new(false);
+    let args = json!({"path":"main.bnt", "write_agents": true});
+    let first = f.call(args.clone(), false, "agents-inspect", &stop);
+    let request = first
+        .approval
+        .as_ref()
+        .ok_or("write_agents must be confirmed")?;
+    assert!(request.facts.agents_write, "{request:?}");
+    assert!(request.summary.contains(".agents/"), "{}", request.summary);
+    assert!(!target.exists());
+    let output = f.call(args, true, "agents", &stop);
+    assert!(!output.is_error, "{output:?}");
+    assert_eq!(fs::read_to_string(&target)?, "written");
+    // 書き込みのないスクリプトに write_agents を付けると、確認の前に断る。
+    fs::write(
+        f.project.join("pure.bnt"),
+        "import Benitoite.Unofficial.IO.Console\nfunction main() -> Unit uses Console.Write\n Console.writeLine(\"pure\")\nend function\n",
+    )?;
+    let pure = f.call(
+        json!({"path":"pure.bnt", "write_agents": true}),
+        false,
+        "pure",
+        &stop,
+    );
+    assert!(pure.is_error && pure.approval.is_none(), "{pure:?}");
+    assert!(pure.text.contains("File.Write"), "{}", pure.text);
+    Ok(())
+}
+
 // 関門: Skill の実行を認めても、作業ディレクトリと書ける範囲はプロジェクトのままとする。
 #[test]
 fn loaded_skill_runs_after_confirmation_with_the_project_as_working_directory() -> TestResult {
@@ -478,6 +520,7 @@ fn agent(
         agent: Default::default(),
         project_parent: None,
         allow_effects: None,
+        allow_agents_write: false,
         mode: Mode::Restricted,
         destination: Destination {
             provider: "mock".into(),

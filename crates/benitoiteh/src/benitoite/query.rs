@@ -101,6 +101,7 @@ impl Processor {
                 allow_ip: false,
                 programs: vec![self.path.clone()],
                 readable: ReadAccess::All,
+                write_agents: false,
             },
             &context.locations,
             &context.denied_candidates,

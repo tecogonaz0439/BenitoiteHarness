@@ -15,6 +15,8 @@ pub struct RestrictedAccess {
     pub programs: Vec<PathBuf>,
     /// 読める範囲。
     pub readable: ReadAccess,
+    /// 利用者がこの一回に承認したとき、`.agents` の守りを外す（設計書 03-02「.agents の守り」）。
+    pub write_agents: bool,
 }
 
 /// 検査済みの場所から、問い合わせと実行に共通の制限モードの方針を作る。
@@ -31,6 +33,11 @@ pub fn restricted_policy(
     config.readable = access.readable.clone();
     config.allow_ip = access.allow_ip;
     config.programs = ProgramAccess::Only(access.programs.clone());
+    if access.write_agents && access.write_project {
+        config
+            .protected_names
+            .retain(|name| name != super::policy::AGENTS);
+    }
     for candidate in denied_candidates {
         match std::fs::canonicalize(candidate) {
             Ok(path) => config.denied_read.push(path),

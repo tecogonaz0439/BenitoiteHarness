@@ -52,6 +52,7 @@ impl Fixture {
                 allow_ip: false,
                 programs: vec![program.into()],
                 readable: ReadAccess::All,
+                write_agents: false,
             },
             &locations,
             &[],

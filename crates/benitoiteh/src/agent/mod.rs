@@ -52,6 +52,8 @@ pub struct AgentConfig {
     pub project_parent: Option<std::path::PathBuf>,
     /// Some は非対話で許す集合、None は対話の確認。
     pub allow_effects: Option<BTreeSet<crate::benitoite::Effect>>,
+    /// 非対話で、.agents に書く要求を確認なしに許す（設計書 03-03「.agents への書き込み」）。
+    pub allow_agents_write: bool,
     pub mode: Mode,
     pub destination: Destination,
     pub kind: AdapterKind,
@@ -69,6 +71,7 @@ impl From<ResolvedExec> for AgentConfig {
     fn from(config: ResolvedExec) -> Self {
         Self {
             allow_effects: None,
+            allow_agents_write: false,
             project_parent: None,
             mode: config.mode,
             destination: config.destination,

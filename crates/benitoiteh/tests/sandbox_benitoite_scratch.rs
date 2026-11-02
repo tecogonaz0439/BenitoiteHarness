@@ -295,6 +295,7 @@ fn scratch_agent(
         agent: Default::default(),
         project_parent: None,
         allow_effects: Some(allowed),
+        allow_agents_write: false,
         mode: Mode::Restricted,
         destination: Destination {
             provider: "mock".into(),

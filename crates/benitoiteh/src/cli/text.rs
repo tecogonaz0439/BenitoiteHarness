@@ -30,6 +30,7 @@ Options (exec only):
     --json
     --output-last-message <file>
     --allow <effects>
+    --allow-agents-write
     --project-parent <dir>
 
 Use - as the exec request to read standard input.

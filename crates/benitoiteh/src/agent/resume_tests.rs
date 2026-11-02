@@ -70,6 +70,7 @@ fn resume_starts_with_empty_session_command_approvals() -> Result<(), Box<dyn st
         agent: Default::default(),
         project_parent: None,
         allow_effects: None,
+        allow_agents_write: false,
         mode: Mode::Normal,
         destination: Destination {
             provider: "test".into(),
@@ -233,6 +234,7 @@ fn web_session_answers_are_remembered_by_the_loop_before_cancelled_execution()
             agent: Default::default(),
             project_parent: None,
             allow_effects: None,
+            allow_agents_write: false,
             mode: Mode::Normal,
             destination: Destination {
                 provider: "test".into(),
@@ -333,6 +335,7 @@ fn image_results_are_restored_only_when_enabled_and_metadata_and_hash_match()
         agent: Default::default(),
         project_parent: None,
         allow_effects: None,
+        allow_agents_write: false,
         mode: Mode::Normal,
         destination: Destination {
             provider: "test".into(),
@@ -613,6 +616,7 @@ fn branch_preparation_failure_preserves_log_and_memory_until_commit()
         agent: Default::default(),
         project_parent: None,
         allow_effects: None,
+        allow_agents_write: false,
         mode: Mode::Normal,
         destination: Destination {
             provider: "test".into(),

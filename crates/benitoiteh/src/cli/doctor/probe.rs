@@ -228,6 +228,7 @@ impl Probe {
                     allow_ip: false,
                     programs: vec![processor.path.clone()],
                     readable: crate::sandbox::ReadAccess::All,
+                    write_agents: false,
                 },
                 &processor.context.locations,
                 &processor.context.denied_candidates,

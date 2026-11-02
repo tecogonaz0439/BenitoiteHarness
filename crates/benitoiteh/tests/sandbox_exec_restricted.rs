@@ -93,6 +93,53 @@ fn redirected_xdg_keeps_default_home_configuration_and_state_unreadable() -> Tes
     Ok(())
 }
 
+// 関門: 非対話の exec では、.agents への書き込みを --allow-agents-write のときだけ許す。
+// 許さないときは確認を待たずに断り、理由を道具の結果で伝える（設計書 03-03「.agents への書き込み」）。
+#[test]
+fn exec_writes_agents_only_with_allow_agents_write() -> TestResult {
+    let protocol = Protocol::Chat;
+    for allowed in [false, true] {
+        let mut server = MockProvider::start(vec![
+            ResponseScript::sse(protocol.response(
+                Some((
+                    "agents",
+                    "write",
+                    json!({"path":".agents/skills/demo/helper.bnt", "content":"function main() -> Unit\nend function\n"}),
+                )),
+                "",
+                false,
+            )),
+            ResponseScript::sse(protocol.response(None, "Done", false)),
+        ])?;
+        let f = Fixture::restricted(protocol, &server)?;
+        let mut command = f.command("Write a skill helper");
+        if allowed {
+            command.arg("--allow-agents-write");
+        }
+        let output = Running::start(command.arg("--json"))?.finish()?;
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let (_, records) = f.records()?;
+        let text = records
+            .iter()
+            .find(|record| {
+                record.get("type") == Some(&json!("tool_result"))
+                    && record.get("name") == Some(&json!("write"))
+            })
+            .and_then(|record| record.pointer("/result/text"))
+            .and_then(Value::as_str)
+            .ok_or("write result")?;
+        let helper = f.root.join("project/.agents/skills/demo/helper.bnt");
+        assert_eq!(helper.exists(), allowed, "{text}");
+        assert_eq!(text.contains("--allow-agents-write"), !allowed, "{text}");
+        server.shutdown()?;
+    }
+    Ok(())
+}
+
 // 関門: サンドボックスの外で動くコマンドも、主のプロセスの環境（提供者のキー）を /proc から読めない
 // （設計書 03-02「主のプロセスの守り」）。親が主のプロセスであることも確かめ、別の理由で通らないようにする。
 #[cfg(target_os = "linux")]

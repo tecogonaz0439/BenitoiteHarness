@@ -40,6 +40,8 @@ pub struct ExecArgs {
     /// 非対話でプロジェクトの作成を許す親。起動時に実のパスへ変換する。
     pub project_parent: Option<PathBuf>,
     pub allow: Option<BTreeSet<crate::benitoite::Effect>>,
+    /// 非対話で、.agents に書く要求を確認なしに許す（設計書 03-03「.agents への書き込み」）。
+    pub allow_agents_write: bool,
     pub resume: Option<String>,
     pub continue_session: bool,
     pub sandbox: Option<Sandbox>,
@@ -103,6 +105,7 @@ impl ExecArgs {
             sandbox: None,
             approval: None,
             no_sandbox: false,
+            allow_agents_write: false,
             mode: None,
             project: None,
             provider: None,
@@ -146,7 +149,10 @@ impl ExecArgs {
             if !seen.insert(option.to_owned()) {
                 return Err(ArgsError::Duplicate(option.to_owned()));
             }
-            let flag = matches!(option, "--json" | "--continue" | "--no-sandbox");
+            let flag = matches!(
+                option,
+                "--json" | "--continue" | "--no-sandbox" | "--allow-agents-write"
+            );
             let known = matches!(
                 option,
                 "--mode"
@@ -166,6 +172,7 @@ impl ExecArgs {
                     | "--resume"
                     | "--continue"
                     | "--no-sandbox"
+                    | "--allow-agents-write"
             );
             if !known || (flag && attached.is_some()) {
                 return Err(ArgsError::Invalid);
@@ -233,6 +240,7 @@ impl ExecArgs {
                 "--resume" => result.resume = Some(string()?.to_owned()),
                 "--continue" => result.continue_session = true,
                 "--no-sandbox" => result.no_sandbox = true,
+                "--allow-agents-write" => result.allow_agents_write = true,
                 _ => return Err(ArgsError::Invalid),
             }
         }
@@ -242,6 +250,7 @@ impl ExecArgs {
         if interactive {
             if result.project_parent.is_some()
                 || result.allow.is_some()
+                || result.allow_agents_write
                 || result.json
                 || result.output_last_message.is_some()
                 || request == Some(Request::Stdin)

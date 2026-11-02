@@ -62,6 +62,51 @@ fn execute(
     f.confirm(&first)?;
     Ok(call(f, paths, true, id, &stop))
 }
+// 関門: テストの実行も、.agents には write_agents を付けて承認した一回だけ書ける。前に確認した
+// エフェクトでも、その一回の確認を省かない（設計書 03-03「.agents への書き込み」）。
+#[test]
+fn tests_write_agents_only_after_a_write_agents_confirmation() -> TestResult {
+    let mut f = Fixture::new()?;
+    f.sandbox()?;
+    let skill = f.project.join(".agents/skills/demo");
+    fs::create_dir_all(&skill)?;
+    let target = skill.join("SKILL.md");
+    fs::write(
+        f.project.join("agents_test.bnt"),
+        "import Benitoite.Unofficial.IO.File\n@test(\"writes\")\nfunction writes() -> Unit uses File.Write\n bind _ <- File.writeText(path: \".agents/skills/demo/SKILL.md\", text: \"written\")\nend function\n",
+    )?;
+    let plain = execute(&mut f, json!(["agents_test.bnt"]), "plain")?;
+    assert!(!target.exists(), "{plain:?}");
+    let stop = AtomicBool::new(false);
+    let invoke = |approval| {
+        let call = f.tools.validate(
+            "benitoite_test",
+            json!({"paths":["agents_test.bnt"], "write_agents": true}),
+        )?;
+        Ok::<_, Box<dyn std::error::Error>>(f.tools.execute_validated(
+            &f.context,
+            &call,
+            approval,
+            Invocation {
+                call_id: "agents",
+                cancelled: &stop,
+                confirmed_effects: &f.confirmed,
+                session_domains: &BTreeSet::new(),
+            },
+        ))
+    };
+    let first = invoke(ApprovalStatus::Unapproved)?;
+    let request = first
+        .approval
+        .as_ref()
+        .ok_or("write_agents must be confirmed")?;
+    assert!(request.facts.agents_write, "{request:?}");
+    assert!(!target.exists());
+    let output = invoke(ApprovalStatus::Approved)?;
+    assert!(!output.is_error, "{output:?}");
+    assert_eq!(fs::read_to_string(&target)?, "written");
+    Ok(())
+}
 // 関門: 本物の対象の重なり、Assert.Check、全体の検査、集計の条件を実行器で守る。
 #[test]
 fn files_directories_overlap_and_empty_targets_run_with_the_reported_effects() -> TestResult {
@@ -339,6 +384,7 @@ fn noninteractive_execution_resets_denials_counts_launches_and_records_rewind_po
         agent: Default::default(),
         project_parent: None,
         allow_effects: Some(Default::default()),
+        allow_agents_write: false,
         mode: Mode::Restricted,
         destination: Destination {
             provider: "mock".into(),

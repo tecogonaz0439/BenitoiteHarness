@@ -123,7 +123,17 @@ pub(super) fn execute_script(
         .copied()
         .filter(|e| *e != Effect::AssertCheck)
         .collect();
+    // .agents に書くには File.Write が要る。書く一回ごとに、前の確認によらず確かめる
+    // （設計書 03-03「.agents への書き込み」）。
+    let write_agents = super::benitoite_process::write_agents(arguments);
+    if write_agents && !confirmation.contains(&Effect::FileWrite) {
+        return Ok(ToolOutput {
+            processor_launches: 1,
+            ..ToolOutput::error(text::WRITE_AGENTS_WITHOUT_FILE_WRITE)
+        });
+    }
     let mut facts = ApprovalFacts {
+        agents_write: write_agents,
         targets: vec![real_path.to_owned()],
         effects: effects::names(&confirmation, false),
         shell_reference: report.shell_reference && report.effects.contains(&Effect::ProcessRun),
@@ -148,6 +158,7 @@ pub(super) fn execute_script(
         });
     }
     let automatic = scratch
+        && !write_agents
         && approval == ApprovalStatus::Unapproved
         && facts.unread_imports == 0
         && confirmation.is_subset(
@@ -171,7 +182,9 @@ pub(super) fn execute_script(
     let needs_confirmation = if scratch && approval == ApprovalStatus::Unapproved {
         !automatic
     } else {
-        !confirmed || (facts.unread_imports > 0 && approval == ApprovalStatus::Unapproved)
+        !confirmed
+            || ((facts.unread_imports > 0 || write_agents)
+                && approval == ApprovalStatus::Unapproved)
     };
     if needs_confirmation {
         if approval == ApprovalStatus::Approved {
@@ -209,6 +222,7 @@ pub(super) fn execute_script(
             // File.Read を自動の範囲だけで許した非対話の呼び直しも、読み取りを限る。
             // 対話で利用者が確認した範囲とは分ける（設計書 03-03「非対話での扱い」）。
             automatic: automatic || retry_automatic.contains(&Effect::FileRead),
+            write_agents,
         },
         &invocation,
     );

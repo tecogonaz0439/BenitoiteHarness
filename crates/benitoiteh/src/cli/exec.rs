@@ -754,6 +754,7 @@ pub(super) fn prepare(
         config.project_parent = project_parent;
         config.allow_effects = (!args.interactive && config.mode == Mode::Restricted)
             .then(|| args.allow.clone().unwrap_or_default());
+        config.allow_agents_write = args.allow_agents_write;
         let mut agent = match resume {
             Some(state) => Agent::resume(
                 config,

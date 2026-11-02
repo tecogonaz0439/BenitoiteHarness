@@ -227,6 +227,10 @@ impl Confirmation {
                     rows.extend(fact(text::SHELL, text::SHELL_REFERENCE, width, compact));
                 }
             }
+            // 一回だけの .agents への書き込みは、どの確認でも別の行で示す（設計書 03-03「.agents への書き込み」）。
+            if request.facts.agents_write {
+                rows.extend(fact(text::AGENTS, text::AGENTS_WRITE, width, compact));
+            }
             rows
         } else {
             fact(text::WARNING, text::MODE_CHANGE_WARNING, width, compact)

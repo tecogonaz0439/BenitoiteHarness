@@ -123,9 +123,11 @@ pub fn positive(name: &str, zero_allowed: bool) -> String {
     };
     format!("Argument {name:?} must be {range}.")
 }
-pub fn write_approval(path: &std::path::Path, protected: bool) -> String {
+pub fn write_approval(path: &std::path::Path, protected: bool, agents: bool) -> String {
     let reason = if protected {
         "inside a protected location (.git or .benitoiteh)"
+    } else if agents {
+        "inside .agents (agent skills and settings)"
     } else {
         "outside the writable roots"
     };
@@ -409,6 +411,8 @@ pub const BENITOITE_RUN: (&str, &str) =
     prompt_parts(include_str!("../../prompts/tools/benitoite_run.md"));
 pub const RUN_ARGS: &str = "Arguments passed to the Benitoite script.";
 pub const RUN_STDIN: &str = "Text written to the script's standard input; empty when omitted.";
+pub const RUN_WRITE_AGENTS: &str = "Set to true only when this run must write under .agents/ (agent skills and settings). The user confirms each such run; otherwise .agents/ stays read-only.";
+pub const WRITE_AGENTS_WITHOUT_FILE_WRITE: &str = "write_agents requires a script whose effects include File.Write. Remove write_agents, or write the files from main.";
 pub const RUN_CONTEXT: &str =
     "The Benitoite script execution context is unavailable. Stop and report.";
 pub const RUN_PATH: &str =

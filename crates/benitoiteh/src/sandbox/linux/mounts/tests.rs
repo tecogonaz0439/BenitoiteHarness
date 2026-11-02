@@ -116,8 +116,10 @@ fn mount_order_keeps_masks_after_writable_roots() -> TestResult {
         let missing = [
             w.join(".git"),
             w.join(".benitoiteh"),
+            w.join(".agents"),
             sub.join(".git"),
             sub.join(".benitoiteh"),
+            sub.join(".agents"),
         ];
         for path in &missing {
             expected.extend([
@@ -208,8 +210,15 @@ fn gitdir_and_custom_protection_use_the_same_mount_precedence() -> TestResult {
             path.as_os_str().to_owned(),
         ]);
     }
+    let agents = w.join(".agents");
     let extra = w.join(".extra");
     expected.extend([
+        OsString::from("--perms"),
+        OsString::from("555"),
+        OsString::from("--tmpfs"),
+        agents.as_os_str().to_owned(),
+        OsString::from("--remount-ro"),
+        agents.as_os_str().to_owned(),
         OsString::from("--perms"),
         OsString::from("555"),
         OsString::from("--tmpfs"),
@@ -223,7 +232,7 @@ fn gitdir_and_custom_protection_use_the_same_mount_precedence() -> TestResult {
         f.0.as_os_str().to_owned(),
     ]);
     assert_eq!(plan.args, expected);
-    assert_eq!(plan.cleanup.directories, [extra]);
+    assert_eq!(plan.cleanup.directories, [agents, extra]);
     assert!(plan.cleanup.cover.is_none());
     plan.cleanup.finish()?;
     Ok(())

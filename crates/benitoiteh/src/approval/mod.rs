@@ -3,6 +3,7 @@
 mod interactive;
 mod text;
 pub use interactive::{ApprovalPrompt, InteractiveApprover};
+pub use text::AGENTS_WRITE_DENIED;
 
 pub use crate::benitoite::report::{ApprovalSource, ContentHash};
 use crate::config::{Approval, Sandbox};
@@ -58,6 +59,9 @@ pub struct ApprovalFacts {
     /// 制限モードで、承認後の再検査が使いうる OS の範囲。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub restricted: Option<RestrictedFacts>,
+    /// この一回で `.agents` に書く（設計書 03-03「.agents への書き込み」）。覚えず、毎回確かめる。
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub agents_write: bool,
 }
 
 /// 確認したエフェクトの和に対応するサンドボックスの範囲（設計書 03-03）。
@@ -162,7 +166,10 @@ pub fn decide_in_mode(
     allowed: &BTreeSet<String>,
     domains: &BTreeSet<String>,
 ) -> Decision {
+    // 制限モードの書く道具は、.agents の .bnt に書くときだけ確認を求める（設計書 03-03「.agents への書き込み」）。
+    let agents_write = kind == ApprovalKind::WriteScope && facts.agents_write;
     if mode == crate::config::Mode::Restricted
+        && !agents_write
         && !matches!(
             kind,
             ApprovalKind::CreateProject

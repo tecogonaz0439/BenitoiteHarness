@@ -562,6 +562,8 @@ pub fn interpreter(path: Option<&std::path::Path>, version: Option<&str>) -> Str
 pub const TARGETS: &str = "Targets";
 pub const EFFECTS: &str = "Effects";
 pub const SHELL: &str = "Shell";
+pub const AGENTS: &str = ".agents";
+pub const AGENTS_WRITE: &str = "This call may write agent skills and settings under .agents/. This approval covers this call only.";
 pub const NO_EFFECTS: &str = "none";
 pub const SHELL_REFERENCE: &str = "The script references Process.shell; the OS sandbox blocks starting a shell in restricted mode.";
 
