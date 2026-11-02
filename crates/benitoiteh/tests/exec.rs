@@ -1352,3 +1352,117 @@ fn ephemeral_exec_runs_tools_and_leaves_no_session_record() -> TestResult {
     server.shutdown()?;
     Ok(())
 }
+
+// 作成時の関門: `debug prompt-input` が示す本文は、同じ依頼で exec が最初に送る本文と同じであり、
+// 認証の値を含まず、何も送らず、記録を残さない。鍵の環境の変数がなくても示せる
+// （設計書 05-01「debug prompt-input」）。
+#[test]
+fn prompt_input_matches_the_first_exec_request_without_sending_or_keys() -> TestResult {
+    for protocol in [Protocol::Chat, Protocol::Anthropic, Protocol::Responses] {
+        let mut server = MockProvider::start(vec![ResponseScript::sse(
+            protocol.response(None, "ok", false),
+        )])?;
+        let f = Fixture::new(protocol, &server)?;
+        fs::write(f.root.join("project/AGENTS.md"), "Project rules.\n")?;
+        let output =
+            Running::start(f.command("Show the files.").args(["--trust-project"]))?.finish()?;
+        assert_eq!(
+            output.status.code(),
+            Some(0),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let sent = server.requests()?;
+        let [sent] = sent.as_slice() else {
+            return Err(format!("{protocol:?}: {} requests", sent.len()).into());
+        };
+        fs::remove_dir_all(f.root.join("state/benitoiteh/sessions"))?;
+        for with_key in [true, false] {
+            let arguments = [
+                "debug",
+                "prompt-input",
+                "Show the files.",
+                "--trust-project",
+                "--no-sandbox",
+            ];
+            let mut command = Command::new(env!("CARGO_BIN_EXE_benitoiteh"));
+            command
+                .args(arguments)
+                .current_dir(f.root.join("project"))
+                .env("HOME", f.root.join("home"))
+                .env("XDG_CONFIG_HOME", f.root.join("config"))
+                .env("XDG_STATE_HOME", f.root.join("state"))
+                .env("TMPDIR", f.root.join("tmp"))
+                .stdin(Stdio::null())
+                .stdout(Stdio::piped())
+                .stderr(Stdio::piped());
+            if with_key {
+                command.env("BENITOITEH_EXEC_TEST_KEY", KEY);
+            }
+            let output = Running::start(&mut command)?.finish()?;
+            assert_eq!(
+                output.status.code(),
+                Some(0),
+                "{protocol:?}: {}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+            let stdout = std::str::from_utf8(&output.stdout)?;
+            assert!(!stdout.contains(KEY), "{stdout}");
+            let shown: Value = serde_json::from_str(stdout)?;
+            let mut body = shown.get("body").cloned().ok_or("body")?;
+            let mut expected = sent.body.clone();
+            // Responses のキャッシュの鍵はセッションの ID なので、起動ごとに違う。
+            for value in [&mut body, &mut expected] {
+                if let Some(fields) = value.as_object_mut() {
+                    fields.remove("prompt_cache_key");
+                }
+            }
+            // 書ける場所に入るセッションの一時ディレクトリも、起動ごとに違う。
+            assert_eq!(
+                without_session_directory(&body.to_string()),
+                without_session_directory(&expected.to_string()),
+                "{protocol:?}"
+            );
+            assert!(
+                shown
+                    .get("url")
+                    .and_then(Value::as_str)
+                    .is_some_and(|url| url.ends_with(&sent.path)),
+                "{shown}"
+            );
+            let headers = shown
+                .get("headers")
+                .and_then(Value::as_object)
+                .ok_or("headers")?;
+            assert!(
+                !headers.contains_key("authorization") && !headers.contains_key("x-api-key"),
+                "{headers:?}"
+            );
+            assert_eq!(server.requests()?.len(), 1, "{protocol:?}");
+            assert_eq!(
+                fs::read_dir(f.root.join("state/benitoiteh/sessions"))?.count(),
+                0
+            );
+        }
+        server.shutdown()?;
+    }
+    Ok(())
+}
+
+/// `tmp/benitoiteh-<セッションの ID>` の ID を伏せる。
+fn without_session_directory(text: &str) -> String {
+    let marker = "tmp/benitoiteh-";
+    let mut result = String::new();
+    let mut rest = text;
+    while let Some(index) = rest.find(marker) {
+        let (before, after) = rest.split_at(index.saturating_add(marker.len()));
+        result.push_str(before);
+        result.push_str("SESSION");
+        let end = after
+            .find(|c: char| !(c.is_ascii_alphanumeric() || c == '-'))
+            .unwrap_or(after.len());
+        rest = after.get(end..).unwrap_or_default();
+    }
+    result.push_str(rest);
+    result
+}

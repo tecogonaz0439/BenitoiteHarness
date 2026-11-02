@@ -61,6 +61,8 @@ pub struct ExecArgs {
     pub output_last_message: Option<PathBuf>,
     /// セッションの記録を残さない（設計書 01-05「記録を残さないセッション」）。
     pub ephemeral: bool,
+    /// `debug prompt-input` から使う。最初の要求を作って示し、送らない。
+    pub preview: bool,
     pub request: Request,
 }
 
@@ -87,6 +89,25 @@ impl ExecArgs {
     /// `exec` の後ろだけを渡して解釈する。パスの値は非 UTF-8 でも保つ。
     pub fn parse(args: impl IntoIterator<Item = impl Into<OsString>>) -> Result<Self, ArgsError> {
         Self::parse_mode(args, false)
+    }
+
+    /// `debug prompt-input` の後ろを解釈する。exec と同じ指定を受け付け、出力と記録の指定と
+    /// 既存のセッションの指定を拒む（設計書 05-01「debug prompt-input」）。
+    pub fn parse_preview(
+        args: impl IntoIterator<Item = impl Into<OsString>>,
+    ) -> Result<Self, ArgsError> {
+        let mut result = Self::parse_mode(args, false)?;
+        if result.json
+            || result.output_last_message.is_some()
+            || result.ephemeral
+            || result.resume.is_some()
+            || result.continue_session
+        {
+            return Err(ArgsError::Invalid);
+        }
+        result.ephemeral = true;
+        result.preview = true;
+        Ok(result)
     }
 
     /// 対話の形の引数を解釈し、非対話専用と後続作業の指定を拒む。
@@ -122,6 +143,7 @@ impl ExecArgs {
             json: false,
             output_last_message: None,
             ephemeral: false,
+            preview: false,
             request: Request::Stdin,
         };
         let mut seen = BTreeSet::new();

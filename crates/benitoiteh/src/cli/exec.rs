@@ -397,11 +397,17 @@ pub(super) fn prepare(
         } else {
             Approval::Never
         };
-        let chatgpt = chatgpt_tokens(&resolved, paths)?;
+        // 送らない要求には、認証の値を読まない（設計書 05-01「debug prompt-input」）。
+        let chatgpt = if args.preview {
+            None
+        } else {
+            chatgpt_tokens(&resolved, paths)?
+        };
         diagnostics.push(text::destination(&resolved.destination));
         let key = resolved
             .api_key
             .as_ref()
+            .filter(|_| !args.preview)
             .map(|key| key.resolve())
             .transpose()
             .map_err(StartupError::Credentials)?;
@@ -936,6 +942,17 @@ pub(super) fn run(args: ExecArgs) -> Result<u8, CliError> {
         .request
         .read(&mut io::stdin().lock())
         .map_err(CliError::Output)?;
+    if args.preview {
+        let preview = agent.preview_request(request).map_err(CliError::Agent)?;
+        let mut stdout = io::stdout().lock();
+        io::Write::write_all(&mut stdout, &preview_json(&preview))
+            .and_then(|()| io::Write::write_all(&mut stdout, b"\n"))
+            .map_err(CliError::Output)?;
+        drop(agent);
+        drop(session);
+        panic::install(None, None);
+        return Ok(0);
+    }
     let mut output = ExecOutput::new(args.json);
     let (sender, receiver) = mpsc::sync_channel(64);
     let control = crate::agent::RunControl::without_steering(
@@ -1006,6 +1023,24 @@ pub(super) fn run(args: ExecArgs) -> Result<u8, CliError> {
         Outcome::Failed => 1,
         Outcome::Cancelled => 130,
     })
+}
+
+/// 送らずに作った要求を、読みやすい JSON にする。本文が JSON でなければ文字列で示す。
+fn preview_json(preview: &crate::provider::RequestPreview) -> Vec<u8> {
+    let body = serde_json::from_slice::<serde_json::Value>(&preview.body).unwrap_or_else(|_| {
+        serde_json::Value::String(String::from_utf8_lossy(&preview.body).into_owned())
+    });
+    let headers = preview
+        .headers
+        .iter()
+        .map(|(name, value)| (name.clone(), serde_json::Value::String(value.clone())))
+        .collect::<serde_json::Map<_, _>>();
+    serde_json::to_vec_pretty(&serde_json::json!({
+        "url": preview.url,
+        "headers": headers,
+        "body": body,
+    }))
+    .unwrap_or_default()
 }
 
 /// 中継の門を作る。macOS の待ち受けは手元のほかのプロセスからも届くので、合言葉を持たせる。

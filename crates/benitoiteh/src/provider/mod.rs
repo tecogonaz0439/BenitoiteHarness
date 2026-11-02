@@ -5,6 +5,7 @@ pub mod ids;
 mod images;
 pub mod openai_chat;
 pub mod openai_responses;
+mod preview;
 pub mod sse;
 mod text;
 pub mod tool_schema;
@@ -12,6 +13,7 @@ pub mod types;
 
 pub(crate) use images::{plan as image_plan, remove_images};
 
+pub use preview::RequestPreview;
 pub use tool_schema::{ArgumentSpec, ArgumentType, SchemaKind, ToolSpec};
 pub use types::{
     AdapterKind, AssistantPart, AssistantTurn, Capabilities, Conversation, Destination,

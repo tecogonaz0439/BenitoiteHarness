@@ -802,24 +802,8 @@ impl Agent {
                 recorder.capture(crate::rewind::CheckpointReason::Request, None, cancelled)?;
         }
         self.checkpoint_notices(events)?;
-        let mut parts = Vec::new();
-        if !self.started {
-            parts.push(UserPart {
-                kind: UserPartKind::Environment,
-                text: self.environment.render(),
-            });
-        }
-        if let Some(changes) = self.environment_changes.take() {
-            parts.push(UserPart {
-                kind: UserPartKind::Environment,
-                text: changes,
-            });
-        }
-        parts.push(UserPart {
-            kind: UserPartKind::Request,
-            text: request,
-        });
-        let message = UserMessage { parts };
+        let changes = self.environment_changes.take();
+        let message = self.request_message(changes, request);
         self.append_node(Record::User {
             node: 0,
             kind: UserKind::Request,
@@ -829,6 +813,29 @@ impl Agent {
         self.started = true;
         self.repeated = None;
         self.run_inner(control, events, summary)
+    }
+
+    /// 依頼の利用者の発言。最初の依頼の前に環境を、変わったときに変わった点を置く。
+    /// `debug prompt-input` も同じ形を使う（設計書 05-01「debug prompt-input」）。
+    fn request_message(&self, changes: Option<String>, request: String) -> UserMessage {
+        let mut parts = Vec::new();
+        if !self.started {
+            parts.push(UserPart {
+                kind: UserPartKind::Environment,
+                text: self.environment.render(),
+            });
+        }
+        if let Some(changes) = changes {
+            parts.push(UserPart {
+                kind: UserPartKind::Environment,
+                text: changes,
+            });
+        }
+        parts.push(UserPart {
+            kind: UserPartKind::Request,
+            text: request,
+        });
+        UserMessage { parts }
     }
 
     fn run_inner(

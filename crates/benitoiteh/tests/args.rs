@@ -204,3 +204,23 @@ fn allow_accepts_atomic_effects_and_rejects_aliases_duplicates_and_interactive_u
     ));
     Ok(())
 }
+
+// 作成時の関門: `debug prompt-input` は exec と同じ指定を受け、出力と記録と既存のセッションの指定を
+// 拒み、記録を残さない形にする（設計書 05-01「debug prompt-input」）。
+#[test]
+fn prompt_input_arguments_reject_output_and_session_options() -> Result<(), ArgsError> {
+    let args = ExecArgs::parse_preview(["--mode", "normal", "request"])?;
+    assert!(args.preview && args.ephemeral);
+    assert_eq!(args.mode, Some(Mode::Normal));
+    for args in [
+        vec!["--json", "request"],
+        vec!["--output-last-message", "file", "request"],
+        vec!["--ephemeral", "request"],
+        vec!["--resume", "id", "request"],
+        vec!["--continue", "request"],
+        vec![],
+    ] {
+        assert!(ExecArgs::parse_preview(args.clone()).is_err(), "{args:?}");
+    }
+    Ok(())
+}

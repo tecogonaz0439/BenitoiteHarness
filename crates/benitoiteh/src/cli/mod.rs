@@ -98,6 +98,14 @@ fn run(
     if argument == "sessions" {
         return sessions::run(args);
     }
+    if argument == "debug" {
+        let mut args = args;
+        if args.next().as_deref() != Some(std::ffi::OsStr::new("prompt-input")) {
+            return Err(CliError::Usage);
+        }
+        let options = args::ExecArgs::parse_preview(args).map_err(CliError::Arguments)?;
+        return exec::run(options);
+    }
     if argument == "login" || argument == "logout" {
         return login::run(args, argument == "logout");
     }

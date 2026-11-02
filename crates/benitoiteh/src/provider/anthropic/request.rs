@@ -31,6 +31,13 @@ pub struct AnthropicRequest {
     pub(super) body: Vec<u8>,
 }
 
+impl AnthropicRequest {
+    /// 認証の値を除いた形（設計書 05-01「debug prompt-input」）。
+    pub fn preview(&self) -> crate::provider::RequestPreview {
+        crate::provider::RequestPreview::new(&self.uri, &self.headers, &self.body)
+    }
+}
+
 impl fmt::Debug for AnthropicRequest {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("AnthropicRequest").finish_non_exhaustive()

@@ -39,6 +39,40 @@ pub(super) enum Request {
     Responses(OpenAiResponsesRequest),
 }
 
+impl Request {
+    pub(super) fn preview(&self) -> crate::provider::RequestPreview {
+        match self {
+            Self::Anthropic(request) => request.preview(),
+            Self::Chat(request) => request.preview(),
+            Self::Responses(request) => request.preview(),
+        }
+    }
+}
+
+impl Agent {
+    /// 次の依頼で最初に送る要求を、送らずに作る（設計書 05-01「debug prompt-input」）。
+    ///
+    /// 会話と記録は変えない。依頼の前に置く環境の部分は、`run_request` と同じ規則で加える。
+    pub fn preview_request(
+        &self,
+        request: String,
+    ) -> Result<crate::provider::RequestPreview, AgentError> {
+        let mut conversation = self.conversation.clone();
+        let message = self.request_message(self.environment_changes.clone(), request);
+        conversation
+            .items
+            .push(crate::provider::Item::UserMessage(message));
+        let request = self.adapter.request(
+            &conversation,
+            &self.system,
+            &self.config.effort,
+            self.previous_last_item,
+            &self.session.id().to_string(),
+        )?;
+        Ok(request.preview())
+    }
+}
+
 pub(super) enum Stream {
     Anthropic(AnthropicStream),
     Chat(OpenAiChatStream),
