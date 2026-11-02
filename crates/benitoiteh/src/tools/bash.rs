@@ -1,8 +1,10 @@
 //! 通常モードのシェルを確認後に起動し、出力の末尾と保存を管理する（設計書 01-03「bash（通常モード）」）。
 
-use std::ffi::OsString;
+use std::ffi::{OsStr, OsString};
+use std::os::unix::ffi::{OsStrExt, OsStringExt};
+use std::os::unix::fs::MetadataExt;
 use std::os::unix::process::ExitStatusExt;
-use std::path::Path;
+use std::path::{Component, Path, PathBuf};
 
 use std::sync::{Arc, Mutex, PoisonError};
 use std::time::Duration;
@@ -321,6 +323,14 @@ fn prepare(
     } else {
         env.remove(std::ffi::OsStr::new("BENITOITEH_SANDBOX"));
         env.remove(std::ffi::OsStr::new("BENITOITEH_SANDBOX_NETWORK_DISABLED"));
+        // 承認を受けて外で動かす一回では、サンドボックスの中から書ける場所に届く PATH の項目を除く。
+        // 中のコマンドが置いた偽の git などを、利用者が承認した外の実行に拾わせない
+        // （設計書 03-02「通常モードの方針」）。
+        if shell.policy.is_some()
+            && let Some(value) = env.get_mut(std::ffi::OsStr::new("PATH"))
+        {
+            *value = outside_path(value, &shell.writable_roots);
+        }
         let mut launch = crate::sandbox::session::command(&shell.helper, path);
         launch
             .arg("-c")
@@ -330,6 +340,105 @@ fn prepare(
             .envs(env);
         Ok(launch.into())
     }
+}
+
+/// `PATH` の項目のうち、書ける場所に届くものを除いて並べ直す。
+fn outside_path(path: &OsStr, roots: &[PathBuf]) -> OsString {
+    let roots: Vec<Root> = roots.iter().map(|root| Root::new(root)).collect();
+    let kept: Vec<&[u8]> = path
+        .as_bytes()
+        .split(|byte| *byte == b':')
+        .filter(|entry| !reaches_writable(Path::new(OsStr::from_bytes(entry)), &roots))
+        .collect();
+    OsString::from_vec(kept.join(&b':'))
+}
+
+/// 書ける場所の根。名前と、ファイルシステムの上の同一性（デバイスと inode）の両方で比べる。
+/// 同一性で比べるのは、大小文字を区別しないファイルシステムの綴りの違う名前や、別の場所の
+/// bind マウントから根に入る道を捕まえるため。
+struct Root {
+    path: PathBuf,
+    identity: Option<(u64, u64)>,
+}
+impl Root {
+    fn new(path: &Path) -> Self {
+        let path = std::fs::canonicalize(path).unwrap_or_else(|_| path.to_owned());
+        let identity = std::fs::metadata(&path)
+            .ok()
+            .map(|metadata| (metadata.dev(), metadata.ino()));
+        Self { path, identity }
+    }
+}
+
+enum Part {
+    Parent,
+    Name(OsString),
+}
+
+fn parts(path: &Path) -> impl DoubleEndedIterator<Item = Part> + '_ {
+    path.components().filter_map(|component| match component {
+        Component::ParentDir => Some(Part::Parent),
+        Component::Normal(name) => Some(Part::Name(name.to_owned())),
+        Component::RootDir | Component::CurDir | Component::Prefix(_) => None,
+    })
+}
+
+/// 項目を根から一段ずつ辿り、通るディレクトリかリンクの先が書ける場所に入るかを調べる。
+/// 相対の項目（空の項目を含む）は作業ディレクトリに依るので、いつも届くとみなす。
+/// 調べられないときも届くとみなす（nono の broker_path と同じく、リンクの各段を調べる）。
+fn reaches_writable(entry: &Path, roots: &[Root]) -> bool {
+    if !entry.is_absolute() {
+        return true;
+    }
+    let inside = |path: &Path, metadata: Option<&std::fs::Metadata>| {
+        roots.iter().any(|root| {
+            path.starts_with(&root.path)
+                || metadata
+                    .is_some_and(|metadata| root.identity == Some((metadata.dev(), metadata.ino())))
+        })
+    };
+    let mut pending: Vec<Part> = parts(entry).rev().collect();
+    let mut current = PathBuf::from("/");
+    let mut links = 0_u8;
+    while let Some(part) = pending.pop() {
+        let name = match part {
+            Part::Parent => {
+                current.pop();
+                continue;
+            }
+            Part::Name(name) => name,
+        };
+        let next = current.join(name);
+        match std::fs::symlink_metadata(&next) {
+            Ok(metadata) if metadata.file_type().is_symlink() => {
+                if inside(&next, None) {
+                    return true;
+                }
+                links = links.saturating_add(1);
+                let Ok(target) = std::fs::read_link(&next) else {
+                    return true;
+                };
+                if links > 40 {
+                    return true;
+                }
+                if target.is_absolute() {
+                    current = PathBuf::from("/");
+                }
+                pending.extend(parts(&target).rev());
+            }
+            Ok(metadata) => {
+                if inside(&next, Some(&metadata)) {
+                    return true;
+                }
+                current = next;
+            }
+            // まだない場所は、書ける場所の中でなければ中から作れない。書ける場所の中かは、
+            // 残りを名前のまま辿った後の最後の判定で見る。
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => current = next,
+            Err(_) => return true,
+        }
+    }
+    inside(&current, None)
 }
 
 fn sandbox_denied(

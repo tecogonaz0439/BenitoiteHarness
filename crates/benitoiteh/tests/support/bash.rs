@@ -27,6 +27,13 @@ pub struct Fixture {
 }
 impl Fixture {
     pub fn new(sandbox: Sandbox) -> Result<Self, Box<dyn Error>> {
+        Self::with_path(sandbox, |_| "/bin:/usr/bin".into())
+    }
+    /// 子に渡す `PATH` を、準備の根（正規化したもの）から作る。
+    pub fn with_path(
+        sandbox: Sandbox,
+        path: impl FnOnce(&std::path::Path) -> String,
+    ) -> Result<Self, Box<dyn Error>> {
         let mut random = [0; 16];
         getrandom::fill(&mut random)?;
         let root =
@@ -50,9 +57,10 @@ impl Fixture {
             config.deny_exec_in_writable = false;
             Some(SandboxPolicy::new(config)?)
         };
+        let path = path(&root);
         let env = child_environment(
             [
-                ("PATH", "/bin:/usr/bin"),
+                ("PATH", path.as_str()),
                 ("OPENAI_API_KEY", "synthetic-openai"),
                 ("ANTHROPIC_API_KEY", "synthetic-anthropic"),
                 ("CUSTOM_PROVIDER_KEY", "synthetic-custom"),

@@ -195,6 +195,57 @@ fn bash_reports_exit_timeout_and_cancellation() -> TestResult {
     Ok(())
 }
 
+// 関門: 外で動かす一回の PATH から、中から書ける場所に届く項目（直に、リンクで、リンクの途中の段で、
+// まだない場所で、相対で）を除き、サンドボックスの中の PATH は変えない（設計書 03-02「通常モードの方針」）。
+#[test]
+fn escalated_bash_path_skips_entries_that_reach_writable_roots() -> TestResult {
+    let original = std::cell::RefCell::new(String::new());
+    let f = Fixture::with_path(Sandbox::WorkspaceWrite, |root| {
+        let value = format!(
+            "{p}/bin:{r}/link-bin:{r}/hop/bin:{p}/missing:bin::{r}/trusted:/bin:/usr/bin",
+            p = root.join("project").display(),
+            r = root.display()
+        );
+        original.replace(value.clone());
+        value
+    })?;
+    let original = original.into_inner();
+    use std::os::unix::fs::{PermissionsExt, symlink};
+    for (directory, text) in [
+        (f.project.join("bin"), "PLANTED"),
+        (f.root.join("trusted"), "TRUSTED"),
+    ] {
+        fs::create_dir_all(&directory)?;
+        let tool = directory.join("probe-tool");
+        fs::write(&tool, format!("#!/bin/sh\necho {text}\n"))?;
+        fs::set_permissions(&tool, fs::Permissions::from_mode(0o755))?;
+    }
+    symlink(f.project.join("bin"), f.root.join("link-bin"))?;
+    symlink(&f.project, f.root.join("hop"))?;
+    let command = r#"printf 'PATH=%s\n' "$PATH"; probe-tool"#;
+    let escalated = f.execute(
+        "escalated",
+        json!({"command": command, "escalate": true}),
+        &AtomicBool::new(false),
+    )?;
+    assert!(!escalated.is_error, "{}", escalated.text);
+    let expected = format!("PATH={}/trusted:/bin:/usr/bin\n", f.root.display());
+    assert!(escalated.text.contains(&expected), "{}", escalated.text);
+    assert!(escalated.text.contains("TRUSTED"), "{}", escalated.text);
+    assert!(!escalated.text.contains("PLANTED"), "{}", escalated.text);
+    let sandboxed = f.execute(
+        "sandboxed",
+        json!({"command": command}),
+        &AtomicBool::new(false),
+    )?;
+    assert!(
+        sandboxed.text.contains(&format!("PATH={original}\n")),
+        "{}",
+        sandboxed.text
+    );
+    Ok(())
+}
+
 #[test]
 fn bash_clears_keys_and_removes_sandbox_markers_when_escalated() -> TestResult {
     for sandbox in [Sandbox::WorkspaceWrite, Sandbox::DangerFullAccess] {
