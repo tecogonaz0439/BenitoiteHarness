@@ -258,3 +258,17 @@ fn private_addresses_ip_literals_and_missing_tokens_are_refused() -> TestResult 
 fn gate_with_token(port: u16) -> NetworkGate {
     gate(&["example.com"], port, false).with_token("token".into())
 }
+
+// 作成時の関門: 承認の方針が尋ねることを許さない門は、画面につながっていても尋ねずに断る。
+#[test]
+fn gates_that_must_not_ask_refuse_without_prompting() -> TestResult {
+    let gate = Arc::new(gate(&[], 9, false));
+    let (prompts, requests) = mpsc::channel::<ApprovalPrompt>();
+    gate.connect_prompts(prompts);
+    let run = ProxyRun::new(Arc::clone(&gate), "curl".into(), PathBuf::from("/project"));
+    let (port, _server) = start(&run)?;
+    let response = exchange(port, "CONNECT unknown.example.com:443 HTTP/1.1\r\n\r\n")?;
+    assert!(response.contains(text::NETWORK_NOT_ALLOWED), "{response}");
+    assert!(requests.try_recv().is_err());
+    Ok(())
+}

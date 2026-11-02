@@ -249,7 +249,13 @@ pub(super) fn prepare(
                 args.provider = Some(provider.clone());
                 args.model = Some(model.clone());
             }
-            user.normal.network = fixed.safety.network;
+            user.normal.network = if fixed.safety.network_proxy {
+                crate::config::NetworkAccess::Proxy
+            } else if fixed.safety.network {
+                crate::config::NetworkAccess::On
+            } else {
+                crate::config::NetworkAccess::Off
+            };
             user.normal
                 .writable_roots
                 .clone_from(&fixed.safety.writable_roots);
@@ -591,10 +597,21 @@ pub(super) fn prepare(
                 &user.referenced_env_vars(),
                 &user.secrets.pass_env,
                 &locations.temporary,
-                policy
-                    .as_ref()
-                    .map(|policy| (selected.name(), policy.config().allow_ip)),
+                // 中継の方式は通信できる方針なので、通信できない印を付けない。
+                policy.as_ref().map(|policy| {
+                    (
+                        selected.name(),
+                        policy.config().allow_ip || policy.config().network_proxy,
+                    )
+                }),
             );
+            // 中継の門はセッションの間で一つにし、このセッションに許したドメインを覚える。尋ねられるのは、
+            // 対話の起動で、承認の方針が尋ねることを許すときだけ（設計書 03-02「通信の中継」）。
+            let network = policy
+                .as_ref()
+                .filter(|policy| policy.config().network_proxy)
+                .map(|_| network_gate(&user, args.interactive, approval))
+                .transpose()?;
             // OS の制限が使えなくても、書く道具の確認には選んだ方針を使う。
             // （設計書 03-03「通常モードの承認の方針」）。
             let writable_roots = match selected {
@@ -650,6 +667,7 @@ pub(super) fn prepare(
                 placeholders: placeholders.clone(),
                 env,
                 approval,
+                network,
             })
         } else {
             None
@@ -806,7 +824,10 @@ pub(super) fn prepare(
             context_window: resolved.capabilities.context_window,
             estimate: 0,
         };
-        let normal_network = resolved.mode == Mode::Normal && user.normal.network;
+        let normal_network = resolved.mode == Mode::Normal
+            && user.normal.network == crate::config::NetworkAccess::On;
+        let normal_proxy = resolved.mode == Mode::Normal
+            && user.normal.network == crate::config::NetworkAccess::Proxy;
         let mut config: crate::agent::AgentConfig = resolved.into();
         config.project_parent = project_parent;
         config.allow_effects = (!args.interactive && config.mode == Mode::Restricted)
@@ -839,6 +860,7 @@ pub(super) fn prepare(
                     vec![]
                 },
                 network: normal_network,
+                network_proxy: normal_proxy,
                 writable_roots: locations.additional,
                 allowed_programs,
             });
@@ -981,6 +1003,26 @@ pub(super) fn run(args: ExecArgs) -> Result<u8, CliError> {
         Outcome::Failed => 1,
         Outcome::Cancelled => 130,
     })
+}
+
+/// 中継の門を作る。macOS の待ち受けは手元のほかのプロセスからも届くので、合言葉を持たせる。
+fn network_gate(
+    user: &UserConfig,
+    interactive: bool,
+    approval: Approval,
+) -> Result<Arc<sandbox::proxy::NetworkGate>, StartupError> {
+    let gate = sandbox::proxy::NetworkGate::new(
+        user.normal.allowed_domains.iter().cloned().collect(),
+        interactive && approval != Approval::Never,
+    );
+    #[cfg(target_os = "macos")]
+    let gate = {
+        let mut random = [0_u8; 16];
+        getrandom::fill(&mut random)
+            .map_err(|error| StartupError::Io(io::Error::other(error.to_string())))?;
+        gate.with_token(format!("{:032x}", u128::from_ne_bytes(random)))
+    };
+    Ok(Arc::new(gate))
 }
 
 /// オプション、同じ画面の前の決定、保存した決定、利用者への確認の順で信頼を決める。

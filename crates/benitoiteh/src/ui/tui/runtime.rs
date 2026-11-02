@@ -163,7 +163,7 @@ pub fn run(
             }
             let (approver, approvals) = crate::approval::InteractiveApprover::channel();
             worker = Worker::start(
-                prepared.agent.with_approver(Box::new(approver)),
+                prepared.agent.with_interactive_approver(approver),
                 prepared.session,
             )
             .map_err(TuiError::Io)?

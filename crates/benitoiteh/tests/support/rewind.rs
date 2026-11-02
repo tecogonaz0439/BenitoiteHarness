@@ -82,6 +82,7 @@ impl Fixture {
             sandbox: Sandbox::DangerFullAccess,
             sandboxed: false,
             approval: Approval::Never,
+            network: None,
         }))
     }
     pub fn agent(&self, server: &MockProvider) -> Result<Agent, Box<dyn Error>> {

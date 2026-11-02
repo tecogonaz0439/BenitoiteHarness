@@ -620,6 +620,19 @@ impl Agent {
         self
     }
 
+    /// 対話の確認の受け手をつなぎ、通信の中継にも同じ画面への口を渡す（設計書 03-02「通信の中継」）。
+    pub fn with_interactive_approver(self, approver: crate::approval::InteractiveApprover) -> Self {
+        if let Some(gate) = self
+            .tool_context
+            .shell
+            .as_ref()
+            .and_then(|shell| shell.network.as_ref())
+        {
+            gate.connect_prompts(approver.prompts());
+        }
+        self.with_approver(Box::new(approver))
+    }
+
     /// 準備で決めた方針を保ち、対話の確認の受け手だけを接続する。
     pub fn with_approver(mut self, approver: Box<dyn Approver>) -> Self {
         self.approver = approver;

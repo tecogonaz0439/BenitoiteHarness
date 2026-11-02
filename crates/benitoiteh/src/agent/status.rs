@@ -9,6 +9,8 @@ use std::path::PathBuf;
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct SessionSafety {
     pub network: bool,
+    /// 通信を中継にだけ通す（設計書 03-02「通信の中継」）。
+    pub network_proxy: bool,
     /// プロジェクトとセッションの一時領域を除く、追加の書ける場所。
     pub writable_roots: Vec<PathBuf>,
     pub allowed_programs: Vec<PathBuf>,

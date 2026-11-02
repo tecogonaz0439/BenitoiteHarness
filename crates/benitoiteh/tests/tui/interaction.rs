@@ -56,6 +56,13 @@ fn approval_gate_and_key_table_have_no_implicit_or_modified_answer() -> TestResu
             's',
             ApprovalOutcome::ApprovedForSession,
         ),
+        // 通信の中継の確認も、セッションの間ドメインを許す答えを持つ（設計書 03-02「通信の中継」）。
+        (
+            ApprovalKind::Network,
+            's',
+            ApprovalOutcome::ApprovedForSession,
+        ),
+        (ApprovalKind::Network, 'y', ApprovalOutcome::Approved),
     ] {
         let mut screen = Screen::new((120, 24), status());
         screen.input(

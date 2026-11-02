@@ -217,6 +217,7 @@ impl Fixture {
                 sandbox,
                 sandboxed,
                 writable_roots,
+                network: None,
             });
         }
         let environment = Environment::capture(

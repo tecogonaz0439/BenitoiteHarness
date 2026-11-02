@@ -246,8 +246,39 @@ impl Default for RestrictedConfig {
 pub struct NormalConfig {
     pub sandbox: Sandbox,
     pub approval: Approval,
-    pub network: bool,
+    pub network: NetworkAccess,
+    /// 中継の方式で、確認なしに通すドメイン（正規化した完全一致）。
+    pub allowed_domains: Vec<String>,
     pub writable_roots: Vec<PathBuf>,
+}
+
+/// 通常モードの子の通信（設計書 03-02「通信の中継」）。設定では `false`・`true`・`"proxy"` と書く。
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum NetworkAccess {
+    /// 通信させない。
+    #[default]
+    Off,
+    /// IP の通信をすべて許す。
+    On,
+    /// benitoiteh の中継だけを通し、許したドメインにだけ届ける。
+    Proxy,
+}
+
+impl<'de> Deserialize<'de> for NetworkAccess {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        #[derive(Deserialize)]
+        #[serde(untagged)]
+        enum Raw {
+            Flag(bool),
+            Name(String),
+        }
+        match Raw::deserialize(deserializer)? {
+            Raw::Flag(true) => Ok(Self::On),
+            Raw::Flag(false) => Ok(Self::Off),
+            Raw::Name(name) if name == "proxy" => Ok(Self::Proxy),
+            Raw::Name(_) => Err(serde::de::Error::custom(text::INVALID_NETWORK)),
+        }
+    }
 }
 
 /// 一連の処理の上限。
@@ -432,6 +463,10 @@ impl UserConfig {
         for domain in &mut config.web_fetch.allowed_domains {
             *domain = self::domain::normalize(domain)
                 .ok_or(ConfigError::Invalid(text::INVALID_DOMAIN))?;
+        }
+        for domain in &mut config.normal.allowed_domains {
+            *domain = self::domain::normalize(domain)
+                .ok_or(ConfigError::Invalid(text::INVALID_NETWORK_DOMAIN))?;
         }
         if config
             .restricted

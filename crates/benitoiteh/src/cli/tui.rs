@@ -180,7 +180,7 @@ fn run_interactive(args: ExecArgs, signals: &mut Signals) -> Result<u8, CliError
         screen.draw(&mut output, None).map_err(CliError::Output)?;
         restore.set_rows_below(screen.rows_below_cursor());
         let (approver, approvals) = crate::approval::InteractiveApprover::channel();
-        let mut worker = Worker::start(agent.with_approver(Box::new(approver)), session)
+        let mut worker = Worker::start(agent.with_interactive_approver(approver), session)
             .map_err(CliError::Output)?
             .with_approval_requests(approvals);
         if let super::args::Request::Text(request) = &args.request

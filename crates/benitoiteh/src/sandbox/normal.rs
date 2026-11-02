@@ -11,7 +11,7 @@ use super::{PolicyConfig, SandboxError, SandboxPolicy};
 pub fn normal_policy(
     sandbox: Sandbox,
     locations: &WritableLocations,
-    network: bool,
+    network: crate::config::NetworkAccess,
     denied_candidates: &[PathBuf],
 ) -> Result<Option<SandboxPolicy>, SandboxError> {
     let writable = match sandbox {
@@ -24,7 +24,11 @@ pub fn normal_policy(
         Sandbox::DangerFullAccess => return Ok(None),
     };
     let mut config = PolicyConfig::new(writable);
-    config.allow_ip = sandbox == Sandbox::WorkspaceWrite && network;
+    config.allow_ip =
+        sandbox == Sandbox::WorkspaceWrite && network == crate::config::NetworkAccess::On;
+    // 中継の方式も、書ける場所を持つ方針でだけ通信を許す（設計書 03-02「通信の中継」）。
+    config.network_proxy =
+        sandbox == Sandbox::WorkspaceWrite && network == crate::config::NetworkAccess::Proxy;
     // 通常モードでは、ビルドしたプログラムをプロジェクト内で動かす。
     config.deny_exec_in_writable = false;
     for candidate in denied_candidates {

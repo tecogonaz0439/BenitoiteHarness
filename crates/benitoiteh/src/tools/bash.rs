@@ -118,7 +118,7 @@ pub(super) fn execute(
     } else {
         None
     };
-    let launch = prepare(
+    let (launch, proxy) = prepare(
         shell,
         context.project.real_path(),
         command,
@@ -241,6 +241,12 @@ pub(super) fn execute(
     if blocked {
         append(&mut contents, text::BASH_SANDBOX);
     }
+    // 中継が断った宛先と理由を、推定でなく事実として返す（設計書 03-02「通信の中継」）。
+    if let Some(proxy) = &proxy {
+        for denial in proxy.run.denials() {
+            append(&mut contents, &denial);
+        }
+    }
     Ok(ToolOutput {
         screen: Some(text::screen_exit(code)),
         spill,
@@ -275,7 +281,7 @@ fn prepare(
     sandboxed: bool,
     secret_call: Option<&crate::askpass::CallGuard>,
     changed_directory: &mut bool,
-) -> Result<RunCommand, ToolError> {
+) -> Result<(RunCommand, Option<ProxyGuard>), ToolError> {
     let path = if Path::new("/bin/bash").is_file() {
         Path::new("/bin/bash")
     } else {
@@ -295,11 +301,13 @@ fn prepare(
     }
     if sandboxed {
         let program = path.canonicalize()?;
-        let command = SandboxCommand {
-            policy: shell
-                .policy
-                .clone()
-                .ok_or_else(|| ToolError::InvalidArguments(text::BASH_CONTEXT.into()))?,
+        let policy = shell
+            .policy
+            .clone()
+            .ok_or_else(|| ToolError::InvalidArguments(text::BASH_CONTEXT.into()))?;
+        let (policy, guard) = proxy(shell, cwd, command, policy, &mut env)?;
+        let sandbox = SandboxCommand {
+            policy,
             args: shell_arguments(&program, command),
             program,
             cwd: cwd.to_owned(),
@@ -308,17 +316,19 @@ fn prepare(
         };
         #[cfg(target_os = "linux")]
         {
-            command
+            let prepared = sandbox
                 .prepare(&shell.helper, &shell.scratch, &shell.placeholders)
-                .map(Into::into)
-                .map_err(|e| failure(&e))
+                .map_err(|e| failure(&e))?;
+            let prepared = match &guard {
+                Some(guard) => prepared.with_proxy(Arc::clone(&guard.run)),
+                None => prepared,
+            };
+            Ok((prepared.into(), guard))
         }
         #[cfg(not(target_os = "linux"))]
         {
-            command
-                .to_command(&shell.helper)
-                .map(Into::into)
-                .map_err(|e| failure(&e))
+            let launch = sandbox.to_command(&shell.helper).map_err(|e| failure(&e))?;
+            Ok((launch.into(), guard))
         }
     } else {
         env.remove(std::ffi::OsStr::new("BENITOITEH_SANDBOX"));
@@ -338,8 +348,75 @@ fn prepare(
             .current_dir(cwd)
             .env_clear()
             .envs(env);
-        Ok(launch.into())
+        Ok((launch.into(), None))
     }
+}
+
+/// 一回のコマンドの中継。断った記録を結果に添えるまで保つ。macOS では待ち受けもここで持つ。
+struct ProxyGuard {
+    run: Arc<crate::sandbox::proxy::ProxyRun>,
+    #[cfg(not(target_os = "linux"))]
+    _server: crate::sandbox::proxy::ProxyServer,
+}
+
+/// 中継の方式なら、このコマンドの中継を用意し、子にプロキシの変数を渡す（設計書 03-02「通信の中継」）。
+/// `NO_PROXY` は除く。受け継いだ例外で中継を飛ばすと、つながらずに失敗するだけだからである。
+fn proxy(
+    shell: &ShellContext,
+    cwd: &Path,
+    command: &str,
+    policy: crate::sandbox::SandboxPolicy,
+    env: &mut std::collections::BTreeMap<OsString, OsString>,
+) -> Result<(crate::sandbox::SandboxPolicy, Option<ProxyGuard>), ToolError> {
+    let Some(gate) = shell
+        .network
+        .as_ref()
+        .filter(|_| policy.config().network_proxy)
+    else {
+        return Ok((policy, None));
+    };
+    let run = crate::sandbox::proxy::ProxyRun::new(Arc::clone(gate), command.into(), cwd.into());
+    #[cfg(target_os = "linux")]
+    let (policy, guard, port) = (
+        policy,
+        ProxyGuard { run },
+        crate::sandbox::proxy::LINUX_PORT,
+    );
+    // macOS では、主のプロセスがループバックで待ち受け、方針でそのポートへの接続だけを許す。
+    #[cfg(not(target_os = "linux"))]
+    let (policy, guard, port) = {
+        let listener = std::net::TcpListener::bind(("127.0.0.1", 0))?;
+        let port = listener.local_addr()?.port();
+        let mut config = policy.config().clone();
+        config.network_proxy = false;
+        config.allow_loopback_port = std::num::NonZeroU16::new(port);
+        let policy = crate::sandbox::SandboxPolicy::new(config).map_err(|e| failure(&e))?;
+        let server =
+            crate::sandbox::proxy::serve(listener, Arc::clone(&run)).map_err(|e| failure(&e))?;
+        (
+            policy,
+            ProxyGuard {
+                run,
+                _server: server,
+            },
+            port,
+        )
+    };
+    let url = OsString::from(gate.proxy_url(port));
+    for name in [
+        "HTTP_PROXY",
+        "HTTPS_PROXY",
+        "ALL_PROXY",
+        "http_proxy",
+        "https_proxy",
+        "all_proxy",
+    ] {
+        env.insert(name.into(), url.clone());
+    }
+    for name in ["NO_PROXY", "no_proxy"] {
+        env.remove(std::ffi::OsStr::new(name));
+    }
+    Ok((policy, Some(guard)))
 }
 
 /// `PATH` の項目のうち、書ける場所に届くものを除いて並べ直す。

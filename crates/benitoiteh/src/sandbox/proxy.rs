@@ -52,6 +52,17 @@ pub struct NetworkGate {
     token: Option<String>,
 }
 
+// 合言葉を表示しない。
+impl std::fmt::Debug for NetworkGate {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("NetworkGate")
+            .field("allowed", &self.allowed)
+            .field("ask", &self.ask)
+            .field("token", &self.token.as_ref().map(|_| "<redacted>"))
+            .finish_non_exhaustive()
+    }
+}
+
 impl NetworkGate {
     /// `allowed` は正規化したドメインの完全一致の集合。`ask` が偽なら、一覧にないものを尋ねずに断る。
     pub fn new(allowed: BTreeSet<String>, ask: bool) -> Self {

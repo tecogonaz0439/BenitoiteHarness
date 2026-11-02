@@ -56,31 +56,47 @@ fn normal_policies_use_validated_roots_and_existing_denied_candidates() -> Resul
         paths.config_dir.clone(),
         paths.data_dir.clone(),
     ];
-    for (sandbox, network, writable, allow_ip) in [
+    use benitoiteh::config::NetworkAccess;
+    let workspace = vec![
+        locations.project.clone(),
+        locations.temporary.clone(),
+        f.0.join("additional"),
+    ];
+    // 中継の方式も、IP の通信と同じく、書ける場所を持つ方針でだけ効く（設計書 03-02「通信の中継」）。
+    for (sandbox, network, writable, allow_ip, network_proxy) in [
         (
             Sandbox::ReadOnly,
-            true,
+            NetworkAccess::On,
             vec![locations.temporary.clone()],
             false,
+            false,
         ),
         (
-            Sandbox::WorkspaceWrite,
+            Sandbox::ReadOnly,
+            NetworkAccess::Proxy,
+            vec![locations.temporary.clone()],
             false,
-            vec![
-                locations.project.clone(),
-                locations.temporary.clone(),
-                f.0.join("additional"),
-            ],
             false,
         ),
         (
             Sandbox::WorkspaceWrite,
+            NetworkAccess::Off,
+            workspace.clone(),
+            false,
+            false,
+        ),
+        (
+            Sandbox::WorkspaceWrite,
+            NetworkAccess::On,
+            workspace.clone(),
             true,
-            vec![
-                locations.project.clone(),
-                locations.temporary.clone(),
-                f.0.join("additional"),
-            ],
+            false,
+        ),
+        (
+            Sandbox::WorkspaceWrite,
+            NetworkAccess::Proxy,
+            workspace.clone(),
+            false,
             true,
         ),
     ] {
@@ -89,6 +105,7 @@ fn normal_policies_use_validated_roots_and_existing_denied_candidates() -> Resul
         let config = policy.config();
         assert_eq!(config.writable, writable);
         assert_eq!(config.allow_ip, allow_ip);
+        assert_eq!(config.network_proxy, network_proxy);
         assert_eq!(
             config.denied_read,
             vec![
@@ -102,6 +119,14 @@ fn normal_policies_use_validated_roots_and_existing_denied_candidates() -> Resul
         assert_eq!(config.protected_names, [".git", ".benitoiteh", ".agents"]);
         assert!(!config.deny_exec_in_writable);
     }
-    assert!(normal_policy(Sandbox::DangerFullAccess, &locations, false, &candidates)?.is_none());
+    assert!(
+        normal_policy(
+            Sandbox::DangerFullAccess,
+            &locations,
+            NetworkAccess::Off,
+            &candidates
+        )?
+        .is_none()
+    );
     Ok(())
 }

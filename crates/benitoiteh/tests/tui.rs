@@ -376,6 +376,7 @@ impl Fixture {
             sandbox: benitoiteh::config::Sandbox::DangerFullAccess,
             sandboxed: false,
             approval: benitoiteh::config::Approval::Never,
+            network: None,
         });
         if mode == Mode::Restricted {
             context = context.with_skill(support::skills()?);

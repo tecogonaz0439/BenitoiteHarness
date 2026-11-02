@@ -887,3 +887,34 @@ fn chatgpt_authentication_is_only_allowed_for_fixed_responses_destination() -> T
     assert!(loaded.error.is_some());
     Ok(())
 }
+
+// 関門: normal.network は、今までの真偽に加えて "proxy" を受け付け、ほかの文字列を誤りとする。
+// 中継で通すドメインは web_fetch と同じ規則で正規化し、IP アドレスや URL を拒む（設計書 03-02「通信の中継」）。
+#[test]
+fn normal_network_accepts_flags_and_proxy_and_normalizes_allowed_domains() -> TestResult {
+    use benitoiteh::config::NetworkAccess;
+    for (value, expected) in [
+        ("false", NetworkAccess::Off),
+        ("true", NetworkAccess::On),
+        ("\"proxy\"", NetworkAccess::Proxy),
+    ] {
+        let config = UserConfig::parse(&format!("[normal]\nnetwork = {value}\n"))?;
+        assert_eq!(config.normal.network, expected, "{value}");
+    }
+    assert_eq!(UserConfig::default().normal.network, NetworkAccess::Off);
+    assert!(UserConfig::parse("[normal]\nnetwork = \"on\"\n").is_err());
+    let config = UserConfig::parse(
+        "[normal]\nnetwork = \"proxy\"\nallowed_domains = [\"Registry.NPMJS.org.\"]\n",
+    )?;
+    assert_eq!(config.normal.allowed_domains, ["registry.npmjs.org"]);
+    for invalid in [
+        "10.0.0.1",
+        "https://example.com",
+        "*.example.com",
+        "localhost",
+    ] {
+        let input = format!("[normal]\nallowed_domains = [\"{invalid}\"]\n");
+        assert!(UserConfig::parse(&input).is_err(), "{invalid}");
+    }
+    Ok(())
+}

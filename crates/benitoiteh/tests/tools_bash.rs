@@ -246,6 +246,87 @@ fn escalated_bash_path_skips_entries_that_reach_writable_roots() -> TestResult {
     Ok(())
 }
 
+// 関門: 中継の方式の bash は、プロキシの変数を受け取り、許したドメインへは中継を通して届く。
+// 許していないドメインは、尋ねて許せば届き、断れば届かず、その宛先と理由が道具の結果に載る
+// （設計書 03-02「通信の中継」）。
+#[cfg(target_os = "linux")]
+#[test]
+fn proxied_bash_reaches_allowed_and_approved_domains_and_reports_denials() -> TestResult {
+    use benitoiteh::approval::{ApprovalAnswer, ApprovalOutcome, ApprovalPrompt};
+    use benitoiteh::sandbox::proxy::NetworkGate;
+    use std::io::{Read, Write};
+    use std::sync::{Arc, mpsc};
+    let upstream = std::net::TcpListener::bind("127.0.0.1:0")?;
+    let port = upstream.local_addr()?.port();
+    std::thread::spawn(move || {
+        for _ in 0..2 {
+            let Ok((mut stream, _)) = upstream.accept() else {
+                return;
+            };
+            let mut chunk = [0_u8; 1024];
+            let _read = stream.read(&mut chunk);
+            let _written = stream.write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nok");
+        }
+    });
+    let gate = Arc::new(
+        NetworkGate::new(["allowed.example".to_owned()].into_iter().collect(), true).with_upstream(
+            Arc::new(move |_, _| Ok(vec![std::net::SocketAddr::from(([127, 0, 0, 1], port))])),
+            |_| true,
+        ),
+    );
+    let (prompts, requests) = mpsc::channel::<ApprovalPrompt>();
+    gate.connect_prompts(prompts);
+    let answers = std::thread::spawn(move || {
+        let mut asked = Vec::new();
+        for outcome in [ApprovalOutcome::Approved, ApprovalOutcome::Denied] {
+            let Ok(prompt) = requests.recv_timeout(Duration::from_secs(30)) else {
+                break;
+            };
+            asked.push(prompt.request.facts.domain.clone().unwrap_or_default());
+            let _sent = prompt.reply.send(ApprovalAnswer {
+                outcome,
+                message: None,
+            });
+        }
+        asked
+    });
+    let f = Fixture::with_network(
+        Sandbox::WorkspaceWrite,
+        |_| "/bin:/usr/bin".into(),
+        Some(gate),
+    )?;
+    let command = r#"printf 'proxy=%s\n' "$HTTPS_PROXY"
+for host in allowed.example asked.example declined.example; do
+  exec 3<>/dev/tcp/127.0.0.1/3128
+  printf 'GET http://%s/ HTTP/1.1\r\n\r\n' "$host" >&3
+  printf '%s: ' "$host"; head -c 12 <&3; echo
+  exec 3>&-
+done"#;
+    let output = f.execute(
+        "proxy",
+        json!({"command": command}),
+        &AtomicBool::new(false),
+    )?;
+    for expected in [
+        "proxy=http://127.0.0.1:3128",
+        "allowed.example: HTTP/1.1 200",
+        "asked.example: HTTP/1.1 200",
+        "declined.example: HTTP/1.1 403",
+        "benitoiteh blocked network access to declined.example:80: the user declined.",
+    ] {
+        assert!(
+            output.text.contains(expected),
+            "{expected}: {}",
+            output.text
+        );
+    }
+    assert_eq!(
+        answers.join().map_err(|_| "answers")?,
+        ["asked.example", "declined.example"]
+    );
+    Ok(())
+}
+
 #[test]
 fn bash_clears_keys_and_removes_sandbox_markers_when_escalated() -> TestResult {
     for sandbox in [Sandbox::WorkspaceWrite, Sandbox::DangerFullAccess] {

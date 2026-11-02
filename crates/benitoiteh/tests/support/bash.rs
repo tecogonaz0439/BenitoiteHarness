@@ -34,6 +34,14 @@ impl Fixture {
         sandbox: Sandbox,
         path: impl FnOnce(&std::path::Path) -> String,
     ) -> Result<Self, Box<dyn Error>> {
+        Self::with_network(sandbox, path, None)
+    }
+    /// 中継の方式の門を渡すと、方針を中継の方式にする（設計書 03-02「通信の中継」）。
+    pub fn with_network(
+        sandbox: Sandbox,
+        path: impl FnOnce(&std::path::Path) -> String,
+        network: Option<std::sync::Arc<benitoiteh::sandbox::proxy::NetworkGate>>,
+    ) -> Result<Self, Box<dyn Error>> {
         let mut random = [0; 16];
         getrandom::fill(&mut random)?;
         let root =
@@ -55,6 +63,7 @@ impl Fixture {
         } else {
             let mut config = PolicyConfig::new(writable_roots.clone());
             config.deny_exec_in_writable = false;
+            config.network_proxy = network.is_some();
             Some(SandboxPolicy::new(config)?)
         };
         let path = path(&root);
@@ -98,6 +107,7 @@ impl Fixture {
             sandbox,
             sandboxed: sandbox != Sandbox::DangerFullAccess,
             approval: Approval::Never,
+            network,
         });
         Ok(Self {
             root,

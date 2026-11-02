@@ -367,6 +367,8 @@ pub struct ShellContext {
     pub sandboxed: bool,
     /// 承認の方針。
     pub approval: Approval,
+    /// 中継の方式のときの、セッションで共有する門（設計書 03-02「通信の中継」）。
+    pub network: Option<Arc<crate::sandbox::proxy::NetworkGate>>,
 }
 
 /// 起動時に固定したウェブの取得の設定（設計書 01-03「web_fetch」）。

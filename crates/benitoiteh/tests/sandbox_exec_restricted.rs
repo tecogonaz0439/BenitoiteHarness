@@ -140,6 +140,69 @@ fn exec_writes_agents_only_with_allow_agents_write() -> TestResult {
     Ok(())
 }
 
+// 関門: 設定の network = "proxy" は、exec の bash を中継の方式で動かす。非対話では尋ねられないので、
+// 一覧にないドメインは断り、その理由を道具の結果に載せる（設計書 03-02「通信の中継」）。
+#[cfg(target_os = "linux")]
+#[test]
+fn exec_proxy_setting_relays_bash_and_refuses_unlisted_domains_without_asking() -> TestResult {
+    let protocol = Protocol::Chat;
+    let command = r#"printf 'proxy=%s\n' "$HTTPS_PROXY"
+exec 3<>/dev/tcp/127.0.0.1/3128
+printf 'CONNECT blocked.example:443 HTTP/1.1\r\n\r\n' >&3
+head -c 12 <&3; echo"#;
+    let mut server = MockProvider::start(vec![
+        ResponseScript::sse(protocol.response(
+            Some(("proxy", "bash", json!({"command": command}))),
+            "",
+            false,
+        )),
+        ResponseScript::sse(protocol.response(None, "Done", false)),
+    ])?;
+    let f = Fixture::restricted(protocol, &server)?;
+    let config = f.root.join("config/benitoiteh/config.toml");
+    let previous = fs::read_to_string(&config)?;
+    fs::write(
+        &config,
+        format!(
+            "{previous}\n[normal]\nnetwork = \"proxy\"\nallowed_domains = [\"allowed.example\"]\n"
+        ),
+    )?;
+    let output = Running::start(f.command("Use the network").args([
+        "--mode",
+        "normal",
+        "--sandbox",
+        "workspace-write",
+        "--approval",
+        "never",
+        "--json",
+    ]))?
+    .finish()?;
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let (_, records) = f.records()?;
+    let text = records
+        .iter()
+        .find(|record| {
+            record.get("type") == Some(&json!("tool_result"))
+                && record.get("name") == Some(&json!("bash"))
+        })
+        .and_then(|record| record.pointer("/result/text"))
+        .and_then(Value::as_str)
+        .ok_or("bash result")?;
+    for expected in [
+        "proxy=http://127.0.0.1:3128",
+        "HTTP/1.1 403",
+        "benitoiteh blocked network access to blocked.example:443: the domain is not in normal.allowed_domains and was not approved.",
+    ] {
+        assert!(text.contains(expected), "{expected}: {text}");
+    }
+    server.shutdown()?;
+    Ok(())
+}
+
 // 関門: サンドボックスの外で動くコマンドも、主のプロセスの環境（提供者のキー）を /proc から読めない
 // （設計書 03-02「主のプロセスの守り」）。親が主のプロセスであることも確かめ、別の理由で通らないようにする。
 #[cfg(target_os = "linux")]
