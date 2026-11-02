@@ -111,6 +111,9 @@ pub const USER_NAMESPACES: &str = "user namespaces";
 pub const LOOPBACK_UNSUPPORTED: &str = "Port-scoped loopback access is unsupported on Linux.";
 
 // 通信の中継（設計書 03-02「通信の中継」）。
+pub const PROXY_WITH_IP: &str = "network_proxy cannot be combined with allow_ip.";
+#[cfg(target_os = "linux")]
+pub const PROXY_LISTENER: &str = "proxy listener";
 pub const NETWORK_NOT_ALLOWED: &str =
     "the domain is not in normal.allowed_domains and was not approved";
 pub const NETWORK_USER_DECLINED: &str = "the user declined";

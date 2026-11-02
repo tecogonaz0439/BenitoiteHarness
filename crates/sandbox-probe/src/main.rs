@@ -177,6 +177,18 @@ fn run(operation: &OsStr, args: &[OsString]) -> io::Result<Option<u8>> {
             };
             TcpStream::connect(address).map(|_| ())
         }
+        // 手元のポートへ要求をそのまま送り、応答を標準出力に写す（通信の中継の確かめ）。
+        ("http-exchange", [port, request]) => {
+            let Some(port) = port.to_str().and_then(|port| port.parse::<u16>().ok()) else {
+                return Ok(None);
+            };
+            let mut stream = TcpStream::connect(("127.0.0.1", port))?;
+            stream.write_all(request.as_encoded_bytes())?;
+            stream.shutdown(std::net::Shutdown::Write)?;
+            let mut response = Vec::new();
+            std::io::Read::read_to_end(&mut stream, &mut response)?;
+            std::io::stdout().write_all(&response)
+        }
         ("socketpair", []) => UnixStream::pair().map(|_| ()),
         ("fd-open", [number]) => return descriptor(number),
         ("exec", [program, rest @ ..]) => {

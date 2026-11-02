@@ -24,6 +24,7 @@ pub struct PreparedSandbox {
     cleanup: Cleanup,
     control: UnixStream,
     stdin: Option<PipeWriter>,
+    proxy: Option<std::sync::Arc<crate::sandbox::proxy::ProxyRun>>,
 }
 
 /// 終了を待った後にだけ、塞ぐための空のディレクトリと覆いを片付ける子。
@@ -37,6 +38,8 @@ pub struct SandboxChild {
     cleanup: Cleanup,
     control: UnixStream,
     stdin: Option<PipeWriter>,
+    /// 子が終わるまで受け付ける中継。落とすと受け付けをやめる。
+    proxy: Option<crate::sandbox::proxy::ProxyServer>,
 }
 
 impl SandboxCommand {
@@ -88,6 +91,7 @@ impl SandboxCommand {
             cleanup: plan.cleanup,
             control,
             stdin: None,
+            proxy: None,
         };
         let (target_stdin, stdin): (OwnedFd, _) = match self.stdin {
             SandboxStdin::Null => (
@@ -149,11 +153,18 @@ impl PreparedSandbox {
         match spawned {
             Ok(child) => {
                 self.cleanup.retain_locks = true;
+                // 補助が設定に失敗すれば、記述子は届かず通り道が閉じる。中継なしで子の失敗を待つ。
+                let proxy = self.proxy.take().and_then(|run| {
+                    receive_listener(&control)
+                        .and_then(|listener| crate::sandbox::proxy::serve(listener, run))
+                        .ok()
+                });
                 Ok(SandboxChild {
                     child,
                     cleanup: std::mem::take(&mut self.cleanup),
                     control,
                     stdin: self.stdin.take(),
+                    proxy,
                 })
             }
             Err(error) => {
@@ -161,6 +172,12 @@ impl PreparedSandbox {
                 Err(SandboxError::Io(error))
             }
         }
+    }
+
+    /// 通信を中継にだけ通す方針で、補助が渡す待ち受けに、この中継をつなぐ（設計書 03-02「通信の中継」）。
+    pub fn with_proxy(mut self, run: std::sync::Arc<crate::sandbox::proxy::ProxyRun>) -> Self {
+        self.proxy = Some(run);
+        self
     }
 
     /// 実行の部分が出力を読み続けられるよう、パイプを設定する。
@@ -233,6 +250,7 @@ impl SandboxChild {
     pub fn wait(&mut self) -> Result<ExitStatus, SandboxError> {
         drop(self.stdin.take());
         let status = self.child.wait().map_err(SandboxError::Io)?;
+        drop(self.proxy.take());
         self.cleanup.finish()?;
         Ok(status)
     }
@@ -241,8 +259,44 @@ impl SandboxChild {
     pub fn wait_with_output(mut self) -> Result<Output, SandboxError> {
         drop(self.stdin.take());
         let output = self.child.wait_with_output().map_err(SandboxError::Io)?;
+        drop(self.proxy.take());
         self.cleanup.finish()?;
         Ok(output)
+    }
+}
+
+/// 補助が名前空間の中で作った待ち受けを受け取る。補助が設定を終えるまで待つ。
+fn receive_listener(control: &UnixStream) -> io::Result<std::net::TcpListener> {
+    use rustix::net::{RecvAncillaryBuffer, RecvAncillaryMessage, RecvFlags, ReturnFlags, recvmsg};
+    control.set_read_timeout(Some(std::time::Duration::from_secs(30)))?;
+    let mut space = [MaybeUninit::uninit(); rustix::cmsg_space!(ScmRights(1))];
+    let mut ancillary = RecvAncillaryBuffer::new(&mut space);
+    let mut byte = [0_u8];
+    let message = loop {
+        match recvmsg(
+            control,
+            &mut [io::IoSliceMut::new(&mut byte)],
+            &mut ancillary,
+            RecvFlags::CMSG_CLOEXEC,
+        ) {
+            Err(rustix::io::Errno::INTR) => continue,
+            result => break result,
+        }
+    };
+    control.set_read_timeout(None)?;
+    let message = message?;
+    let mut received = Vec::new();
+    for message in ancillary.drain() {
+        if let RecvAncillaryMessage::ScmRights(fds) = message {
+            received.extend(fds);
+        }
+    }
+    let fd = received.pop();
+    match (message.bytes, byte, fd, received.is_empty()) {
+        (1, [b'L'], Some(fd), true) if !message.flags.contains(ReturnFlags::CTRUNC) => {
+            Ok(std::net::TcpListener::from(fd))
+        }
+        _ => Err(io::Error::other(text::CONTROL)),
     }
 }
 

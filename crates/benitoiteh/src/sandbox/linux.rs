@@ -99,6 +99,14 @@ fn prepare_and_run(
     let control = control::receive_stdin().map_err(|e| failure(text::DESCRIPTORS, e))?;
     check_descriptors(control.as_raw_fd()).map_err(|e| failure(text::DESCRIPTORS, e))?;
     check_capabilities()?;
+    // 中継の方式では、名前空間の中のループバックで待ち受け、その記述子を親へ渡す。目的のプログラムより
+    // 先に固定のポートを取るので、中のプロセスが同じポートで偽の中継を開けない（設計書 03-02「通信の中継」）。
+    if policy.config().network_proxy {
+        let listener = std::net::TcpListener::bind(("127.0.0.1", super::proxy::LINUX_PORT))
+            .map_err(|e| failure(text::PROXY_LISTENER, e))?;
+        control::send_listener(&control, &listener)
+            .map_err(|e| failure(text::PROXY_LISTENER, e))?;
+    }
     rustix::thread::set_no_new_privs(true).map_err(|e| failure(text::NO_NEW_PRIVS, e))?;
     filesystem::restrict(&policy, required)?;
     let filter = filter::compile_policy(policy.config()).map_err(|e| failure(text::SECCOMP, e))?;

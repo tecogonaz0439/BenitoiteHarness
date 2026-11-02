@@ -646,6 +646,81 @@ fn protected_and_denied_mounts_cannot_be_removed_or_overmounted() -> TestResult 
     Ok(())
 }
 
+// 作成時の関門: 中継の方式では、名前空間の中の子は外へ直接つなげず、benitoiteh の中継を通して
+// だけ、許したドメインへ届く。許していないドメインは、理由つきの 403 と断った記録になる
+// （設計書 03-02「通信の中継」）。
+#[test]
+fn proxied_network_reaches_allowed_domains_only_through_the_relay() -> TestResult {
+    use benitoiteh::sandbox::proxy::{LINUX_PORT, NetworkGate, ProxyRun};
+    use std::sync::Arc;
+    let f = Fixture::new()?;
+    let upstream = TcpListener::bind("127.0.0.1:0")?;
+    let port = upstream.local_addr()?.port();
+    let server = std::thread::spawn(move || -> io::Result<Vec<u8>> {
+        let (mut stream, _) = upstream.accept()?;
+        stream.set_read_timeout(Some(std::time::Duration::from_secs(10)))?;
+        let mut head = Vec::new();
+        let mut chunk = [0_u8; 1024];
+        while !head.windows(4).any(|window| window == b"\r\n\r\n") {
+            let count = io::Read::read(&mut stream, &mut chunk)?;
+            if count == 0 {
+                break;
+            }
+            head.extend_from_slice(chunk.get(..count).unwrap_or_default());
+        }
+        stream.write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 5\r\n\r\nhello")?;
+        Ok(head)
+    });
+    let gate = Arc::new(
+        NetworkGate::new(["example.com".to_owned()].into_iter().collect(), false).with_upstream(
+            Arc::new(move |_, _| Ok(vec![std::net::SocketAddr::from(([127, 0, 0, 1], port))])),
+            |_| true,
+        ),
+    );
+    let run = ProxyRun::new(gate, "probe".into(), f.root.clone());
+    let mut config = f.config();
+    config.network_proxy = true;
+    let relay = LINUX_PORT.to_string();
+    for (request, expected) in [
+        ("GET http://example.com/ HTTP/1.1\r\n\r\n", "hello"),
+        ("GET http://other.example/ HTTP/1.1\r\n\r\n", "HTTP/1.1 403"),
+    ] {
+        let output = f
+            .command(
+                config.clone(),
+                &[
+                    OsStr::new("http-exchange"),
+                    OsStr::new(&relay),
+                    OsStr::new(request),
+                ],
+            )?
+            .with_proxy(Arc::clone(&run))
+            .output()?;
+        check(&output, 0, request);
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        assert!(stdout.contains(expected), "{request}: {stdout}");
+    }
+    let head = server.join().map_err(|_| "upstream")??;
+    assert!(String::from_utf8(head)?.starts_with("GET / HTTP/1.1\r\nHost: example.com\r\n"));
+    assert_eq!(run.denials().len(), 1, "{:?}", run.denials());
+    assert!(
+        run.denials()
+            .iter()
+            .all(|line| line.contains("other.example:80"))
+    );
+    // 外の手元のサーバにも、外のアドレスにも、名前空間の中から直接はつなげない。
+    for address in [format!("127.0.0.1:{port}"), "93.184.216.34:443".into()] {
+        let output = f
+            .command(
+                config.clone(),
+                &[OsStr::new("tcp-connect"), OsStr::new(&address)],
+            )?
+            .output()?;
+        assert_ne!(output.status.code(), Some(0), "{address}");
+    }
+    Ok(())
+}
+
 // 作成時の関門: 待機前の rmdir と、起動前からあった空のディレクトリの削除を捕まえる。
 #[test]
 fn cleanup_waits_for_exit_and_preserves_preexisting_empty_directories() -> TestResult {
