@@ -32,7 +32,12 @@
 | 9 | 11-03 | 段 2 の 1〜3: 複数の置き換え、道具の結果の刈り込み、下のディレクトリの指示のファイル | 既定で切った評価用の切り替えとして作った。評価はまだ | [08](08-stage2.md) | `53b95c1`〜`333a203` |
 | 10 | 11-03 | BH-011（完了の前の確かめ）を閉じた | `agent.completion_check` を既定 `false` のまま残し、段 2 の 4 の確かめの促しは加えない | [08](08-stage2.md) | `237306c` |
 | 11 | 11-03 | 段 2 の 4: 計画を書く道具 `update_plan` | 既定で切った評価用の切り替えとして作った。評価はまだ | [08](08-stage2.md) | `32c0fee` |
-| 12 | 11-03 | 本書の見直し（作業の一覧と残っていることの整理） | — | 本書 | `42374a0` |
+| 12 | 11-03 | 本書の見直し（作業の一覧と残っていることの整理） | — | 本書 | `42374a0`、`d97df39` |
+| 13 | 11-03 | 時々失敗するテスト 2 件の原因を確かめて直した | 負荷をかけた再現で原因を確かめ、テストの側で直した | [09](09-linux-followups.md) | `cd43ecc` |
+| 14 | 11-03 | 評価の道具の Python のテストの 4 件の失敗を調べた | 1 件は Python の版の違いで、テストを直した。3 件は macOS を前提とする | [09](09-linux-followups.md) | `1680f63` |
+| 15 | 11-03 | 端末を通した通しの試し | 確認、通知、外部のエディタを擬似端末で通すテストを加えた | [09](09-linux-followups.md) | `ef037fe` |
+| 16 | 11-03 | 04 の未確認のます目を確かめた | 11 のます目に判定と出典を書き、`benitoiteh` の列を改めた | [09](09-linux-followups.md) | `413a491` |
+| 17 | 11-03 | 記録の更新 | — | 本書、[09](09-linux-followups.md) | （このコミット） |
 
 キャッチアップの案の段ごとの状態は次のとおりである。
 
@@ -56,6 +61,7 @@
 | [06-stage3.md](06-stage3.md) | キャッチアップの案の段 3（通信の制限）の設計と実装 |
 | [07-stage4.md](07-stage4.md) | キャッチアップの案の段 4（使い勝手）の設計と実装（2026-11-03 まで） |
 | [08-stage2.md](08-stage2.md) | キャッチアップの案の段 2（エージェントの性能）の 1〜4 を、評価用の切り替えとして作った記録と、BH-011 を閉じた決定（2026-11-03） |
+| [09-linux-followups.md](09-linux-followups.md) | Linux で進められる残件（時々失敗するテスト、Python のテストの失敗、04 の未確認、端末の通しの試し）の記録（2026-11-03） |
 
 ## 残っていること
 
@@ -76,9 +82,9 @@
 
 ### まだ行っていない作業
 
-- 段 3 の 3 のうち、macOS の方針の拒否の記録から拒否の理由を道具の結果に返すこと（[06](06-stage3.md)の「限り」）。
-- [04](04-oss-feature-review.md)の機能の比べで「（未確認）」とした各対象の機能の確かめ。
-- 端末を通した通しの試し（確認を出して答える流れ、OSC 9 と前面の報告、外部のエディタ）。どれも画面の部品の単体テストと起動のテストで分けて確かめた（[05](05-stage1.md)の「そのほか」、[07](07-stage4.md)の「確かめていないこと」）。
+- 段 3 の 3 のうち、macOS の方針の拒否の記録から拒否の理由を道具の結果に返すこと（[06](06-stage3.md)の「限り」）。macOS の実機で確かめる。
+
+04 の未確認のます目と、端末を通した通しの試し（擬似端末まで）は、2026-11-03 に済ませた（[09](09-linux-followups.md)）。
 
 ### macOS と aarch64 の Linux での確かめ
 
@@ -89,14 +95,14 @@
 - 主のプロセスの環境と記憶をほかのプロセスから読めるか（BH-118。[05](05-stage1.md)）。
 - Seatbelt で `.agents` が守られること、`PATH` の判定のデバイスと inode の比べ、`~/Library/Keychains` を読ませないことの影響（[05](05-stage1.md)）。
 - 制限モードのプロジェクトの秘密の名前を、どの深さでも塞ぐ正規表現の規則にするか（[05](05-stage1.md)）。
-- 段 4 の通知と外部のエディタの、macOS の端末での動き（[07](07-stage4.md)）。
+- 段 4 の通知と外部のエディタの、macOS の端末での動きと、実際の端末のエミュレータでの OSC 9 の表示（[07](07-stage4.md)、[09](09-linux-followups.md)）。
+- 評価の道具の Python のテストのうち、macOS を前提とするもの（判定のサンドボックスを要する 8 件と、`test_workspace_processes_stop_before_snapshot_and_judgment`）（[09](09-linux-followups.md)）。
 
 aarch64 の Linux（Apple の `container`）での実行も、まだ行っていない。
 
 ### 原因を確かめていない失敗
 
-- 時々失敗するテスト 2 件（`tests/exec.rs::closed_event_output_still_finishes_the_session_record`、`tests/tui/commands.rs` の `accepted_rewind_finishes_before_quit_and_repeated_keyboard_interrupts`）。[03](03-other-test-files.md)の「ほかの失敗」に記した。以後の全体のテストでは失敗していない。
-- 評価の道具の Python のテストのうち、macOS の判定を要しない 4 件の失敗（[01](01-cloud-linux-check.md)の「結果」）。
+ない。時々失敗するテスト 2 件と、評価の道具の Python のテストの 4 件の失敗は、2026-11-03 に原因を確かめた（[09](09-linux-followups.md)）。前者は 2 件とも、後者は 1 件をテストの側で直し、残りの 3 件は macOS を前提とする（上の「macOS と aarch64 の Linux での確かめ」）。
 
 ## 確かめた検査
 
@@ -107,7 +113,8 @@ aarch64 の Linux（Apple の `container`）での実行も、まだ行ってい
 | 作業の初め（本番のコードを変える前） | 754 件が通り、失敗 0、無視 16 | [01](01-cloud-linux-check.md) |
 | 段 4 の後 | 805 件が通り、失敗 0、無視 16 | [07](07-stage4.md) |
 | 段 2 の 1〜3 の後 | 810 件が通り、失敗 0、無視 16 | [08](08-stage2.md) |
-| 段 2 の 4 の後（最新、`32c0fee`） | 811 件が通り、失敗 0、無視 16（`work/cloud-check/stage2-4.log`） | [08](08-stage2.md) |
+| 段 2 の 4 の後（`32c0fee`） | 811 件が通り、失敗 0、無視 16（`work/cloud-check/stage2-4.log`） | [08](08-stage2.md) |
+| Linux で進められる残件の後（最新、`413a491`） | 812 件が通り、失敗 0、無視 16（`work/cloud-check/remaining-linux.log`） | [09](09-linux-followups.md) |
 
 lint は、各段の後に `cargo clippy --workspace --all-targets`（`x86_64-unknown-linux-musl`、`aarch64-apple-darwin`）と `cargo fmt --check` が通ることを確かめた。作業の初めには、`cargo deny check licenses advisories` と `tools/perf` の Python のテストも通った。`tests/session.rs` の直し方の確かめ（直す前は 40 回のうち 9 回失敗し、直した後は 0 回）は [02](02-session-flaky-tests.md) に書く。
 
@@ -156,6 +163,9 @@ lint は、各段の後に `cargo clippy --workspace --all-targets`（`x86_64-un
 | `crates/benitoiteh/src/`（道具、提供者の引数の型、圧縮、セッション、文脈、Agent、設定、画面）と `prompts/tools/edit-multiple.md`・`prompts/tools/update_plan.md`・`src/tools/plan.rs`（追加） | 変更 | 段 2 の 1〜4 の評価用の切り替え（複数の置き換え、道具の結果の刈り込み、下のディレクトリの指示のファイル、計画を書く道具） | [08](08-stage2.md) |
 | `crates/benitoiteh/tests/`（書く道具、提供者、設定、exec、ループ、セッション、文脈）、`tests/expected/`、`examples/update_context_expected.rs` | 変更 | 段 2 のテストを加え、複数の置き換えの形と計画の道具の形の文脈の期待値を加えた | [08](08-stage2.md) |
 | `docs/design/01-agent/01-03-tools.md`、`01-04-context.md`、`01-05-sessions.md`、`02-providers/02-01-provider-layer.md`、`03-safety/03-01-security-model.md`、`05-interface/05-01-cli.md`、`open-issues.md` | 変更 | 段 2 の四つの切り替えを書き、BH-122 と BH-123 を加え、BH-011 を閉じた（`01-01-agent-loop.md`、`07-quality/07-02-evaluation.md` も変えた） | [08](08-stage2.md) |
+| `crates/benitoiteh/tests/exec.rs`、`tests/tui/commands.rs` | 変更 | 時々失敗するテスト 2 件を、テストの側で直した | [09](09-linux-followups.md) |
+| `crates/benitoiteh/tests/tui/pty.rs` | 変更 | 確認、通知、外部のエディタを擬似端末で通すテストを加えた | [09](09-linux-followups.md) |
+| `tools/skill-eval/test_skill_eval.py` | 変更 | 深い JSON のテストの入れ子を、Python の版に依らない深さにした | [09](09-linux-followups.md) |
 | `docs/2026-11-02/` | 追加 | 本ディレクトリ | — |
 | `docs/README.md` | 変更 | 本ディレクトリへの案内を加えた | — |
 
@@ -206,3 +216,8 @@ lint は、各段の後に `cargo clippy --workspace --all-targets`（`x86_64-un
 | 10 | `237306c` | BH-011 を閉じ、完了の前の確かめを既定で切ったままにする |
 | 11 | `32c0fee` | 計画を書く道具 `update_plan` |
 | 12 | `42374a0` | まとめを、作業の一覧と残っていることを中心に組み直す |
+| 12 | `d97df39` | 作業の一覧に、まとめのコミットを書く |
+| 13 | `cd43ecc` | 時々失敗するテスト 2 件を、テストの側で直す |
+| 14 | `1680f63` | 深い JSON のテストを Python の版に依らないようにする |
+| 15 | `ef037fe` | 確認、通知、外部のエディタを、本物の端末で通して確かめる |
+| 16 | `413a491` | 機能の比べの未確認のます目を確かめる |
