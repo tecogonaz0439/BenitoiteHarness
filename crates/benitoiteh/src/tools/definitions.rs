@@ -91,6 +91,20 @@ pub(super) fn multiple_edit_arguments() -> Vec<ArgumentSpec> {
     vec![arg("path", String, true), edits]
 }
 
+/// 評価用の計画を書く道具（設計書 01-03「update_plan」）。状態を持たず、並べて実行しない。
+pub(super) fn plan_definition() -> ToolDefinition {
+    use ArgumentType::{ObjectArray, String};
+    let mut plan = arg("plan", ObjectArray, true);
+    plan.items = vec![arg("step", String, true), arg("status", String, true)];
+    definition(
+        ToolId::UpdatePlan,
+        text::UPDATE_PLAN,
+        &[text::UPDATE_PLAN.1],
+        vec![arg("explanation", String, false), plan],
+        false,
+    )
+}
+
 pub(super) fn definitions(mode: crate::config::Mode) -> Vec<ToolDefinition> {
     use ArgumentType::{Boolean, Integer, String};
     let mut tools = vec![

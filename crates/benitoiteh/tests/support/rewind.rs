@@ -148,6 +148,7 @@ impl Fixture {
             read_line_numbers: None,
             multiple_edits: None,
             nested_instructions: None,
+            plan_tool: None,
             plugins: Vec::new(),
             skills: Vec::new(),
         }))?;

@@ -428,6 +428,8 @@ pub struct AgentBehaviorConfig {
     /// 道具が触れた下のディレクトリの指示のファイルを、道具の結果に添える
     /// （設計書 01-04「下のディレクトリの指示のファイル」）。
     pub nested_instructions: bool,
+    /// 計画を書く道具 `update_plan` を加える（設計書 01-03「update_plan」）。
+    pub plan_tool: bool,
 }
 
 /// 圧縮の予備と残す量。利用者だけが変更できる（設計書 01-04「圧縮の値を比べる設定」）。

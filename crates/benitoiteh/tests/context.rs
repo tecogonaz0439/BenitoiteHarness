@@ -23,6 +23,7 @@ enum Variant {
     Default,
     ReadPlain,
     EditMultiple,
+    Plan,
 }
 
 #[test]
@@ -68,6 +69,13 @@ fn llm_context_matches_reviewed_files_in_both_modes() -> Result<(), Box<dyn Erro
             include_str!("expected/system-normal-edit-multiple.txt"),
             include_str!("expected/tools-normal-edit-multiple.json"),
         ),
+        (
+            Mode::Restricted,
+            true,
+            Variant::Plan,
+            include_str!("expected/system-restricted-plan.txt"),
+            include_str!("expected/tools-restricted-plan.json"),
+        ),
     ] {
         let tools = if enabled {
             ToolSet::new(mode)
@@ -78,6 +86,7 @@ fn llm_context_matches_reviewed_files_in_both_modes() -> Result<(), Box<dyn Erro
             Variant::Default => tools,
             Variant::ReadPlain => tools.plain_read(),
             Variant::EditMultiple => tools.multiple_edits(),
+            Variant::Plan => tools.with_plan(),
         };
         let context = SystemContext::new(&tools, enabled.then_some(skill.as_ref()))?;
         if mode == Mode::Restricted {

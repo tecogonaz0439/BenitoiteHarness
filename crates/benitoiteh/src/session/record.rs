@@ -143,6 +143,8 @@ pub struct Header {
     pub multiple_edits: Option<bool>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub nested_instructions: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub plan_tool: Option<bool>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub skills: Vec<RecordedSkill>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]

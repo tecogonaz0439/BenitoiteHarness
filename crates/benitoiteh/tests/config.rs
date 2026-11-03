@@ -721,6 +721,7 @@ fn evaluation_switches_are_user_only_and_preserve_read_exclusions() -> TestResul
         assert!(!config.agent.completion_check);
         assert!(!config.edit.multiple);
         assert!(!config.agent.nested_instructions);
+        assert!(!config.agent.plan_tool);
         assert_eq!(config.compaction.reserve_tokens, 16_384);
         assert_eq!(config.compaction.keep_tokens, 20_000);
     }
@@ -777,6 +778,7 @@ fn evaluation_switches_are_user_only_and_preserve_read_exclusions() -> TestResul
     for (input, field) in [
         ("[read]\nline_numbers=false", "line_numbers"),
         ("model='discarded'\n[agent]\ncompletion_check=true", "agent"),
+        ("[agent]\nplan_tool=true", "agent"),
         ("[restricted]\nafter_write_check=false", "restricted"),
         ("[skills]\nuser=false", "skills"),
         (
@@ -815,6 +817,7 @@ fn evaluation_switches_are_user_only_and_preserve_read_exclusions() -> TestResul
         ("[agent]\ncompletion_check=1", invalid),
         ("[agent]\ncompletion_check='true'", invalid),
         ("[agent]\nnested_instructions=1", invalid),
+        ("[agent]\nplan_tool='true'", invalid),
         (
             "[agent]\ncompletion_checks=true",
             "unknown configuration field `completion_checks`",

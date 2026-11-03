@@ -361,6 +361,12 @@ impl Agent {
         } else {
             tools
         };
+        // 計画の道具はファイルにもプロセスにも触れないので、両モードで加えられる。
+        let tools = if config.agent.plan_tool {
+            tools.with_plan()
+        } else {
+            tools
+        };
         // 制限モードは指示のファイルを読まないので、下のディレクトリのものも読まない（BH-042）。
         let nested = config.agent.nested_instructions && config.mode == Mode::Normal;
         let nested_instructions = nested.then(|| {
@@ -411,6 +417,7 @@ impl Agent {
                 read_line_numbers: (!tool_context.read_line_numbers).then_some(false),
                 multiple_edits: tool_context.multiple_edits.then_some(true),
                 nested_instructions: nested.then_some(true),
+                plan_tool: config.agent.plan_tool.then_some(true),
                 plugins: environment.skills().plugins.clone(),
                 skills: environment.skills().recorded(),
             }))?;

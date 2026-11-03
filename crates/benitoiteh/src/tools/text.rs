@@ -8,6 +8,8 @@ pub const READ_PLAIN: (&str, &str) =
     prompt_parts(include_str!("../../prompts/tools/read-plain.md"));
 pub const EDIT_MULTIPLE: (&str, &str) =
     prompt_parts(include_str!("../../prompts/tools/edit-multiple.md"));
+pub const UPDATE_PLAN: (&str, &str) =
+    prompt_parts(include_str!("../../prompts/tools/update_plan.md"));
 pub const GLOB: (&str, &str) = prompt_parts(include_str!("../../prompts/tools/glob.md"));
 pub const GREP: (&str, &str) = prompt_parts(include_str!("../../prompts/tools/grep.md"));
 pub const WRITE: (&str, &str) = prompt_parts(include_str!("../../prompts/tools/write.md"));
@@ -83,6 +85,10 @@ pub fn argument(name: &str) -> &'static str {
         "new_string" => "Replacement text.",
         "replace_all" => "Replace every occurrence.",
         "edits" => "Replacements to apply to the file.",
+        "explanation" => "Why the plan changed.",
+        "plan" => "All steps of the plan, in order.",
+        "step" => "Short description of the step.",
+        "status" => "One of pending, in_progress, or completed.",
         _ => "Argument value.",
     }
 }
@@ -161,6 +167,16 @@ pub fn edit_overlap(first: usize, second: usize, path: &str) -> String {
     format!(
         "edits[{first}] and edits[{second}] overlap in {path}. Merge them into one edit or target disjoint regions. No change was made."
     )
+}
+pub const PLAN_UPDATED: &str = "Plan updated.";
+pub fn plan_status(index: usize, status: &str) -> String {
+    format!("Invalid status {status:?} for plan[{index}]. Use pending, in_progress, or completed.")
+}
+pub fn plan_empty_step(index: usize) -> String {
+    format!("plan[{index}].step must not be empty.")
+}
+pub fn plan_in_progress(count: usize) -> String {
+    format!("At most one step can be in_progress; found {count}. No change was made.")
 }
 pub const EDITS_EMPTY: &str = "edits must contain at least one replacement.";
 pub fn edit_unchanged(path: &str) -> String {

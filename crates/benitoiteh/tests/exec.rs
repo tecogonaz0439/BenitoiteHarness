@@ -212,7 +212,7 @@ fn evaluation_switches_reach_read_and_recorded_hashes_from_user_config() -> Test
             fs::write(
                 path,
                 format!(
-                    "{contents}\n[restricted]\nafter_write_check=false\n[read]\nline_numbers=false\n[edit]\nmultiple=true\n[compaction]\nreserve_tokens=8192\nkeep_tokens=8000\nprune_tool_results=true\n"
+                    "{contents}\n[restricted]\nafter_write_check=false\n[read]\nline_numbers=false\n[edit]\nmultiple=true\n[agent]\nplan_tool=true\n[compaction]\nreserve_tokens=8192\nkeep_tokens=8000\nprune_tool_results=true\n"
                 ),
             )?;
         }
@@ -236,10 +236,9 @@ fn evaluation_switches_reach_read_and_recorded_hashes_from_user_config() -> Test
         for key in ["after_write_check", "read_line_numbers"] {
             assert_eq!(header.get(key), (!enabled).then_some(&Value::Bool(false)));
         }
-        assert_eq!(
-            header.get("multiple_edits"),
-            (!enabled).then_some(&Value::Bool(true))
-        );
+        for key in ["multiple_edits", "plan_tool"] {
+            assert_eq!(header.get(key), (!enabled).then_some(&Value::Bool(true)));
+        }
         hashes.push((
             header
                 .get("system_prompt_sha256")
@@ -282,6 +281,15 @@ fn evaluation_switches_reach_read_and_recorded_hashes_from_user_config() -> Test
         assert_eq!(
             edit.pointer("/function/parameters/properties/edits")
                 .is_some(),
+            !enabled
+        );
+        assert_eq!(
+            request
+                .get("tools")
+                .and_then(Value::as_array)
+                .is_some_and(|tools| tools.iter().any(|tool| {
+                    tool.pointer("/function/name").and_then(Value::as_str) == Some("update_plan")
+                })),
             !enabled
         );
         assert_eq!(

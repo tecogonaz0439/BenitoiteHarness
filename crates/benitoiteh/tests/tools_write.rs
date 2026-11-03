@@ -660,6 +660,62 @@ fn multiple_edits_match_the_original_reject_overlaps_and_write_nothing_on_failur
     Ok(())
 }
 
+// 作成時の関門: 評価用の計画を書く道具（設計書 01-03「update_plan」）の契約。
+// 状態の値と「進めている段は一つまで」の検査、画面に示す一覧、既定で道具がないことを
+// 実行器の境界で確かめる。ファイルを書く道具ではないが、同じ実行器の準備を使う。
+#[test]
+fn plan_tool_validates_statuses_and_shows_the_checklist_only_when_enabled() -> TestResult {
+    let f = Fixture::new(Mode::Restricted)?;
+    let tools = ToolSet::new(Mode::Restricted).with_plan();
+    let output = tools.execute(
+        &f.context,
+        "update_plan",
+        json!({"explanation":"Split\nthe work.","plan":[
+            {"step":"Read the\n input","status":"completed"},
+            {"step":"Write main.bnt","status":"in_progress"},
+            {"step":"Run tests","status":"pending"}
+        ]}),
+    );
+    assert!(!output.is_error, "{}", output.text);
+    assert_eq!(output.text, "Plan updated.");
+    assert_eq!(
+        output.display.as_deref(),
+        Some("Split the work.\n[x] Read the input\n[>] Write main.bnt\n[ ] Run tests")
+    );
+    let output = tools.execute(&f.context, "update_plan", json!({"plan":[]}));
+    assert!(!output.is_error && output.display.as_deref() == Some(""));
+    for (plan, error) in [
+        (
+            json!([{"step":"a","status":"done"}]),
+            "Invalid status \"done\" for plan[0]. Use pending, in_progress, or completed.",
+        ),
+        (
+            json!([{"step":"a","status":"in_progress"},{"step":"b","status":"in_progress"}]),
+            "At most one step can be in_progress; found 2. No change was made.",
+        ),
+        (
+            json!([{"step":"a","status":"pending"},{"step":" ","status":"pending"}]),
+            "plan[1].step must not be empty.",
+        ),
+    ] {
+        let output = tools.execute(&f.context, "update_plan", json!({ "plan": plan }));
+        assert!(output.is_error);
+        assert_eq!(output.text, error);
+    }
+    let output = tools.execute(&f.context, "update_plan", json!({"plan":[{"step":"a"}]}));
+    assert!(
+        output.is_error
+            && output
+                .text
+                .starts_with("Missing required argument \"plan[0].status\".")
+    );
+    let output = f
+        .tools
+        .execute(&f.context, "update_plan", json!({"plan":[]}));
+    assert!(output.is_error && output.text.starts_with("Unknown tool \"update_plan\"."));
+    Ok(())
+}
+
 #[test]
 fn all_selected_quote_and_dash_variants_match_without_changing_neighboring_text() -> TestResult {
     let f = Fixture::new(Mode::Restricted)?;

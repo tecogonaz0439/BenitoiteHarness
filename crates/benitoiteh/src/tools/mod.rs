@@ -12,6 +12,7 @@ mod definitions;
 mod edit;
 pub mod exclude;
 mod paths;
+mod plan;
 pub(crate) mod process_output;
 mod read;
 pub(crate) use read::run_image_helper;
@@ -82,6 +83,8 @@ pub enum ToolId {
     CreateProject,
     /// HTTPS の本文の取得。
     WebFetch,
+    /// 評価用の計画の記録（設計書 01-03「update_plan」）。
+    UpdatePlan,
 }
 
 impl ToolId {
@@ -102,6 +105,7 @@ impl ToolId {
             Self::BenitoiteReference => "benitoite_reference",
             Self::WebFetch => "web_fetch",
             Self::CreateProject => "create_project",
+            Self::UpdatePlan => "update_plan",
         }
     }
 }
@@ -186,6 +190,18 @@ impl ToolSet {
                 tool.rules = &[text::EDIT_MULTIPLE.1];
                 tool.spec.arguments = definitions::multiple_edit_arguments();
             }
+        }
+        self
+    }
+
+    /// 評価用に、計画を書く道具を最後に加える（設計書 01-03「update_plan」）。
+    pub fn with_plan(mut self) -> Self {
+        if !self
+            .definitions
+            .iter()
+            .any(|tool| tool.id == ToolId::UpdatePlan)
+        {
+            self.definitions.push(definitions::plan_definition());
         }
         self
     }
@@ -318,6 +334,7 @@ impl ToolSet {
                 create_project::execute(context, &call.arguments, approval, invocation)
             }
             ToolId::WebFetch => web_fetch::execute(context, &call.arguments, approval, invocation),
+            ToolId::UpdatePlan => plan::execute(&call.arguments),
         };
         let mut output = match result {
             Ok(output) => output,

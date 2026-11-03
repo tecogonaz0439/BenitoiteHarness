@@ -21,18 +21,41 @@ fn main() -> Result<(), Box<dyn Error>> {
     }
     let skill = benitoiteh::benitoite::skill::SkillDocument::from_json("SKILL.md", &output.stdout)?;
     let directory = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/expected");
-    for (mode, name, enabled, plain_read, multiple_edits) in [
-        (Mode::Restricted, "restricted", true, false, false),
-        (Mode::Normal, "normal", true, false, false),
+    for (mode, name, enabled, plain_read, multiple_edits, plan) in [
+        (Mode::Restricted, "restricted", true, false, false, false),
+        (Mode::Normal, "normal", true, false, false, false),
         (
             Mode::Normal,
             "normal-without-benitoite",
             false,
             false,
             false,
+            false,
         ),
-        (Mode::Restricted, "restricted-read-plain", true, true, false),
-        (Mode::Normal, "normal-edit-multiple", true, false, true),
+        (
+            Mode::Restricted,
+            "restricted-read-plain",
+            true,
+            true,
+            false,
+            false,
+        ),
+        (
+            Mode::Normal,
+            "normal-edit-multiple",
+            true,
+            false,
+            true,
+            false,
+        ),
+        (
+            Mode::Restricted,
+            "restricted-plan",
+            true,
+            false,
+            false,
+            true,
+        ),
     ] {
         let tools = if enabled {
             ToolSet::new(mode)
@@ -49,6 +72,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         } else {
             tools
         };
+        let tools = if plan { tools.with_plan() } else { tools };
         let context = SystemContext::new(&tools, enabled.then_some(&skill))?;
         fs::write(
             directory.join(format!("system-{name}.txt")),
