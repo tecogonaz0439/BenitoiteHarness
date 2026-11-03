@@ -523,6 +523,7 @@ enum SummaryResponse {
 
 fn user(text: String) -> Item {
     Item::UserMessage(UserMessage {
+        images: Vec::new(),
         parts: vec![UserPart {
             kind: UserPartKind::Request,
             text,

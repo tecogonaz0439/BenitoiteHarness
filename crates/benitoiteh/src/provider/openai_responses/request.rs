@@ -140,11 +140,36 @@ impl OpenAiResponsesAdapter {
         let plan = crate::provider::image_plan(conversation, self.capabilities.image_input);
         for (index, item) in conversation.items.iter().enumerate() {
             match item {
-                Item::UserMessage(user) => input.push(json!({"type": "message", "role": "user",
-                    "content": user.parts.iter().map(|p| json!({"type": "input_text", "text": p.text})).collect::<Vec<_>>()})),
+                Item::UserMessage(user) => {
+                    let mut content = user
+                        .parts
+                        .iter()
+                        .map(|p| json!({"type": "input_text", "text": p.text}))
+                        .collect::<Vec<_>>();
+                    let (images, notices) = crate::provider::images::prepare_user(
+                        user,
+                        self.capabilities.image_input,
+                        &plan,
+                        index,
+                    );
+                    content.extend(images.into_iter().map(|image| json!({"type": "input_image", "image_url": crate::provider::images::data_url(image), "detail": "auto"})));
+                    content.extend(
+                        notices
+                            .into_iter()
+                            .map(|notice| json!({"type": "input_text", "text": notice})),
+                    );
+                    input.push(json!({"type": "message", "role": "user", "content": content}));
+                }
                 Item::ToolResult(result) => {
-                    let id = ids.get(&result.id).ok_or(OpenAiResponsesError::InvalidRequest)?;
-                    let (body, images) = crate::provider::images::prepare(result, self.capabilities.image_input, &plan, index);
+                    let id = ids
+                        .get(&result.id)
+                        .ok_or(OpenAiResponsesError::InvalidRequest)?;
+                    let (body, images) = crate::provider::images::prepare(
+                        result,
+                        self.capabilities.image_input,
+                        &plan,
+                        index,
+                    );
                     let output = if images.is_empty() {
                         json!(body)
                     } else {
@@ -154,7 +179,9 @@ impl OpenAiResponsesAdapter {
                         }
                         json!(parts)
                     };
-                    input.push(json!({"type": "function_call_output", "call_id": id, "output": output}));
+                    input.push(
+                        json!({"type": "function_call_output", "call_id": id, "output": output}),
+                    );
                 }
                 Item::AssistantTurn(turn) => {
                     let same = turn.raw_items.destination == self.destination
@@ -164,7 +191,14 @@ impl OpenAiResponsesAdapter {
                     for part in &turn.parts {
                         if let AssistantPart::ToolCall(call) = part {
                             let original = call.provider_id.as_deref().unwrap_or(&call.id);
-                            ids.insert(call.id.clone(), if same { original.to_owned() } else { remap_tool_call_id(original) });
+                            ids.insert(
+                                call.id.clone(),
+                                if same {
+                                    original.to_owned()
+                                } else {
+                                    remap_tool_call_id(original)
+                                },
+                            );
                         }
                     }
                     if same {
@@ -175,8 +209,14 @@ impl OpenAiResponsesAdapter {
                                 continue;
                             }
                             let mut raw = raw.clone();
-                            let fields = raw.as_object_mut().ok_or(OpenAiResponsesError::InvalidRequest)?;
-                            if !fields.get("id").and_then(Value::as_str).is_some_and(is_prefixed) {
+                            let fields = raw
+                                .as_object_mut()
+                                .ok_or(OpenAiResponsesError::InvalidRequest)?;
+                            if !fields
+                                .get("id")
+                                .and_then(Value::as_str)
+                                .is_some_and(is_prefixed)
+                            {
                                 fields.remove("id");
                             }
                             input.push(raw);

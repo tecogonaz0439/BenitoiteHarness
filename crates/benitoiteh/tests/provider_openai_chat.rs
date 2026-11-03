@@ -35,6 +35,7 @@ fn destination(server: &MockProvider) -> Destination {
 fn conversation() -> Conversation {
     Conversation {
         items: vec![Item::UserMessage(UserMessage {
+            images: Vec::new(),
             parts: vec![
                 UserPart {
                     kind: UserPartKind::Environment,
@@ -987,6 +988,54 @@ fn bounded_images_are_omitted_with_one_notice_per_result() -> TestResult {
             if partial { 1 } else { 6 }
         );
     }
+    server.shutdown()?;
+    Ok(())
+}
+
+// 作成時の関門: 利用者の添付の画像は、利用者の発言の中に image_url の部分として送る
+// （設計書 02-01「画像の受け渡し」）。
+#[test]
+fn user_attachments_are_image_url_parts_of_the_user_message() -> TestResult {
+    let mut server = MockProvider::start(vec![
+        ResponseScript::sse(simple("stop")),
+        ResponseScript::sse(simple("stop")),
+    ])?;
+    for enabled in [true, false] {
+        let adapter = OpenAiChatAdapter::new(
+            destination(&server),
+            Capabilities {
+                image_input: enabled,
+                ..Capabilities::default()
+            },
+            KEY.into(),
+        );
+        request(
+            &adapter,
+            &image_support::user_attachment(true),
+            RequestOptions::default(),
+        )?;
+    }
+    let requests = server.requests()?;
+    let content = |index: usize| {
+        requests
+            .get(index)
+            .and_then(|request| request.body.pointer("/messages/1/content"))
+            .cloned()
+    };
+    assert_eq!(
+        content(0),
+        Some(json!([
+            {"type":"text", "text":"Look."},
+            {"type":"image_url", "image_url":{"url":"data:image/png;base64,Zm9vYmFy"}}
+        ]))
+    );
+    assert_eq!(
+        content(1),
+        Some(json!([
+            {"type":"text", "text":"Look."},
+            {"type":"text", "text":"(Image omitted: the current provider does not accept images.)"}
+        ]))
+    );
     server.shutdown()?;
     Ok(())
 }

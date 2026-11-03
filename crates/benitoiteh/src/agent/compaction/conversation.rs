@@ -30,15 +30,19 @@ pub(super) fn item_bytes(item: &Item, replay: ReasoningReplay, destination: &Des
             })
             .sum(),
     };
-    let image_bytes = match item {
-        Item::ToolResult(result) => result.images.iter().fold(0_u64, |total, image| {
+    let images = match item {
+        Item::ToolResult(result) => result.images.as_slice(),
+        Item::UserMessage(message) => message.images.as_slice(),
+        Item::AssistantTurn(_) => &[],
+    };
+    let image_bytes = {
+        images.iter().fold(0_u64, |total, image| {
             let tokens = u64::from(image.width)
                 .div_ceil(28)
                 .saturating_mul(u64::from(image.height).div_ceil(28))
                 .min(1568);
             total.saturating_add(tokens.saturating_mul(3))
-        }),
-        Item::UserMessage(_) | Item::AssistantTurn(_) => 0,
+        })
     };
     u64::try_from(bytes)
         .unwrap_or(u64::MAX)
@@ -348,7 +352,13 @@ pub(super) fn rebuild(
         parts.append(&mut first.parts);
         first.parts = parts;
     } else {
-        retained.insert(0, Item::UserMessage(UserMessage { parts }));
+        retained.insert(
+            0,
+            Item::UserMessage(UserMessage {
+                parts,
+                images: Vec::new(),
+            }),
+        );
     }
     if replay == ReasoningReplay::SameDestination {
         for item in &mut retained {

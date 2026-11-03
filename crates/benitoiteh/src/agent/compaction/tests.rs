@@ -180,6 +180,7 @@ fn unbuildable_continuation_falls_back_and_summarizes_first_request_and_steering
 
 fn user_with_parts(parts: Vec<(UserPartKind, String)>) -> Item {
     Item::UserMessage(UserMessage {
+        images: Vec::new(),
         parts: parts
             .into_iter()
             .map(|(kind, text)| UserPart { kind, text })

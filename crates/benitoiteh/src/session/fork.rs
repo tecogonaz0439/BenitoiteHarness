@@ -243,8 +243,15 @@ fn assets(
             );
             hashes.extend(result.images.iter().map(|image| image.sha256.clone()));
         }
+        // 利用者の添付の画像も写す（設計書 02-01「画像の受け渡し」）。
+        if let Record::User { message, .. } = record {
+            hashes.extend(message.images.iter().map(|image| image.sha256.clone()));
+        }
         if let Record::Compaction { conversation, .. } = record {
             for item in &conversation.items {
+                if let Item::UserMessage(message) = item {
+                    hashes.extend(message.images.iter().map(|image| image.sha256.clone()));
+                }
                 if let Item::ToolResult(result) = item {
                     hashes.extend(result.images.iter().map(|image| image.sha256.clone()));
                     if let Some(infos) = spills.get(result.id.as_str()) {

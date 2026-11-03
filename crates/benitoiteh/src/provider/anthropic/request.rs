@@ -141,13 +141,31 @@ impl AnthropicAdapter {
         let plan = crate::provider::image_plan(conversation, self.capabilities.image_input);
         for (index, item) in conversation.items.iter().enumerate() {
             let (role, mut content) = match item {
-                Item::UserMessage(user) => (
-                    "user",
-                    user.parts
+                Item::UserMessage(user) => {
+                    let mut content = user
+                        .parts
                         .iter()
                         .map(|p| json!({"type": "text", "text": p.text}))
-                        .collect(),
-                ),
+                        .collect::<Vec<_>>();
+                    let (images, notices) = crate::provider::images::prepare_user(
+                        user,
+                        self.capabilities.image_input,
+                        &plan,
+                        index,
+                    );
+                    for image in images {
+                        content.push(json!({"type": "image", "source": {
+                            "type": "base64", "media_type": image.media_type,
+                            "data": crate::provider::images::encode(image.data.as_deref().unwrap_or_default())
+                        }}));
+                    }
+                    content.extend(
+                        notices
+                            .into_iter()
+                            .map(|notice| json!({"type": "text", "text": notice})),
+                    );
+                    ("user", content)
+                }
                 Item::AssistantTurn(turn) => {
                     let same = turn.raw_items.destination == self.destination
                         && turn.raw_items.adapter == AdapterKind::AnthropicMessages;

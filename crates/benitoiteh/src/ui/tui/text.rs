@@ -724,3 +724,21 @@ pub const EDITOR_TOO_LARGE: &str = "The edited input is larger than 1 MiB; the i
 pub fn editor_failed(error: &str) -> String {
     format!("Could not use the external editor: {error}")
 }
+
+/// 状態の行に示す添付の画像の名前（設計書 05-02「入力の操作」）。
+pub fn attachments(paths: &[std::path::PathBuf]) -> String {
+    if paths.is_empty() {
+        return String::new();
+    }
+    let names = paths
+        .iter()
+        .map(|path| {
+            path.file_name().map_or_else(
+                || path.display().to_string(),
+                |name| name.to_string_lossy().into_owned(),
+            )
+        })
+        .collect::<Vec<_>>()
+        .join(", ");
+    format!(" | images: {names}")
+}

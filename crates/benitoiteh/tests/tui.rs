@@ -238,6 +238,8 @@ struct Fixture {
     root: PathBuf,
     project: PathBuf,
     paths: DataPaths,
+    /// 模擬の提供者が画像を受け付けるか。
+    image_input: bool,
 }
 impl Fixture {
     fn new() -> Result<Self, Box<dyn Error>> {
@@ -262,6 +264,7 @@ impl Fixture {
             root,
             project,
             paths,
+            image_input: false,
         })
     }
 
@@ -315,7 +318,10 @@ impl Fixture {
                 model: "mock-model".into(),
             },
             kind: AdapterKind::OpenAiChat,
-            capabilities: Capabilities::default(),
+            capabilities: Capabilities {
+                image_input: self.image_input,
+                ..Capabilities::default()
+            },
             effort: "high".into(),
             limits: Limits::default(),
             http_timeouts: HttpTimeouts {

@@ -94,6 +94,8 @@ pub struct Screen {
     /// 補完の候補にするファイル。初めて補うときに集める。
     files: Option<Vec<String>>,
     mention: Option<mention::Mention>,
+    /// 次の依頼に添える画像のパス（設計書 05-02「入力の操作」）。
+    attachments: Vec<std::path::PathBuf>,
 }
 
 // 送る文と復元する原文を分け、// を外した文が取り消し後にコマンドにならないようにする。
@@ -144,7 +146,13 @@ impl Screen {
             project_dir: None,
             files: None,
             mention: None,
+            attachments: Vec::new(),
         }
+    }
+
+    /// 次の依頼に添える画像のパスを移す。
+    pub fn take_attachments(&mut self) -> Vec<std::path::PathBuf> {
+        std::mem::take(&mut self.attachments)
     }
 
     /// 外部のエディタのコマンドを使う。`VISUAL`、なければ `EDITOR` を空白で分けたもの。
@@ -253,6 +261,28 @@ impl Screen {
         }
         if self.selection.is_some() {
             return self.selection_input(event);
+        }
+        // 処理の途中でないときに画像のファイルのパスを一つだけ貼ったら、文ではなく添付にする
+        // （設計書 05-02「入力の操作」）。
+        if !running
+            && let Event::Paste(value) = &event
+            && let Some(path) = image_path(value)
+        {
+            if !self.attachments.contains(&path) {
+                self.attachments.push(path);
+            }
+            return Action::None;
+        }
+        // Ctrl+C で入力欄を空にするときは、添付も外す。
+        if let Event::Key(key) = &event
+            && key.kind == crossterm::event::KeyEventKind::Press
+            && key.code == crossterm::event::KeyCode::Char('c')
+            && key
+                .modifiers
+                .contains(crossterm::event::KeyModifiers::CONTROL)
+            && !running
+        {
+            self.attachments.clear();
         }
         // `@` の後の Tab はパスを補う。ほかの入力は補う途中の状態を捨てる（設計書 05-02「入力の操作」）。
         if let Event::Key(key) = &event
@@ -720,9 +750,10 @@ impl Screen {
                 text::QUIT_HINT.to_owned()
             } else {
                 format!(
-                    "{}{}{}",
+                    "{}{}{}{}",
                     text::status(&self.status, elapsed),
                     text::queued(self.followups.len()),
+                    text::attachments(&self.attachments),
                     self.operation
                         .map_or(String::new(), |value| format!(" | {value}"))
                 )
@@ -759,6 +790,34 @@ impl Screen {
         self.rows_below = u16::try_from(below).unwrap_or(u16::MAX);
         Ok(())
     }
+}
+
+/// 貼った文が、画像の拡張子を持つ一つのファイルの絶対パスなら、そのパスを返す。
+/// 端末が付ける引用符、`file://`、空白の `\` を外す。中身は送るときに read と同じ規則で読む。
+fn image_path(value: &str) -> Option<std::path::PathBuf> {
+    let trimmed = value.trim();
+    if trimmed.contains('\n') {
+        return None;
+    }
+    let unquoted = ['\'', '"']
+        .into_iter()
+        .find_map(|quote| {
+            trimmed
+                .strip_prefix(quote)
+                .and_then(|rest| rest.strip_suffix(quote))
+        })
+        .unwrap_or(trimmed);
+    let unprefixed = unquoted.strip_prefix("file://").unwrap_or(unquoted);
+    let path = std::path::PathBuf::from(unprefixed.replace("\\ ", " ").replace("%20", " "));
+    let image = path
+        .extension()
+        .and_then(std::ffi::OsStr::to_str)
+        .is_some_and(|extension| {
+            ["png", "jpg", "jpeg", "gif", "webp"]
+                .iter()
+                .any(|known| extension.eq_ignore_ascii_case(known))
+        });
+    (path.is_absolute() && image && path.is_file()).then_some(path)
 }
 
 #[cfg(test)]

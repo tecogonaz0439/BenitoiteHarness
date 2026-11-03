@@ -289,6 +289,7 @@ fn assistant_turn_json_preserves_order_ids_opaque_data_and_unreported_usage()
     let conversation = Conversation {
         items: vec![
             Item::UserMessage(UserMessage {
+                images: Vec::new(),
                 parts: vec![
                     UserPart {
                         kind: UserPartKind::Environment,

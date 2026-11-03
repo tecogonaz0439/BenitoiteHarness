@@ -458,6 +458,25 @@ impl Default for SearchLimits {
 }
 
 impl ToolContext {
+    /// 利用者が添付した画像を、`read` と同じ規則（範囲、読まないファイル、縮小、保存）で読む
+    /// （設計書 05-02「入力の操作」）。画像でないファイルは誤りとし、中身を返さない。
+    pub fn attach_image(
+        &self,
+        path: &Path,
+        cancelled: &AtomicBool,
+    ) -> Result<crate::provider::ToolImage, String> {
+        let path = path
+            .to_str()
+            .ok_or_else(|| text::ATTACH_NOT_UTF8.to_owned())?;
+        let output = read::execute(self, &serde_json::json!({"path": path}), cancelled)
+            .map_err(|error| error.to_string())?;
+        output
+            .images
+            .into_iter()
+            .next()
+            .ok_or_else(|| text::ATTACH_NOT_IMAGE.to_owned())
+    }
+
     /// 起動時に開いた範囲と、除外の規則を受け取る。
     pub fn new(
         mode: Mode,

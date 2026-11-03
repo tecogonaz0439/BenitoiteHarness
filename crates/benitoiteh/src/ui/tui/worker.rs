@@ -242,6 +242,16 @@ impl Worker {
 
     /// 各依頼に新しい取り消しの印を作る。実行中に二つ目を送らない。
     pub fn submit(&mut self, request: String, control: RunControl) -> Result<(), AgentError> {
+        self.submit_with_images(request, Vec::new(), control)
+    }
+
+    /// 添付の画像のパスとともに依頼を送る（設計書 05-02「入力の操作」）。
+    pub fn submit_with_images(
+        &mut self,
+        request: String,
+        attachments: Vec<std::path::PathBuf>,
+        control: RunControl,
+    ) -> Result<(), AgentError> {
         if self.is_running() {
             return Err(AgentError::Worker);
         }
@@ -255,6 +265,7 @@ impl Worker {
                     cancel_step: Arc::clone(&control.cancel_step),
                     cancel_run: Arc::clone(&control.cancel_run),
                     steering: receiver,
+                    attachments,
                 },
             })
             .map_err(|_| AgentError::Worker)?;

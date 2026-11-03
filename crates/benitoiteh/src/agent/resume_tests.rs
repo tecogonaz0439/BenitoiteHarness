@@ -699,3 +699,147 @@ fn branch_preparation_failure_preserves_log_and_memory_until_commit()
     server.shutdown()?;
     Ok(())
 }
+
+// 作成時の関門: 利用者の添付の画像は、記録には参照だけを書き、再開のときに中身をハッシュと
+// 照合して戻し、戻せなければ除いて断りを添える（設計書 02-01「画像の受け渡し」）。
+#[test]
+fn user_attachments_are_recorded_by_reference_and_restored_on_resume()
+-> Result<(), Box<dyn std::error::Error>> {
+    let id = session::SessionId::generate(std::time::SystemTime::now())?;
+    let directory = std::env::temp_dir().join(format!("benitoiteh-resume-attach-{id}"));
+    std::fs::create_dir(&directory)?;
+    let fixture = Fixture(std::fs::canonicalize(directory)?);
+    for name in ["home", "project", "tmp"] {
+        std::fs::create_dir(fixture.0.join(name))?;
+    }
+    let paths = DataPaths::from_values(
+        Some(&fixture.0.join("home")),
+        Some(&fixture.0.join("config")),
+        Some(&fixture.0.join("state")),
+        Some(&fixture.0.join("tmp")),
+    )?;
+    let project = fixture.0.join("project");
+    let bytes = b"GIF89a\x01\0\x01\0";
+    std::fs::write(project.join("picture.gif"), bytes)?;
+    let session = Session::create(&paths, id)?;
+    let mut server =
+        mock_provider::MockProvider::start(vec![mock_provider::ResponseScript::sse(format!(
+            "data: {}\n\ndata: [DONE]\n\n",
+            serde_json::json!({"choices":[{"delta":{"content":"seen"},"finish_reason":"stop"}]})
+        ))])?;
+    let config = AgentConfig {
+        compaction: Default::default(),
+        agent: Default::default(),
+        project_parent: None,
+        allow_effects: None,
+        allow_agents_write: false,
+        mode: Mode::Normal,
+        destination: Destination {
+            provider: "test".into(),
+            base_url: server.base_url(),
+            model: "model".into(),
+        },
+        kind: AdapterKind::OpenAiChat,
+        capabilities: Capabilities {
+            image_input: true,
+            ..Capabilities::default()
+        },
+        effort: "high".into(),
+        limits: Limits::default(),
+        http_timeouts: HttpTimeouts::default(),
+        retry_initial: Duration::from_millis(1),
+    };
+    let environment = Environment::capture(
+        &project,
+        Mode::Normal,
+        &[],
+        false,
+        std::time::SystemTime::now(),
+    )?;
+    let mut agent = Agent::new(
+        config.clone(),
+        String::new(),
+        tool_context(&paths, &project, &session)?.with_image_input(true),
+        environment.clone(),
+        session.clone(),
+    )?;
+    let (sender, receiver) = std::sync::mpsc::sync_channel(64);
+    let mut control = RunControl::without_steering(
+        Arc::new(AtomicBool::new(false)),
+        Arc::new(AtomicBool::new(false)),
+    );
+    control.attachments = vec![project.join("picture.gif")];
+    agent.run_controlled("Look at this".into(), control, sender)?;
+    let _events = receiver.into_iter().collect::<Vec<_>>();
+    let requests = server.requests()?;
+    assert!(
+        requests
+            .first()
+            .ok_or("missing request")?
+            .body
+            .to_string()
+            .contains("data:image/gif;base64,R0lGODlhAQABAA==")
+    );
+    let log = std::fs::read_to_string(session.directory().join("session.jsonl"))?;
+    assert!(!log.contains("R0lGODlhAQABAA=="));
+    drop(agent);
+    let attached = |agent: &Agent| {
+        agent
+            .conversation()
+            .items
+            .iter()
+            .find_map(|item| match item {
+                Item::UserMessage(message)
+                    if message.parts.iter().any(|part| part.text == "Look at this") =>
+                {
+                    Some(message.clone())
+                }
+                Item::UserMessage(_) | Item::ToolResult(_) | Item::AssistantTurn(_) => None,
+            })
+    };
+    let state = session::ResumeState::read(session.directory())?;
+    let agent = Agent::resume(
+        config.clone(),
+        String::new(),
+        tool_context(&paths, &project, &session)?.with_image_input(true),
+        environment.clone(),
+        session.clone(),
+        state.clone(),
+    )?;
+    let message = attached(&agent).ok_or("missing request")?;
+    let hash = message
+        .images
+        .first()
+        .map(|image| image.sha256.clone())
+        .ok_or("missing attachment")?;
+    assert_eq!(
+        message
+            .images
+            .first()
+            .and_then(|image| image.data.as_deref()),
+        Some(bytes.as_slice())
+    );
+    drop(agent);
+    std::fs::write(
+        session.directory().join("objects").join(&hash),
+        b"corrupted!",
+    )?;
+    let agent = Agent::resume(
+        config,
+        String::new(),
+        tool_context(&paths, &project, &session)?.with_image_input(true),
+        environment,
+        session.clone(),
+        state,
+    )?;
+    let message = attached(&agent).ok_or("missing request")?;
+    assert!(message.images.is_empty());
+    assert!(
+        message
+            .parts
+            .iter()
+            .any(|part| part.text.contains("could not be restored"))
+    );
+    server.shutdown()?;
+    Ok(())
+}

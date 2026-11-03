@@ -95,3 +95,11 @@ pub const LEFTOVER_PROCESSES: &str =
 pub const EFFECTS_NOT_ALLOWED: &str = "The run stopped because benitoite_run, benitoite_test or benitoite_scratch was refused 3 times in a row: the effects were outside --allow.";
 
 pub const BRANCH_CHANGED: &str = "The branch changed; open /tree again.";
+
+/// 添付の画像を読めなかった（設計書 05-02「入力の操作」）。
+pub fn attach_failed(path: &std::path::Path, reason: &str) -> String {
+    format!(
+        "Could not attach {}: {reason}. The request was not sent.",
+        path.display()
+    )
+}

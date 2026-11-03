@@ -119,6 +119,9 @@ fn user(output: &mut String, message: &UserMessage) {
         };
         let _written = write!(output, "\n## {heading}\n\n{}\n", part.text.trim_end());
     }
+    if !message.images.is_empty() {
+        let _written = write!(output, "\n{}\n", text::export_images(message.images.len()));
+    }
 }
 
 /// 中身の最も長い連続した `` ` `` より長い囲みで包む。理由: 中身の囲みで、書き出しの囲みを閉じさせない。

@@ -38,6 +38,7 @@ fn capabilities() -> Result<Capabilities, Box<dyn Error>> {
 fn conversation() -> Conversation {
     Conversation {
         items: vec![Item::UserMessage(UserMessage {
+            images: Vec::new(),
             parts: vec![
                 UserPart {
                     kind: UserPartKind::Environment,
@@ -938,6 +939,64 @@ fn bounded_images_are_omitted_with_one_notice_per_result() -> TestResult {
             if partial { 1 } else { 6 }
         );
     }
+    server.shutdown()?;
+    Ok(())
+}
+
+// 作成時の関門: 利用者の添付の画像は、依頼の文の後に画像のブロックとして送り、送れないときは
+// 断りの文に替える（設計書 02-01「画像の受け渡し」）。
+#[test]
+fn user_attachments_follow_the_request_text_or_become_notices() -> TestResult {
+    let cases = [(true, true), (false, true), (true, false)];
+    let mut server = MockProvider::start(
+        cases
+            .iter()
+            .map(|_| Ok(ResponseScript::sse(simple("end_turn", None)?)))
+            .collect::<Result<Vec<_>, Box<dyn Error>>>()?,
+    )?;
+    for (enabled, available) in cases {
+        let adapter = AnthropicAdapter::new(
+            destination(&server),
+            Capabilities {
+                image_input: enabled,
+                ..Capabilities::default()
+            },
+            KEY.into(),
+        );
+        request(
+            &adapter,
+            &image_support::user_attachment(available),
+            RequestOptions::default(),
+        )?;
+    }
+    let requests = server.requests()?;
+    let content = |index: usize| {
+        requests
+            .get(index)
+            .and_then(|request| request.body.pointer("/messages/0/content"))
+            .cloned()
+    };
+    assert_eq!(
+        content(0),
+        Some(json!([
+            {"type":"text", "text":"Look."},
+            {"type":"image", "source":{"type":"base64", "media_type":"image/png", "data":"Zm9vYmFy"}}
+        ]))
+    );
+    assert_eq!(
+        content(1),
+        Some(json!([
+            {"type":"text", "text":"Look."},
+            {"type":"text", "text":"(Image omitted: the current provider does not accept images.)"}
+        ]))
+    );
+    assert_eq!(
+        content(2),
+        Some(json!([
+            {"type":"text", "text":"Look."},
+            {"type":"text", "text":"(Image omitted: the image data is not available.)"}
+        ]))
+    );
     server.shutdown()?;
     Ok(())
 }

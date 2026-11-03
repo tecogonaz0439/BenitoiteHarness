@@ -103,6 +103,8 @@ pub struct RunControl {
     pub cancel_step: Arc<AtomicBool>,
     pub cancel_run: Arc<AtomicBool>,
     pub steering: Receiver<String>,
+    /// 依頼に添える画像のパス（設計書 05-02「入力の操作」）。
+    pub attachments: Vec<std::path::PathBuf>,
 }
 
 impl RunControl {
@@ -113,6 +115,7 @@ impl RunControl {
             cancel_step,
             cancel_run,
             steering,
+            attachments: Vec::new(),
         }
     }
 }
@@ -157,6 +160,8 @@ pub enum AgentError {
     Worker,
     /// やり直しのゆらぎ用の乱数が得られない。
     Random,
+    /// 添付の画像を読めなかった。依頼は送らない。
+    Attachment(String),
 }
 
 impl fmt::Display for AgentError {
@@ -177,6 +182,7 @@ impl fmt::Display for AgentError {
             Self::ReceiverClosed => f.write_str(text::CHANNEL_CLOSED),
             Self::Worker => f.write_str(text::WORKER_FAILED),
             Self::Random => f.write_str(text::RANDOM_FAILED),
+            Self::Attachment(message) => f.write_str(message),
         }
     }
 }
@@ -222,6 +228,7 @@ impl AgentError {
             Self::ReceiverClosed => "event_receiver",
             Self::Worker => "worker",
             Self::Random => "random",
+            Self::Attachment(_) => "attachment",
         }
     }
 }
@@ -772,6 +779,17 @@ impl Agent {
         self.completion_prompted = false;
         self.effects_denied = 0;
         let cancelled = &*control.cancel_step;
+        // 添付は、記録と時点を残す前に read と同じ規則で読む。一つでも読めなければ依頼を送らない。
+        // 理由: 利用者が添えたつもりの画像を黙って欠いて送らない（設計書 05-02「入力の操作」）。
+        let mut images = Vec::new();
+        for path in &control.attachments {
+            match self.tool_context.attach_image(path, cancelled) {
+                Ok(image) => images.push(image),
+                Err(reason) => {
+                    return Err(AgentError::Attachment(text::attach_failed(path, &reason)));
+                }
+            }
+        }
         self.resuming = false;
         if self.resume_compaction {
             let report = self.perform_compaction(
@@ -803,7 +821,8 @@ impl Agent {
         }
         self.checkpoint_notices(events)?;
         let changes = self.environment_changes.take();
-        let message = self.request_message(changes, request);
+        let mut message = self.request_message(changes, request);
+        message.images = images;
         self.append_node(Record::User {
             node: 0,
             kind: UserKind::Request,
@@ -835,7 +854,10 @@ impl Agent {
             kind: UserPartKind::Request,
             text: request,
         });
-        UserMessage { parts }
+        UserMessage {
+            parts,
+            images: Vec::new(),
+        }
     }
 
     fn run_inner(
@@ -857,6 +879,7 @@ impl Agent {
             }
             if let Some(changes) = self.environment_changes.take() {
                 let message = UserMessage {
+                    images: Vec::new(),
                     parts: vec![UserPart {
                         kind: UserPartKind::Environment,
                         text: changes,
@@ -1025,6 +1048,7 @@ impl Agent {
                 && summary.turns < self.config.limits.max_turns
             {
                 let message = UserMessage {
+                    images: Vec::new(),
                     parts: vec![UserPart {
                         kind: UserPartKind::Environment,
                         text: format!(
@@ -1064,7 +1088,10 @@ impl Agent {
         if parts.is_empty() {
             return Ok(false);
         }
-        let message = UserMessage { parts };
+        let message = UserMessage {
+            parts,
+            images: Vec::new(),
+        };
         self.append_node(Record::User {
             node: 0,
             kind: UserKind::Steer,

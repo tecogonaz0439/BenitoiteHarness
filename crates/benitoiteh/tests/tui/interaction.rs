@@ -638,6 +638,7 @@ fn resumed_preview_shows_last_three_request_or_steering_pairs_and_omits_environm
     };
     let mut conversation = Conversation::default();
     conversation.items.push(Item::UserMessage(UserMessage {
+        images: Vec::new(),
         parts: vec![
             UserPart {
                 kind: UserPartKind::Environment,
@@ -651,6 +652,7 @@ fn resumed_preview_shows_last_three_request_or_steering_pairs_and_omits_environm
     }));
     for index in 0..5 {
         conversation.items.push(Item::UserMessage(UserMessage {
+            images: Vec::new(),
             parts: vec![UserPart {
                 kind: if index == 0 {
                     UserPartKind::Request

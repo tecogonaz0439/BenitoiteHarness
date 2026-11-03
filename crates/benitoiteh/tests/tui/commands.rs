@@ -1489,6 +1489,7 @@ fn new_after_project_creation_uses_the_project_from_the_event() -> TestResult {
                 root: f.root.clone(),
                 project: destination.clone(),
                 paths: f.paths.clone(),
+                image_input: false,
             });
             let mut prepared = next
                 .new_session_in_mode(&server, Mode::Restricted)
@@ -2066,4 +2067,117 @@ fn tab_completes_project_paths_after_at_signs() -> TestResult {
         Action::Submit("@src/main.rs @src/mapping.rs".into())
     );
     Ok(())
+}
+
+// 作成時の関門: 処理の途中でないときに貼った画像のファイルの絶対パスは、文ではなく添付になり、
+// 状態の行に名前が出て、次の依頼とともに read と同じ規則で読んで送る。中身は objects/ に置き、
+// 記録には参照だけを書く。読まないファイルは添付せず、依頼も送らない（設計書 05-02「入力の操作」）。
+#[test]
+fn pasted_image_paths_are_attached_with_the_read_rules() -> TestResult {
+    let mut png = Vec::new();
+    image::RgbImage::new(2, 2)
+        .write_to(&mut std::io::Cursor::new(&mut png), image::ImageFormat::Png)?;
+    let mut server = MockProvider::start(vec![ResponseScript::sse(response(
+        json!({"content":"LLM done"}),
+        "stop",
+    ))])?;
+    let mut f = Fixture::new()?;
+    f.image_input = true;
+    let picture = f.project.join("shot one.png");
+    fs::write(&picture, &png)?;
+    let secret = f.project.join(".env.png");
+    fs::write(&secret, &png)?;
+    let (worker, directory) = f.worker(&server)?;
+    let mut screen = Screen::new((160, 30), status());
+    let mut output = Output::default();
+    let quoted = format!("'{}'", picture.display());
+    let mut input = Driver::new(
+        output.clone(),
+        vec![
+            ("", vec![Event::Paste(quoted)]),
+            ("images: shot one.png", send("describe this")),
+            ("LLM done", vec![Event::Paste(secret.display().to_string())]),
+            ("images: .env.png", send("and this")),
+            ("Could not attach", send("/quit")),
+        ],
+    );
+    assert_eq!(
+        run(
+            &mut screen,
+            worker,
+            &mut input,
+            &mut output,
+            &AtomicBool::new(false),
+            |_| {},
+            &mut |_, _, _| Err("should not prepare".into())
+        )?,
+        0
+    );
+    let requests = server.requests()?;
+    assert_eq!(
+        requests.len(),
+        1,
+        "the excluded attachment must not be sent"
+    );
+    let content = requests
+        .first()
+        .and_then(|request| request.body.pointer("/messages/1/content"))
+        .and_then(serde_json::Value::as_array)
+        .ok_or("content")?;
+    let expected = format!("data:image/png;base64,{}", base64_encode(&png));
+    assert!(
+        content.iter().any(|part| part
+            .pointer("/image_url/url")
+            .and_then(serde_json::Value::as_str)
+            == Some(expected.as_str())),
+        "{content:?}"
+    );
+    assert!(
+        !content
+            .iter()
+            .any(|part| part.to_string().contains("shot one.png"))
+    );
+    let records = read_records(&directory)?;
+    let attached = records
+        .iter()
+        .find_map(|record| {
+            if let Record::User { message, .. } = record
+                && !message.images.is_empty()
+            {
+                Some(message.images.clone())
+            } else {
+                None
+            }
+        })
+        .ok_or("recorded attachment")?;
+    let hash = attached
+        .first()
+        .map(|image| image.sha256.clone())
+        .ok_or("hash")?;
+    assert_eq!(fs::read(directory.join("objects").join(&hash))?, png);
+    assert!(!fs::read_to_string(directory.join("session.jsonl"))?.contains("base64"));
+    server.shutdown()?;
+    Ok(())
+}
+
+fn base64_encode(data: &[u8]) -> String {
+    const ALPHABET: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let mut output = String::new();
+    for chunk in data.chunks(3) {
+        let byte = |index: usize| u32::from(chunk.get(index).copied().unwrap_or(0));
+        let value = byte(0) << 16 | byte(1) << 8 | byte(2);
+        for (index, shift) in [18, 12, 6, 0].into_iter().enumerate() {
+            if index <= chunk.len() {
+                let symbol = usize::try_from((value >> shift) & 63)
+                    .ok()
+                    .and_then(|position| ALPHABET.get(position))
+                    .copied()
+                    .unwrap_or(b'=');
+                output.push(char::from(symbol));
+            } else {
+                output.push('=');
+            }
+        }
+    }
+    output
 }

@@ -36,6 +36,7 @@ fn tree_rows_preserve_preorder_branch_depth_and_combined_marks() -> TestResult {
         node,
         kind: UserKind::Request,
         message: UserMessage {
+            images: Vec::new(),
             parts: vec![UserPart {
                 kind: UserPartKind::Request,
                 text: text.into(),
@@ -287,6 +288,7 @@ fn records_replay_conversation_losslessly_and_finish_with_summary() -> TestResul
     writer.append(&header(&session))?;
     assert!(summary_writer.append(&header(&session)).is_err());
     let message = UserMessage {
+        images: Vec::new(),
         parts: vec![
             UserPart {
                 kind: UserPartKind::Environment,
@@ -426,6 +428,7 @@ fn replay_ignores_only_torn_tail_and_fills_missing_tool_results_before_next_mess
         stderr_spill: None,
     })?;
     let message = UserMessage {
+        images: Vec::new(),
         parts: vec![UserPart {
             kind: UserPartKind::Steering,
             text: "check files".to_owned(),
@@ -1576,6 +1579,7 @@ fn replay_selects_only_the_path_and_its_reasoning_segments() -> TestResult {
         node,
         kind: UserKind::Request,
         message: UserMessage {
+            images: Vec::new(),
             parts: vec![UserPart {
                 kind: UserPartKind::Request,
                 text: text.into(),
@@ -1739,7 +1743,10 @@ fn invalid_trees_are_rejected_before_resume_touches_temporary_files() -> TestRes
     let user = |node| Record::User {
         node,
         kind: UserKind::Request,
-        message: UserMessage { parts: vec![] },
+        message: UserMessage {
+            parts: vec![],
+            images: Vec::new(),
+        },
     };
     let cases = vec![
         vec![
@@ -1824,6 +1831,7 @@ fn fork_copies_the_whole_selected_path_and_only_its_assets() -> TestResult {
         node,
         kind: UserKind::Request,
         message: UserMessage {
+            images: Vec::new(),
             parts: vec![UserPart {
                 kind: UserPartKind::Request,
                 text: value.into(),
@@ -1934,6 +1942,7 @@ fn fork_copies_the_whole_selected_path_and_only_its_assets() -> TestResult {
     let compacted = Conversation {
         items: vec![
             Item::UserMessage(UserMessage {
+                images: Vec::new(),
                 parts: vec![UserPart {
                     kind: UserPartKind::Request,
                     text: "summary".into(),
@@ -2643,6 +2652,7 @@ fn export_writes_the_current_branch_with_compaction_and_safe_fences() -> TestRes
         node,
         kind: UserKind::Request,
         message: UserMessage {
+            images: Vec::new(),
             parts: vec![UserPart {
                 kind,
                 text: text.into(),
@@ -2673,6 +2683,7 @@ fn export_writes_the_current_branch_with_compaction_and_safe_fences() -> TestRes
         node: 4,
         conversation: Conversation {
             items: vec![Item::UserMessage(UserMessage {
+                images: Vec::new(),
                 parts: vec![UserPart {
                     kind: UserPartKind::Summary,
                     text: "Summary text.".into(),

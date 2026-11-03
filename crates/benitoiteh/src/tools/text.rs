@@ -634,3 +634,7 @@ pub fn read_resized_image(
         "Read image file {media_type} ({width}x{height}, {bytes} bytes; resized from {original_width}x{original_height})"
     )
 }
+
+/// 添付の画像を読めなかった理由（設計書 05-02「入力の操作」）。
+pub const ATTACH_NOT_UTF8: &str = "the path is not UTF-8";
+pub const ATTACH_NOT_IMAGE: &str = "the file is not a PNG, JPEG, GIF or WebP image";

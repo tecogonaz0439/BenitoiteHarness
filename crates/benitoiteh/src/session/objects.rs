@@ -11,6 +11,9 @@ use sha2::{Digest, Sha256};
 
 use super::{Session, SessionError, create_file, id, open_existing_file, text};
 
+/// ハッシュごとに一度だけ読んで確かめた中身と、形式と寸法。
+type RestoredObjects = HashMap<String, Option<(Arc<[u8]>, &'static str, u32, u32)>>;
+
 impl Session {
     /// 再開の会話の画像をハッシュで確かめ、戻せない画像には断りの文を残す。
     pub(crate) fn restore_images(
@@ -25,39 +28,59 @@ impl Session {
         // 中身の複製を避ける。記録の属性は参照ごとに照合する（設計書 01-05「記録を残す期間」）。
         let mut objects = HashMap::new();
         for item in &mut conversation.items {
-            let crate::provider::Item::ToolResult(result) = item else {
-                continue;
-            };
-            let mut omitted = false;
-            result.images.retain_mut(|image| {
-                let restored = objects.entry(image.sha256.clone()).or_insert_with(|| {
-                    let bytes = self
-                        .read_object(&image.sha256, crate::tools::MAX_IMAGE_BYTES)
-                        .ok()?;
-                    let (mime, width, height) = crate::tools::inspect_image(&bytes).ok()?;
-                    Some((Arc::<[u8]>::from(bytes), mime, width, height))
-                });
-                match restored.as_ref() {
-                    Some((bytes, mime, width, height))
-                        if u64::try_from(bytes.len()).ok() == Some(image.bytes)
-                            && *mime == image.media_type
-                            && *width == image.width
-                            && *height == image.height =>
-                    {
-                        image.data = Some(Arc::clone(bytes));
-                        true
-                    }
-                    _ => {
-                        omitted = true;
-                        false
+            match item {
+                crate::provider::Item::ToolResult(result) => {
+                    if self.restore_list(&mut result.images, &mut objects) {
+                        result.text.push('\n');
+                        result.text.push_str(text::IMAGE_RESTORE_OMITTED);
                     }
                 }
-            });
-            if omitted {
-                result.text.push('\n');
-                result.text.push_str(text::IMAGE_RESTORE_OMITTED);
+                // 利用者の添付も同じ確かめで戻す（設計書 02-01「画像の受け渡し」）。
+                crate::provider::Item::UserMessage(message) => {
+                    if self.restore_list(&mut message.images, &mut objects) {
+                        message.parts.push(crate::provider::UserPart {
+                            kind: crate::provider::UserPartKind::Request,
+                            text: text::ATTACHMENT_RESTORE_OMITTED.to_owned(),
+                        });
+                    }
+                }
+                crate::provider::Item::AssistantTurn(_) => {}
             }
         }
+    }
+
+    /// 画像の並びを中身で確かめて戻し、戻せないものを除く。除いたら真を返す。
+    fn restore_list(
+        &self,
+        images: &mut Vec<crate::provider::ToolImage>,
+        objects: &mut RestoredObjects,
+    ) -> bool {
+        let mut omitted = false;
+        images.retain_mut(|image| {
+            let restored = objects.entry(image.sha256.clone()).or_insert_with(|| {
+                let bytes = self
+                    .read_object(&image.sha256, crate::tools::MAX_IMAGE_BYTES)
+                    .ok()?;
+                let (mime, width, height) = crate::tools::inspect_image(&bytes).ok()?;
+                Some((Arc::<[u8]>::from(bytes), mime, width, height))
+            });
+            match restored.as_ref() {
+                Some((bytes, mime, width, height))
+                    if u64::try_from(bytes.len()).ok() == Some(image.bytes)
+                        && *mime == image.media_type
+                        && *width == image.width
+                        && *height == image.height =>
+                {
+                    image.data = Some(Arc::clone(bytes));
+                    true
+                }
+                _ => {
+                    omitted = true;
+                    false
+                }
+            }
+        });
+        omitted
     }
 
     // 保存した名前の再確認は省き、復元時には必ず中身をハッシュと照合する。

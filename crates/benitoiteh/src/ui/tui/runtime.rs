@@ -309,7 +309,10 @@ pub fn run(
                 Action::Submit(request) => {
                     screen.original_submission = None;
                     screen.show_request(&request);
-                    if let Err(failure) = worker.submit(request, RunControl::default()) {
+                    let attachments = screen.take_attachments();
+                    if let Err(failure) =
+                        worker.submit_with_images(request, attachments, RunControl::default())
+                    {
                         error = Some(TuiError::Agent(failure));
                         exiting = true;
                     }

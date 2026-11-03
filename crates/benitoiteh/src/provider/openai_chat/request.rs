@@ -151,10 +151,28 @@ impl OpenAiChatAdapter {
                 flush_images(&mut messages, &mut attachments);
             }
             let message = match item {
-                Item::UserMessage(user) => json!({
-                    "role": "user",
-                    "content": user.parts.iter().map(|p| json!({"type": "text", "text": p.text})).collect::<Vec<_>>()
-                }),
+                Item::UserMessage(user) => {
+                    let mut content = user
+                        .parts
+                        .iter()
+                        .map(|p| json!({"type": "text", "text": p.text}))
+                        .collect::<Vec<_>>();
+                    let (images, notices) = crate::provider::images::prepare_user(
+                        user,
+                        self.capabilities.image_input,
+                        &plan,
+                        index,
+                    );
+                    content.extend(images.into_iter().map(|image| json!({
+                        "type": "image_url", "image_url": {"url": crate::provider::images::data_url(image)}
+                    })));
+                    content.extend(
+                        notices
+                            .into_iter()
+                            .map(|notice| json!({"type": "text", "text": notice})),
+                    );
+                    json!({"role": "user", "content": content})
+                }
                 Item::AssistantTurn(turn) => {
                     let same = turn.raw_items.destination == self.destination
                         && turn.raw_items.adapter == AdapterKind::OpenAiChat;

@@ -155,6 +155,7 @@ fn steering_precedes_completion_and_does_not_reset_the_prompt() -> TestResult {
     let (mut agent, _) = f.agent(config)?;
     let (send, steering) = mpsc::channel();
     let control = RunControl {
+        attachments: Vec::new(),
         cancel_step: Arc::new(AtomicBool::new(false)),
         cancel_run: Arc::new(AtomicBool::new(false)),
         steering,
