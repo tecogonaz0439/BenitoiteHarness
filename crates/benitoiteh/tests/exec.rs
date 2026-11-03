@@ -914,7 +914,22 @@ fn closed_event_output_still_finishes_the_session_record() -> TestResult {
     temporary_cleanup::check_temporary_root(temporary.path())?;
     temporary_cleanup::check_temporary_root(&f.root.join("tmp"))?;
     no_secret(&output, &records);
-    server.shutdown()?;
+    // 子は出力が閉じたと知った時点で終えるので、模擬の提供者への接続は、要求を送る前
+    // （模擬の側の UnexpectedEof）か、応答の途中（BrokenPipe）で切れうる。この切断は
+    // 確かめたい振る舞いの結果であり、テストの失敗にしない（2026-11-03 に 900 回で 8 回再現）。
+    match server.shutdown() {
+        Err(error)
+            if !matches!(
+                error.kind(),
+                io::ErrorKind::UnexpectedEof
+                    | io::ErrorKind::BrokenPipe
+                    | io::ErrorKind::ConnectionReset
+            ) =>
+        {
+            return Err(error.into());
+        }
+        Ok(()) | Err(_) => {}
+    }
     Ok(())
 }
 
