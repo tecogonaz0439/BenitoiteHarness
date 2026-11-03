@@ -19,7 +19,7 @@
 
 【方針】セッションごとに一つの JSON Lines のファイル（`session.jsonl`）を、セッションのディレクトリに置く。ファイルには追記だけを行い、書いた行を書き換えない。理由: 途中で `benitoiteh` が異常に終わっても、それまでの記録が残る。
 
-- 1 行目はヘッダの行とし、記録の形式の版、セッションの ID、開始の時刻（UTC）、`benitoiteh` の版、モード、プロジェクトのディレクトリ、提供者の設定の名前とベースの URL とモデル、処理系のパスと、その実行ファイルの SHA-256 の値、`--version=json` の版とビルドの情報、処理系から得た `SKILL.md` の SHA-256 の値、システムプロンプトと道具の定義の SHA-256 の値を書く。評価のための切り替え（`restricted.after_write_check`、`read.line_numbers`、`edit.multiple`、`agent.completion_check`、`compaction.reserve_tokens`・`compaction.keep_tokens`。[道具](01-03-tools.md)、[エージェントのループ](01-01-agent-loop.md)、[文脈の管理](01-04-context.md)）を既定と違う値にしたときは、その値も書く。
+- 1 行目はヘッダの行とし、記録の形式の版、セッションの ID、開始の時刻（UTC）、`benitoiteh` の版、モード、プロジェクトのディレクトリ、提供者の設定の名前とベースの URL とモデル、処理系のパスと、その実行ファイルの SHA-256 の値、`--version=json` の版とビルドの情報、処理系から得た `SKILL.md` の SHA-256 の値、システムプロンプトと道具の定義の SHA-256 の値を書く。評価のための切り替え（`restricted.after_write_check`、`read.line_numbers`、`edit.multiple`、`agent.completion_check`、`compaction.reserve_tokens`・`compaction.keep_tokens`・`compaction.prune_tool_results`。[道具](01-03-tools.md)、[エージェントのループ](01-01-agent-loop.md)、[文脈の管理](01-04-context.md)）を既定と違う値にしたときは、その値も書く。
 - 2 行目以降は、[エージェントのループ](01-01-agent-loop.md)の「イベント」を、ストリーミングの途中の差分（`text_delta`・`reasoning_delta`）を除いて書く。応答は、一つの応答を受け取り終えた時点で一行にまとめる。
 - 応答は、共通の形に変えたものに加えて、提供者が返した項目を、順序と識別子を変えずに記録する（[提供者の層](../02-providers/02-01-provider-layer.md)の「共通の形」）。推論の内容のうち暗号化された項目と署名（再開のときに送り返すのに要る）も含む。
 - 確認の要求と結果、圧縮の要約、巻き戻し、プロジェクトのディレクトリの変更、利用者の入力を記録する。
@@ -27,7 +27,7 @@
 - 各行は書いたらすぐにファイルに書き出す（`flush`）。一つの行の大きさの上限は 16 MiB とし、超える内容（大きな道具の結果など）は `spill/` に置いて、行にはその場所を書く。
 - API キーとトークンは書かない。HTTP の要求のヘッダも書かない。
 
-記録の形式は試作の途中で変わりうるので、ヘッダの行の版で区別し、試作の間は前の版の読み込みを保証しない。利用者に約束する JSON の形（BH-012）とは別に、再開に要る記録の形は、P1 で形式の版 1 として定め（[実装プラン](../../plan/tasks/P1-05-session.md)）、P5-16 でセッションの木のために版 2 に改めた（[実装プラン](../../plan/tasks/P5-16-session-tree.md)。版 1 の記録は再開できない）。各行は `type` の欄で種類を分け、`header`・`session_start`・`turn_start`・`user`・`assistant`（提供者の元の項目を含む）・`tool_call`・`tool_start`・`tool_result`・`approval`・`retry`・`error`・`turn_end`・`session_end`・`summary` と、後の段階で使う `project_dir_changed`・`compaction`・`images_removed`・`branch`（枝を移る記録。会話を戻す操作もこの記録で表す。後述の「セッションの木」）を持つ。会話を作る記録には、節点の番号を付ける（同節）。16 MiB を超える行は、元の JSON を `spill/` の下のファイルに分けて置き、行には `spilled` の種類でその場所を書く。
+記録の形式は試作の途中で変わりうるので、ヘッダの行の版で区別し、試作の間は前の版の読み込みを保証しない。利用者に約束する JSON の形（BH-012）とは別に、再開に要る記録の形は、P1 で形式の版 1 として定め（[実装プラン](../../plan/tasks/P1-05-session.md)）、P5-16 でセッションの木のために版 2 に改めた（[実装プラン](../../plan/tasks/P5-16-session-tree.md)。版 1 の記録は再開できない）。各行は `type` の欄で種類を分け、`header`・`session_start`・`turn_start`・`user`・`assistant`（提供者の元の項目を含む）・`tool_call`・`tool_start`・`tool_result`・`approval`・`retry`・`error`・`turn_end`・`session_end`・`summary` と、後の段階で使う `project_dir_changed`・`compaction`・`images_removed`・`tool_results_pruned`（評価用の道具の結果の刈り込み。[文脈の管理](01-04-context.md)の「道具の結果の刈り込み」）・`branch`（枝を移る記録。会話を戻す操作もこの記録で表す。後述の「セッションの木」）を持つ。会話を作る記録には、節点の番号を付ける（同節）。16 MiB を超える行は、元の JSON を `spill/` の下のファイルに分けて置き、行には `spilled` の種類でその場所を書く。
 
 ### LLM を使ったテストのための記録
 
@@ -78,7 +78,7 @@ git のリポジトリを使わない形にしたのは、プロジェクトが 
 
 【決定】一つのセッションの記録の中に、会話を木の形で保つ（2026-10-19 に設計者が決めた。BH-016 を閉じた）。前の時点から別の枝を始めても、もとの枝を捨てず、後で戻れる。加えて、今の枝を新しいセッションに写す `/fork` を設ける。枝の要約（離れる枝の内容を LLM に要約させて新しい枝に添えること）と、節点に名前を付けることは、後に回す。理由: 試した手を戻って比べたり、うまくいかなかった続きを残したまま別の手を試したりできる。調べたハーネスのうち、記録の中に木を保つのは Pi だけで（badlogic/pi-mono のコミット `1402973a`、`packages/coding-agent/src/core/session-manager.ts` の `buildSessionPath`、`createBranchedSession`。`docs/session-format.md`）、Claude Code（`/branch`、`--fork-session`。<https://code.claude.com/docs/en/sessions.md>）、Codex CLI、OpenCode は新しいセッションに写す形をとる。`benitoiteh` は、ファイルの時点を枝と結び付けて、枝を移るときにファイルも戻せる。
 
-- **節点**: 会話を作る記録（`user`、`assistant`、`tool_result`、`compaction`、`images_removed`）に、セッションの中で増え続ける番号を付ける。各節点の親は、記録の上で直前の、今の枝の節点とし、記録には書かない。
+- **節点**: 会話を作る記録（`user`、`assistant`、`tool_result`、`compaction`、`images_removed`、`tool_results_pruned`）に、セッションの中で増え続ける番号を付ける。各節点の親は、記録の上で直前の、今の枝の節点とし、記録には書かない。
 - **枝を移る記録**: 枝を移るときは、移る先の節点（会話の始めなら、なし）と、離れる枝の先端の節点を書いた記録を一行加える。以後の節点の親は、移った先の節点とする。最後の枝を移る記録の移った先（その後に節点があれば最後の節点）が、今の先端である。再開は、今の先端から続ける。理由: 移った枝を記録に残すので、再開しても利用者が選んだ枝に戻る（Pi は、要約のない枝の移動を記録に書かず、再開すると最後の節点に戻る。同じコミットの `_buildIndex`）。
 - **記録の検査**: 記録は信頼しないので、移る先と離れる先端は、その記録より前に現れた節点でなければならない（循環を作れない）。知らない番号を指す記録があれば、その記録の形を誤りとして、再開を断る。
 - **会話の組み立て**: 今の先端から親を辿って会話の始めまでの道を作る。道の上の最後の圧縮の記録の会話から始め、その後の道の上の節点を順に加える。ほかの枝の圧縮は使わない。結果のない道具の呼び出しの扱いは、前述の「再開」と同じとする。

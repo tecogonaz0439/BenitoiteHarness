@@ -1,6 +1,7 @@
 //! 要約の要求と、記録を起点とする会話の置き換えを管理する（設計書 01-04「圧縮」）。
 
 mod conversation;
+mod prune;
 
 #[cfg(test)]
 mod tests;

@@ -946,7 +946,12 @@ impl Agent {
             }
             // 道具の呼び出しは前の番で全て結果と対応済みなので、実行途中では圧縮しない
             // （設計書 01-04「圧縮」）。一つの番の前では一度だけ判定する。
-            if self.threshold_reached() {
+            // 刈り込みで閾値を下回れば、要約の要求を送らない（設計書 01-04「道具の結果の刈り込み」）。
+            if self.threshold_reached()
+                && !(self.config.compaction.prune_tool_results
+                    && self.prune_tool_results(events)?
+                    && !self.threshold_reached())
+            {
                 let report = self.perform_compaction(
                     CompactOptions::for_reason(CompactionReason::Threshold),
                     cancelled,
@@ -970,6 +975,10 @@ impl Agent {
             // （設計書 01-01「やり直し」）。
             let received = match self.request_and_receive(cancelled, events) {
                 Err(AgentError::Provider(ProviderError::ContextOverflow)) => {
+                    // 超過では刈り込んだ後も要約する。刈り込みは要約に渡す会話を減らす。
+                    if self.config.compaction.prune_tool_results {
+                        self.prune_tool_results(events)?;
+                    }
                     let report = self.perform_compaction(
                         CompactOptions::for_reason(CompactionReason::Overflow),
                         cancelled,

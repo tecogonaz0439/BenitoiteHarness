@@ -41,7 +41,7 @@ fn evaluation_switches_reach_read_and_recorded_hashes_from_user_config() -> Test
             fs::write(
                 path,
                 format!(
-                    "{contents}\n[restricted]\nafter_write_check=false\n[read]\nline_numbers=false\n[edit]\nmultiple=true\n[compaction]\nreserve_tokens=8192\nkeep_tokens=8000\n"
+                    "{contents}\n[restricted]\nafter_write_check=false\n[read]\nline_numbers=false\n[edit]\nmultiple=true\n[compaction]\nreserve_tokens=8192\nkeep_tokens=8000\nprune_tool_results=true\n"
                 ),
             )?;
         }
@@ -59,7 +59,7 @@ fn evaluation_switches_reach_read_and_recorded_hashes_from_user_config() -> Test
         assert_eq!(
             header.get("compaction"),
             (!enabled).then_some(&json!({
-                "reserve_tokens": 8192, "keep_tokens": 8000,
+                "reserve_tokens": 8192, "keep_tokens": 8000, "prune_tool_results": true,
             }))
         );
         for key in ["after_write_check", "read_line_numbers"] {

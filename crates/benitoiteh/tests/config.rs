@@ -741,16 +741,23 @@ fn evaluation_switches_are_user_only_and_preserve_read_exclusions() -> TestResul
     assert!(!resolved.plugins.user && !resolved.plugins.project);
     assert_eq!(resolved.read.exclude, ["user.*", "project.*"]);
     // 両端と片方だけの指定も、設定の所有者で解決まで確かめる。
-    for (input, reserve_tokens, keep_tokens) in [
-        ("", 16_384, 20_000),
-        ("[compaction]\nreserve_tokens=0\nkeep_tokens=0", 0, 0),
+    for (input, reserve_tokens, keep_tokens, prune_tool_results) in [
+        ("", 16_384, 20_000, false),
+        ("[compaction]\nreserve_tokens=0\nkeep_tokens=0", 0, 0, false),
         (
             "[compaction]\nreserve_tokens=18446744073709551615\nkeep_tokens=18446744073709551615",
             u64::MAX,
             u64::MAX,
+            false,
         ),
-        ("[compaction]\nreserve_tokens=8192", 8_192, 20_000),
-        ("[compaction]\nkeep_tokens=8000", 16_384, 8_000),
+        ("[compaction]\nreserve_tokens=8192", 8_192, 20_000, false),
+        ("[compaction]\nkeep_tokens=8000", 16_384, 8_000, false),
+        (
+            "[compaction]\nprune_tool_results=true",
+            16_384,
+            20_000,
+            true,
+        ),
     ] {
         let user = UserConfig::parse(&format!(
             "default_provider='p'\n[providers.p]\nkind='openai-chat'\nmodel='m'\n{input}"
@@ -761,7 +768,8 @@ fn evaluation_switches_are_user_only_and_preserve_read_exclusions() -> TestResul
             resolved.compaction,
             CompactionConfig {
                 reserve_tokens,
-                keep_tokens
+                keep_tokens,
+                prune_tool_results,
             }
         );
     }
@@ -775,6 +783,7 @@ fn evaluation_switches_are_user_only_and_preserve_read_exclusions() -> TestResul
             "compaction",
         ),
         ("[compaction]\nkeep_tokens=0", "compaction"),
+        ("[compaction]\nprune_tool_results=true", "compaction"),
         ("[plugins]\nuser=false", "plugins"),
         ("[edit]\nmultiple=true", "edit"),
     ] {
@@ -797,6 +806,7 @@ fn evaluation_switches_are_user_only_and_preserve_read_exclusions() -> TestResul
         ("[compaction]\nreserve_tokens=18446744073709551616", invalid),
         ("[compaction]\nkeep_tokens=18446744073709551616", invalid),
         ("[compaction]\nkeep_tokens=1.5", invalid),
+        ("[compaction]\nprune_tool_results=1", invalid),
         (
             "[compaction]\nreserve_token=0",
             "unknown configuration field `reserve_token`",

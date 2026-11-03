@@ -156,6 +156,15 @@ pub enum AgentEvent {
     },
     /// 画像を除いた要求の送り直しが通った。
     ImagesRemoved { results: Vec<String> },
+    /// 圧縮の前に、道具の結果を頭と尾だけにした（設計書 01-04「道具の結果の刈り込み」）。
+    ToolResultsPruned {
+        /// 刈り込んだ道具の結果の内部の ID。
+        results: Vec<String>,
+        /// 除いた文字の数。
+        removed_chars: u64,
+        estimate_before: u64,
+        estimate_after: u64,
+    },
     /// 同じ要求のやり直し。
     Retry {
         attempt: u64,
@@ -264,7 +273,7 @@ impl AgentEvent {
                 justification: justification.clone(),
                 user_message: user_message.clone(),
             },
-            Self::ImagesRemoved { .. } => return None,
+            Self::ImagesRemoved { .. } | Self::ToolResultsPruned { .. } => return None,
             Self::Retry {
                 attempt,
                 delay_ms,

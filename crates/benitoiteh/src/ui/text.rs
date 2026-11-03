@@ -159,4 +159,7 @@ pub fn skill_skipped(path: &std::path::Path, reason: &str) -> String {
     format!("Skill skipped: {}: {reason}", path.display())
 }
 
+pub fn tool_results_pruned(count: usize) -> String {
+    format!("Pruned {count} earlier tool results before compaction.")
+}
 pub const IMAGES_REMOVED: &str = "Images were removed and the request was sent again successfully.";

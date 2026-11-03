@@ -316,6 +316,9 @@ pub(super) fn replay_records(mut records: Vec<Record>, tree: &SessionTree) -> Co
             Record::ImagesRemoved { results, .. } if !results.is_empty() => {
                 crate::provider::remove_images(&mut conversation, Some(&results));
             }
+            Record::ToolResultsPruned { results, .. } => {
+                apply_pruned(&mut conversation, &results);
+            }
             Record::Compaction {
                 conversation: compacted,
                 ..
@@ -340,6 +343,17 @@ pub(super) fn replay_records(mut records: Vec<Record>, tree: &SessionTree) -> Co
         }
     }
     fill_missing(conversation, &starts)
+}
+
+/// 刈り込んだ結果の文を、同じ ID の道具の結果に入れる。画像と誤りの印は変えない。
+pub fn apply_pruned(conversation: &mut Conversation, results: &[super::PrunedResult]) {
+    for item in &mut conversation.items {
+        if let Item::ToolResult(result) = item
+            && let Some(pruned) = results.iter().find(|pruned| pruned.id == result.id)
+        {
+            result.text.clone_from(&pruned.text);
+        }
+    }
 }
 
 fn fill_missing(conversation: Conversation, starts: &BTreeSet<String>) -> Conversation {

@@ -15,6 +15,13 @@ pub const WORKER_FAILED: &str = "An agent worker failed.";
 pub const INVALID_ARGUMENTS: &str = "Tool arguments are not valid JSON.";
 pub const RANDOM_FAILED: &str = "Could not obtain randomness for retry timing.";
 
+/// 刈り込んだ道具の結果の中ほどに置く印（設計書 01-04「道具の結果の刈り込み」）。
+pub fn pruned_tool_result(omitted: usize) -> String {
+    format!(
+        "\n\n[... {omitted} characters were removed from the middle of this earlier tool result to save context. Run the tool again if you need them. ...]\n\n"
+    )
+}
+
 pub fn refusal(category: &str) -> String {
     format!("The provider refused the response (category: {category}).")
 }

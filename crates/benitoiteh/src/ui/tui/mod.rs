@@ -448,6 +448,14 @@ impl Screen {
                     .extend(message.lines().map(|line| plain(line, Decoration::Error)));
             }
             AgentEvent::ImagesRemoved { .. } => self.notice(text::IMAGES_REMOVED),
+            AgentEvent::ToolResultsPruned {
+                results,
+                estimate_after,
+                ..
+            } => {
+                self.status.estimate = *estimate_after;
+                self.notice(&text::tool_results_pruned(results.len()));
+            }
             AgentEvent::Retry { reason, .. } => {
                 self.flush_pending();
                 self.notice(&text::event_detail(text::RETRY, reason));

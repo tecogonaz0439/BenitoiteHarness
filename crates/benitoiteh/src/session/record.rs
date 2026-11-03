@@ -93,6 +93,9 @@ pub struct RecordedCompaction {
     pub reserve_tokens: u64,
     /// 残す会話の目安。
     pub keep_tokens: u64,
+    /// 道具の結果の刈り込み。既定の偽は書かない。
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub prune_tool_results: bool,
 }
 
 impl From<crate::config::CompactionConfig> for RecordedCompaction {
@@ -100,8 +103,18 @@ impl From<crate::config::CompactionConfig> for RecordedCompaction {
         Self {
             reserve_tokens: config.reserve_tokens,
             keep_tokens: config.keep_tokens,
+            prune_tool_results: config.prune_tool_results,
         }
     }
+}
+
+/// 刈り込んだ道具の結果。再生で同じ文に替えるため、刈り込んだ後の文を持つ。
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct PrunedResult {
+    /// 道具の結果の内部の ID。
+    pub id: String,
+    /// 刈り込んだ後の文。
+    pub text: String,
 }
 
 /// 最初の行。キーや HTTP のヘッダを受け取る欄を持たない。
@@ -380,6 +393,12 @@ pub enum Record {
     },
     /// 画像を外した送り直しの成功。結果の内部 ID で、以後の再生でも画像を除く。
     ImagesRemoved { node: u64, results: Vec<String> },
+    /// 圧縮の前の道具の結果の刈り込み（設計書 01-04「道具の結果の刈り込み」）。
+    /// 以後の再生でも、同じ ID の結果の文を刈り込んだ文に替える。
+    ToolResultsPruned {
+        node: u64,
+        results: Vec<PrunedResult>,
+    },
     /// やり直しの分類と待ち時間。
     Retry {
         attempt: u64,
@@ -467,7 +486,8 @@ impl Record {
             | Self::Assistant { node, .. }
             | Self::ToolResult { node, .. }
             | Self::Compaction { node, .. }
-            | Self::ImagesRemoved { node, .. } => Some(*node),
+            | Self::ImagesRemoved { node, .. }
+            | Self::ToolResultsPruned { node, .. } => Some(*node),
             Self::Header(_)
             | Self::SessionStart { .. }
             | Self::TurnStart { .. }
@@ -493,7 +513,8 @@ impl Record {
             | Self::Assistant { node, .. }
             | Self::ToolResult { node, .. }
             | Self::Compaction { node, .. }
-            | Self::ImagesRemoved { node, .. } => *node = value,
+            | Self::ImagesRemoved { node, .. }
+            | Self::ToolResultsPruned { node, .. } => *node = value,
             Self::Header(_)
             | Self::SessionStart { .. }
             | Self::TurnStart { .. }

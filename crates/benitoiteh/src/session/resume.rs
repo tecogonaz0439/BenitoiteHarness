@@ -163,6 +163,7 @@ impl ResumeState {
                 | Record::ToolStart { .. }
                 | Record::Approval { .. }
                 | Record::ImagesRemoved { .. }
+                | Record::ToolResultsPruned { .. }
                 | Record::Retry { .. }
                 | Record::Error { .. }
                 | Record::TurnEnd { .. }

@@ -435,6 +435,9 @@ pub struct CompactionConfig {
     pub reserve_tokens: u64,
     /// 残す会話の目安。文脈の上限の 4 分の 1 までに抑える。
     pub keep_tokens: u64,
+    /// 閾値の圧縮の前に、LLM が読んだ後の長い道具の結果を頭と尾だけにする
+    /// （設計書 01-04「道具の結果の刈り込み」）。
+    pub prune_tool_results: bool,
 }
 
 impl Default for CompactionConfig {
@@ -442,6 +445,7 @@ impl Default for CompactionConfig {
         Self {
             reserve_tokens: 16_384,
             keep_tokens: 20_000,
+            prune_tool_results: false,
         }
     }
 }

@@ -2338,8 +2338,16 @@ fn fork_rewrites_only_complete_spill_paths_owned_by_each_result() -> TestResult 
         spill: Some(other.clone()),
         stderr_spill: None,
     })?;
-    writer.append(&Record::Compaction {
+    // 刈り込んだ文にも、元の結果の保存先が残りうる。
+    writer.append(&Record::ToolResultsPruned {
         node: 3,
+        results: vec![benitoiteh::session::PrunedResult {
+            id: "first".into(),
+            text: body.clone(),
+        }],
+    })?;
+    writer.append(&Record::Compaction {
+        node: 4,
         conversation: Conversation {
             items: vec![Item::ToolResult(first)],
         },
@@ -2363,6 +2371,7 @@ fn fork_rewrites_only_complete_spill_paths_owned_by_each_result() -> TestResult 
     let records = read_records(copied.directory())?;
     assert!(records.iter().any(|record| matches!(record, Record::ToolResult { result, .. } if result.id == "first" && result.text == expected)));
     assert!(records.iter().any(|record| matches!(record, Record::Compaction { conversation, .. } if matches!(conversation.items.first(), Some(Item::ToolResult(result)) if result.text == expected))));
+    assert!(records.iter().any(|record| matches!(record, Record::ToolResultsPruned { results, .. } if matches!(results.first(), Some(pruned) if pruned.text == expected))));
     Ok(())
 }
 
