@@ -1096,6 +1096,7 @@ fn invalid_calls_return_corrective_errors_without_reading_and_array_arguments_ar
             kind: ArgumentType::StringArray,
             required: true,
             description: "Paths".into(),
+            items: Vec::new(),
         }],
     };
     let mut arguments = json!({"paths":"[\"first.bnt\",\"second.bnt\"]"});

@@ -354,6 +354,11 @@ impl Agent {
         } else {
             tools.plain_read()
         };
+        let tools = if tool_context.multiple_edits {
+            tools.multiple_edits()
+        } else {
+            tools
+        };
         let skill = tool_context
             .skill
             .as_ref()
@@ -395,6 +400,7 @@ impl Agent {
                     .then_some(config.compaction.into()),
                 after_write_check: (!tool_context.after_write_check).then_some(false),
                 read_line_numbers: (!tool_context.read_line_numbers).then_some(false),
+                multiple_edits: tool_context.multiple_edits.then_some(true),
                 plugins: environment.skills().plugins.clone(),
                 skills: environment.skills().recorded(),
             }))?;

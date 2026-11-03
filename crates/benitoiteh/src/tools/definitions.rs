@@ -16,23 +16,41 @@ pub fn repair_and_validate(spec: &ToolSpec, arguments: &mut Value) -> Result<(),
     let object = arguments
         .as_object_mut()
         .ok_or_else(|| invalid(text::OBJECT_REQUIRED))?;
+    validate_object(&spec.arguments, object, None).map_err(|detail| invalid(&detail))
+}
+
+/// 欄の並びでオブジェクトを検証する。`parent` は要素の検証のときの配列の引数の名前と添字で、
+/// 誤りの文に入れて、どの要素を直せばよいかを示す。
+fn validate_object(
+    arguments: &[ArgumentSpec],
+    object: &mut serde_json::Map<std::string::String, Value>,
+    parent: Option<(&str, usize)>,
+) -> Result<(), std::string::String> {
+    let qualified = |name: &str| match parent {
+        Some((array, index)) => format!("{array}[{index}].{name}"),
+        None => name.to_owned(),
+    };
     for name in object.keys() {
-        if !spec.arguments.iter().any(|argument| argument.name == *name) {
-            return Err(invalid(&text::unknown_argument(name)));
+        if !arguments.iter().any(|argument| argument.name == *name) {
+            return Err(text::unknown_argument(&qualified(name)));
         }
     }
-    for argument in &spec.arguments {
+    for argument in arguments {
+        let name = qualified(&argument.name);
         let Some(value) = object.get_mut(&argument.name) else {
             if argument.required {
-                return Err(invalid(&text::missing_argument(&argument.name)));
+                return Err(text::missing_argument(&name));
             }
             continue;
         };
-        if argument.kind == ArgumentType::StringArray
-            && let Some(encoded) = value.as_str()
+        // 配列を JSON の文字列に包んで送る LLM があるので、文字列なら一度だけ読み直す。
+        if matches!(
+            argument.kind,
+            ArgumentType::StringArray | ArgumentType::ObjectArray
+        ) && let Some(encoded) = value.as_str()
         {
             *value = serde_json::from_str(encoded)
-                .map_err(|_| invalid(&text::wrong_type(&argument.name, argument.kind)))?;
+                .map_err(|_| text::wrong_type(&name, argument.kind))?;
         }
         let valid = match argument.kind {
             ArgumentType::String => value.is_string(),
@@ -41,12 +59,36 @@ pub fn repair_and_validate(spec: &ToolSpec, arguments: &mut Value) -> Result<(),
             ArgumentType::StringArray => value
                 .as_array()
                 .is_some_and(|values| values.iter().all(Value::is_string)),
+            ArgumentType::ObjectArray => value
+                .as_array()
+                .is_some_and(|values| values.iter().all(Value::is_object)),
         };
         if !valid {
-            return Err(invalid(&text::wrong_type(&argument.name, argument.kind)));
+            return Err(text::wrong_type(&name, argument.kind));
+        }
+        if argument.kind == ArgumentType::ObjectArray
+            && let Some(values) = value.as_array_mut()
+        {
+            for (index, item) in values.iter_mut().enumerate() {
+                if let Some(item) = item.as_object_mut() {
+                    validate_object(&argument.items, item, Some((&argument.name, index)))?;
+                }
+            }
         }
     }
     Ok(())
+}
+
+/// 評価用の複数の置き換えの形の `edit` の引数（設計書 01-03「複数の置き換え」）。
+pub(super) fn multiple_edit_arguments() -> Vec<ArgumentSpec> {
+    use ArgumentType::{Boolean, ObjectArray, String};
+    let mut edits = arg("edits", ObjectArray, true);
+    edits.items = vec![
+        arg("old_string", String, true),
+        arg("new_string", String, true),
+        arg("replace_all", Boolean, false),
+    ];
+    vec![arg("path", String, true), edits]
 }
 
 pub(super) fn definitions(mode: crate::config::Mode) -> Vec<ToolDefinition> {
@@ -250,5 +292,6 @@ fn arg_described(
         kind,
         required,
         description: description.to_owned(),
+        items: Vec::new(),
     }
 }

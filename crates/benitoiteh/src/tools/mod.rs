@@ -177,6 +177,19 @@ impl ToolSet {
         self
     }
 
+    /// 評価用に `edit` を、複数の置き換えを一度に受ける形へ替える（設計書 01-03「複数の置き換え」）。
+    pub fn multiple_edits(mut self) -> Self {
+        for tool in &mut self.definitions {
+            if tool.id == ToolId::Edit {
+                tool.summary = text::EDIT_MULTIPLE.0;
+                tool.spec.description = text::EDIT_MULTIPLE.0.into();
+                tool.rules = &[text::EDIT_MULTIPLE.1];
+                tool.spec.arguments = definitions::multiple_edit_arguments();
+            }
+        }
+        self
+    }
+
     /// モードで許す道具を、決まった順序で用意する。
     pub fn new(mode: Mode) -> Self {
         Self {
@@ -385,6 +398,7 @@ pub struct ToolContext {
     pub(crate) image_input: bool,
     pub(crate) after_write_check: bool,
     pub(crate) read_line_numbers: bool,
+    pub(crate) multiple_edits: bool,
     pub(crate) noninteractive: bool,
     pub(crate) project_parent: Option<PathBuf>,
     pub mode: Mode,
@@ -490,6 +504,7 @@ impl ToolContext {
             noninteractive: false,
             after_write_check: true,
             read_line_numbers: true,
+            multiple_edits: false,
             project_parent: None,
             project_creation: None,
             project_candidates: Mutex::new(BTreeMap::new()),
@@ -531,6 +546,12 @@ impl ToolContext {
     pub fn with_eval_switches(mut self, after_write_check: bool, read_line_numbers: bool) -> Self {
         self.after_write_check = after_write_check;
         self.read_line_numbers = read_line_numbers;
+        self
+    }
+
+    /// 利用者の設定だけから、`edit` を複数の置き換えの形にするかを固定する（設計書 01-03「複数の置き換え」）。
+    pub fn with_multiple_edits(mut self, enabled: bool) -> Self {
+        self.multiple_edits = enabled;
         self
     }
 

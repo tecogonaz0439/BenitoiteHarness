@@ -62,6 +62,7 @@ fn tools() -> Vec<ToolSpec> {
             kind: ArgumentType::String,
             required: true,
             description: "File path.".into(),
+            items: Vec::new(),
         }],
     }]
 }

@@ -6,6 +6,8 @@ use serde_json::Value;
 pub const READ: (&str, &str) = prompt_parts(include_str!("../../prompts/tools/read.md"));
 pub const READ_PLAIN: (&str, &str) =
     prompt_parts(include_str!("../../prompts/tools/read-plain.md"));
+pub const EDIT_MULTIPLE: (&str, &str) =
+    prompt_parts(include_str!("../../prompts/tools/edit-multiple.md"));
 pub const GLOB: (&str, &str) = prompt_parts(include_str!("../../prompts/tools/glob.md"));
 pub const GREP: (&str, &str) = prompt_parts(include_str!("../../prompts/tools/grep.md"));
 pub const WRITE: (&str, &str) = prompt_parts(include_str!("../../prompts/tools/write.md"));
@@ -80,6 +82,7 @@ pub fn argument(name: &str) -> &'static str {
         "old_string" => "Text to replace.",
         "new_string" => "Replacement text.",
         "replace_all" => "Replace every occurrence.",
+        "edits" => "Replacements to apply to the file.",
         _ => "Argument value.",
     }
 }
@@ -103,6 +106,7 @@ pub fn wrong_type(name: &str, kind: ArgumentType) -> String {
         ArgumentType::Integer => "an integer",
         ArgumentType::Boolean => "a boolean",
         ArgumentType::StringArray => "an array of strings",
+        ArgumentType::ObjectArray => "an array of objects",
     };
     format!("Argument {name:?} must be {expected}.")
 }
@@ -149,6 +153,16 @@ pub fn edit_multiple(path: &str, count: usize) -> String {
         "Found {count} occurrences of old_string in {path}. Add surrounding lines to make it unique, or set replace_all to true."
     )
 }
+/// 複数の置き換えの一つの誤り。どの要素かを先に示し、続けて一つの置き換えと同じ文を添える。
+pub fn edit_item(index: usize, message: &str) -> String {
+    format!("edits[{index}]: {message}")
+}
+pub fn edit_overlap(first: usize, second: usize, path: &str) -> String {
+    format!(
+        "edits[{first}] and edits[{second}] overlap in {path}. Merge them into one edit or target disjoint regions. No change was made."
+    )
+}
+pub const EDITS_EMPTY: &str = "edits must contain at least one replacement.";
 pub fn edit_unchanged(path: &str) -> String {
     format!("old_string and new_string are identical. No change was made to {path}.")
 }

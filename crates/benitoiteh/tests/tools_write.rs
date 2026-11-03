@@ -546,6 +546,120 @@ fn folded_edits_preserve_untouched_bytes_bom_and_crlf_and_replace_all() -> TestR
     Ok(())
 }
 
+// 作成時の関門: 評価用の複数の置き換えの形（設計書 01-03「複数の置き換え」）の契約。
+// 元のファイルでの照合、要素ごとの照合と全置換、重なりの拒否、失敗の時に書かないことを
+// 実行器の境界で確かめる。既定の形が `edits` を受けないことも確かめる。
+#[test]
+fn multiple_edits_match_the_original_reject_overlaps_and_write_nothing_on_failure() -> TestResult {
+    let f = Fixture::new(Mode::Restricted)?;
+    let tools = ToolSet::new(Mode::Restricted).multiple_edits();
+    let edit = |edits: Value| {
+        tools.execute(
+            &f.context,
+            "edit",
+            json!({"path":"source.bnt", "edits":edits}),
+        )
+    };
+    for (before, edits, expected) in [
+        // 順に当てる形なら、二つ目の one が二つになって失敗する。
+        (
+            "one\ntwo\nthree\n",
+            json!([{"old_string":"three","new_string":"one"},{"old_string":"one","new_string":"three"}]),
+            "three\ntwo\none\n",
+        ),
+        (
+            "x x\r\n‘q’  \r\nend\r\n",
+            json!([{"old_string":"x","new_string":"y","replace_all":true},{"old_string":"'q'\nend","new_string":"r\ns"}]),
+            "y y\r\nr\r\ns\r\n",
+        ),
+        (
+            "a b\n",
+            json!([{"old_string":"a","new_string":"a"},{"old_string":"b","new_string":"c"}]),
+            "a c\n",
+        ),
+        (
+            "abcd\n",
+            json!([{"old_string":"cd","new_string":"y"},{"old_string":"ab","new_string":"x"}]),
+            "xy\n",
+        ),
+        (
+            "s1\n",
+            json!(r#"[{"old_string":"s1","new_string":"s2"}]"#),
+            "s2\n",
+        ),
+    ] {
+        f.success("write", json!({"path":"source.bnt", "content":before}));
+        let output = edit(edits);
+        assert!(!output.is_error, "{}", output.text);
+        assert_eq!(fs::read_to_string(f.project.join("source.bnt"))?, expected);
+    }
+    f.success(
+        "write",
+        json!({"path":"source.bnt", "content":"one two\none\n"}),
+    );
+    let not_found = "Could not find old_string in source.bnt. It must match the file exactly, including whitespace and line breaks. Read the file again if it may have changed.";
+    for (edits, error) in [
+        (
+            json!([{"old_string":"one two","new_string":"x"},{"old_string":"two","new_string":"y"}]),
+            "edits[0] and edits[1] overlap in source.bnt. Merge them into one edit or target disjoint regions. No change was made.".to_owned(),
+        ),
+        (
+            json!([{"old_string":"two","new_string":"2"},{"old_string":"zzz","new_string":"x"}]),
+            format!("edits[1]: {not_found}"),
+        ),
+        (
+            json!([{"old_string":"one","new_string":"1"}]),
+            "edits[0]: Found 2 occurrences of old_string in source.bnt. Add surrounding lines to make it unique, or set replace_all to true.".to_owned(),
+        ),
+        (
+            json!([{"old_string":"two","new_string":"2"},{"old_string":"","new_string":"x"}]),
+            "edits[1]: old_string must not be empty. Use write to create a file.".to_owned(),
+        ),
+        (json!([]), "edits must contain at least one replacement.".to_owned()),
+        (
+            json!([{"old_string":"two","new_string":"two"}]),
+            "old_string and new_string are identical. No change was made to source.bnt.".to_owned(),
+        ),
+    ] {
+        let output = edit(edits);
+        assert!(output.is_error);
+        assert_eq!(output.text, error);
+        assert_eq!(fs::read_to_string(f.project.join("source.bnt"))?, "one two\none\n");
+    }
+    for (arguments, prefix) in [
+        (
+            json!({"path":"source.bnt", "edits":[{"old_string":"two","new_string":"2","old_text":"x"}]}),
+            "Unknown argument \"edits[0].old_text\".",
+        ),
+        (
+            json!({"path":"source.bnt", "edits":[{"old_string":"two"}]}),
+            "Missing required argument \"edits[0].new_string\".",
+        ),
+        (
+            json!({"path":"source.bnt", "old_string":"two", "edits":[{"old_string":"two","new_string":"2"}]}),
+            "Unknown argument \"old_string\".",
+        ),
+    ] {
+        let output = tools.execute(&f.context, "edit", arguments);
+        assert!(
+            output.is_error && output.text.starts_with(prefix),
+            "{}",
+            output.text
+        );
+    }
+    let output = f.tools.execute(
+        &f.context,
+        "edit",
+        json!({"path":"source.bnt", "edits":[{"old_string":"two","new_string":"2"}]}),
+    );
+    assert!(output.is_error && output.text.starts_with("Unknown argument \"edits\"."));
+    assert_eq!(
+        fs::read_to_string(f.project.join("source.bnt"))?,
+        "one two\none\n"
+    );
+    Ok(())
+}
+
 #[test]
 fn all_selected_quote_and_dash_variants_match_without_changing_neighboring_text() -> TestResult {
     let f = Fixture::new(Mode::Restricted)?;

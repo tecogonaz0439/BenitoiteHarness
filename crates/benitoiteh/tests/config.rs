@@ -719,6 +719,7 @@ fn evaluation_switches_are_user_only_and_preserve_read_exclusions() -> TestResul
         assert!(config.restricted.after_write_check);
         assert!(config.read.line_numbers);
         assert!(!config.agent.completion_check);
+        assert!(!config.edit.multiple);
         assert_eq!(config.compaction.reserve_tokens, 16_384);
         assert_eq!(config.compaction.keep_tokens, 20_000);
     }
@@ -775,6 +776,7 @@ fn evaluation_switches_are_user_only_and_preserve_read_exclusions() -> TestResul
         ),
         ("[compaction]\nkeep_tokens=0", "compaction"),
         ("[plugins]\nuser=false", "plugins"),
+        ("[edit]\nmultiple=true", "edit"),
     ] {
         fs::write(&path, input)?;
         let loaded = ProjectConfig::load(&root);
@@ -806,6 +808,7 @@ fn evaluation_switches_are_user_only_and_preserve_read_exclusions() -> TestResul
             "unknown configuration field `completion_checks`",
         ),
         ("[read]\nline_numbers=0", invalid),
+        ("[edit]\nmultiple='true'", invalid),
         ("[restricted]\nafter_write_check='false'", invalid),
     ] {
         let error = UserConfig::parse(input)

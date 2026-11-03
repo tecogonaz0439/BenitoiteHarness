@@ -1,7 +1,7 @@
 # 提供者の層
 
 - 状態: 草稿
-- 未決事項: BH-030, BH-031, BH-032, BH-033, BH-036, BH-117, BH-120
+- 未決事項: BH-030, BH-031, BH-032, BH-033, BH-036, BH-117, BH-120, BH-122
 
 ## 目的と範囲
 
@@ -137,6 +137,7 @@ Gemini の API の専用のアダプタ（ADR 0340 の E）は、三つのアダ
 【方針】道具の引数は、`benitoiteh` の中で一つの型として定め、アダプタごとに、その提供者の厳密な形の生成が受け付ける JSON Schema に変えて送る。
 
 - OpenAI の strict では、各オブジェクトに `additionalProperties: false` を付け、すべての引数を必須にし、省略できる引数は型に `null` を加えて表す（[OpenAI の function calling の文書](https://developers.openai.com/api/docs/guides/function-calling)。2026-10-16 に確かめた）。受け取った `null` は、省いたものとして既定の値を使う。
+- 引数の型は、文字列、整数、真偽、文字列の配列、オブジェクトの配列とする。オブジェクトの配列の要素の欄にも、外側の引数と同じ規則（必須、`null` の追加、`additionalProperties: false`）を掛け、受け取った要素の `null` も同じく省いたものとして扱う。オブジェクトの配列は、評価用の `edit` の `edits` だけが使う（[道具](../01-agent/01-03-tools.md)の「複数の置き換え」）。本物の提供者が、strict の指定のもとで入れ子のオブジェクトの Schema を受け付けるかは確かめていない（【要検証】BH-122）。
 - Responses API と Chat Completions API は、道具の定義の外側の形が違うので、アダプタごとに包む。
 - 厳密な形の生成を使うかに依らず、受け取った引数は `benitoiteh` の側で検証する（[エージェントのループ](../01-agent/01-01-agent-loop.md)の「道具の実行」）。理由: 厳密な形の生成は形を保証するが、パスの範囲や大きさの上限までは保証しない。互換の口が strict をどう扱うかは、提供者ごとに確かめていない。
 

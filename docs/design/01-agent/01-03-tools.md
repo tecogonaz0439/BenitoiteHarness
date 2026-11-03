@@ -1,7 +1,7 @@
 # 道具
 
 - 状態: 草稿
-- 未決事項: BH-003, BH-005, BH-006, BH-007, BH-008, BH-009, BH-028, BH-112, BH-113
+- 未決事項: BH-003, BH-005, BH-006, BH-007, BH-008, BH-009, BH-028, BH-112, BH-113, BH-122, BH-123
 
 ## 目的と範囲
 
@@ -156,6 +156,28 @@ Benitoite の事前検討は、LLM に見せる道具の形を、サーバモー
 
 - 制限モードでは、`.bnt` のファイルだけを直せる。
 - 結果と差分の扱いは `write` と同じとする。
+
+### 複数の置き換え
+
+【方針】評価のために、利用者の設定の `edit.multiple = true` で、`edit` を一度に複数の置き換えを受ける形に替えられる（既定は `false`）。プロジェクトの設定ファイルでは受け付けない。理由: Pi は `edit` をこの形にしており（`earendil-works/pi` の `752019d` の `packages/coding-agent/src/core/tools/edit.ts` と `edit-diff.ts`）、同じファイルの複数の箇所を一つの呼び出しで直せると、番と失敗が減る見込みがある。効果は測っていないので、既定の形と比べてから採るかを決める（【要検証】BH-123）。信頼しないプロジェクトから、LLM に見せる道具の形を変えさせない。
+
+```json
+{ "path": "string", "edits": [{ "old_string": "string", "new_string": "string", "replace_all": "boolean (optional)" }] }
+```
+
+- 切り替えたときは、`edit` の引数を `path` と `edits` だけにし、道具の説明の文を `prompts/tools/edit-multiple.md` の文に替える（道具の定義のハッシュも変わる）。一つの置き換えの `old_string`・`new_string`・`replace_all` は受け付けない。理由: 二つの形を同時に許すと、LLM がどちらを使うかが揺れ、比べる条件が混ざる。
+- 各要素の `old_string` は、前の要素の結果ではなく、元のファイルで照合する。照合の手順（字面、次に寄せた形）、一つだけ現れる規則、`replace_all` は、要素ごとに一つの置き換えと同じに扱う。理由: 前の結果に当てる形では、要素の順で結果が変わり、LLM が予想しにくい。Pi も元のファイルで照合する。
+- 要素の範囲が重なれば、どれも置き換えずに誤りとする。範囲が接するだけなら許す。
+- どれかの要素が誤りなら、ファイルを書かない。巻き戻しの記録も作らない。
+- 置き換えて全体が変わらなければ、一つの置き換えと同じ「変化がない」の誤りとする。一部の要素の `old_string` と `new_string` が同じでも、全体が変われば書く（Pi に倣う）。
+- 配列を JSON の文字列に包んで送られたら、一度だけ読み直す（文字列の配列の引数と同じ）。
+- 誤りの文は、要素の誤りなら `edits[<添字>]: ` に続けて一つの置き換えと同じ文とする。ほかは次のとおりとする。
+
+| 場合 | 誤りの文 |
+|---|---|
+| 重なる | `edits[A] and edits[B] overlap in <path>. Merge them into one edit or target disjoint regions. No change was made.` |
+| 空の `edits` | `edits must contain at least one replacement.` |
+| 要素の欄の誤り | `Unknown argument "edits[N].<欄>".` などの、引数の検証の文に要素の位置を加えた文 |
 
 ### 書く道具のパスの規則
 

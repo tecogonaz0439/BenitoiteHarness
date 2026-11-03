@@ -764,6 +764,7 @@ pub(super) fn prepare(
             user.restricted.after_write_check,
             resolved.read_line_numbers,
         )
+        .with_multiple_edits(user.edit.multiple)
         .with_project_creation(paths.clone(), helper.clone())
         .with_benitoite(processor.clone())
         .with_session(session.clone())

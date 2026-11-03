@@ -330,6 +330,14 @@ impl Default for UserReadConfig {
     }
 }
 
+/// 利用者だけが選べる `edit` の形（設計書 01-03「複数の置き換え」）。
+#[derive(Clone, Debug, Default, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct UserEditConfig {
+    /// 真なら、`edit` は複数の置き換えを `edits` の配列で受ける。
+    pub multiple: bool,
+}
+
 /// 利用者だけが Skill の探索元を切り替えられる設定（設計書 01-04）。
 #[derive(Clone, Debug, Deserialize)]
 #[serde(default, deny_unknown_fields)]
@@ -453,6 +461,7 @@ pub struct UserConfig {
     pub compaction: CompactionConfig,
     pub web_fetch: WebFetchConfig,
     pub read: UserReadConfig,
+    pub edit: UserEditConfig,
     pub skills: UserSkillsConfig,
     pub plugins: UserPluginsConfig,
     pub sessions: SessionsConfig,

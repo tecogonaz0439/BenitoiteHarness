@@ -21,21 +21,33 @@ fn main() -> Result<(), Box<dyn Error>> {
     }
     let skill = benitoiteh::benitoite::skill::SkillDocument::from_json("SKILL.md", &output.stdout)?;
     let directory = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/expected");
-    for (mode, name, enabled, line_numbers) in [
-        (Mode::Restricted, "restricted", true, true),
-        (Mode::Normal, "normal", true, true),
-        (Mode::Normal, "normal-without-benitoite", false, true),
-        (Mode::Restricted, "restricted-read-plain", true, false),
+    for (mode, name, enabled, plain_read, multiple_edits) in [
+        (Mode::Restricted, "restricted", true, false, false),
+        (Mode::Normal, "normal", true, false, false),
+        (
+            Mode::Normal,
+            "normal-without-benitoite",
+            false,
+            false,
+            false,
+        ),
+        (Mode::Restricted, "restricted-read-plain", true, true, false),
+        (Mode::Normal, "normal-edit-multiple", true, false, true),
     ] {
         let tools = if enabled {
             ToolSet::new(mode)
         } else {
             ToolSet::without_benitoite(mode)
         };
-        let tools = if line_numbers {
-            tools
-        } else {
+        let tools = if plain_read {
             tools.plain_read()
+        } else {
+            tools
+        };
+        let tools = if multiple_edits {
+            tools.multiple_edits()
+        } else {
+            tools
         };
         let context = SystemContext::new(&tools, enabled.then_some(&skill))?;
         fs::write(

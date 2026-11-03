@@ -58,12 +58,14 @@ fn tools() -> Vec<ToolSpec> {
                 kind: ArgumentType::String,
                 required: true,
                 description: "File path.".into(),
+                items: Vec::new(),
             },
             ArgumentSpec {
                 name: "limit".into(),
                 kind: ArgumentType::Integer,
                 required: false,
                 description: "Line limit.".into(),
+                items: Vec::new(),
             },
         ],
     }]

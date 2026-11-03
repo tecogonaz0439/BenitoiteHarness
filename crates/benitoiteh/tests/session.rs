@@ -207,6 +207,7 @@ fn header(session: &Session) -> Record {
         compaction: None,
         after_write_check: None,
         read_line_numbers: None,
+        multiple_edits: None,
         plugins: Vec::new(),
         skills: Vec::new(),
     })
