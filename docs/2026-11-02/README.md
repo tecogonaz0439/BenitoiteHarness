@@ -22,6 +22,7 @@
 | [05-stage1.md](05-stage1.md) | キャッチアップの案の段 1（安全の穴を塞ぐ）の確かめと修正 |
 | [06-stage3.md](06-stage3.md) | キャッチアップの案の段 3（通信の制限）の設計と実装 |
 | [07-stage4.md](07-stage4.md) | キャッチアップの案の段 4（使い勝手）の設計と実装（2026-11-03 まで） |
+| [08-stage2.md](08-stage2.md) | キャッチアップの案の段 2（エージェントの性能）の 1〜3 を、評価用の切り替えとして作った記録（2026-11-03） |
 
 ## 変更したファイル
 
@@ -65,6 +66,9 @@
 | `crates/benitoiteh/src/`（セッション、提供者、Agent、CLI、文脈、道具、画面）と `prompts/init.md`（追加） | 変更 | 段 4 の使い勝手の項目（記録を残さないセッション、送る入力の表示、雛形と `/init`、通知、書き出し、外部のエディタ、`@` の補い、画像の添付、`/model`、出力の型） | [07](07-stage4.md) |
 | `crates/benitoiteh/tests/`（セッション、exec、引数、CLI、設定、画面、提供者）と単体テスト | 変更 | 段 4 のテストを加えた | [07](07-stage4.md) |
 | `docs/design/01-agent/01-04-context.md`、`01-05-sessions.md`、`02-providers/02-01-provider-layer.md`、`03-safety/03-01-security-model.md`、`05-interface/05-01-cli.md`、`05-02-tui.md`、`open-issues.md` | 変更 | 段 4 の各項目を書き、途中のモデルの切り替えの規則を改め、BH-120 と BH-121 を加えた | [07](07-stage4.md) |
+| `crates/benitoiteh/src/`（道具、提供者の引数の型、圧縮、セッション、文脈、Agent、設定、画面）と `prompts/tools/edit-multiple.md`（追加） | 変更 | 段 2 の 1〜3 の評価用の切り替え（複数の置き換え、道具の結果の刈り込み、下のディレクトリの指示のファイル） | [08](08-stage2.md) |
+| `crates/benitoiteh/tests/`（書く道具、提供者、設定、exec、ループ、セッション、文脈）、`tests/expected/`、`examples/update_context_expected.rs` | 変更 | 段 2 のテストを加え、複数の置き換えの形の文脈の期待値を加えた | [08](08-stage2.md) |
+| `docs/design/01-agent/01-03-tools.md`、`01-04-context.md`、`01-05-sessions.md`、`02-providers/02-01-provider-layer.md`、`03-safety/03-01-security-model.md`、`05-interface/05-01-cli.md`、`open-issues.md` | 変更 | 段 2 の三つの切り替えを書き、BH-122 と BH-123 を加えた | [08](08-stage2.md) |
 | `docs/2026-11-02/` | 追加 | 本ディレクトリ | — |
 | `docs/README.md` | 変更 | 本ディレクトリへの案内を加えた | — |
 
@@ -100,7 +104,9 @@
 
 - macOS での実行。`aarch64-apple-darwin` の確かめは Linux からのコンパイルと lint だけである。macOS だけで走る `pinned_temporary_directory_uses_an_alternate_name_on_resume` も、`Fixture::spawning()` に変えた。
 - aarch64 の Linux（Apple の `container`）での実行。
-- 本物の提供者での、利用者の発言の中の画像（BH-120）と出力の型（BH-121）の確かめ。本物の LLM を呼ぶので、設計者の了承を得てから行う。
+- 本物の提供者での、利用者の発言の中の画像（BH-120）と出力の型（BH-121）と `edit` の入れ子の Schema（BH-122）の確かめ。本物の LLM を呼ぶので、設計者の了承を得てから行う。
+- 段 2 の三つの評価用の切り替えの効果の比べ（BH-123）。本物の LLM を呼ぶので、課題・モデル・回数・費用を示して設計者の了承を得てから行う。
+- 段 2 の 4（計画の道具と確かめの促し。BH-008、BH-011 の判断を待つ）と 5（スクリプトから道具を呼ぶエフェクト。処理系の側の変更を待つ）。
 - macOS で確かめる項目に加えたもの: 通信の中継（BH-119）、 主のプロセスの環境と記憶をほかのプロセスから読めるか（BH-118）、Seatbelt で `.agents` が守られること、制限モードのプロジェクトの秘密の名前をどの深さでも塞ぐ正規表現の規則にするか、`PATH` の判定のデバイスと inode の比べ、`~/Library/Keychains` を読ませないことの影響。
 - 原因を確かめていない失敗 2 件（`tests/exec.rs::closed_event_output_still_finishes_the_session_record`、`tests/tui/commands.rs` の `accepted_rewind_finishes_before_quit_and_repeated_keyboard_interrupts`）。[03](03-other-test-files.md)の「ほかの失敗」に記した。
 - 評価の道具の Python のテストのうち、macOS の判定を要しない 4 件の失敗の原因（[01](01-cloud-linux-check.md)の「結果」）。
