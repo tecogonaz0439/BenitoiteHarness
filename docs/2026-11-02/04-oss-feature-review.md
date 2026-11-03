@@ -15,7 +15,9 @@
 
 各リポジトリを浅い複製で取り、ソースと同梱の文書だけを読んだ。ビルドも実行もしていない。対象ごとに一つのサブエージェントが読み、オーケストレータが、挙がったパスのうち主なもの（各対象で 5〜11 件）がその場所にあることと、`benitoiteh` についての主張（子プロセスの環境、読ませない場所、ダンプの抑止、Landlock の `Refer`）を、ソースで確かめた。以下の出典のパスは各リポジトリの根からの相対パスであり、ソースから確かめていないものは「（未確認）」と書く。
 
-`benitoiteh` の側は、ブランチ `claude/stoic-ride-otqoj5`（2026-11-02）の設計書とコードを基準とした。
+`benitoiteh` の側は、ブランチ `claude/stoic-ride-otqoj5`（2026-11-02）の設計書とコードを基準とした。下の表の `benitoiteh` の列は、段 1〜4 の後（2026-11-03）の状態に改めた。
+
+2026-11-03 に、「（未確認）」とした 11 のます目を、同じコミットの浅い複製で確かめた。対象ごとに一つのサブエージェントがソースを読み、オーケストレータが、挙がったパスのうち表に書いたもの（15 件）がその場所にあることを確かめた。
 
 ## 総評
 
@@ -45,23 +47,23 @@
 | 機能 | benitoiteh | Codex | Pi | Hermes | DSH | nono | srt |
 |---|---|---|---|---|---|---|---|
 | OS のサンドボックス（macOS・Linux） | ○ | ○ | × | △（docker などの裏方） | △（書き込みだけ） | ○ | ○ |
-| 通信のドメインの許可の一覧（プロキシ） | ×（BH-046） | ○ | × | △（外部のプロキシ） | × | ○ | ○ |
-| 子プロセスの環境からの秘密の除去 | △（提供者のキーだけ） | △（設定で除ける。既定の除外は既定で無効。`codex-rs/config/src/shell_environment_policy.rs:136`） | × | △（`execute_code` の子だけ） | （未確認） | ○ | ○ |
+| 通信のドメインの許可の一覧（プロキシ） | ○（通常モード。段 3。制限モードは処理系を待つ） | ○ | × | △（外部のプロキシ） | × | ○ | ○ |
+| 子プロセスの環境からの秘密の除去 | ○（段 1。秘密に見える名前を除き、`pass_env` で通す） | △（設定で除ける。既定の除外は既定で無効。`codex-rs/config/src/shell_environment_policy.rs:136`） | × | △（`execute_code` の子だけ） | ○（既定で `KEY\|PASSWORD\|SECRET\|TOKEN` の名前を除く。型は変えられない。`packages/subprocess/subprocess/src/index.ts:47`） | ○ | ○ |
 | 偽のトークンを本物に差し替えるプロキシ | × | ○ | × | ○ | × | ○ | ○ |
-| サンドボックスの拒否の記録を LLM に返す | △（文字列の推定） | （未確認） | × | × | × | ○（`why`） | ○ |
-| 計画・todo の道具 | ×（BH-008） | ○ | × | ○ | ○ | — | — |
-| 一度に複数の箇所を直す `edit` | × | ○（`apply_patch`） | ○ | ○ | ○（任意） | — | — |
-| 圧縮の前の道具の結果の刈り込み | × | △（残す出力の扱い。同じ働きかは未確認） | △（`context_edit`） | △（micro compaction） | ○ | — | — |
-| 下のディレクトリの AGENTS.md | ×（根から作業のディレクトリまで） | （未確認） | （未確認） | ○ | ○ | — | — |
+| サンドボックスの拒否の記録を LLM に返す | △（文字列の推定。中継の通信の拒否は理由を返す。段 3） | △（ファイルの拒否は出力の語からの推定で、LLM には終了の状態と出力だけを返す。中継の通信の拒否はドメインと理由を返す。`codex-rs/sandboxing/src/denial.rs:5`、`codex-rs/core/src/network_policy_decision.rs:46`） | × | × | × | ○（`why`） | ○ |
+| 計画・todo の道具 | △（評価用の切り替え `agent.plan_tool`。段 2。BH-008） | ○ | × | ○ | ○ | — | — |
+| 一度に複数の箇所を直す `edit` | △（評価用の切り替え `edit.multiple`。段 2） | ○（`apply_patch`） | ○ | ○ | ○（任意） | — | — |
+| 圧縮の前の道具の結果の刈り込み | △（評価用の切り替え `compaction.prune_tool_results`。段 2） | △（記録するときに各結果を上限で切る。遠隔の圧縮では、上限を超える間だけ末尾に続く道具の結果を書き換える。古い結果だけを刈り込む段はない。`codex-rs/core/src/context_manager/history.rs:592`、`codex-rs/core/src/compact_remote_history.rs:70`） | △（`context_edit`） | △（micro compaction） | ○ | — | — |
+| 下のディレクトリの AGENTS.md | △（評価用の切り替え `agent.nested_instructions`。段 2） | ×（起動のときに根から作業のディレクトリまで。下のものは LLM に読むよう指示する。`codex-rs/core/src/agents_md.rs:189`、`codex-rs/protocol/src/prompts/base_instructions/default.md:27`） | ×（作業のディレクトリから上だけ。`packages/coding-agent/src/core/resource-loader.ts:260`） | ○ | ○ | — | — |
 | 背景の処理・PTY | × | ○ | × | ○ | ○ | — | — |
 | スクリプトから道具を呼ぶ | ×（BH-002） | ○（V8） | ○（QuickJS） | ○（Python） | ○（TS。既定は無効） | — | — |
 | サブエージェント | × | ○ | △ | ○ | ○ | — | — |
 | MCP のクライアント | ×（BH-116） | ○ | ○ | ○ | ○ | — | — |
 | エディタとの連携（ACP・JSON-RPC） | × | ○ | ○（RPC） | ○（ACP） | ○（ACP） | — | — |
-| 途中のモデルの切り替え | × | ○ | ○ | （未確認） | （未確認） | — | — |
-| 利用者の定義する `/` のコマンド | × | ○ | ○ | ○ | （未確認） | — | — |
-| プロジェクトの設定と Skill の信頼の確認 | × | △（フックの値の照合） | ○ | △（信頼するディレクトリの Skill だけ） | （未確認） | ○（署名） | — |
-| OS のキーストア | ×（BH-033） | ○ | （未確認） | ○ | （未確認） | ○ | — |
+| 途中のモデルの切り替え | ○（`/model`。同じ提供者の設定の中。段 4） | ○ | ○ | ○（`/model`。提供者もまたげる。`hermes_cli/cli_model_switch_mixin.py:968`） | ○（`packages/api/session-controller/src/commands.ts:149`） | — | — |
+| 利用者の定義する `/` のコマンド | ○（段 4） | ○ | ○ | ○ | △（Skill を `/名前` で呼べるだけ。雛形のファイルと引数の置き換えはない。`packages/skill/tool-skill/src/index.ts:167`） | — | — |
+| プロジェクトの設定と Skill の信頼の確認 | ○（段 1） | △（フックの値の照合） | ○ | △（信頼するディレクトリの Skill だけ） | ×（起動したプロジェクトを信頼する前提。`packages/credentials/credentials-local/src/index.ts:18`） | ○（署名） | — |
+| OS のキーストア | ×（BH-033） | ○ | △（組み込みはない。鍵の値に `!` で始まるコマンドを書けば、Keychain などから読める。`packages/coding-agent/src/core/resolve-config-value.ts:80`、`packages/coding-agent/docs/providers.md:70`） | ○ | ×（ファイルと環境変数だけ。`packages/credentials/credentials-local/src/index.ts:1`） | ○ | — |
 | セッションの木・巻き戻し | ○ | △ | ○ | △ | × | △（スナップショット） | — |
 
 ## 安全の仕組みの不足
@@ -99,7 +101,7 @@ Codex、nono、srt は、いずれもホストの側の HTTP CONNECT（と SOCKS
 
 - srt は、`.git` に加えて、シェルの設定、`.gitconfig`、`.gitmodules`、`.mcp.json`、`.vscode/`、`.idea/`、`.claude/commands`、`.claude/agents`、`.git/hooks`、`.git/config` を書かせない（`src/sandbox/sandbox-utils.ts:21-50`）。`benitoiteh` に当てはめると、次の起動の指示になる `.agents/`（プロジェクトの Skill）と、エディタが実行しうる `.vscode/` と `.idea/` が候補である。
 - srt は Linux で、書ける根から守る場所までの途中のディレクトリをマウントの場所にして、付け替えを `EBUSY` で止める（`src/sandbox/linux-sandbox-utils.ts:1917` の `ancestorPinArgs`）。`benitoiteh` にはこれがない。bubblewrap の読み取りだけの重ね（`--ro-bind`）だけで試すと、すでにある `sub/.git` の親の `sub` を名前を変えて動かし、新しい `sub/.git/hooks/pre-commit` を書けた（2026-11-02、本環境の bubblewrap 0.9.0、root でない利用者）。`benitoiteh` は書ける根に Landlock の `Refer` を許す（`crates/benitoiteh/src/sandbox/linux/filesystem.rs:114`）ので、実際のサンドボックスでも同じに通ると見るが、確かめていない【要検証】。（追記: 段 1 で、実際のサンドボックスでも通ることを確かめ、祖先をマウントの場所にして塞いだ。同じ親の中の付け替えには `Refer` は関わらず、原因は祖先がマウントの場所でないことだった。[05](05-stage1.md)の「入れ子の守る場所の付け替え」）設計書 03-02 は、子プロセスが新しく作った入れ子の守る場所を保証の外とするが、この手順は、すでにある入れ子の守る場所の保護を、付け替えで実質的に外す。
-- nono は、サンドボックスの外で動かす補助のプログラムの `PATH` から、サンドボックスが書ける場所を、シンボリックリンクの各段まで調べて除く（`crates/nono/src/broker_path.rs`）。`benitoiteh` の `escalate` と秘密の入力の仲介は、サンドボックスの外で、継承した `PATH` のまま動く。サンドボックスの中のコマンドが、`PATH` にあるプロジェクトのディレクトリに偽の `git` を置ける場合がある（未確認）。
+- nono は、サンドボックスの外で動かす補助のプログラムの `PATH` から、サンドボックスが書ける場所を、シンボリックリンクの各段まで調べて除く（`crates/nono/src/broker_path.rs`）。`benitoiteh` の `escalate` と秘密の入力の仲介は、サンドボックスの外で、継承した `PATH` のまま動く。サンドボックスの中のコマンドが、`PATH` にあるプロジェクトのディレクトリに偽の `git` を置ける場合がある（段 1 で、直す前は拾わせられることを確かめ、`escalate` の `PATH` を直した。仲介の補助は絶対のパスで指すので `PATH` に依らない。[05](05-stage1.md)）。
 - Codex は、`main` の前に、コアのダンプと ptrace の接続を止め、`LD_PRELOAD` と `DYLD_*` を除く（`codex-rs/process-hardening/src/lib.rs`）。`benitoiteh` は、サンドボックスの補助と画像の補助でダンプを止める（`crates/benitoiteh/src/sandbox/linux.rs:106`、`crates/benitoiteh/src/tools/read/image_helper.rs:67`）が、API のキーと OAuth のトークンを持つ主のプロセスでは止めていない。
 
 ### プロジェクトの信頼
@@ -198,5 +200,5 @@ MCP（BH-116）、ACP、RPC、OS のキーストア（BH-033）、偽のトー�
 
 - Linux の入れ子の守る場所の付け替え（「守る場所と PATH」）。`benitoiteh` の実際のサンドボックスで、`sandbox_linux.rs` に否定のテストとして加えて確かめる。（済み。[05](05-stage1.md)）
 - `PATH` に偽のプログラムを置いて、`escalate` に拾わせる道筋。`benitoiteh` の `PATH` の組み立てを読んで確かめる。（済み。直す前は拾わせられた。[05](05-stage1.md)）
-- 各対象の機能のうち「（未確認）」としたもの。
+- 各対象の機能のうち「（未確認）」としたもの。（済み。2026-11-03 に確かめて表に書いた）
 - 効果の見込みは、どれも測っていない。
