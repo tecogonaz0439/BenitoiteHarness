@@ -440,11 +440,12 @@ fn restored_output_discards_later_frames_and_flushes() -> io::Result<()> {
 fn restoration_releases_every_enabled_terminal_mode() -> io::Result<()> {
     assert_eq!(
         restoration(2)?,
-        b"\x1b[?2026l\x1b[0m\x1b[?25h\x1b[?7h\x1b[?2004l\x1b[<1u\r\n\r\n\r\n"
+        b"\x1b[?2026l\x1b[0m\x1b[?25h\x1b[?7h\x1b[?2004l\x1b[?1004l\x1b[<1u\r\n\r\n\r\n"
     );
     let mut setup = Vec::new();
     control::setup(&mut setup)?;
-    assert_eq!(setup, b"\x1b[?2004h\x1b[>1u");
+    // 前面の報告は通知のために有効にする（設計書 05-02「通知」）。
+    assert_eq!(setup, b"\x1b[?2004h\x1b[?1004h\x1b[>1u");
     Ok(())
 }
 
@@ -1023,6 +1024,7 @@ fn deep_tree_indentation_is_capped_and_shows_the_actual_depth()
         node,
         kind: UserKind::Request,
         message: UserMessage {
+            images: Vec::new(),
             parts: vec![UserPart {
                 kind: UserPartKind::Request,
                 text: text.into(),
@@ -1781,4 +1783,35 @@ fn plugin_line_puts_the_untrusted_path_last() {
         })
     });
     assert!(fields);
+}
+
+// 作成時の関門: 貼った文のうち、画像の拡張子を持つ一つの実在するファイルの絶対パスだけを添付とし、
+// 端末が付ける引用符・file://・空白の \\ を外す（設計書 05-02「入力の操作」）。
+#[test]
+fn pasted_text_becomes_an_image_path_only_for_one_existing_absolute_image()
+-> Result<(), Box<dyn std::error::Error>> {
+    let directory = std::env::temp_dir().join(format!(
+        "benitoiteh-paste-{}",
+        crate::session::SessionId::generate(std::time::SystemTime::now())?
+    ));
+    std::fs::create_dir(&directory)?;
+    let picture = directory.join("my shot.PNG");
+    std::fs::write(&picture, b"png")?;
+    std::fs::write(directory.join("notes.txt"), b"text")?;
+    let shown = picture.display().to_string();
+    for (pasted, expected) in [
+        (shown.clone(), true),
+        (format!("'{shown}'"), true),
+        (format!("\"{shown}\"\n"), true),
+        (format!("file://{}", shown.replace(' ', "%20")), true),
+        (shown.replace(' ', "\\ "), true),
+        (format!("{shown}\n{shown}"), false),
+        ("my shot.PNG".to_owned(), false),
+        (directory.join("missing.png").display().to_string(), false),
+        (directory.join("notes.txt").display().to_string(), false),
+    ] {
+        assert_eq!(image_path(&pasted).is_some(), expected, "{pasted:?}");
+    }
+    std::fs::remove_dir_all(&directory)?;
+    Ok(())
 }
