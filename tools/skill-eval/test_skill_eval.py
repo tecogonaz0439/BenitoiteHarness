@@ -1832,7 +1832,9 @@ class AgyTests(unittest.TestCase):
                         self.assertEqual(f.read(), 'unchanged')
 
     def test_security_json_recursion_special_files_and_record_redaction(self):
-        deep = '[' * 3000 + ']' * 3000
+        # Python 3.12 以降の json は 3,000 段では RecursionError にならないので、どの版でも
+        # 読めない深さにする（3.11・3.12・3.13 で 100,000 段は RecursionError、2026-11-03）。
+        deep = '[' * 100000 + ']' * 100000
         fields, reason, _ = evaluation.external_output('agy-json', deep, 0)
         self.assertIsNone(fields['end'])
         self.assertIn('harness summary unreadable', reason)
