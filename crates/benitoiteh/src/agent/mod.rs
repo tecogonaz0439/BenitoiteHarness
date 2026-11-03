@@ -280,6 +280,8 @@ pub struct Agent {
     resume_has_reasoning: bool,
     resume_results: Vec<Record>,
     environment_changes: Option<String>,
+    /// 評価用の下のディレクトリの指示のファイル。通常モードで有効にしたときだけ持つ。
+    nested_instructions: Option<crate::context::instructions::NestedInstructions>,
 }
 
 // 準備を終えるまで Agent に触れず、記録の追記後は代入だけで反映できる値。
@@ -359,6 +361,13 @@ impl Agent {
         } else {
             tools
         };
+        // 制限モードは指示のファイルを読まないので、下のディレクトリのものも読まない（BH-042）。
+        let nested = config.agent.nested_instructions && config.mode == Mode::Normal;
+        let nested_instructions = nested.then(|| {
+            crate::context::instructions::NestedInstructions::new(
+                environment.project_instructions(),
+            )
+        });
         let skill = tool_context
             .skill
             .as_ref()
@@ -401,6 +410,7 @@ impl Agent {
                 after_write_check: (!tool_context.after_write_check).then_some(false),
                 read_line_numbers: (!tool_context.read_line_numbers).then_some(false),
                 multiple_edits: tool_context.multiple_edits.then_some(true),
+                nested_instructions: nested.then_some(true),
                 plugins: environment.skills().plugins.clone(),
                 skills: environment.skills().recorded(),
             }))?;
@@ -470,6 +480,7 @@ impl Agent {
             resume_has_reasoning: false,
             resume_results: Vec::new(),
             environment_changes: None,
+            nested_instructions,
         };
         if let Some(mut state) = state {
             agent.files = std::mem::take(&mut state.files);
@@ -566,6 +577,9 @@ impl Agent {
         self.added_bytes = 0;
         self.largest_input = None;
         self.repeated = None;
+        if let Some(nested) = &mut self.nested_instructions {
+            nested.reset();
+        }
     }
 
     fn commit_branch(&mut self, branch: &Record, prepared: PreparedPath) -> Result<(), AgentError> {

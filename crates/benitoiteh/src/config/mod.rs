@@ -425,6 +425,9 @@ impl Default for SecretsConfig {
 #[serde(default, deny_unknown_fields)]
 pub struct AgentBehaviorConfig {
     pub completion_check: bool,
+    /// 道具が触れた下のディレクトリの指示のファイルを、道具の結果に添える
+    /// （設計書 01-04「下のディレクトリの指示のファイル」）。
+    pub nested_instructions: bool,
 }
 
 /// 圧縮の予備と残す量。利用者だけが変更できる（設計書 01-04「圧縮の値を比べる設定」）。

@@ -35,6 +35,23 @@ pub fn instruction_loaded(path: &std::path::Path) -> String {
     format!("Instruction file loaded: {}", path.display())
 }
 
+/// 道具の結果に添えた指示と、読まなかった指示を一行ずつ示す。
+pub fn nested_instructions(
+    paths: &[std::path::PathBuf],
+    skipped: &[crate::session::SkippedInstruction],
+) -> String {
+    paths
+        .iter()
+        .map(|path| instruction_loaded(path))
+        .chain(
+            skipped
+                .iter()
+                .map(|entry| instruction_skipped(&entry.path, &entry.reason)),
+        )
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
 /// 読まなかった指示と除外理由を示す。
 pub fn instruction_skipped(path: &std::path::Path, reason: &str) -> String {
     format!("Instruction file skipped: {}: {reason}", path.display())

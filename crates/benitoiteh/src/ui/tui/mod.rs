@@ -448,6 +448,11 @@ impl Screen {
                     .extend(message.lines().map(|line| plain(line, Decoration::Error)));
             }
             AgentEvent::ImagesRemoved { .. } => self.notice(text::IMAGES_REMOVED),
+            AgentEvent::NestedInstructions { paths, skipped, .. } => {
+                for line in crate::ui::text::nested_instructions(paths, skipped).lines() {
+                    self.notice(line);
+                }
+            }
             AgentEvent::ToolResultsPruned {
                 results,
                 estimate_after,

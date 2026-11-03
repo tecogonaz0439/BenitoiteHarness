@@ -1684,3 +1684,49 @@ fn pruning_trims_read_tool_results_before_summarizing_and_replays_from_records()
     }
     Ok(())
 }
+
+// 作成時の関門: 下のディレクトリの指示を添えたことは、会話を置き換えると忘れる
+// （設計書 01-04「下のディレクトリの指示のファイル」）。要約で指示が会話から消えても、
+// 次に触れたときに添え直されることを、本物の圧縮と道具の実行で確かめる。読む条件は
+// exec の入口のテストで確かめる。
+#[test]
+fn nested_instructions_are_attached_again_after_compaction() -> TestResult {
+    let f = Fixture::new()?;
+    fs::create_dir(f.project.join("sub"))?;
+    fs::write(f.project.join("sub/AGENTS.md"), "sub rule")?;
+    fs::write(f.project.join("sub/x.txt"), "x")?;
+    let kind = AdapterKind::OpenAiChat;
+    let read = || Some(("read", json!({"path":"sub/x.txt"})));
+    let mut server = MockProvider::start(vec![
+        response(kind, "", read(), 10),
+        response(kind, "", read(), 10),
+        response(kind, "Done.", None, 10),
+        response(kind, "summary", None, 10),
+        response(kind, "", read(), 10),
+        response(kind, "Done.", None, 10),
+    ])?;
+    let mut config = f.config(&server, kind);
+    config.agent.nested_instructions = true;
+    let (mut agent, directory) = f.agent(config)?;
+    complete(&mut agent)?;
+    let (report, _) = compact(&mut agent, options(false))?;
+    assert_eq!(report.outcome, CompactOutcome::Compacted);
+    complete(&mut agent)?;
+    let attached = read_records(&directory)?
+        .iter()
+        .filter_map(|record| {
+            if let Record::ToolResult { result, .. } = record {
+                Some(
+                    result.text.contains("<project_instructions path=\"")
+                        && result.text.ends_with("sub rule</project_instructions>"),
+                )
+            } else {
+                None
+            }
+        })
+        .collect::<Vec<_>>();
+    // 同じ会話の二度目は添えず、圧縮の後の一度目は添える。
+    assert_eq!(attached, [true, false, true]);
+    server.shutdown()?;
+    Ok(())
+}

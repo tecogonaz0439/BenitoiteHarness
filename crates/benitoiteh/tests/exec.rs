@@ -16,6 +16,177 @@ mod support;
 mod fixture;
 use fixture::*;
 
+// 作成時の関門: 評価用の下のディレクトリの指示のファイル（設計書 01-04「下のディレクトリの
+// 指示のファイル」）。利用者の設定から道具の結果と記録とイベントまでを、起動のときの指示の
+// 読み込みと合わせて確かめる。既定で添えないこと、一度だけ添えること、誤りの結果では見た
+// ことにしないこと、起動で読んだファイルへのリンクと固いリンクを読まないことを並べる。
+#[test]
+fn nested_instructions_reach_tool_results_once_under_the_startup_reading_rules() -> TestResult {
+    for enabled in [false, true] {
+        let protocol = Protocol::Chat;
+        let calls = [
+            ("read", json!({"path":"other/missing.txt"})),
+            ("read", json!({"path":"sub/deep/file.txt"})),
+            ("read", json!({"path":"sub/deep/file.txt"})),
+            ("read", json!({"path":"other/ok.txt"})),
+            ("read", json!({"path":"linked/x.txt"})),
+            ("glob", json!({"pattern":"*","path":"hard"})),
+        ];
+        let mut script = calls
+            .iter()
+            .enumerate()
+            .map(|(index, (name, arguments))| {
+                ResponseScript::sse(protocol.response(
+                    Some((&format!("call_{index}"), name, arguments.clone())),
+                    "",
+                    false,
+                ))
+            })
+            .collect::<Vec<_>>();
+        script.push(ResponseScript::sse(protocol.response(None, "done", false)));
+        let mut server = MockProvider::start(script)?;
+        let f = Fixture::new(protocol, &server)?;
+        let project = f.root.join("project");
+        for directory in ["sub/deep", "other", "linked", "hard"] {
+            fs::create_dir_all(project.join(directory))?;
+        }
+        for (path, contents) in [
+            ("AGENTS.md", "root rule"),
+            ("sub/AGENTS.md", "sub <rule>"),
+            ("sub/deep/CLAUDE.md", "deep rule"),
+            ("sub/deep/file.txt", "file"),
+            ("other/AGENTS.md", "other rule"),
+            ("other/ok.txt", "ok"),
+            ("linked/x.txt", "x"),
+            ("hard/AGENTS.md", "hard rule"),
+        ] {
+            fs::write(project.join(path), contents)?;
+        }
+        std::os::unix::fs::symlink("../AGENTS.md", project.join("linked/AGENTS.md"))?;
+        fs::hard_link(project.join("hard/AGENTS.md"), project.join("hard-copy.md"))?;
+        if enabled {
+            let path = f.root.join("config/benitoiteh/config.toml");
+            let contents = fs::read_to_string(&path)?;
+            fs::write(
+                path,
+                format!("{contents}\n[agent]\nnested_instructions=true\n"),
+            )?;
+        }
+        let output = f.command("read the files").arg("--json").output()?;
+        assert_eq!(
+            output.status.code(),
+            Some(0),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let (_, records) = f.records()?;
+        assert_eq!(
+            records
+                .first()
+                .and_then(|header| header.get("nested_instructions")),
+            enabled.then_some(&json!(true))
+        );
+        let texts = records
+            .iter()
+            .filter(|record| record.get("type").and_then(Value::as_str) == Some("tool_result"))
+            .map(|record| {
+                record
+                    .pointer("/result/text")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default()
+                    .to_owned()
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(texts.len(), calls.len());
+        let tag = |path: &str, contents: &str| {
+            format!(
+                "<project_instructions path=\"{}\">{contents}</project_instructions>",
+                project.join(path).display()
+            )
+        };
+        let sub = tag("sub/AGENTS.md", "sub &lt;rule&gt;");
+        let deep = tag("sub/deep/CLAUDE.md", "deep rule");
+        let other = tag("other/AGENTS.md", "other rule");
+        for (index, expected) in [
+            (0, Vec::new()),
+            (1, vec![sub.as_str(), deep.as_str()]),
+            (2, Vec::new()),
+            (3, vec![other.as_str()]),
+            (4, Vec::new()),
+            (5, Vec::new()),
+        ] {
+            let text = texts.get(index).ok_or("tool result")?;
+            let found = text.matches("<project_instructions").count();
+            if enabled {
+                assert_eq!(found, expected.len(), "{index}: {text}");
+                // 根の側から順に、結果の後に並べる。
+                let suffix = expected
+                    .iter()
+                    .map(|tag| format!("\n\n{tag}"))
+                    .collect::<String>();
+                assert!(text.ends_with(&suffix), "{index}: {text}");
+            } else {
+                assert_eq!(found, 0, "{index}: {text}");
+            }
+        }
+        assert!(
+            texts
+                .iter()
+                .all(|text| !text.contains("root rule") && !text.contains("hard rule"))
+        );
+        let events = lines(&output.stdout)?;
+        let notices = events
+            .iter()
+            .filter(|event| {
+                event.get("type").and_then(Value::as_str) == Some("nested_instructions")
+            })
+            .collect::<Vec<_>>();
+        if enabled {
+            let skipped = notices
+                .iter()
+                .flat_map(|event| {
+                    event
+                        .get("skipped")
+                        .and_then(Value::as_array)
+                        .cloned()
+                        .unwrap_or_default()
+                })
+                .map(|entry| {
+                    (
+                        entry
+                            .get("path")
+                            .and_then(Value::as_str)
+                            .unwrap_or_default()
+                            .to_owned(),
+                        entry
+                            .get("reason")
+                            .and_then(Value::as_str)
+                            .unwrap_or_default()
+                            .to_owned(),
+                    )
+                })
+                .collect::<Vec<_>>();
+            assert_eq!(
+                skipped,
+                [
+                    (
+                        project.join("linked/AGENTS.md").display().to_string(),
+                        "This file has already been included.".to_owned()
+                    ),
+                    (
+                        project.join("hard/AGENTS.md").display().to_string(),
+                        "Multiple hard links are not allowed.".to_owned()
+                    ),
+                ]
+            );
+        } else {
+            assert!(notices.is_empty());
+        }
+        server.shutdown()?;
+    }
+    Ok(())
+}
+
 // 関門: 設定の値が起動の準備から read とプロンプトとヘッダへ届く契約。
 // 道具単体では見つけられない接続漏れを、普段の設定を使わない exec で捕まえる。
 #[test]

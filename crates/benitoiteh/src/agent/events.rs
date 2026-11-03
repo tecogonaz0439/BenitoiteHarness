@@ -154,6 +154,13 @@ pub enum AgentEvent {
         #[serde(with = "super::event_paths")]
         paths: Vec<PathBuf>,
     },
+    /// 道具の結果に、下のディレクトリの指示のファイルを添えた（設計書 01-04「下のディレクトリの指示のファイル」）。
+    NestedInstructions {
+        call_id: String,
+        #[serde(with = "super::event_paths")]
+        paths: Vec<PathBuf>,
+        skipped: Vec<crate::session::SkippedInstruction>,
+    },
     /// 画像を除いた要求の送り直しが通った。
     ImagesRemoved { results: Vec<String> },
     /// 圧縮の前に、道具の結果を頭と尾だけにした（設計書 01-04「道具の結果の刈り込み」）。
@@ -273,7 +280,9 @@ impl AgentEvent {
                 justification: justification.clone(),
                 user_message: user_message.clone(),
             },
-            Self::ImagesRemoved { .. } | Self::ToolResultsPruned { .. } => return None,
+            Self::ImagesRemoved { .. }
+            | Self::ToolResultsPruned { .. }
+            | Self::NestedInstructions { .. } => return None,
             Self::Retry {
                 attempt,
                 delay_ms,

@@ -187,16 +187,12 @@ impl Environment {
             ("network", text::network(self.network_allowed).into()),
             ("benitoite_version", self.benitoite_version.clone()),
         ];
-        fields.extend(self.instructions.files.iter().map(|file| {
-            (
-                "project_instructions",
-                format!(
-                    "<project_instructions path=\"{}\">{}</project_instructions>",
-                    escape_attribute(&file.path.to_string_lossy()),
-                    escape(&file.contents),
-                ),
-            )
-        }));
+        fields.extend(
+            self.instructions
+                .files
+                .iter()
+                .map(|file| ("project_instructions", file.render())),
+        );
         if let Some(skills) = self.skills.render() {
             fields.push(("skills", skills));
         }
@@ -213,14 +209,14 @@ fn absolute_path(path: &Path) -> Result<String, ContextError> {
         .ok_or(ContextError::InvalidPath)
 }
 
-fn escape(value: &str) -> String {
+pub(super) fn escape(value: &str) -> String {
     value
         .replace('&', "&amp;")
         .replace('<', "&lt;")
         .replace('>', "&gt;")
 }
 
-fn escape_attribute(value: &str) -> String {
+pub(super) fn escape_attribute(value: &str) -> String {
     escape(value).replace('"', "&quot;")
 }
 
