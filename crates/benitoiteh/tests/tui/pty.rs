@@ -497,3 +497,130 @@ fn second_signal_prints_checkpoint_after_terminal_restore_only_during_rewind() -
     }
     Ok(())
 }
+
+// 作成時の関門: 本物の端末を通した確認・通知・外部のエディタ（設計書 05-02「通知」「入力の操作」、
+// 03-03「.agents への書き込み」）。画面の部品のテストは時刻と端末を差し替えるので、擬似端末の
+// バイト列からのキーと前面の報告の読み取り、表示の直後のキーの扱い、エディタのための端末の
+// 明け渡しと復元を、実行ファイルと端末の境界で一度通す。
+#[test]
+fn terminal_confirmation_notification_and_external_editor_work_end_to_end() -> TestResult {
+    let f = Fixture::new()?;
+    let tool = response(
+        json!({"tool_calls":[{"index":0,"id":"call_1","type":"function","function":{"name":"write","arguments":json!({"path":".agents/note.md","content":"approved"}).to_string()}}]}),
+        "tool_calls",
+    );
+    let mut server = MockProvider::start(vec![
+        ResponseScript::sse(tool.into_bytes()),
+        ResponseScript::sse(response(json!({"content":"Wrote it."}), "stop").into_bytes()),
+        ResponseScript::sse(response(json!({"content":"Read it."}), "stop").into_bytes()),
+    ])?;
+    fs::create_dir_all(f.paths.config_file.parent().ok_or("config parent")?)?;
+    fs::write(
+        &f.paths.config_file,
+        format!(
+            "default_provider = 'mock'\n[providers.mock]\nkind = 'openai-chat'\nbase_url = '{}'\nmodel = 'mock-model'\n",
+            server.base_url()
+        ),
+    )?;
+    // 外部のエディタは、下書きのファイルに決まった文を書いて終える。
+    let editor = f.root.join("editor.sh");
+    fs::write(&editor, "#!/bin/sh\nprintf 'edited request' > \"$1\"\n")?;
+    fs::set_permissions(&editor, std::os::unix::fs::PermissionsExt::from_mode(0o700))?;
+    let mut pty = tty::Pty::new()?;
+    let original = rustix::termios::tcgetattr(pty.slave()?)?;
+    let mut input = pty.input()?;
+    let mut command = Command::new(env!("CARGO_BIN_EXE_benitoiteh"));
+    command
+        .args(["--mode", "normal", "--no-sandbox", "Write the note"])
+        .current_dir(&f.project)
+        .env_clear()
+        .env("PATH", "")
+        .env("HOME", f.root.join("home"))
+        .env("XDG_CONFIG_HOME", f.root.join("config"))
+        .env("XDG_STATE_HOME", f.root.join("state"))
+        .env("TMPDIR", f.root.join("tmp"))
+        .env("VISUAL", &editor)
+        .process_group(0)
+        .stdin(pty.slave()?)
+        .stdout(pty.slave()?)
+        .stderr(pty.slave()?);
+    let mut child = command.spawn()?;
+    let mut stage = 0;
+    let mut shown = None;
+    let mut early_write = false;
+    let project = f.project.clone();
+    let (output, terminal) = pty.interact(
+        &mut child,
+        Duration::from_secs(20),
+        |_, terminal, elapsed| {
+            let visible = String::from_utf8_lossy(terminal);
+            match stage {
+                // 前面の報告を有効にしたら、前面を離れたと報告する。
+                0 if visible.contains("\x1b[?1004h") => {
+                    input.write_all(b"\x1b[O")?;
+                    stage = 1;
+                }
+                1 if visible.contains("[y] write") => {
+                    // 表示の直後のキーは読み捨てる。すぐの y では書かず、少し待った y で書く。
+                    if shown.is_none() {
+                        input.write_all(b"y")?;
+                    }
+                    let at = *shown.get_or_insert(elapsed);
+                    if elapsed.saturating_sub(at) >= Duration::from_millis(400) {
+                        early_write = project.join(".agents/note.md").exists();
+                        input.write_all(b"y")?;
+                        stage = 2;
+                    }
+                }
+                2 if visible.contains("Wrote it.") => {
+                    input.write_all(b"\x07")?;
+                    stage = 3;
+                }
+                3 if visible.contains("edited request") => {
+                    input.write_all(b"\r")?;
+                    stage = 4;
+                }
+                4 if visible.contains("Read it.") => {
+                    input.write_all(b"/quit\r")?;
+                    stage = 5;
+                }
+                _ => {}
+            }
+            Ok(())
+        },
+    )?;
+    let visible = String::from_utf8_lossy(&terminal);
+    assert_eq!(stage, 5, "{visible}");
+    assert!(
+        !early_write,
+        "the key sent as the confirmation appeared was accepted"
+    );
+    assert_eq!(output.status.code(), Some(0), "{output:?}: {visible}");
+    assert_eq!(
+        fs::read_to_string(f.project.join(".agents/note.md"))?,
+        "approved"
+    );
+    // 前面にない間に、確認を開いたときと処理を終えたときに知らせた。
+    for message in [
+        "\x1b]9;benitoiteh is waiting for your confirmation.\x07",
+        "\x1b]9;benitoiteh finished the request.\x07",
+    ] {
+        assert!(visible.contains(message), "{message:?}: {visible}");
+    }
+    let requests = server.requests()?;
+    assert_eq!(requests.len(), 3);
+    assert!(
+        requests
+            .last()
+            .ok_or("edited request")?
+            .body
+            .to_string()
+            .contains("edited request")
+    );
+    let restored = rustix::termios::tcgetattr(pty.slave()?)?;
+    assert_eq!(restored.local_modes, original.local_modes);
+    assert_eq!(restored.input_modes, original.input_modes);
+    assert!(visible.contains("\x1b[?1004l"));
+    server.shutdown()?;
+    Ok(())
+}
