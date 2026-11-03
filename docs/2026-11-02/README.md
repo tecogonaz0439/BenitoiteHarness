@@ -106,7 +106,7 @@
 - aarch64 の Linux（Apple の `container`）での実行。
 - 本物の提供者での、利用者の発言の中の画像（BH-120）と出力の型（BH-121）と `edit` の入れ子の Schema（BH-122）の確かめ。本物の LLM を呼ぶので、設計者の了承を得てから行う。
 - 段 2 の三つの評価用の切り替えの効果の比べ（BH-123）。本物の LLM を呼ぶので、課題・モデル・回数・費用を示して設計者の了承を得てから行う。
-- 段 2 の 4（計画の道具と確かめの促し。BH-008、BH-011 の判断を待つ）と 5（スクリプトから道具を呼ぶエフェクト。処理系の側の変更を待つ）。
+- 段 2 の 4 のうち計画の道具（BH-008。確かめの促しは BH-011 を閉じたので加えない）と 5（スクリプトから道具を呼ぶエフェクト。処理系の側の変更を待つ）。
 - macOS で確かめる項目に加えたもの: 通信の中継（BH-119）、 主のプロセスの環境と記憶をほかのプロセスから読めるか（BH-118）、Seatbelt で `.agents` が守られること、制限モードのプロジェクトの秘密の名前をどの深さでも塞ぐ正規表現の規則にするか、`PATH` の判定のデバイスと inode の比べ、`~/Library/Keychains` を読ませないことの影響。
 - 原因を確かめていない失敗 2 件（`tests/exec.rs::closed_event_output_still_finishes_the_session_record`、`tests/tui/commands.rs` の `accepted_rewind_finishes_before_quit_and_repeated_keyboard_interrupts`）。[03](03-other-test-files.md)の「ほかの失敗」に記した。
 - 評価の道具の Python のテストのうち、macOS の判定を要しない 4 件の失敗の原因（[01](01-cloud-linux-check.md)の「結果」）。
