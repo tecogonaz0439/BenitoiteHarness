@@ -379,6 +379,7 @@ pub fn run(
                             }
                         },
                         Command::Status => worker.status(),
+                        Command::Model(change) => worker.model(change),
                         Command::Compact(instructions) => {
                             screen.operation = Some(super::text::COMPACTING);
                             worker.compact(instructions)

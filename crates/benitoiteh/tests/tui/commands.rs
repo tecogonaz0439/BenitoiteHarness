@@ -51,6 +51,19 @@ fn command_grammar_busy_rules_and_literal_slashes_apply_only_at_submission() -> 
         ("/fork before", Action::Command(Command::ForkBefore)),
         ("/fork x", Action::None),
         ("/init", Action::Command(Command::Init)),
+        ("/model", Action::Command(Command::Model(None))),
+        (
+            "/model other-model",
+            Action::Command(Command::Model(Some(("other-model".into(), None)))),
+        ),
+        (
+            "/model other-model  low ",
+            Action::Command(Command::Model(Some((
+                "other-model".into(),
+                Some("low".into()),
+            )))),
+        ),
+        ("/model a b c", Action::None),
         ("/quit", Action::Quit),
         (
             "/compact keep names\nand paths",
@@ -2180,4 +2193,48 @@ fn base64_encode(data: &[u8]) -> String {
         }
     }
     output
+}
+
+// 作成時の関門: `/model` は今の提供者とモデルと推論の度合いを示し、名前を添えると次の依頼から
+// そのモデルへ送り、状態の行を替える（設計書 05-02「`/` で始まるコマンド」）。
+#[test]
+fn model_command_switches_the_model_for_the_next_request() -> TestResult {
+    let mut server = MockProvider::start(vec![ResponseScript::sse(response(
+        json!({"content":"LLM done"}),
+        "stop",
+    ))])?;
+    let f = Fixture::new()?;
+    let (worker, _directory) = f.worker(&server)?;
+    let mut screen = Screen::new((160, 30), status());
+    let mut output = Output::default();
+    let mut input = Driver::new(
+        output.clone(),
+        vec![
+            ("", send("/model")),
+            (
+                "model: mock-model; effort: high",
+                send("/model other-model low"),
+            ),
+            ("prompt cache starts over", send("ordinary request")),
+            ("LLM done", send("/quit")),
+        ],
+    );
+    assert_eq!(
+        run(
+            &mut screen,
+            worker,
+            &mut input,
+            &mut output,
+            &AtomicBool::new(false),
+            |_| {},
+            &mut |_, _, _| Err("should not prepare".into())
+        )?,
+        0
+    );
+    let requests = server.requests()?;
+    let body = &requests.first().ok_or("request")?.body;
+    assert_eq!(body.get("model"), Some(&json!("other-model")));
+    assert!(safe_output(&output.0.borrow())?.contains("mock/other-model"));
+    server.shutdown()?;
+    Ok(())
 }

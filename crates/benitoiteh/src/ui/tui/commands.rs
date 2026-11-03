@@ -21,6 +21,8 @@ pub enum Command {
     PreviewBranch(crate::agent::BranchTarget, crate::rewind::RewindScope),
     /// `AGENTS.md` を書く依頼を送る（設計書 05-02「`/` で始まるコマンド」）。
     Init,
+    /// モデルと推論の度合いを替える。None は今の値を示す（設計書 05-02「`/` で始まるコマンド」）。
+    Model(Option<(String, Option<String>)>),
     /// 入力欄を外部のエディタで書く（設計書 05-02「入力の操作」）。
     Editor,
     /// 今の枝を Markdown に書き出す。パスがなければプロジェクトの下に決まった名前で書く。
@@ -129,6 +131,25 @@ impl Screen {
             },
             "quit" => Action::Quit,
             "init" => Action::Command(Command::Init),
+            "model" => {
+                let mut words = arguments.split_whitespace();
+                match (words.next(), words.next(), words.next()) {
+                    (None, _, _) => Action::Command(Command::Model(None)),
+                    (Some(model), effort, None)
+                        if model.chars().all(|c| !c.is_control())
+                            && effort.is_none_or(|e| e.chars().all(|c| !c.is_control())) =>
+                    {
+                        Action::Command(Command::Model(Some((
+                            model.to_owned(),
+                            effort.map(str::to_owned),
+                        ))))
+                    }
+                    _ => {
+                        self.notice(text::MODEL_USAGE);
+                        Action::None
+                    }
+                }
+            }
             "export" => Action::Command(Command::Export(
                 (!arguments.trim().is_empty()).then(|| arguments.trim().to_owned()),
             )),
@@ -159,6 +180,21 @@ impl Screen {
         for line in text::session_status(status, tokens).lines() {
             self.notice(line);
         }
+    }
+
+    pub(super) fn model_result(
+        &mut self,
+        status: &crate::agent::AgentStatus,
+        effort: &str,
+        changed: bool,
+    ) {
+        self.status.model.clone_from(&status.model);
+        self.notice(&text::model_result(
+            &status.provider,
+            &status.model,
+            effort,
+            changed,
+        ));
     }
 
     pub(super) fn compact_result(&mut self, report: &crate::agent::CompactReport) {

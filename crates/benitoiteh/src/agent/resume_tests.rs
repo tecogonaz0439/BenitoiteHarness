@@ -843,3 +843,120 @@ fn user_attachments_are_recorded_by_reference_and_restored_on_resume()
     server.shutdown()?;
     Ok(())
 }
+
+// 作成時の関門: `/model` の切り替えの後の要求は新しいモデルへ送り、前のモデルの推論の文を送らない。
+// 切り替えなければ送る。新しい送り先の開始を記録し、再開ではその送り先を使う。すべての番の推論を
+// 求める提供者では、次の依頼の前に圧縮する（設計書 05-02「`/` で始まるコマンド」）。
+#[test]
+fn switching_models_stops_reasoning_replay_and_records_the_new_destination()
+-> Result<(), Box<dyn std::error::Error>> {
+    let reply = |content: &str| {
+        mock_provider::ResponseScript::sse(format!(
+            "data: {}\n\ndata: [DONE]\n\n",
+            serde_json::json!({"choices":[{"delta":{"reasoning_content":"Plan","content":content},"finish_reason":"stop"}]})
+        ))
+    };
+    for (switch, replay) in [
+        (false, crate::provider::ReasoningReplay::SameDestination),
+        (true, crate::provider::ReasoningReplay::SameDestination),
+        (true, crate::provider::ReasoningReplay::AllTurns),
+    ] {
+        let id = session::SessionId::generate(std::time::SystemTime::now())?;
+        let directory = std::env::temp_dir().join(format!("benitoiteh-switch-model-{id}"));
+        std::fs::create_dir(&directory)?;
+        let fixture = Fixture(std::fs::canonicalize(directory)?);
+        for name in ["home", "project", "tmp"] {
+            std::fs::create_dir(fixture.0.join(name))?;
+        }
+        let paths = DataPaths::from_values(
+            Some(&fixture.0.join("home")),
+            Some(&fixture.0.join("config")),
+            Some(&fixture.0.join("state")),
+            Some(&fixture.0.join("tmp")),
+        )?;
+        let project = fixture.0.join("project");
+        let session = Session::create(&paths, id)?;
+        let mut server = mock_provider::MockProvider::start(vec![
+            reply("first"),
+            reply("summary"),
+            reply("second"),
+        ])?;
+        let config = AgentConfig {
+            compaction: Default::default(),
+            agent: Default::default(),
+            project_parent: None,
+            allow_effects: None,
+            allow_agents_write: false,
+            mode: Mode::Normal,
+            destination: Destination {
+                provider: "test".into(),
+                base_url: server.base_url(),
+                model: "model-a".into(),
+            },
+            kind: AdapterKind::OpenAiChat,
+            capabilities: Capabilities {
+                reasoning_replay: replay,
+                ..Capabilities::default()
+            },
+            effort: "high".into(),
+            limits: Limits::default(),
+            http_timeouts: HttpTimeouts::default(),
+            retry_initial: Duration::from_millis(1),
+        };
+        let environment = Environment::capture(
+            &project,
+            Mode::Normal,
+            &[],
+            false,
+            std::time::SystemTime::now(),
+        )?;
+        let mut agent = Agent::new(
+            config,
+            String::new(),
+            tool_context(&paths, &project, &session)?,
+            environment,
+            session.clone(),
+        )?;
+        for (index, request) in ["one", "two"].into_iter().enumerate() {
+            if index == 1 && switch {
+                agent.switch_model("model-b", Some("low"));
+            }
+            let (sender, receiver) = std::sync::mpsc::sync_channel(64);
+            agent.run(request.into(), Arc::new(AtomicBool::new(false)), sender)?;
+            let _events = receiver.into_iter().collect::<Vec<_>>();
+        }
+        let requests = server.requests()?;
+        let last = requests.last().ok_or("missing request")?;
+        let body = last.body.to_string();
+        let label = format!("{switch} {replay:?}");
+        assert_eq!(
+            last.body.get("model").and_then(serde_json::Value::as_str),
+            Some(if switch { "model-b" } else { "model-a" }),
+            "{label}"
+        );
+        assert_eq!(
+            body.contains("\"reasoning_content\":\"Plan\""),
+            !switch,
+            "{label}: {body}"
+        );
+        // すべての番の推論を求める口では、切り替えの後に要約の要求を一つ挟む。
+        assert_eq!(
+            requests.len(),
+            if replay == crate::provider::ReasoningReplay::AllTurns {
+                3
+            } else {
+                2
+            },
+            "{label}"
+        );
+        let state = session::ResumeState::read(session.directory())?;
+        assert_eq!(
+            state.destination.model,
+            if switch { "model-b" } else { "model-a" },
+            "{label}"
+        );
+        drop(agent);
+        server.shutdown()?;
+    }
+    Ok(())
+}

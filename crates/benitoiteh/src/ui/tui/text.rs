@@ -282,6 +282,7 @@ pub const HELP: &str = "/help                  Show commands and input controls.
 /tree                  Show the session tree and move to a branch or request.
 /fork [before]         Copy a path into a new session.
 /new                   Start a new session.
+/model [name [effort]] Show or switch the model of the current provider.
 /init                  Ask the model to write AGENTS.md for this project.
 /export [path]         Write the current branch to a new Markdown file.
 /quit                  Quit.
@@ -741,4 +742,17 @@ pub fn attachments(paths: &[std::path::PathBuf]) -> String {
         .collect::<Vec<_>>()
         .join(", ");
     format!(" | images: {names}")
+}
+
+/// `/model` の使い方と結果（設計書 05-02「`/` で始まるコマンド」）。
+pub const MODEL_USAGE: &str = "Usage: /model [name [effort]]";
+pub fn model_result(provider: &str, model: &str, effort: &str, changed: bool) -> String {
+    let current = format!("Provider: {provider}; model: {model}; effort: {effort}");
+    if changed {
+        format!(
+            "{current}. Earlier reasoning is not sent to the new model, and the prompt cache starts over."
+        )
+    } else {
+        current
+    }
 }

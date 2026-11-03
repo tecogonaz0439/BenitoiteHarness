@@ -272,6 +272,8 @@ pub struct Agent {
     check_limit: BTreeMap<std::path::PathBuf, String>,
     completion_prompted: bool,
     resuming: bool,
+    /// `/model` で送り先を替えた。次の依頼の前に、新しい送り先の開始を記録する。
+    destination_changed: bool,
     resume_compaction: bool,
     resume_has_reasoning: bool,
     resume_results: Vec<Record>,
@@ -454,6 +456,7 @@ impl Agent {
             check_limit: BTreeMap::new(),
             completion_prompted: false,
             resuming: false,
+            destination_changed: false,
             resume_compaction: false,
             resume_has_reasoning: false,
             resume_results: Vec::new(),
@@ -646,6 +649,45 @@ impl Agent {
         self
     }
 
+    /// 同じ提供者の設定の中で、モデルと推論の度合いを替える（設計書 05-02「`/` で始まるコマンド」）。
+    ///
+    /// 機能の表は提供者の設定ごとなので変えない。前のモデルの推論の内容は、アダプタが応答ごとの
+    /// 送り先で照合して送らない。すべての番の推論を求める提供者では、再開と同じく次の依頼の前に
+    /// 圧縮する。次の依頼の前に、新しい送り先の開始を記録し、再開でもその送り先を使う。
+    pub fn switch_model(&mut self, model: &str, effort: Option<&str>) {
+        if self.config.destination.model != model {
+            self.config.destination.model = model.to_owned();
+            self.adapter.set_model(model);
+            if self.config.capabilities.reasoning_replay
+                == crate::provider::ReasoningReplay::AllTurns
+            {
+                let turns = self
+                    .conversation
+                    .items
+                    .iter()
+                    .filter_map(|item| match item {
+                        Item::AssistantTurn(turn) => Some(turn),
+                        Item::UserMessage(_) | Item::ToolResult(_) => None,
+                    })
+                    .collect::<Vec<_>>();
+                if !turns.is_empty() {
+                    self.resume_compaction = true;
+                    self.resume_has_reasoning |=
+                        turns.iter().any(|turn| reasoning::has_reasoning(turn));
+                }
+            }
+        }
+        if let Some(effort) = effort {
+            self.config.effort = effort.to_owned();
+        }
+        self.destination_changed = self.started;
+    }
+
+    /// 今の推論の度合い。
+    pub fn effort(&self) -> &str {
+        &self.config.effort
+    }
+
     /// 履歴の保存先を分けるための、実のプロジェクトのディレクトリ。
     pub fn project_dir(&self) -> &std::path::Path {
         self.tool_context.project.real_path()
@@ -682,7 +724,8 @@ impl Agent {
         let started = Instant::now();
         let mut summary = Summary::default();
         self.flush_resume_results()?;
-        if !self.started || self.resuming {
+        if !self.started || self.resuming || self.destination_changed {
+            self.destination_changed = false;
             let host = provider_host(&self.config.destination)?;
             self.emit(
                 &events,

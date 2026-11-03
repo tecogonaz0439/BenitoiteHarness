@@ -26,6 +26,8 @@ enum Job {
         cancelled: Arc<AtomicBool>,
     },
     Status,
+    /// モデルと推論の度合いを替える。None は今の値を示すだけ。
+    Model(Option<(String, Option<String>)>),
     ListCheckpoints,
     ListBranches,
     ListForkRequests,
@@ -58,6 +60,7 @@ enum Reply {
     Run(RunReport),
     Compact(CompactReport),
     Status(AgentStatus, TokenCounts),
+    Model(AgentStatus, String, bool),
     ListCheckpoints(Vec<CheckpointInfo>),
     ListBranches(Vec<BranchTreeRow>),
     ListForkRequests(Vec<BranchTreeRow>),
@@ -171,6 +174,17 @@ impl Worker {
                             .and(result.map(Reply::Compact))
                     }
                     Job::Status => Ok(Reply::Status(agent.status(), tokens.clone())),
+                    Job::Model(change) => {
+                        let changed = change.is_some();
+                        if let Some((model, effort)) = change {
+                            agent.switch_model(&model, effort.as_deref());
+                        }
+                        Ok(Reply::Model(
+                            agent.status(),
+                            agent.effort().to_owned(),
+                            changed,
+                        ))
+                    }
                     Job::ListCheckpoints => agent.checkpoints().map(Reply::ListCheckpoints),
                     Job::ListBranches => agent.branch_tree().map(Reply::ListBranches),
                     Job::ListForkRequests => agent.branch_tree().map(Reply::ListForkRequests),
@@ -382,6 +396,11 @@ impl Worker {
     pub(super) fn end(&mut self) -> Result<(), AgentError> {
         self.command(Job::End, RunControl::default())
     }
+    /// モデルと推論の度合いを替えるか、今の値を示す（設計書 05-02「`/` で始まるコマンド」）。
+    pub fn model(&mut self, change: Option<(String, Option<String>)>) -> Result<(), AgentError> {
+        self.command(Job::Model(change), RunControl::default())
+    }
+
     /// セッションの記録のディレクトリ。
     pub(super) fn session_directory(&self) -> &std::path::Path {
         &self.session_directory
@@ -479,6 +498,10 @@ impl Worker {
                     }
                     Ok(Reply::Status(status, tokens)) => {
                         screen.command_status(&status, &tokens);
+                        self.status = status;
+                    }
+                    Ok(Reply::Model(status, effort, changed)) => {
+                        screen.model_result(&status, &effort, changed);
                         self.status = status;
                     }
                     Ok(Reply::ListCheckpoints(points)) => screen.select_checkpoints(points),

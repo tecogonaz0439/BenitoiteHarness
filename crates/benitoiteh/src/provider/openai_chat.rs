@@ -129,6 +129,12 @@ impl fmt::Debug for OpenAiChatAdapter {
 }
 
 impl OpenAiChatAdapter {
+    /// 同じ提供者の設定の中でモデルを替える（設計書 05-02「`/` で始まるコマンド」）。
+    /// 推論の内容は応答ごとの送り先で照合するので、前のモデルの推論は送らなくなる。
+    pub fn set_model(&mut self, model: &str) {
+        self.destination.model = model.to_owned();
+    }
+
     /// 送り先と機能と、解決済みの API キーを受け取る。空のキーなら認証を送らない。
     pub fn new(destination: Destination, capabilities: Capabilities, api_key: String) -> Self {
         Self {

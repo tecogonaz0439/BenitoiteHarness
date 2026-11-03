@@ -80,6 +80,14 @@ pub(super) enum Stream {
 }
 
 impl Adapter {
+    pub(super) fn set_model(&mut self, model: &str) {
+        match self {
+            Self::Anthropic(adapter) => adapter.set_model(model),
+            Self::Chat(adapter) => adapter.set_model(model),
+            Self::Responses(adapter) => adapter.set_model(model),
+        }
+    }
+
     pub(super) fn new(config: &AgentConfig, key: String) -> Result<Self, ProviderError> {
         Ok(match config.kind {
             AdapterKind::AnthropicMessages => Self::Anthropic(AnthropicAdapter::new(
