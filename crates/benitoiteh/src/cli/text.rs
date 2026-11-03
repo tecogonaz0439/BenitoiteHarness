@@ -32,6 +32,7 @@ Options (exec only):
     --json
     --output-last-message <file>
     --ephemeral
+    --output-schema <file>
     --allow <effects>
     --allow-agents-write
     --trust-project
@@ -226,3 +227,12 @@ pub const CHATGPT_STORAGE: &str =
     "Could not read saved ChatGPT authorization securely. Run benitoiteh login chatgpt.";
 
 pub const CHATGPT_DESTINATION: &str = "ChatGPT authentication requires https://api.openai.com/v1.";
+
+/// 出力の型のファイルを使えない（設計書 05-01「exec の出力」）。
+pub fn invalid_output_schema(path: &std::path::Path, reason: &str) -> String {
+    format!(
+        "benitoiteh: cannot use {} as --output-schema: {reason}",
+        path.display()
+    )
+}
+pub const SCHEMA_NOT_OBJECT: &str = "the file must contain a JSON object of at most 1 MiB";

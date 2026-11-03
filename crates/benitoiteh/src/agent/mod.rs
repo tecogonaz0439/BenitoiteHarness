@@ -274,6 +274,8 @@ pub struct Agent {
     resuming: bool,
     /// `/model` で送り先を替えた。次の依頼の前に、新しい送り先の開始を記録する。
     destination_changed: bool,
+    /// `exec --output-schema` の JSON Schema。普通の番の要求にだけ付ける。
+    output_schema: Option<serde_json::Value>,
     resume_compaction: bool,
     resume_has_reasoning: bool,
     resume_results: Vec<Record>,
@@ -457,6 +459,7 @@ impl Agent {
             completion_prompted: false,
             resuming: false,
             destination_changed: false,
+            output_schema: None,
             resume_compaction: false,
             resume_has_reasoning: false,
             resume_results: Vec::new(),

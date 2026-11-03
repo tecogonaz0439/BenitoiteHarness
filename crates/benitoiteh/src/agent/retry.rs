@@ -21,6 +21,7 @@ impl Agent {
             &self.config.effort,
             self.previous_last_item,
             &self.session.id().to_string(),
+            self.output_schema.as_ref(),
         )?;
         let received = self.receive_with_retry(&request, cancelled, events);
         if !matches!(
@@ -42,6 +43,7 @@ impl Agent {
             &self.config.effort,
             self.previous_last_item,
             &self.session.id().to_string(),
+            self.output_schema.as_ref(),
         )?;
         let received = self.receive_with_retry(&request, cancelled, events)?;
         if received.is_some() {

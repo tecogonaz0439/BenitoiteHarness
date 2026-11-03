@@ -184,6 +184,7 @@ fn requests_follow_capabilities_and_do_not_authenticate_without_a_key() -> TestR
                 previous_last_item: Some(0),
                 disable_tools: key,
                 prompt_cache_key: Some("session-test"),
+                output_schema: None,
             },
         )?;
         assert!(!format!("{adapter:?} {request:?}").contains(KEY));

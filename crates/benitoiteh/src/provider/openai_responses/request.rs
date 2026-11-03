@@ -24,6 +24,8 @@ pub struct RequestOptions<'a> {
     pub disable_tools: bool,
     /// キャッシュの振り分けに使うセッションの ID。
     pub prompt_cache_key: Option<&'a str>,
+    /// 最後の応答の形を決める JSON Schema（設計書 05-01「exec の出力」）。圧縮の要求には付けない。
+    pub output_schema: Option<&'a Value>,
 }
 
 /// 認証と本文を診断へ出さない送信専用の要求。
@@ -108,6 +110,12 @@ impl OpenAiResponsesAdapter {
         }
         if let Some(key) = options.prompt_cache_key {
             fields.insert("prompt_cache_key".into(), json!(key));
+        }
+        if let Some(schema) = options.output_schema {
+            fields.insert(
+                "text".into(),
+                json!({"format": {"type": "json_schema", "name": "output", "schema": schema, "strict": true}}),
+            );
         }
         if tools.is_empty() {
             let fields = body

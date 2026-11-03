@@ -1519,3 +1519,92 @@ fn sessions_export_prints_the_recorded_conversation() -> TestResult {
     server.shutdown()?;
     Ok(())
 }
+
+// 作成時の関門: `--output-schema` の JSON Schema は、三つの口のそれぞれの形で、道具を呼ぶ番を含む
+// 普通の番の要求に付く。読めないファイルと JSON のオブジェクトでないファイルは、何も送らずに起動を
+// 止める（設計書 05-01「exec の出力」）。
+#[test]
+fn output_schema_reaches_every_turn_in_each_provider_format() -> TestResult {
+    let schema = json!({
+        "type": "object",
+        "properties": {"answer": {"type": "string"}},
+        "required": ["answer"],
+        "additionalProperties": false
+    });
+    for protocol in [Protocol::Chat, Protocol::Anthropic, Protocol::Responses] {
+        let mut server = MockProvider::start(vec![
+            ResponseScript::sse(protocol.response(
+                Some(("read", "read", json!({"path":"a.bnt"}))),
+                "",
+                false,
+            )),
+            ResponseScript::sse(protocol.response(None, "{\"answer\":\"done\"}", false)),
+        ])?;
+        let f = Fixture::new(protocol, &server)?;
+        let path = f.root.join("schema.json");
+        fs::write(&path, serde_json::to_vec(&schema)?)?;
+        let mut command = f.command("Answer as JSON.");
+        command.arg("--output-schema").arg(&path);
+        let output = Running::start(&mut command)?.finish()?;
+        assert_eq!(
+            output.status.code(),
+            Some(0),
+            "{protocol:?}: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert_eq!(
+            std::str::from_utf8(&output.stdout)?.trim(),
+            "{\"answer\":\"done\"}"
+        );
+        let requests = server.requests()?;
+        assert_eq!(requests.len(), 2, "{protocol:?}");
+        for request in &requests {
+            let (pointer, expected) = match protocol {
+                Protocol::Chat => (
+                    "/response_format",
+                    json!({"type":"json_schema","json_schema":{"name":"output","schema":schema,"strict":true}}),
+                ),
+                Protocol::Responses => (
+                    "/text/format",
+                    json!({"type":"json_schema","name":"output","schema":schema,"strict":true}),
+                ),
+                Protocol::Anthropic => (
+                    "/output_config/format",
+                    json!({"type":"json_schema","schema":schema}),
+                ),
+            };
+            assert_eq!(
+                request.body.pointer(pointer),
+                Some(&expected),
+                "{protocol:?}"
+            );
+        }
+        // Anthropic では、推論の度合いと同じ output_config に並べる。
+        if protocol == Protocol::Anthropic {
+            assert!(
+                requests
+                    .iter()
+                    .all(|request| request.body.pointer("/output_config/effort").is_some())
+            );
+        }
+        server.shutdown()?;
+    }
+    let mut server = MockProvider::start(Vec::new())?;
+    let f = Fixture::new(Protocol::Chat, &server)?;
+    fs::write(f.root.join("list.json"), "[1, 2]")?;
+    fs::write(f.root.join("broken.json"), "{")?;
+    for name in ["missing.json", "list.json", "broken.json"] {
+        let mut command = f.command("Answer as JSON.");
+        command.arg("--output-schema").arg(f.root.join(name));
+        let output = Running::start(&mut command)?.finish()?;
+        assert_ne!(output.status.code(), Some(0), "{name}");
+        assert!(
+            String::from_utf8_lossy(&output.stderr).contains("--output-schema"),
+            "{name}: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+    assert!(server.requests()?.is_empty());
+    server.shutdown()?;
+    Ok(())
+}

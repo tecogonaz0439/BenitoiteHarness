@@ -280,6 +280,12 @@ pub(super) fn prepare(
             }
         }
         let args = &args;
+        // 出力の型は、セッションを作る前に読んで確かめる（設計書 05-01「exec の出力」）。
+        let output_schema = args
+            .output_schema
+            .as_deref()
+            .map(read_output_schema)
+            .transpose()?;
         let cwd = std::env::current_dir().map_err(StartupError::Io)?;
         let opened = if let Some(session) = overrides.and_then(|fixed| fixed.fork_session.as_ref())
         {
@@ -883,6 +889,7 @@ pub(super) fn prepare(
                 .map_err(StartupError::Agent)?;
         }
         agent = agent
+            .with_output_schema(output_schema)
             .with_project_trust(project_trust)
             .with_approvals(Box::new(NonInteractiveApprover), approval_policy)
             .with_session_safety(crate::agent::SessionSafety {
@@ -1047,6 +1054,29 @@ pub(super) fn run(args: ExecArgs) -> Result<u8, CliError> {
         Outcome::Failed => 1,
         Outcome::Cancelled => 130,
     })
+}
+
+/// `--output-schema` のファイルを、1 MiB までの JSON のオブジェクトとして読む。
+/// 中身の JSON Schema としての正しさは提供者が確かめる。
+fn read_output_schema(path: &Path) -> Result<serde_json::Value, StartupError> {
+    use std::io::Read as _;
+    let invalid = |reason: &str| {
+        StartupError::Io(io::Error::new(
+            io::ErrorKind::InvalidData,
+            text::invalid_output_schema(path, reason),
+        ))
+    };
+    let mut bytes = Vec::new();
+    std::fs::File::open(path)
+        .and_then(|file| file.take(1024 * 1024 + 1).read_to_end(&mut bytes))
+        .map_err(|error| invalid(&error.to_string()))?;
+    if bytes.len() > 1024 * 1024 {
+        return Err(invalid(text::SCHEMA_NOT_OBJECT));
+    }
+    match serde_json::from_slice::<serde_json::Value>(&bytes) {
+        Ok(value @ serde_json::Value::Object(_)) => Ok(value),
+        Ok(_) | Err(_) => Err(invalid(text::SCHEMA_NOT_OBJECT)),
+    }
 }
 
 /// 送らずに作った要求を、読みやすい JSON にする。本文が JSON でなければ文字列で示す。

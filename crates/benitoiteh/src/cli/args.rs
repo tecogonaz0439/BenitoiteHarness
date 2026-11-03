@@ -61,6 +61,8 @@ pub struct ExecArgs {
     pub output_last_message: Option<PathBuf>,
     /// セッションの記録を残さない（設計書 01-05「記録を残さないセッション」）。
     pub ephemeral: bool,
+    /// 最後の応答の形を決める JSON Schema のファイル（設計書 05-01「exec の出力」）。
+    pub output_schema: Option<PathBuf>,
     /// `debug prompt-input` から使う。最初の要求を作って示し、送らない。
     pub preview: bool,
     pub request: Request,
@@ -143,6 +145,7 @@ impl ExecArgs {
             json: false,
             output_last_message: None,
             ephemeral: false,
+            output_schema: None,
             preview: false,
             request: Request::Stdin,
         };
@@ -198,6 +201,7 @@ impl ExecArgs {
                     | "--max-run-tokens"
                     | "--json"
                     | "--output-last-message"
+                    | "--output-schema"
                     | "--sandbox"
                     | "--approval"
                     | "--allow"
@@ -244,6 +248,7 @@ impl ExecArgs {
                 "--max-run-tokens" => result.max_run_tokens = Some(number(string()?)?),
                 "--json" => result.json = true,
                 "--output-last-message" => result.output_last_message = Some(PathBuf::from(value)),
+                "--output-schema" => result.output_schema = Some(PathBuf::from(value)),
                 "--sandbox" => {
                     result.sandbox = Some(match string()? {
                         "read-only" => Sandbox::ReadOnly,
@@ -295,6 +300,7 @@ impl ExecArgs {
                 || result.json
                 || result.output_last_message.is_some()
                 || result.ephemeral
+                || result.output_schema.is_some()
                 || request == Some(Request::Stdin)
             {
                 return Err(ArgsError::Invalid);

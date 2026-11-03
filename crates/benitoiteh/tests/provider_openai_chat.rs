@@ -343,6 +343,7 @@ fn requests_follow_capabilities_and_omit_authorization_without_a_key() -> TestRe
                 disable_tools: key,
                 effort: Some("high"),
                 previous_last_item: Some(0),
+                output_schema: None,
             },
         )?;
         assert!(!format!("{adapter:?} {request_body:?}").contains(KEY));

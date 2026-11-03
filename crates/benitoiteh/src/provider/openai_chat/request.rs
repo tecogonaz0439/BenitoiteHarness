@@ -22,6 +22,8 @@ pub struct RequestOptions<'a> {
     pub previous_last_item: Option<usize>,
     /// 圧縮のため tool_choice: none を使うか。未対応の口では誤りにする。
     pub disable_tools: bool,
+    /// 最後の応答の形を決める JSON Schema（設計書 05-01「exec の出力」）。圧縮の要求には付けない。
+    pub output_schema: Option<&'a Value>,
 }
 
 /// 認証ヘッダを含む送信専用の要求。Debug は内容を表示しない。
@@ -102,6 +104,13 @@ impl OpenAiChatAdapter {
         }
         if !tools.is_empty() && options.disable_tools {
             insert(&mut body, "tool_choice", json!("none"))?;
+        }
+        if let Some(schema) = options.output_schema {
+            insert(
+                &mut body,
+                "response_format",
+                json!({"type": "json_schema", "json_schema": {"name": "output", "schema": schema, "strict": true}}),
+            )?;
         }
         if tools.is_empty() {
             let fields = body

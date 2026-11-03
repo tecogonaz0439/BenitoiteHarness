@@ -17,6 +17,12 @@ use super::{Agent, AgentConfig, AgentError};
 use crate::provider::openai_responses::ChatGptTokens;
 
 impl Agent {
+    /// 最後の応答の形を決める JSON Schema を、普通の番の要求に付ける（設計書 05-01「exec の出力」）。
+    pub fn with_output_schema(mut self, schema: Option<serde_json::Value>) -> Self {
+        self.output_schema = schema;
+        self
+    }
+
     /// 起動時に検査済みの ChatGPT の保存を Responses のアダプタに渡す。
     pub fn with_chatgpt_tokens(mut self, source: ChatGptTokens) -> Result<Self, AgentError> {
         let Adapter::Responses(adapter) = self.adapter else {
@@ -68,6 +74,7 @@ impl Agent {
             &self.config.effort,
             self.previous_last_item,
             &self.session.id().to_string(),
+            self.output_schema.as_ref(),
         )?;
         Ok(request.preview())
     }
@@ -115,8 +122,16 @@ impl Adapter {
         effort: &str,
         previous: Option<usize>,
         session_id: &str,
+        output_schema: Option<&serde_json::Value>,
     ) -> Result<Request, ProviderError> {
-        self.request_with(conversation, system, effort, previous, session_id, false)
+        self.build(
+            conversation,
+            system,
+            effort,
+            previous,
+            session_id,
+            (false, output_schema),
+        )
     }
 
     pub(super) fn request_with(
@@ -128,6 +143,26 @@ impl Adapter {
         session_id: &str,
         disable_tools: bool,
     ) -> Result<Request, ProviderError> {
+        self.build(
+            conversation,
+            system,
+            effort,
+            previous,
+            session_id,
+            (disable_tools, None),
+        )
+    }
+
+    /// 要求を組み立てる。最後の応答の形の指定は、普通の番にだけ付ける。
+    fn build(
+        &self,
+        conversation: &Conversation,
+        system: &SystemContext,
+        effort: &str,
+        previous: Option<usize>,
+        session_id: &str,
+        (disable_tools, output_schema): (bool, Option<&serde_json::Value>),
+    ) -> Result<Request, ProviderError> {
         match self {
             Self::Anthropic(adapter) => adapter
                 .build_request(
@@ -138,6 +173,7 @@ impl Adapter {
                         effort: Some(effort),
                         previous_last_item: previous,
                         disable_tools,
+                        output_schema,
                     },
                 )
                 .map(Request::Anthropic)
@@ -151,6 +187,7 @@ impl Adapter {
                         effort: Some(effort),
                         previous_last_item: previous,
                         disable_tools,
+                        output_schema,
                     },
                 )
                 .map(Request::Chat)
@@ -165,6 +202,7 @@ impl Adapter {
                         previous_last_item: previous,
                         disable_tools,
                         prompt_cache_key: Some(session_id),
+                        output_schema,
                     },
                 )
                 .map(Request::Responses)

@@ -846,7 +846,8 @@ fn user_attachments_are_recorded_by_reference_and_restored_on_resume()
 
 // 作成時の関門: `/model` の切り替えの後の要求は新しいモデルへ送り、前のモデルの推論の文を送らない。
 // 切り替えなければ送る。新しい送り先の開始を記録し、再開ではその送り先を使う。すべての番の推論を
-// 求める提供者では、次の依頼の前に圧縮する（設計書 05-02「`/` で始まるコマンド」）。
+// 求める提供者では、次の依頼の前に圧縮し、その要約の要求には出力の型を付けない
+// （設計書 05-02「`/` で始まるコマンド」）。
 #[test]
 fn switching_models_stops_reasoning_replay_and_records_the_new_destination()
 -> Result<(), Box<dyn std::error::Error>> {
@@ -916,7 +917,8 @@ fn switching_models_stops_reasoning_replay_and_records_the_new_destination()
             tool_context(&paths, &project, &session)?,
             environment,
             session.clone(),
-        )?;
+        )?
+        .with_output_schema(Some(serde_json::json!({"type": "object"})));
         for (index, request) in ["one", "two"].into_iter().enumerate() {
             if index == 1 && switch {
                 agent.switch_model("model-b", Some("low"));
@@ -949,6 +951,16 @@ fn switching_models_stops_reasoning_replay_and_records_the_new_destination()
             },
             "{label}"
         );
+        // 出力の型は普通の番にだけ付け、圧縮の要約の要求には付けない（設計書 05-01「exec の出力」）。
+        let formats = requests
+            .iter()
+            .map(|request| request.body.get("response_format").is_some())
+            .collect::<Vec<_>>();
+        if replay == crate::provider::ReasoningReplay::AllTurns {
+            assert_eq!(formats, [true, false, true], "{label}");
+        } else {
+            assert!(formats.iter().all(|present| *present), "{label}");
+        }
         let state = session::ResumeState::read(session.directory())?;
         assert_eq!(
             state.destination.model,
