@@ -49,4 +49,12 @@
 
 ## 確かめた結果
 
-macOS で、`cargo clippy`（ホスト、`aarch64-unknown-linux-musl`、`x86_64-unknown-linux-musl`）と、`sandbox` の単体テスト、`sandbox_benitoite_run`・`sandbox_benitoite_test`・`sandbox_benitoite_scratch`・`sandbox_macos`・`sandbox_exec_restricted` が通った。全体の検査の結果は、取り込みの記録に書く。
+macOS で、`cargo clippy`（ホスト、`aarch64-unknown-linux-musl`、`x86_64-unknown-linux-musl`）と、`sandbox` の単体テスト、`sandbox_benitoite_run`・`sandbox_benitoite_test`・`sandbox_benitoite_scratch`・`sandbox_macos`・`sandbox_exec_restricted` が通った。全体の検査（`scripts/check.sh`、`BENITOITEH_X86_64_HOST` を指定。コミット `9ef1427`）は終了状態 0 だった。
+
+| 対象 | 結果 |
+|---|---|
+| macOS | 819 件が通り、失敗 0、無視 14。評価の道具の Python のテスト 118 件も通った |
+| aarch64 の Linux（Apple の `container`） | 721 件が通り、失敗 0、無視 13（Landlock を要する `sandbox_*.rs` は飛ばす） |
+| x86_64 の Linux（試験の機械の podman） | 815 件が通り、失敗 0、無視 16。`restricted_scripts_cannot_read_project_secret_names` の Linux の期待値（深い行は読める）も通った |
+
+一度目の全体の検査では、x86_64 の試験の機械に ssh でつながらなかった（`No route to host`）。この会話を動かすデスクトップのアプリに、macOS の手元の網への接続の許可がなかったためであり、設計者が許可した後に走らせ直した。
