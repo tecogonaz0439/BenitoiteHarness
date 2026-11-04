@@ -109,3 +109,11 @@
 | exec の通常モードの `bash` に、利用者の規則の代わりに既定の規則を渡す | `redirected_xdg_keeps_default_home_paths_unreadable_from_normal_bash` で失敗した |
 
 macOS で `scripts/check.sh --inside-codex` が終了状態 0 で通った。
+
+全体の検査（`scripts/check.sh`、`BENITOITEH_X86_64_HOST` を指定。コミット `394daad`）は終了状態 0 だった。テストの関数を足していないので、件数は P5-48 と同じである。
+
+| 対象 | 結果 |
+|---|---|
+| macOS | 819 件が通り、失敗 0、無視 14。評価の道具の Python のテスト 118 件も通った |
+| aarch64 の Linux（Apple の `container`） | 721 件が通り、失敗 0、無視 13（Landlock を要する `sandbox_*.rs` は飛ばす） |
+| x86_64 の Linux（試験の機械の podman） | 815 件が通り、失敗 0、無視 16 |
