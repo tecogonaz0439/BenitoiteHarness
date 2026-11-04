@@ -359,6 +359,16 @@ fn address_table_rejects_special_ranges_and_checks_embedded_ipv4() -> TestResult
     Ok(())
 }
 
+// 作成時の関門: 機械自身の口に付いたアドレスを見分ける判定が、付いたアドレスと付いていないアドレスを
+// 分ける。公開のアドレスを持つ口は試験の機械にないことが多いので、判定そのものを確かめる。
+#[test]
+fn addresses_assigned_to_this_machine_are_recognized() -> TestResult {
+    assert!(address::assigned_here("127.0.0.1".parse()?));
+    assert!(!address::assigned_here("8.8.8.8".parse()?));
+    assert!(!address::assigned_here("2606:4700:4700::1111".parse()?));
+    Ok(())
+}
+
 #[test]
 fn resolution_waits_for_approval_and_rejects_any_forbidden_answer() -> TestResult {
     let f = Fixture::new(&["example.com"])?;

@@ -136,7 +136,7 @@ pub fn network_denied(host: &str, port: u16, reason: &str) -> String {
     format!("benitoiteh blocked network access to {host}:{port}: {reason}.")
 }
 
-/// 確認の要約。
+/// 確認の要約。許可はドメインのすべてのポートに効くので、そのことを示す（設計書 03-03「通信の確認」）。
 pub fn network_summary(host: &str, port: u16) -> String {
-    format!("Allow the command to connect to {host}:{port}?")
+    format!("Allow the command to connect to {host}:{port}? Allowing it covers every port of {host}.")
 }

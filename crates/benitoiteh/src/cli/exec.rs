@@ -1098,7 +1098,7 @@ fn preview_json(preview: &crate::provider::RequestPreview) -> Vec<u8> {
     .unwrap_or_default()
 }
 
-/// 中継の門を作る。macOS の待ち受けは手元のほかのプロセスからも届くので、合言葉を持たせる。
+/// 中継の門を作る。macOS の待ち受けの合言葉は、呼び出しごとに bash の道具が作る。
 fn network_gate(
     user: &UserConfig,
     interactive: bool,
@@ -1108,13 +1108,6 @@ fn network_gate(
         user.normal.allowed_domains.iter().cloned().collect(),
         interactive && approval != Approval::Never,
     );
-    #[cfg(target_os = "macos")]
-    let gate = {
-        let mut random = [0_u8; 16];
-        getrandom::fill(&mut random)
-            .map_err(|error| StartupError::Io(io::Error::other(error.to_string())))?;
-        gate.with_token(format!("{:032x}", u128::from_ne_bytes(random)))
-    };
     Ok(Arc::new(gate))
 }
 

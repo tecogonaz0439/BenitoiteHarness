@@ -1,8 +1,22 @@
 //! 私的なネットワークと特殊用途のアドレスを拒む（設計書 01-03「web_fetch」）。
 
-use std::net::{IpAddr, Ipv4Addr};
+use std::net::{IpAddr, Ipv4Addr, SocketAddr, UdpSocket};
 
+/// 宛先にしてよいアドレスか。種類で私的・特殊用途のものを拒み、さらに機械自身の口に付いたアドレス
+/// （Mac の大域の IPv6、VPS の公開の IPv4 など）も拒む。後者を通すと、攻撃者が DNS の向き先を機械自身へ
+/// 替えて、すべての口で待ち受けるサンドボックスの外のサービスに届かせられる（設計書 01-03「web_fetch」、
+/// 03-02「通信の中継」）。ルータの公開のアドレスへの折り返し（NAT のヘアピン）は見分けられない。
 pub(crate) fn allowed(address: IpAddr) -> bool {
+    kind_allowed(address) && !assigned_here(address.to_canonical())
+}
+
+/// 機械自身の口に付いたアドレスか。付いていれば、そのアドレスで bind できる。`unsafe` で口の一覧を
+/// 読まずに、標準のライブラリだけで判定する。
+pub(super) fn assigned_here(address: IpAddr) -> bool {
+    UdpSocket::bind(SocketAddr::new(address, 0)).is_ok()
+}
+
+fn kind_allowed(address: IpAddr) -> bool {
     match address {
         IpAddr::V4(ip) => ipv4(ip),
         IpAddr::V6(ip) => {

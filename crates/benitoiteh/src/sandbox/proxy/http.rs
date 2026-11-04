@@ -5,7 +5,6 @@ pub(super) struct Request {
     pub host: String,
     pub port: u16,
     pub forward: Option<Forward>,
-    authorization: Option<String>,
 }
 
 /// 平文の HTTP の要求を、宛先へ渡す形に直すための材料。
@@ -50,6 +49,8 @@ impl Request {
                 .bytes()
                 .all(|byte| byte.is_ascii_uppercase() || byte == b'-')
             || !matches!(version, "HTTP/1.1" | "HTTP/1.0")
+            // 要求の行の対象に制御の文字を入れて、宛先へ別の要求の行やヘッダを流し込ませない。
+            || target.bytes().any(|byte| byte < 0x21 || byte == 0x7f)
         {
             return Err(ParseError::Invalid);
         }
@@ -67,17 +68,12 @@ impl Request {
             }
             headers.push((name.to_owned(), value.trim().to_owned()));
         }
-        let authorization = headers
-            .iter()
-            .find(|(name, _)| name.eq_ignore_ascii_case("proxy-authorization"))
-            .map(|(_, value)| value.clone());
         if method == "CONNECT" {
             let (host, port) = authority(target, None)?;
             return Ok(Self {
                 host,
                 port,
                 forward: None,
-                authorization,
             });
         }
         let lower = target.get(..8).map(str::to_ascii_lowercase);
@@ -109,24 +105,33 @@ impl Request {
                 target,
                 headers,
             }),
-            authorization,
         })
     }
+}
 
-    /// `Proxy-Authorization: Basic base64("benitoiteh:<合言葉>")` と一致するか。
-    pub(super) fn authorized(&self, token: &str) -> bool {
-        let expected = format!("Basic {}", base64(format!("benitoiteh:{token}").as_bytes()));
-        self.authorization.as_deref().is_some_and(|value| {
+/// 要求の頭の `Proxy-Authorization` が `Basic base64("benitoiteh:<合言葉>")` と一致するか。
+/// 要求の行を解釈する前に確かめられるよう、頭のバイト列から直に探す（設計書 03-02「通信の中継」）。
+pub(super) fn head_authorized(head: &[u8], token: &str) -> bool {
+    let expected = format!("Basic {}", base64(format!("benitoiteh:{token}").as_bytes()));
+    head.split(|byte| *byte == b'\n')
+        .skip(1)
+        .filter_map(|line| {
+            let line = line.strip_suffix(b"\r").unwrap_or(line);
+            let colon = line.iter().position(|byte| *byte == b':')?;
+            let (name, value) = (line.get(..colon)?, line.get(colon.saturating_add(1)..)?);
+            name.eq_ignore_ascii_case(b"proxy-authorization")
+                .then(|| value.trim_ascii())
+        })
+        .any(|value| {
             value.len() == expected.len()
                 && value
-                    .bytes()
+                    .iter()
                     .zip(expected.bytes())
                     .fold(0_u8, |difference, (left, right)| {
                         difference | (left ^ right)
                     })
                     == 0
         })
-    }
 }
 
 impl Forward {
@@ -240,6 +245,14 @@ mod tests {
                 ParseError::Credentials("example.com".into(), 80),
             ),
             (b"GET /relative HTTP/1.1\r\n\r\n", ParseError::Invalid),
+            (
+                b"GET http://example.com/a\nX:y HTTP/1.1\r\n\r\n",
+                ParseError::Invalid,
+            ),
+            (
+                b"GET http://example.com/\x7f HTTP/1.1\r\n\r\n",
+                ParseError::Invalid,
+            ),
             (b"CONNECT [::1]:443 HTTP/1.1\r\n\r\n", ParseError::Invalid),
             (b"CONNECT example.com HTTP/1.1\r\n\r\n", ParseError::Invalid),
             (
@@ -267,16 +280,22 @@ mod tests {
         assert_eq!(base64(b"foobar"), "Zm9vYmFy");
         assert_eq!(base64(b"fo"), "Zm8=");
         assert_eq!(base64(b"f"), "Zg==");
-        let request = Request::parse(
-            format!(
-                "CONNECT example.com:443 HTTP/1.1\r\nProxy-Authorization: Basic {}\r\n\r\n",
-                base64(b"benitoiteh:secret")
-            )
-            .as_bytes(),
-        )
-        .map_err(|error| format!("{error:?}"))?;
-        assert!(request.authorized("secret"));
-        assert!(!request.authorized("other"));
+        let head = format!(
+            "CONNECT example.com:443 HTTP/1.1\r\nproxy-authorization:  Basic {}\r\n\r\n",
+            base64(b"benitoiteh:secret")
+        );
+        assert!(head_authorized(head.as_bytes(), "secret"));
+        assert!(!head_authorized(head.as_bytes(), "other"));
+        // 解釈できない要求の行でも、合言葉は先に確かめられる。要求の行の中の名前は、ヘッダとして扱わない。
+        let unparsable = format!(
+            "GET https://x/ HTTP/1.1\r\nProxy-Authorization: Basic {}\r\n\r\n",
+            base64(b"benitoiteh:secret")
+        );
+        assert!(head_authorized(unparsable.as_bytes(), "secret"));
+        assert!(!head_authorized(
+            b"Proxy-Authorization: Basic YmVuaXRvaXRlaDpzZWNyZXQ= HTTP/1.1\r\n\r\n",
+            "secret"
+        ));
         Ok(())
     }
 }
