@@ -41,6 +41,7 @@
 | 守る場所 | protected paths | 書ける場所の中で、子プロセスにも道具にも書かせない場所（`.git` と `.benitoiteh`）。`.agents` も守る名前に含め、利用者が一回ごとに確認した書き込みだけを許す | 03-02 |
 | 通信の中継 | network relay | 通常モードの `network = "proxy"` で、サンドボックスの中のコマンドの通信を通し、許したドメインにだけ届ける `benitoiteh` の中の HTTP のプロキシ | 03-02 |
 | プロジェクトの信頼 | project trust | プロジェクトの Skill・プラグイン・雛形・設定の `model` を使ってよいかの、利用者の決定。探す範囲の根ごとに覚える。確認と OS のサンドボックスは変えない | 03-01 |
+| 環境の規則 | environment rules | 子プロセスの環境に、`benitoiteh` の環境のどの変数を受け継ぎ、どの値を設定するかを、`allow`・`deny`・`set` の行を上から順に当てて決める、利用者の設定。提供者のキーの変数は、規則によらず除く | 03-02 |
 | 評価用の切り替え | evaluation switch | 評価の結果で採るかを決める動きを、既定で切ったまま入れておく設定（`edit.multiple`、`compaction.prune_tool_results`、`agent.nested_instructions`、`agent.plan_tool` など） | 07-02 |
 | 書ける場所の検査 | writable-root check | 起動のときと `create_project` のときに、書ける場所がホームディレクトリや `benitoiteh` の設定・データのディレクトリと重ならないかを確かめること | 03-02 |
 | 外部の Unix IPC | external Unix IPC | サンドボックスの外のプロセスとの、Unix ドメインのソケットによる通信 | 03-02 |

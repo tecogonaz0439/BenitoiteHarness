@@ -1,7 +1,7 @@
 # OS のサンドボックス
 
 - 状態: 草稿
-- 未決事項: BH-040, BH-041, BH-044, BH-045, BH-091, BH-094
+- 未決事項: BH-033, BH-040, BH-041, BH-044, BH-045, BH-091, BH-094
 
 ## 目的と範囲
 
@@ -262,12 +262,52 @@ macOS で `~/Library/Keychains` を読ませないことの影響を、2026-11-0
 - `BENITOITEH_SANDBOX` に方針の名前を、`BENITOITEH_SANDBOX_NETWORK_DISABLED=1`（ネットワークを使えないとき）を設定する。Codex CLI の同じ働きの変数に倣う。理由: テストなどがサンドボックスの中で動いていることを知り、ネットワークを要するテストを飛ばせる。
 - 通常モードの `bash` では、`NO_COLOR=1`・`TERM=dumb`・`PAGER=cat`・`GIT_PAGER=cat` を設定する。理由: 色の制御の文字とページャの待ちは、LLM に返す出力を読みにくくし、コマンドを止める。Codex CLI も同じ値を設定する。
 
-【方針】`benitoiteh` が起動するすべての子プロセス（処理系、`bash`、`escalate` で外で動かすコマンド、`doctor` の確かめ）の環境は、`benitoiteh` の環境から次の変数を除いて作る。
+【決定】`benitoiteh` が起動するすべての子プロセス（処理系、`bash`、`escalate` で外で動かすコマンド、`doctor` の確かめ）の環境は、`benitoiteh` の環境から、環境の規則を当ててから `benitoiteh` が必ず当てる変更を加えて作る（2026-11-04 に設計者が決めた）。
 
-- LLM の提供者のキーの変数（[Benitoite の処理系との連携](../04-benitoite/04-01-benitoite-integration.md)の「処理系の起動」）。
-- 秘密に見える名前の変数。名前が `KEY`・`SECRET`・`TOKEN`・`PASSWORD`・`PASSWD`・`CREDENTIAL` のどれかを含むもの（ASCII の大文字と小文字を区別しない）とする。ただし、利用者の設定ファイルの `[secrets]` の `pass_env` に書いた名前（完全に一致するもの）は除かない（[CLI と設定ファイル](../05-interface/05-01-cli.md)の「設定ファイル」）。理由: サンドボックスの中のコマンドは、`env` を打つだけで環境を LLM へ返せる。`GITHUB_TOKEN` や `AWS_SECRET_ACCESS_KEY` を LLM の提供者へ送らないことを既定とし、`gh` などに要る名前だけを利用者が選んで通す。語の組は Codex CLI の既定の除外（`*KEY*`・`*SECRET*`・`*TOKEN*`。<https://github.com/openai/codex> のコミット `3026a8e54e0f48c4d8074cd700f35b0697abc329` の `codex-rs/protocol/src/shell_environment.rs`）に、パスワードと資格情報の語を足したものである。Codex CLI はこの除外を既定では使わないが、`benitoiteh` は安全の性質を既定とするため使う。秘密を名前に表さない変数（URL に埋め込んだパスワードなど）は除けない。`SSH_AUTH_SOCK` などのエージェントの場所は秘密そのものではないので残る（[秘密の入力](03-04-secrets.md)の「段 1: すでにある秘密の仲介役を使う」）。
+#### 環境の規則
 
-ローダとインタプリタに働く変数（`LD_PRELOAD`・`DYLD_INSERT_LIBRARIES`・`NODE_OPTIONS`・`PYTHONPATH` など）は、親の環境から除かない。理由: 親の環境は利用者が設定したものであり、信頼の前提では信頼する側にある。nono はこれらを必ず除くが、nono は親の環境も信頼しない前提に立つ。LLM が子の環境にこれらを設定する道筋（Benitoite の `Process.Command` の `environment`）は、処理系が `LD_`・`DYLD_` で始まる名前を拒む（BH-026）。
+環境の規則は、利用者の設定ファイルの `[environment]` の `rules` に書く行の並びである（[CLI と設定ファイル](../05-interface/05-01-cli.md)の「設定ファイル」）。空の環境から始め、行を上から順に一つずつ当てる。
+
+| 行 | 働き |
+|---|---|
+| `allow <パターン>` | `benitoiteh` の環境の変数のうち、パターンに合うものを、その値で入れる。すでにある名前は、その値で置き換える |
+| `deny <パターン>` | 今の環境から、パターンに合うものを除く。`set` で入れたものも除く |
+| `set <名前>=<値>` | その名前に、その値を入れる。すでにある名前は置き換える。値は展開しない |
+
+- パターンは、`*`（長さが 0 以上の任意の文字の並び）だけを特別に扱い、どの位置にも書ける。`*` を含まないパターンは、名前の全体と一致するものにだけ合う。名前とパターンは、ASCII の大文字と小文字を区別せずに比べる。理由: `deny *KEY*` を、小文字の `api_key` にも効かせる。
+- 後の行が前の行に勝つ。たとえば、最後に `allow *` を置くと、前の `deny` は効かない。`set` の後に `deny <その名前>` か `deny *` を置くと、`set` は効かない。`set` の後の `allow` は、`benitoiteh` の環境にその名前があればその値に置き換え、なければ `set` の値を残す。先頭の行が `allow *` でなければ、合わない変数は受け継がない。
+- 利用者が `rules` を書かないときは、`rules = ["allow *"]` と同じに扱う。つまり、提供者のキーの変数（後述の「規則の後に必ず当てる変更」）のほかは、すべて子に渡る（2026-11-04 に設計者が決めた）。2026-11-02 から 11-04 までの既定（秘密に見える名前の変数を除く）は改めた。理由: 名前による判定は経験則で、漏れと誤りを除けない。既定は Codex CLI と nono と同じく受け継ぐ形とし、秘密を除くかは、利用者が規則で決める。
+- 利用者が `rules` を書いたときは、その並びだけを当てる（`allow *` を前に足さない）。理由: 書いた行の並びだけを読めば、子に渡る変数が分かる。
+
+サンドボックスの中のコマンドは、`env` を打つだけで環境を LLM へ返せる。`GITHUB_TOKEN` や `AWS_SECRET_ACCESS_KEY` を LLM の提供者へ送りたくない利用者のために、秘密に見える名前を除く次の規則を、設定の例として示す。語の組は Codex CLI の既定の除外（`*KEY*`・`*SECRET*`・`*TOKEN*`。<https://github.com/openai/codex> のコミット `3026a8e54e0f48c4d8074cd700f35b0697abc329` の `codex-rs/protocol/src/shell_environment.rs`）に、パスワードと資格情報の語を足したものである。`gh` などに要る名前は、最後に `allow <名前>` を足して通す。
+
+```text
+allow *
+deny *KEY*
+deny *SECRET*
+deny *TOKEN*
+deny *PASSWORD*
+deny *PASSWD*
+deny *CREDENTIAL*
+```
+
+通す一覧と除く一覧、決まった値の設定は nono に倣った（<https://github.com/nolabs-ai/nono> のコミット `0e15816b2976cc0ac1db2bf1803307db78c79713` の `docs/cli/features/environment.mdx`）。nono は除く一覧がいつも通す一覧に勝つが、`benitoiteh` は行の順で決める。理由: 広く除いてから一部を通す形と、広く通してから一部を除く形を、同じ書き方で表せる。
+
+【決定】nono の `env_credentials`（OS のキーストアなどから読んだ秘密を、通す一覧と除く一覧によらず子の環境に入れる仕組み。同じ文書の「Interaction with Credential Injection」）に当たる仕組みは、試作では作らず、将来対応とする（2026-11-04 に設計者が決めた）。OS のキーストアの扱い（BH-033）とあわせて検討する。それまでは、子に要る秘密を、利用者が `benitoiteh` の環境に置き、規則の `allow` で通す。
+
+名前による判定は経験則である。秘密を名前に表さない変数（`MYSQL_PWD`、URL に埋め込んだパスワードなど）は、上の例の規則では除けない。確実に除きたい利用者は、`allow *` を置かず、要る名前だけを `allow` する規則を書ける。値の形で秘密を見分ける判定（Gemini CLI の `environmentSanitization.ts` の形）は、2026-11-04 に設計者が見送ると決めた。`SSH_AUTH_SOCK` などのエージェントの場所は秘密そのものではないので、上の例の規則でも残る（[秘密の入力](03-04-secrets.md)の「段 1: すでにある秘密の仲介役を使う」）。
+
+#### 規則の後に必ず当てる変更
+
+`benitoiteh` は、環境の規則の結果に、規則によらず次の変更を当てる。
+
+- LLM の提供者のキーの変数（[Benitoite の処理系との連携](../04-benitoite/04-01-benitoite-integration.md)の「処理系の起動」と、設定ファイルで提供者のキーとして参照した変数）を除く。規則で `allow` しても通さない。
+- 外側の `benitoiteh` の印（`BENITOITEH_SANDBOX`・`BENITOITEH_SANDBOX_NETWORK_DISABLED` と、秘密の入力の補助の変数）を除き、今回の値を設定する。前述の `TMPDIR`、`BENITOITEH_SANDBOX`、`BENITOITEH_SANDBOX_NETWORK_DISABLED`、`NO_COLOR`・`TERM`・`PAGER`・`GIT_PAGER` と、秘密の入力の補助の変数（[秘密の入力](03-04-secrets.md)）である。
+- `escalate` の一回の `PATH` から、書ける場所に届く項目を除く（後述の「通常モードの方針」）。
+
+理由: 提供者のキーを除くことは、保証の N3 と R5 の本体であり（[セキュリティモデル](03-01-security-model.md)）、利用者の規則の書き誤りで崩さない。`benitoiteh` が設定する変数を規則で上書きできると、サンドボックスの印や一時ディレクトリの場所を、子に誤って伝える。規則がこれらを変えようとする書き方（`set` で提供者のキーや `benitoiteh` が設定する名前を書く、`*` を含まない `allow` で提供者のキーの名前を書く）は、黙って打ち消さず、設定の誤りとして起動を止める（[CLI と設定ファイル](../05-interface/05-01-cli.md)の「設定ファイル」）。理由: 黙って打ち消すと、利用者は通したつもりになる。
+
+ローダとインタプリタに働く変数（`LD_PRELOAD`・`DYLD_INSERT_LIBRARIES`・`NODE_OPTIONS`・`PYTHONPATH` など）は、`benitoiteh` が必ず除く変数に含めず（利用者の規則で除ける）、利用者の規則の `set` でも設定できる。理由: 親の環境は利用者が設定したものであり、信頼の前提では信頼する側にある。nono はこれらを必ず除くが、nono は親の環境も信頼しない前提に立つ。LLM が子の環境にこれらを設定する道筋（Benitoite の `Process.Command` の `environment`）は、処理系が `LD_`・`DYLD_` で始まる名前を拒む（BH-026）。
 
 ### 主のプロセスの守り
 
