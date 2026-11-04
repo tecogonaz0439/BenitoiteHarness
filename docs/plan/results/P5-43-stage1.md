@@ -1,6 +1,8 @@
 # 段 1: 安全の穴を塞ぐ
 
-[04](04-oss-feature-review.md)の「段 1: 安全の穴を塞ぐ」を、設計者の指示で進めた記録である。段 1 は本番のコードを変える。確かめは、[01](01-cloud-linux-check.md)の環境（x86_64 の Linux、Alpine 3.22.7 の rootfs、root でない利用者）で行った。macOS での確かめは別途とする。
+> 2026-11-04 に、`docs/2026-11-02/` の `05-stage1.md` から本ディレクトリへ移した。本文は当時の記録のままとし、リンクだけを張り直した。
+
+[04-oss-feature-review](../../2026-11-02/04-oss-feature-review.md)の「段 1: 安全の穴を塞ぐ」を、設計者の指示で進めた記録である。段 1 は本番のコードを変える。確かめは、[P5-42-cloud-linux-check](P5-42-cloud-linux-check.md)の環境（x86_64 の Linux、Alpine 3.22.7 の rootfs、root でない利用者）で行った。macOS での確かめは別途とする。
 
 ## 入れ子の守る場所の付け替え
 

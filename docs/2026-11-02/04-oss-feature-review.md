@@ -100,8 +100,8 @@ Codex、nono、srt は、いずれもホストの側の HTTP CONNECT（と SOCKS
 ### 守る場所と PATH
 
 - srt は、`.git` に加えて、シェルの設定、`.gitconfig`、`.gitmodules`、`.mcp.json`、`.vscode/`、`.idea/`、`.claude/commands`、`.claude/agents`、`.git/hooks`、`.git/config` を書かせない（`src/sandbox/sandbox-utils.ts:21-50`）。`benitoiteh` に当てはめると、次の起動の指示になる `.agents/`（プロジェクトの Skill）と、エディタが実行しうる `.vscode/` と `.idea/` が候補である。
-- srt は Linux で、書ける根から守る場所までの途中のディレクトリをマウントの場所にして、付け替えを `EBUSY` で止める（`src/sandbox/linux-sandbox-utils.ts:1917` の `ancestorPinArgs`）。`benitoiteh` にはこれがない。bubblewrap の読み取りだけの重ね（`--ro-bind`）だけで試すと、すでにある `sub/.git` の親の `sub` を名前を変えて動かし、新しい `sub/.git/hooks/pre-commit` を書けた（2026-11-02、本環境の bubblewrap 0.9.0、root でない利用者）。`benitoiteh` は書ける根に Landlock の `Refer` を許す（`crates/benitoiteh/src/sandbox/linux/filesystem.rs:114`）ので、実際のサンドボックスでも同じに通ると見るが、確かめていない【要検証】。（追記: 段 1 で、実際のサンドボックスでも通ることを確かめ、祖先をマウントの場所にして塞いだ。同じ親の中の付け替えには `Refer` は関わらず、原因は祖先がマウントの場所でないことだった。[05](05-stage1.md)の「入れ子の守る場所の付け替え」）設計書 03-02 は、子プロセスが新しく作った入れ子の守る場所を保証の外とするが、この手順は、すでにある入れ子の守る場所の保護を、付け替えで実質的に外す。
-- nono は、サンドボックスの外で動かす補助のプログラムの `PATH` から、サンドボックスが書ける場所を、シンボリックリンクの各段まで調べて除く（`crates/nono/src/broker_path.rs`）。`benitoiteh` の `escalate` と秘密の入力の仲介は、サンドボックスの外で、継承した `PATH` のまま動く。サンドボックスの中のコマンドが、`PATH` にあるプロジェクトのディレクトリに偽の `git` を置ける場合がある（段 1 で、直す前は拾わせられることを確かめ、`escalate` の `PATH` を直した。仲介の補助は絶対のパスで指すので `PATH` に依らない。[05](05-stage1.md)）。
+- srt は Linux で、書ける根から守る場所までの途中のディレクトリをマウントの場所にして、付け替えを `EBUSY` で止める（`src/sandbox/linux-sandbox-utils.ts:1917` の `ancestorPinArgs`）。`benitoiteh` にはこれがない。bubblewrap の読み取りだけの重ね（`--ro-bind`）だけで試すと、すでにある `sub/.git` の親の `sub` を名前を変えて動かし、新しい `sub/.git/hooks/pre-commit` を書けた（2026-11-02、本環境の bubblewrap 0.9.0、root でない利用者）。`benitoiteh` は書ける根に Landlock の `Refer` を許す（`crates/benitoiteh/src/sandbox/linux/filesystem.rs:114`）ので、実際のサンドボックスでも同じに通ると見るが、確かめていない【要検証】。（追記: 段 1 で、実際のサンドボックスでも通ることを確かめ、祖先をマウントの場所にして塞いだ。同じ親の中の付け替えには `Refer` は関わらず、原因は祖先がマウントの場所でないことだった。[P5-43-stage1](../plan/results/P5-43-stage1.md)の「入れ子の守る場所の付け替え」）設計書 03-02 は、子プロセスが新しく作った入れ子の守る場所を保証の外とするが、この手順は、すでにある入れ子の守る場所の保護を、付け替えで実質的に外す。
+- nono は、サンドボックスの外で動かす補助のプログラムの `PATH` から、サンドボックスが書ける場所を、シンボリックリンクの各段まで調べて除く（`crates/nono/src/broker_path.rs`）。`benitoiteh` の `escalate` と秘密の入力の仲介は、サンドボックスの外で、継承した `PATH` のまま動く。サンドボックスの中のコマンドが、`PATH` にあるプロジェクトのディレクトリに偽の `git` を置ける場合がある（段 1 で、直す前は拾わせられることを確かめ、`escalate` の `PATH` を直した。仲介の補助は絶対のパスで指すので `PATH` に依らない。[P5-43-stage1](../plan/results/P5-43-stage1.md)）。
 - Codex は、`main` の前に、コアのダンプと ptrace の接続を止め、`LD_PRELOAD` と `DYLD_*` を除く（`codex-rs/process-hardening/src/lib.rs`）。`benitoiteh` は、サンドボックスの補助と画像の補助でダンプを止める（`crates/benitoiteh/src/sandbox/linux.rs:106`、`crates/benitoiteh/src/tools/read/image_helper.rs:67`）が、API のキーと OAuth のトークンを持つ主のプロセスでは止めていない。
 
 ### プロジェクトの信頼
@@ -162,27 +162,27 @@ Codex、nono、srt は、いずれもホストの側の HTTP CONNECT（と SOCKS
 
 ### 段 1: 安全の穴を塞ぐ（小さい変更）
 
-1. 子プロセスの環境の方針を加える。`LD_PRELOAD`・`DYLD_*`・`NODE_OPTIONS`・`PYTHONPATH` などを必ず除き、秘密に見える名前（`*_TOKEN`、`*_SECRET`、`*_KEY`、`AWS_*` など）を既定で除き、利用者が許す名前を足せるようにする。（秘密の名前の除去と通す名前は済み。ローダなどの変数を必ず除く案は採らなかった。[05](05-stage1.md)）
-2. サンドボックスで読ませない場所に、nono の組（クラウドの資格情報、`.netrc`、`.npmrc`、`.git-credentials`、シェルの履歴など）と、道具の「読まないファイル」（`.env*` と鍵の形の名前）を加え、`bash` でも読めないようにする（BH-100 と関わる）。（ホームの場所は済み。プロジェクトの中の `.env*` などは、設計者の決定で制限モードだけを塞いだ（BH-100 を閉じた）。[05](05-stage1.md)）
-3. `escalate` と秘密の入力の仲介の補助を起動する前に、`PATH` から書ける場所を除く。（`escalate` は済み。仲介の補助は絶対のパスで指すので `PATH` に依らない。[05](05-stage1.md)）
-4. 主のプロセスで、起動の直後にコアのダンプと ptrace の接続を止める。（Linux は済み。macOS は BH-118。[05](05-stage1.md)）
-5. Linux の入れ子の守る場所の付け替えを、実際のサンドボックスで確かめる【要検証】。通るなら、srt の方式（途中のディレクトリをマウントの場所にする）で塞ぐ。（済み。[05](05-stage1.md)）
-6. 守る名前に `.agents` を加えるかを決める。（加えた。承認した一回だけ書ける。[05](05-stage1.md)）
-7. プロジェクトの `.agents/skills` とプロジェクトの設定を、信頼の確認の後にだけ読む。（済み。設定は `model` だけを信頼の後に使う。[05](05-stage1.md)）
+1. 子プロセスの環境の方針を加える。`LD_PRELOAD`・`DYLD_*`・`NODE_OPTIONS`・`PYTHONPATH` などを必ず除き、秘密に見える名前（`*_TOKEN`、`*_SECRET`、`*_KEY`、`AWS_*` など）を既定で除き、利用者が許す名前を足せるようにする。（秘密の名前の除去と通す名前は済み。ローダなどの変数を必ず除く案は採らなかった。[P5-43-stage1](../plan/results/P5-43-stage1.md)）
+2. サンドボックスで読ませない場所に、nono の組（クラウドの資格情報、`.netrc`、`.npmrc`、`.git-credentials`、シェルの履歴など）と、道具の「読まないファイル」（`.env*` と鍵の形の名前）を加え、`bash` でも読めないようにする（BH-100 と関わる）。（ホームの場所は済み。プロジェクトの中の `.env*` などは、設計者の決定で制限モードだけを塞いだ（BH-100 を閉じた）。[P5-43-stage1](../plan/results/P5-43-stage1.md)）
+3. `escalate` と秘密の入力の仲介の補助を起動する前に、`PATH` から書ける場所を除く。（`escalate` は済み。仲介の補助は絶対のパスで指すので `PATH` に依らない。[P5-43-stage1](../plan/results/P5-43-stage1.md)）
+4. 主のプロセスで、起動の直後にコアのダンプと ptrace の接続を止める。（Linux は済み。macOS は BH-118。[P5-43-stage1](../plan/results/P5-43-stage1.md)）
+5. Linux の入れ子の守る場所の付け替えを、実際のサンドボックスで確かめる【要検証】。通るなら、srt の方式（途中のディレクトリをマウントの場所にする）で塞ぐ。（済み。[P5-43-stage1](../plan/results/P5-43-stage1.md)）
+6. 守る名前に `.agents` を加えるかを決める。（加えた。承認した一回だけ書ける。[P5-43-stage1](../plan/results/P5-43-stage1.md)）
+7. プロジェクトの `.agents/skills` とプロジェクトの設定を、信頼の確認の後にだけ読む。（済み。設定は `model` だけを信頼の後に使う。[P5-43-stage1](../plan/results/P5-43-stage1.md)）
 
 ### 段 2: エージェントの性能（評価で確かめてから採る）
 
 1. 複数の置き換えを渡せる `edit`。
 2. 圧縮の前の道具の結果の刈り込み。
 3. 下のディレクトリの `AGENTS.md` を道具の結果に添える。
-4. 計画の道具（BH-008）と、編集の直後の確かめの促し（BH-011 の比較に加える）。（確かめの促しは、2026-11-03 に設計者が BH-011 を閉じたので加えない。[08](08-stage2.md)）
+4. 計画の道具（BH-008）と、編集の直後の確かめの促し（BH-011 の比較に加える）。（確かめの促しは、2026-11-03 に設計者が BH-011 を閉じたので加えない。[P5-46-stage2](../plan/results/P5-46-stage2.md)）
 5. Benitoite のスクリプトから読む道具を呼ぶエフェクト（BH-002）。処理系への要望（04-01）として、Benitoite の側と形を詰める。
 
-各案は、DeepSeek Harness の方法に倣い、同じ課題・同じモデルで条件を並べて比べる。本物の LLM を呼ぶ評価は、設計者の了承の後に行う。（1〜3 は、既定で切った評価用の切り替えとして作った。評価はまだ行っていない（BH-123）。[08](08-stage2.md)）
+各案は、DeepSeek Harness の方法に倣い、同じ課題・同じモデルで条件を並べて比べる。本物の LLM を呼ぶ評価は、設計者の了承の後に行う。（1〜3 は、既定で切った評価用の切り替えとして作った。評価はまだ行っていない（BH-123）。[P5-46-stage2](../plan/results/P5-46-stage2.md)）
 
 ### 段 3: 通信の制限（BH-046、BH-040）
 
-（通常モードは作った。制限モードは処理系の対応を待つ。拒否の理由は中継のものだけを返す。[06](06-stage3.md)）
+（通常モードは作った。制限モードは処理系の対応を待つ。拒否の理由は中継のものだけを返す。[P5-44-stage3](../plan/results/P5-44-stage3.md)）
 
 1. ループバックの CONNECT のプロキシ（中身は覗かない）を作る。許可の一覧、拒否の一覧、解決したアドレスの確かめ、セッションのトークンを持たせ、`web_fetch` のドメインの確認と同じ答え方を使う。
 2. macOS は、`allow_loopback_port` を使う。Linux は、`--unshare-net` の中で待ち受けを作って記述子を渡す（nono の方式）。
@@ -190,7 +190,7 @@ Codex、nono、srt は、いずれもホストの側の HTTP CONNECT（と SOCKS
 
 ### 段 4: 使い勝手
 
-`/model`、`@` によるファイルの指定、外部のエディタ、利用者の定義するコマンド、書き出し、通知、`exec` の便宜、送る入力を示すコマンド、`/init`。どれも安全の性質に触れず、小さく作れる。（すべて済み。画像の添付と出力の型を含む。[07](07-stage4.md)）
+`/model`、`@` によるファイルの指定、外部のエディタ、利用者の定義するコマンド、書き出し、通知、`exec` の便宜、送る入力を示すコマンド、`/init`。どれも安全の性質に触れず、小さく作れる。（すべて済み。画像の添付と出力の型を含む。[P5-45-stage4](../plan/results/P5-45-stage4.md)）
 
 ### 段 5: 連携
 
@@ -198,7 +198,7 @@ MCP（BH-116）、ACP、RPC、OS のキーストア（BH-033）、偽のトー�
 
 ## 要検証と未確認
 
-- Linux の入れ子の守る場所の付け替え（「守る場所と PATH」）。`benitoiteh` の実際のサンドボックスで、`sandbox_linux.rs` に否定のテストとして加えて確かめる。（済み。[05](05-stage1.md)）
-- `PATH` に偽のプログラムを置いて、`escalate` に拾わせる道筋。`benitoiteh` の `PATH` の組み立てを読んで確かめる。（済み。直す前は拾わせられた。[05](05-stage1.md)）
+- Linux の入れ子の守る場所の付け替え（「守る場所と PATH」）。`benitoiteh` の実際のサンドボックスで、`sandbox_linux.rs` に否定のテストとして加えて確かめる。（済み。[P5-43-stage1](../plan/results/P5-43-stage1.md)）
+- `PATH` に偽のプログラムを置いて、`escalate` に拾わせる道筋。`benitoiteh` の `PATH` の組み立てを読んで確かめる。（済み。直す前は拾わせられた。[P5-43-stage1](../plan/results/P5-43-stage1.md)）
 - 各対象の機能のうち「（未確認）」としたもの。（済み。2026-11-03 に確かめて表に書いた）
 - 効果の見込みは、どれも測っていない。

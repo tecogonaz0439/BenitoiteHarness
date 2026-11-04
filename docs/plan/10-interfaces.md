@@ -12,6 +12,8 @@ deny.toml                     依存のライセンスと勧告の検査の設�
 scripts/check.sh              完了の前に通す検査
 scripts/container-run.sh      Linux 向けのテストの実行ファイルを container の中で走らせる
 scripts/remote-linux-run.sh   x86_64 の Linux 向けのテストの実行ファイルを、ssh で届く機械の podman で走らせる
+scripts/cloud-linux-setup.sh  使い捨てのクラウドの x86_64 の Linux に、bubblewrap、処理系、Alpine の rootfs、試験の利用者を用意する（P5-42）
+scripts/cloud-linux-run.sh    上の rootfs へ移り、root でない利用者でテストを走らせる cargo の runner（P5-42）
 crates/benitoiteh/            試作のクレート（ライブラリと実行ファイル）
   src/main.rs                 cli::main を呼ぶだけ
   src/lib.rs                  モジュールの宣言

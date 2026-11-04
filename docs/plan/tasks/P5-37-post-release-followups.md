@@ -63,11 +63,11 @@
 
 | 元の検査・作業 | 場所（行の目安） | 症状と扱い |
 |---|---|---|
-| P5-30・P5-31・P5-32（P5-25 の後）（`P5-30-review.md`） | `tests/session.rs:796,1013,1377,2462` 付近 | `linked_storage_parents_allow_drop_resume_and_cleanup`、`cleanup_reports_failures_continues_and_retries_without_losing_locks`、`expired_session_tombstone_outlives_its_unremovable_temporary_directory`、`unavailable_temporary_root_is_diagnosed_without_skipping_session_cleanup` が断続的に失敗した。TMPDIR の共有が原因という説は推測である。 |
-| P5-31 の全体の検査 | `tests/exec.rs:687` 付近の `closed_event_output_still_finishes_the_session_record` | BrokenPipe による失敗が報告された。原因は未確認である。 |
+| P5-30・P5-31・P5-32（P5-25 の後）（`P5-30-review.md`） | `tests/session.rs:796,1013,1377,2462` 付近 | `linked_storage_parents_allow_drop_resume_and_cleanup`、`cleanup_reports_failures_continues_and_retries_without_losing_locks`、`expired_session_tombstone_outlives_its_unremovable_temporary_directory`、`unavailable_temporary_root_is_diagnosed_without_skipping_session_cleanup` が断続的に失敗した。TMPDIR の共有が原因という説は推測である。2026-11-02 に、子プロセスを起こすテストと錠に依るテストの重なりが原因と確かめ、テストの側で直した（[P5-42](P5-42-cloud-linux-and-flaky-tests.md)、[記録](../results/P5-42-session-flaky-tests.md)）。 |
+| P5-31 の全体の検査 | `tests/exec.rs:687` 付近の `closed_event_output_still_finishes_the_session_record` | BrokenPipe による失敗が報告された。原因は未確認である。2026-11-03 に、負荷をかけた再現で原因を確かめ、テストの側で直した（[P5-42](P5-42-cloud-linux-and-flaky-tests.md)、[記録](../results/P5-42-linux-followups.md)）。 |
 | P5-12・P5-25 の全体の検査 | `src/benitoite/tests.rs:194` 付近の `queries_bound_output_timeout_and_propagate_cancellation` | overflow の行が `OutputLimit` 以外で失敗した。P5-13 で対応したと記録されていたが、2026-10-20 に再発した。 |
 | P5-19 の全体の検査 | `tests/run.rs:40` 付近の `input_and_both_output_streams_are_drained_and_may_share_a_sink` | 当時は `pipe_close_wait` が 100 ms で `PossiblyRemaining` になった。移行時のコードでは 5 秒へ変更済みであり、再発の有無を確かめる。 |
-| P5-04 の x86_64 の全体の検査 | `tests/sandbox_linux.rs:1520` 付近の `stale_placeholder_records_are_reaped_without_removing_user_data_or_locked_paths` | 錠のあるパスの存在の確かめが一度失敗し、再実行では通った。原因は未確認である。 |
+| P5-04 の x86_64 の全体の検査 | `tests/sandbox_linux.rs:1520` 付近の `stale_placeholder_records_are_reaped_without_removing_user_data_or_locked_paths` | 錠のあるパスの存在の確かめが一度失敗し、再実行では通った。原因は未確認である。2026-11-02 に、錠を手放した直後の回収を待たずに確かめる箇所で再現し、`tests/session.rs` と同じ錠の競合と見て、回収を最大 2 秒やり直す形にテストを直した（[P5-42](P5-42-cloud-linux-and-flaky-tests.md)、[記録](../results/P5-42-other-test-files.md)）。 |
 | P5-16 の検査中の記録 | `tests/user_skills.rs:573` 付近の `user_skills_take_count_and_byte_budgets_before_project_skills` | TMPDIR が長いと件数の上限より先に索引の 16 KiB の上限へ達し、期待する件数を満たさないと報告された。 |
 
 ## 後の作業で扱いが記録された所見
