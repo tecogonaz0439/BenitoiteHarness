@@ -142,6 +142,24 @@
       "expected_stdout": "cases/all_conditions/expected.stdout",
       "input": "cases/all_conditions/input",
       "name": "all_conditions"
+    },
+    {
+      "args": [
+        "snapshots/drafts"
+      ],
+      "expected_files": "cases/s1_root_drafts/expected.files",
+      "expected_stdout": "cases/s1_root_drafts/expected.stdout",
+      "input": "cases/s1_root_drafts/input",
+      "name": "s1_root_drafts"
+    },
+    {
+      "args": [
+        "snapshots/.root"
+      ],
+      "expected_files": "cases/s1_root_hidden/expected.files",
+      "expected_stdout": "cases/s1_root_hidden/expected.stdout",
+      "input": "cases/s1_root_hidden/input",
+      "name": "s1_root_hidden"
     }
   ],
   "kind": "staged",
@@ -159,6 +177,10 @@
     {
       "case": "s1_name_order",
       "script": "negative/reverse_names.bnt"
+    },
+    {
+      "case": "s1_root_drafts",
+      "script": "negative/exclude_root_name.bnt"
     }
   ],
   "stages": [

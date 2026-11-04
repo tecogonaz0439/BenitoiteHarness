@@ -233,9 +233,18 @@ fn queries_bound_output_timeout_and_propagate_cancellation() -> Result<(), Box<d
         };
         let result = probe.query(&args, query_limits, &AtomicBool::new(false));
         match expected {
-            "overflow" => assert!(matches!(result, Err(BenitoiteError::OutputLimit))),
-            "timeout" => assert!(matches!(result, Err(BenitoiteError::TimedOut))),
-            "diagnostics" => assert!(matches!(result, Err(BenitoiteError::DiagnosticsLimit))),
+            "overflow" => assert!(
+                matches!(result, Err(BenitoiteError::OutputLimit)),
+                "{result:?}"
+            ),
+            "timeout" => assert!(
+                matches!(result, Err(BenitoiteError::TimedOut)),
+                "{result:?}"
+            ),
+            "diagnostics" => assert!(
+                matches!(result, Err(BenitoiteError::DiagnosticsLimit)),
+                "{result:?}"
+            ),
             _ => {
                 let output = result?;
                 assert_eq!(output.stdout.len(), 3);

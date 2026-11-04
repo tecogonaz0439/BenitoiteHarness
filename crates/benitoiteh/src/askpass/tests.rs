@@ -21,6 +21,11 @@ impl Drop for FixtureRoot {
     }
 }
 impl Fixture {
+    /// 根は一時の場所の下に作るが、補助の子は本物と同じ親（Linux の `XDG_RUNTIME_DIR` の `bha-<uid>`、
+    /// ソケットのパスが 103 バイトを超えれば根の `bha-<uid>` か `/tmp/bha-<uid>`）に置く。子の名前は乱数の
+    /// セッションの ID なので、利用者のセッションの子と重ならない。子は `Broker` を落とすときに消え、
+    /// 親は本物と同じく残す。テストが異常終了して残った子は、記録のない ID の子なので、本物の掃除も
+    /// 消さない（設計書 03-04「補助」）。
     pub fn new() -> io::Result<Self> {
         let mut random = [0; 16];
         getrandom::fill(&mut random).map_err(io::Error::other)?;
@@ -301,7 +306,9 @@ fn helper_recreation_requires_its_own_id_file() -> io::Result<()> {
     );
     drop(broker);
     assert!(!directory.exists());
-    let mut cases = vec!["foreign", "missing", "link", "mode", "fifo", "long"];
+    let mut cases = vec![
+        "foreign", "missing", "link", "hardlink", "mode", "fifo", "long",
+    ];
     // 持ち主の違う `id` は root でないと作れない。
     if rustix::process::geteuid().is_root() {
         cases.push("owner");
@@ -319,6 +326,11 @@ fn helper_recreation_requires_its_own_id_file() -> io::Result<()> {
                 fs::set_permissions(&target, fs::Permissions::from_mode(0o600))?;
                 symlink(&target, directory.join("id"))?;
             }
+            // 自分の ID でも、ほかの名前からも指せる `id` は、外から書き換えられうるので使わない。
+            "hardlink" => {
+                place_id(&directory, own.as_bytes())?;
+                fs::hard_link(directory.join("id"), f.root.join("id-hardlink"))?;
+            }
             "mode" => {
                 place_id(&directory, own.as_bytes())?;
                 fs::set_permissions(directory.join("id"), fs::Permissions::from_mode(0o644))?;
@@ -331,7 +343,8 @@ fn helper_recreation_requires_its_own_id_file() -> io::Result<()> {
                     .status()?;
                 assert!(made.success());
             }
-            "long" => place_id(&directory, format!("{}\n", "x".repeat(64)).as_bytes())?,
+            // 自分の ID の後を空白で伸ばし、大きさの上限だけに当たる形にする。
+            "long" => place_id(&directory, format!("{id}{}\n", " ".repeat(64)).as_bytes())?,
             _ => {
                 place_id(&directory, own.as_bytes())?;
                 rustix::fs::chown(
@@ -346,6 +359,16 @@ fn helper_recreation_requires_its_own_id_file() -> io::Result<()> {
             "{case}"
         );
         assert_eq!(fs::read(directory.join("keep"))?, b"keep", "{case}");
+        if case == "long" {
+            // 大きすぎる `id` は、読む前に権限の誤りとして断る（読んだ後の形の確かめとは別の誤り）。
+            assert_eq!(
+                read_id(&directory).err().map(|error| error.kind()),
+                Some(io::ErrorKind::PermissionDenied)
+            );
+        }
+        if case == "hardlink" {
+            fs::remove_file(f.root.join("id-hardlink"))?;
+        }
         fs::remove_dir_all(&directory)?;
     }
     DirBuilder::new().mode(0o700).create(&directory)?;
@@ -822,8 +845,10 @@ fn line_separators_release_output_in_written_order_without_missing_secrets() -> 
     Ok(())
 }
 
-// 関門: 呼び出しの状態（照合の値を含む）を次の呼び出しまで持ち続ける退行と、
-// 先の守りの後始末が後の呼び出しを窓口から外す退行を捕まえる（設計書 03-04「秘密の扱い」）。
+// 関門: 呼び出しの状態（照合の値を含む）を手放さない退行と、先の守りの後始末が後の呼び出しを
+// 窓口から外す退行を捕まえる。前半は、伏せ字の処理（Redactor）が終わるまで状態を持ち、先の守りを
+// 手放しても後の呼び出しが窓口に残ることを確かめる。後半は、画面が閉じた欄を持っていても、守りを
+// 手放せば状態が残らないことを確かめる（設計書 03-04「秘密の扱い」）。
 #[test]
 fn finished_calls_release_their_state_without_disturbing_the_next_call() -> io::Result<()> {
     let f = Fixture::new()?;
@@ -868,11 +893,13 @@ fn finished_calls_release_their_state_without_disturbing_the_next_call() -> io::
         .send(Answer::Yes)
         .map_err(|_| io::ErrorKind::BrokenPipe)?;
     assert_eq!(status(client)?, b"Y");
-    // 後の呼び出しも、守りを手放せば窓口から外れる。
+    // 後の呼び出しも、守りを手放せば窓口から外れる。画面がまだ閉じた欄（Prompt）を持っていても、
+    // 呼び出しの状態は手放す。
     let weak = Arc::downgrade(&second.call);
-    drop(prompt);
     drop(second);
     assert!(weak.upgrade().is_none());
+    assert!(!prompt.is_open());
+    drop(prompt);
     Ok(())
 }
 

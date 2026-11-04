@@ -129,7 +129,7 @@ fn user_configuration_reads_the_design_example_and_rejects_invalid_fields() -> T
         ("[providers.p]\nkind='not-an-adapter'\nmodel='m'", None),
         (
             "[providers.p]\nkind='anthropic-messages'\nmodel='m'\neffort=''",
-            None,
+            Some("effort"),
         ),
         (
             "[providers.p]\nkind='openai-chat'\nmodel='m'\napi_key='secret-literal'",

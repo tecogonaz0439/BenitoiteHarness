@@ -10,6 +10,7 @@ import os
 from pathlib import Path
 import re
 import shutil
+import signal
 import statistics
 import subprocess
 import sys
@@ -136,10 +137,27 @@ def sha256(path):
     return digest.hexdigest()
 
 
-def execute(args, root, env):
-    # シェルを通さず、パスの空白も一つの引数として保つ。
-    return subprocess.run(args, cwd=str(root), env=env, stdout=subprocess.PIPE,
-                          stderr=subprocess.STDOUT, text=True, check=False)
+# ビルドと測定の一回の上限。リリースのビルドを含むので長めに取る。
+EXECUTE_TIMEOUT = 3600
+
+
+def execute(args, root, env, timeout=EXECUTE_TIMEOUT):
+    # シェルを通さず、パスの空白も一つの引数として保つ。終わらない子で測定を止めないよう上限を掛け、
+    # 時間切れと中断（Ctrl-C）では子孫のグループごと止める。新しいセッションの子には端末の
+    # 中断が届かないため、ここで止めないと子が残る。
+    process = subprocess.Popen(args, cwd=str(root), env=env, stdout=subprocess.PIPE,
+                               stderr=subprocess.STDOUT, text=True, start_new_session=True)
+    try:
+        output, _ = process.communicate(timeout=timeout)
+    except (subprocess.TimeoutExpired, KeyboardInterrupt) as error:
+        try:
+            os.killpg(process.pid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+        output, _ = process.communicate()
+        if isinstance(error, KeyboardInterrupt):
+            raise
+        output = (output or '') + '\ntimed out after %d seconds\n' % timeout
 
 
 def collect_environment(root, processor, env):

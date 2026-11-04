@@ -477,8 +477,13 @@ mod macos {
                         return Err(invalid());
                     }
                     let path = leading_alias(&path);
-                    remaining |=
-                        !own_process && roots.iter().any(|root| path.starts_with(lsof_path(root)));
+                    // MAXPATHLEN（1024）を超える cwd は、先頭を欠いた末尾だけが示される（2026-11-05 に
+                    // macOS 27.2 で、1332 バイトの cwd が 1010 バイトで示されることを確かめた）。
+                    // 根との比較ができないので、残ったものとして扱う（設計書 07-02「評価の手順」）。
+                    let truncated = name.len() >= LSOF_TRUNCATED;
+                    remaining |= !own_process
+                        && (truncated
+                            || roots.iter().any(|root| path.starts_with(lsof_path(root))));
                     seen_cwd = true;
                 }
                 Some((b'f', b"cwd")) if process => {}
@@ -491,6 +496,9 @@ mod macos {
         Ok(remaining)
     }
 
+    /// これ以上の長さの cwd の表示は、先頭を欠いているとみなす。
+    const LSOF_TRUNCATED: usize = 1000;
+
     fn lsof_path(path: &Path) -> PathBuf {
         // lsof(8) の LC_ALL=C の表示へ根の方を直す。ほかのプロセスの名前を
         // 逆変換すると、字面の「\\n」と改行の表示を取り違えうるためである。
@@ -498,6 +506,8 @@ mod macos {
         let mut result = Vec::new();
         for byte in path.as_os_str().as_bytes() {
             let escaped = match *byte {
+                // lsof は逆斜線を二重にして示す（2026-11-05 に macOS 27.2 で確かめた）。
+                b'\\' => Some("\\\\"),
                 8 => Some("\\b"),
                 12 => Some("\\f"),
                 b'\n' => Some("\\n"),
@@ -568,12 +578,20 @@ mod macos {
                 )
                 .map_err(|error| error.to_string())?
             );
+            // 字面の逆斜線を含む根は、lsof が逆斜線を二重にした表示と比べる。
             assert!(
                 has_writable_cwd(
-                    b"p101\nfcwd\nn/private/tmp/literal\\nroot/child\n",
+                    b"p101\nfcwd\nn/private/tmp/literal\\\\nroot/child\n",
                     &[PathBuf::from("/private/tmp/literal\\nroot")]
                 )
                 .map_err(|error| error.to_string())?
+            );
+            // 先頭を欠いた長い cwd は、根と比べられないので残ったものとする。
+            let long = format!("p101\nfcwd\nn/{}\n", "d".repeat(1009));
+            assert!(has_writable_cwd(long.as_bytes(), &roots).map_err(|error| error.to_string())?);
+            let short = format!("p101\nfcwd\nn/{}\n", "d".repeat(100));
+            assert!(
+                !has_writable_cwd(short.as_bytes(), &roots).map_err(|error| error.to_string())?
             );
             for source in [
                 "",

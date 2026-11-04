@@ -14,7 +14,7 @@ pub const REDACTED: &str = "[REDACTED]";
 pub const INVALID_PROGRAM: &str = "restricted.allowed_programs must contain absolute paths";
 pub const INVALID_EFFECT: &str =
     "restricted.scratch_auto_effects contains an effect that cannot be allowed automatically";
-pub const INVALID_VALUE: &str = "configuration contains an empty name";
+pub const INVALID_VALUE: &str = "provider model, effort and base_url must not be empty";
 pub const DIRECTORY_REQUIRED: &str = "configuration and writable roots must be directories";
 pub const ROOT_OR_HOME: &str = "writable root is the filesystem root, home, or an ancestor of home";
 pub const HOME_PRIVATE: &str = "writable root is inside a home dot directory or macOS Library";

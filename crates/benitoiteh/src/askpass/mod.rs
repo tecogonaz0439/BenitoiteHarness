@@ -52,14 +52,16 @@ pub struct Prompt {
     pub pid: u32,
     pub ppid: u32,
     pub reply: mpsc::SyncSender<Answer>,
-    call: Arc<CallState>,
+    /// 呼び出しが有効か。呼び出しの状態（合言葉と照合の値）は持たず、閉じた欄が ESC まで残っても、
+    /// 状態は呼び出しが終わったときに手放す（設計書 03-04「秘密の扱い」）。
+    active: Arc<AtomicBool>,
     open: Arc<AtomicBool>,
     outcome: Arc<Mutex<Option<&'static str>>>,
 }
 impl Prompt {
     /// 失効と補助の切断は、画面側で値を送らずに閉じる。
     pub fn is_open(&self) -> bool {
-        self.open.load(Ordering::Acquire) && self.call.active.load(Ordering::Acquire)
+        self.open.load(Ordering::Acquire) && self.active.load(Ordering::Acquire)
     }
     /// 補助への書き込みが確定した結果だけを、画面と道具で共有する。
     pub(crate) fn outcome(&self) -> Option<&'static str> {
@@ -96,7 +98,7 @@ impl Default for State {
     }
 }
 struct CallState {
-    active: AtomicBool,
+    active: Arc<AtomicBool>,
     token: Zeroizing<String>,
     facts: Facts,
     rolling_base: Zeroizing<u64>,
@@ -454,7 +456,7 @@ impl Broker {
         getrandom::fill(rolling_key.as_mut()).map_err(io::Error::other)?;
         let rolling_base = Zeroizing::new(u64::from_ne_bytes(*rolling_key) | 257);
         let call = Arc::new(CallState {
-            active: AtomicBool::new(true),
+            active: Arc::new(AtomicBool::new(true)),
             token,
             facts,
             rolling_base,
@@ -708,7 +710,7 @@ fn serve(
             pid: request.pid,
             ppid: request.ppid,
             reply,
-            call: Arc::clone(&call),
+            active: Arc::clone(&call.active),
             open: Arc::clone(&open),
             outcome: Arc::clone(&result),
         })
@@ -756,19 +758,25 @@ fn serve(
                     && secret.len() <= protocol::MAX_SECRET
                     && !secret.bytes().any(|b| matches!(b, 0 | b'\r' | b'\n')) =>
             {
-                // 求めは 3 件までなので容量を超えない。超える形でも伸ばさない。
-                if let Some(hash) = output::SecretHash::new(secret.as_bytes(), *call.rolling_base)
+                // 照合の値を積めたときだけ秘密を書く。積めないまま書くと、出力の伏せ字が掛からない。
+                // 求めは 3 件までなので今は積めない分岐に入らないが、上限を変えても漏らさない
+                // （設計書 03-04「秘密の扱い」）。
+                outcome = if let Some(hash) =
+                    output::SecretHash::new(secret.as_bytes(), *call.rolling_base)
                     && state.hashes.len() < output::MAX_HASHES
                 {
                     state.hashes.push(hash);
-                }
-                outcome = if stream
-                    .write_all(b"S")
-                    .and_then(|()| stream.write_all(secret.as_bytes()))
-                    .is_ok()
-                {
-                    "answered"
+                    if stream
+                        .write_all(b"S")
+                        .and_then(|()| stream.write_all(secret.as_bytes()))
+                        .is_ok()
+                    {
+                        "answered"
+                    } else {
+                        "refused"
+                    }
                 } else {
+                    let _written = stream.write_all(b"N");
                     "refused"
                 };
             }

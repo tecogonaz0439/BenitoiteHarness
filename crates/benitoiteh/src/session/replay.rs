@@ -357,15 +357,13 @@ pub fn apply_pruned(conversation: &mut Conversation, results: &[super::PrunedRes
 }
 
 fn fill_missing(conversation: Conversation, starts: &BTreeSet<String>) -> Conversation {
-    let known = conversation
-        .items
-        .iter()
-        .enumerate()
-        .filter_map(|(index, item)| match item {
-            Item::ToolResult(result) => Some((result.id.clone(), index)),
-            Item::UserMessage(_) | Item::AssistantTurn(_) => None,
-        })
-        .collect::<std::collections::BTreeMap<_, _>>();
+    // 同じ ID の結果が重なれば、その場で出す場合と同じく、先に記録したものを使う。
+    let mut known = std::collections::BTreeMap::new();
+    for (index, item) in conversation.items.iter().enumerate() {
+        if let Item::ToolResult(result) = item {
+            known.entry(result.id.clone()).or_insert(index);
+        }
+    }
     let mut rebuilt = Conversation::default();
     let mut pending = Vec::<ToolCall>::new();
     let mut emitted = BTreeSet::new();

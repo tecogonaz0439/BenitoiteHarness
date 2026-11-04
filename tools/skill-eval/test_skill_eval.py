@@ -2920,8 +2920,19 @@ class CompactionTaskTests(unittest.TestCase):
                     workspace = os.path.join(temporary, 'workspace')
                     evaluation.prepare_inputs(task, workspace)
                     self.assertFalse(os.path.exists(os.path.join(workspace, 'materials')))
+                    # 前の段のエージェントが後の段の資料の名前に外へのハードリンクを置いても、その先は変えない。
+                    outside = os.path.join(temporary, 'outside')
+                    with open(outside, 'wb') as f:
+                        f.write(b'outside')
+                    planted = os.path.join(workspace, evaluation.stage_materials(task, 2)[0])
                     for stage in range(1, 4):
+                        if stage == 2:
+                            os.makedirs(os.path.dirname(planted), exist_ok=True)
+                            os.link(outside, planted)
                         prompt = evaluation.prepare_stage(task, workspace, stage)
+                        # 解と判定の資料は、どの段の後も作業ディレクトリに写らない。
+                        for hidden in ('reference.bnt', 'cases', 'negative', 'stages', 'task.json'):
+                            self.assertFalse(os.path.lexists(os.path.join(workspace, hidden)), hidden)
                         self.assertLessEqual(len(evaluation.prepare_stage_prompt(task, stage).encode()), 4096)
                         self.assertTrue(prompt)
                         for later in range(stage + 1, 4):
@@ -2934,6 +2945,8 @@ class CompactionTaskTests(unittest.TestCase):
                             self.assertLessEqual(len(data), 12 * 1024)
                             self.assertEqual(hashlib.sha256(data).hexdigest(),
                                              config['generation']['files_sha256'][path])
+                    with open(outside, 'rb') as f:
+                        self.assertEqual(f.read(), b'outside')
                     changed = os.path.join(generated, evaluation.stage_materials(task, 1)[0])
                     with open(changed, 'ab') as f:
                         f.write(b'changed')

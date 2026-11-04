@@ -1557,7 +1557,15 @@ fn chatgpt_cancellation_survives_resend_and_prevents_send_after_refresh() -> Tes
 // 関門: 再送の応答に旧・新の両トークンが含まれる場合も、詳細と Retry-After を外へ漏らさない。
 #[test]
 fn chatgpt_resend_errors_redact_both_rejected_and_current_tokens() -> TestResult {
-    for status in [Some(401), Some(400), None] {
+    // exact では、断られたトークンと今のトークンをそれぞれ一つだけ、文字種の絞り込みを通る欄に返す。
+    // 伏せ字のどちらかを外すと、その欄にトークンが残る。
+    for (status, exact) in [
+        (Some(401), false),
+        (Some(400), false),
+        (None, false),
+        (Some(400), true),
+        (None, true),
+    ] {
         let fixture = ChatGptFixture::new()?;
         let echoed = format!(
             "{} | {} | {}",
@@ -1565,7 +1573,11 @@ fn chatgpt_resend_errors_redact_both_rejected_and_current_tokens() -> TestResult
             chatgpt::NEW_ACCESS,
             chatgpt::ACCESS.get(..10).ok_or("prefix")?
         );
-        let error = json!({"type":echoed,"code":echoed,"message":echoed});
+        let error = if exact {
+            json!({"type":chatgpt::NEW_ACCESS,"code":chatgpt::ACCESS,"message":echoed})
+        } else {
+            json!({"type":echoed,"code":echoed,"message":echoed})
+        };
         let response = if let Some(status) = status {
             let mut response = ResponseScript::json(status, &json!({"error":error}))?;
             response.headers.push(("Retry-After".into(), echoed));
@@ -1593,7 +1605,7 @@ fn chatgpt_resend_errors_redact_both_rejected_and_current_tokens() -> TestResult
             return Err("missing error details".into());
         };
         for value in [&details.code, &details.error_type, &details.message] {
-            assert_eq!(value, &None);
+            assert_eq!(value, &None, "{status:?} {exact}");
         }
         assert_eq!(retry_after, &None);
         assert_eq!(

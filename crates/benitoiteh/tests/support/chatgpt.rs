@@ -2,9 +2,11 @@
 
 use benitoiteh::auth::{Account, Credentials, Endpoints, Secret, Tokens};
 
-pub const ACCESS: &str = "synthetic-chatgpt-access-never-log";
-pub const REFRESH: &str = "synthetic-chatgpt-refresh-never-log";
-pub const NEW_ACCESS: &str = "synthetic-chatgpt-new-access-never-log";
+// 誤りの詳細の文字種の絞り込み（英小文字・数字・`_`・`.`）を通る形にする。通らない形だと、伏せ字を
+// 外しても絞り込みだけで消え、伏せ字の退行を捕まえられない。
+pub const ACCESS: &str = "synthetic_chatgpt_access_never_log";
+pub const REFRESH: &str = "synthetic_chatgpt_refresh_never_log";
+pub const NEW_ACCESS: &str = "synthetic_chatgpt_new_access_never_log";
 
 pub fn credentials(expires_at: u64) -> Credentials {
     Credentials {

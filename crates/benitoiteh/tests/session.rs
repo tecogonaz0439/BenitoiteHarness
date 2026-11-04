@@ -414,10 +414,16 @@ fn replay_ignores_only_torn_tail_and_fills_missing_tool_results_before_next_mess
     let started = call("started");
     let cancelled = call("cancelled");
     let done = call("done");
+    let late = call("late");
     writer.append(&Record::Assistant {
         node: 1,
         turn: 1,
-        response: response(&[started.clone(), cancelled.clone(), done.clone()]),
+        response: response(&[
+            started.clone(),
+            cancelled.clone(),
+            done.clone(),
+            late.clone(),
+        ]),
     })?;
     writer.append(&Record::ToolStart {
         call: started.clone(),
@@ -442,6 +448,22 @@ fn replay_ignores_only_torn_tail_and_fills_missing_tool_results_before_next_mess
         kind: UserKind::Steer,
         message: message.clone(),
     })?;
+    // 舵取りの後に記録された結果は、次の発言の前へ一度だけ移す。同じ ID の結果が重なれば、
+    // 移す場合もその場で出す場合も、先に記録したものを使う（設計書 01-05「再開」）。
+    for (node, call, text) in [
+        (4, &late, "late first"),
+        (5, &late, "late second"),
+        (6, &done, "done again"),
+    ] {
+        writer.append(&Record::ToolResult {
+            node,
+            turn: 1,
+            name: "write".to_owned(),
+            result: result(call, text),
+            spill: None,
+            stderr_spill: None,
+        })?;
+    }
     // P3-04 より前の確認と集計の行を、そのまま再開できることを確かめる。
     OpenOptions::new().append(true).open(session.directory().join("session.jsonl"))?.write_all(
         br#"{"type":"approval","phase":"request","id":"old","tool_id":"started","request":"outside write","outcome":null}
@@ -458,7 +480,11 @@ fn replay_ignores_only_torn_tail_and_fills_missing_tool_results_before_next_mess
         .open(&file)?
         .write_all(b"{\"type\":\"assistant\",\"response\":")?;
     let conversation = replay(session.directory())?;
-    assert_eq!(conversation.items.len(), 5);
+    assert_eq!(conversation.items.len(), 6, "{:?}", conversation.items);
+    assert_eq!(
+        conversation.items.get(4),
+        Some(&Item::ToolResult(result(&late, "late first")))
+    );
     assert_eq!(
         conversation.items.get(1),
         Some(&Item::ToolResult(result(&done, "already done")))
@@ -2515,6 +2541,63 @@ fn helper_ids_resolve_children_whose_random_parts_collide() -> TestResult {
     assert!(live_child.join("id").exists());
     assert!(!stale_child.0.exists());
     drop(live);
+    Ok(())
+}
+
+// 作成時の関門: 子の `id` を確かめられないとき（権限が 0600 でない）と、`id` の示すセッションの補助の
+// 名前が子の名前と合わないときは、名前の対応表へ落とさずに子を残す（設計書 03-04「補助」）。
+// 既存のテストは `id` のない子と正しい `id` の子だけを扱い、この二つの分岐に入らない。
+#[test]
+fn helper_children_with_unverifiable_or_mismatched_ids_are_kept() -> TestResult {
+    use std::os::unix::fs::OpenOptionsExt;
+    let f = Fixture::new()?;
+    let unverifiable = Session::create(&f.paths, "20200101T000000Z-0000000000000011".parse()?)?;
+    let mismatched = Session::create(&f.paths, "20200101T000000Z-0000000000000012".parse()?)?;
+    let (unverifiable_id, mismatched_id) = (unverifiable.id().clone(), mismatched.id().clone());
+    drop((unverifiable, mismatched));
+    // macOS の子の名前は ID の乱数の部分だけである（補助のソケットのパスの長さのため）。
+    let helper_name = |id: &SessionId| {
+        let id = id.to_string();
+        if cfg!(target_os = "macos") {
+            id.rsplit_once('-')
+                .map_or(id.clone(), |(_, random)| random.to_owned())
+        } else {
+            id
+        }
+    };
+    let parent = f
+        .paths
+        .temporary_root
+        .join(format!("bha-{}", rustix::process::geteuid().as_raw()));
+    fs::DirBuilder::new().mode(0o700).create(&parent)?;
+    // 一つ目は自分の ID を 0644 で書き、二つ目は別のセッション（一つ目）の ID を書く。
+    let children = [
+        (
+            parent.join(helper_name(&unverifiable_id)),
+            &unverifiable_id,
+            0o644,
+        ),
+        (
+            parent.join(helper_name(&mismatched_id)),
+            &unverifiable_id,
+            0o600,
+        ),
+    ];
+    for (child, id, mode) in &children {
+        fs::DirBuilder::new().mode(0o700).create(child)?;
+        let mut file = OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .mode(0o600)
+            .open(child.join("id"))?;
+        writeln!(file, "{id}")?;
+        file.set_permissions(fs::Permissions::from_mode(*mode))?;
+    }
+    let report = cleanup(&f.paths, DEFAULT_RETENTION_DAYS, SystemTime::now())?;
+    assert!(report.failures.is_empty(), "{:?}", report.failures);
+    for (child, _, _) in &children {
+        assert!(child.join("id").exists(), "{}", child.display());
+    }
     Ok(())
 }
 

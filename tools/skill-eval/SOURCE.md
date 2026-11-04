@@ -32,13 +32,14 @@ python3 -I tools/skill-eval/skill_eval.py \
 DeepSeek Harness は、次の形で走らせる。評価の道具はサンドボックスの外で起動する。macOS で `sandbox-exec` を入れ子にすると、DeepSeek Harness がシェルの呼び出しをすべて拒む。
 
 ```sh
+SKILL_EVAL_DSH_CLI=<path-to-deepseek-harness>/apps/cli/lib/bin.js \
 python3 -I tools/skill-eval/skill_eval.py \
   --harness deepseek-harness --trials 3 --allow-unverified \
   --benitoite <path-to-benitoite-v0.0.12> \
   --work-root <directory-outside-git-repositories> --stop-cost <USD>
 ```
 
-DeepSeek Harness に大域のコマンドがないため、`harnesses.json` の `start` と `version` には、組み立て済みの CLI を `node` で起動する手元の絶対パスが入っている。ほかの機械では、両方の項目をその機械の実行ファイルの絶対パスへ書き換える。手元の DeepSeek Harness は `0.2.1-rc.2`、コミット `687f282e` である。起動は `--profile headless --patch <試行>/dsh-eval-overlay.yml --json <依頼>` の順とする。作業ディレクトリの実のパスから `/` までに `.git` があれば、上位の指示や Skill を読まないように、起動前に止める。`--model` でモデルを変えられる。重ね書きのモデル名は ASCII の英数字・`-`・`.` に限り、`options.effort` は `off`・`low`・`high`・`max` のいずれかとする。どちらも YAML で引用して書く。
+DeepSeek Harness に大域のコマンドがないため、`harnesses.json` の `start` と `version` は、組み立て済みの CLI を `node` で起動する。CLI の場所は手元ごとに違うので、型板の `{dsh_cli}` を、環境変数 `SKILL_EVAL_DSH_CLI` の絶対パスで置き換える（2026-11-05 に、手元の絶対パスを直に書く形から改めた）。変数がないか絶対パスでなければ、起動の前に止める。名前を `DSH_` で始めないのは、子の環境から `DSH_` で始まる変数を除くためである。手元の DeepSeek Harness は `0.2.1-rc.2`、コミット `687f282e` である。起動は `--profile headless --patch <試行>/dsh-eval-overlay.yml --json <依頼>` の順とする。作業ディレクトリの実のパスから `/` までに `.git` があれば、上位の指示や Skill を読まないように、起動前に止める。`--model` でモデルを変えられる。重ね書きのモデル名は ASCII の英数字・`-`・`.` に限り、`options.effort` は `off`・`low`・`high`・`max` のいずれかとする。どちらも YAML で引用して書く。
 
 重ね書きでは、ウェブの道具（`tool-web`）、セッションの記録を要求に含める欄（`session-log-deepseek`）、導入した部品の一覧を送る欄（`plugin-package-inventory-deepseek`）、会話の題を作る補助の LLM の呼び出し（`session-title-llm`）を止める。`DSH_HOME` と `DSH_AGENTS_HOME` は試行ごとの空のディレクトリに向け、`DSH_TELEMETRY_DISABLED=1` を設定する。親の `DSH_*`・`DEEPSEEK_*`・`NODE_*` は除き、名前だけを記録する。API のキーはサービス `benitoiteh-deepseek` から一回の評価で一度だけ読み、ハーネスの起動の環境の `DEEPSEEK_API_KEY` だけに渡す。`--dry-run` ではキーを読まない。
 
@@ -257,6 +258,10 @@ python3 -I tools/skill-eval/skill_eval.py \
 
 `benitoiteh-mock-compact` は各段で資料を読み、解を書き、実行し、完了する筋書きを使う。通常の応答の固定の入力は 45,000、出力は 50、要約は入力 1,000・出力 50 とする。要約の依頼はリポジトリの `prompts/compaction.md` と照合し、段の筋書きを進めずに応答する。これは再開と集計の配線を確かめる模擬であり、本物の LLM の課題の達成率や圧縮の効果を表さない。
 
+判定のサンドボックスが起動を許すのは、`Process.Run` を使う課題の `/usr/bin/sort` と、シェルを使う課題の `sh`・`bash`・`grep`・`cut`・`sort` だけである。`awk`・`sed` などを使う正しい解は、起動を拒まれて失敗する。その失敗は、実行の失敗（`run`）か標準出力の食い違い（`stdout`）として分類し、サンドボックスの拒否と区別しない（2026-11-05 に P5-37 で、P5-32 の再レビューの情報 3 を限界として書いた）。
+
+宣言したエフェクトの静的な検査（`benitoite check`）は、判定のサンドボックスの外で、判定用の `PATH` と `HOME` で動く。処理系の検査が、取り込みを辿って作業ディレクトリの外のファイルを読むか、その中身を診断に含めるかは確かめていない。診断は理由の抜粋（120 文字）として結果に残りうる（2026-11-05 に P5-37 で、P5-32 の再レビューの情報 4 を、確かめていない注意として引き継いだ）。
+
 P5-32 で加えた宣言したエフェクトの検査は保つ。生成したコードの `check --report=json`（テストでは `test --check --report=json`）の完全な `aggregateEffects.expanded` が、正しい解の `task_allow` の部分集合であるときだけ実行する。P5-34 で実行・テストと段の課題の判定を `skill_eval_judge` に統合し、macOS の `/usr/bin/sandbox-exec` で囲む。実行器自身には親の HOME・XDG の場所を知らせ、秘密の候補を除外させる。判定の子へは親の環境を引き継がず、HOME・XDG をコマンド専用の一時の場所の下、TMPDIR をその専用の場所へ向け、PATH を `/usr/bin:/bin` に限る。読み取りは OS・判定・専用の一時の場所・信頼する検査の根、必要な実行ファイルと `/` 自身の literal だけに許す。`/` と親 HOME を包含する読み取りの根を拒み、`--allow-program` には `--read-root` を必須にする。書き込みは判定の場所、専用の一時の場所、`/dev/null` のデータに限る。起動は Benitoite の課題では実の処理系と固定した補助プログラムだけに許す。`process_run` は `/usr/bin/sort`、`process_shell` は `/bin/sh`・`/bin/bash`・`/usr/bin/grep`・`/usr/bin/cut`・`/usr/bin/sort` を許す。通信は `http_client` の模擬の localhost のポートへの外向きの接続だけを例外とし、ほかは拒む。macOS 以外とサンドボックスの準備の失敗は判定の失敗にする。
 
 `benitoiteh` の起動と版の問い合わせでは、`PWD`・`OLDPWD` と、値に評価元のリポジトリのパス（実のパスと macOS の別名）を含む変数を除く。除いた名前は `environment_removed_paths` に残す。セッションの記録と退避した出力に、リポジトリのパスまたは `tools/skill-eval/tasks` があれば、`WARNING` と `repository_path_seen: true`・`comparison_excluded: true` を残す。成果物の判定は保ち、圧縮の比較は不成立とする。場所の推測などによる読み取りを完全に防ぐ仕組みではない。XDG を変更しても普段の秘密を読ませないよう、`benitoiteh` の拒否の候補にも HOME の既定の設定・状態のディレクトリを加えた。
@@ -416,7 +421,7 @@ Codex 内では、親 HOME の拒否と必要な許し直しの順、理由の�
 
 実行器で読み取りの根を列挙するときは、起動に必要な `/` 自身を literal として加える。`--read-root /` と親 HOME を包含する根、および読み取りの根の指定を伴わない `--allow-program` は拒む。判定の子の PATH と、道具の実のパス・SHA-256・版の探索は `/usr/bin:/bin` に揃えた。
 
-workspace の snapshot も、ディレクトリの記述子から `O_NOFOLLOW`・`O_NONBLOCK` で開き、`fstat` で通常のファイルであることを確かめる。判定前に workspace とその下を cwd とする残りを lsof で調べ、検出や検査の失敗では後続を止める。印を消して cwd も外へ移した子孫の不存在は保証しない。
+workspace の snapshot も、ディレクトリの記述子から `O_NOFOLLOW`・`O_NONBLOCK` で開き、`fstat` で通常のファイルであることを確かめる。判定前に workspace とその下を cwd とする残りを lsof で調べ、検出や検査の失敗では後続を止める。lsof は逆斜線を二重にして示し、MAXPATHLEN を超える cwd は先頭を欠いた末尾だけを示す（2026-11-05 に macOS 27.2 で、1332 バイトの cwd が 1010 バイトで示されることを確かめた）。根の側を同じ表示へ直して比べ、1000 バイト以上の表示は根と比べられないので残りとして扱う（P5-37 で、P5-31 の再レビューの低 1・低 2 を直した）。印を消して cwd も外へ移した子孫の不存在は保証しない。
 
 ポートの規則 `localhost:PORT` は、IPv4 の `127.0.0.1` に加え、IPv6 の `::1` の同じポートへの外向きの接続も許す。これは TCP だけに限定する規則ではない。HTTP の模擬は `127.0.0.1` で待ち受ける。ほかの宛先の拒否のテストは、127.0.0.2 の別名や待ち受けを作らず、外での接続の結果と内での PermissionDenied を対にする。
 

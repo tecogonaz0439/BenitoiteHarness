@@ -316,18 +316,22 @@ pub(super) fn rebuild(
     files: &FileHistory,
     replay: ReasoningReplay,
 ) -> Conversation {
-    let mut parts = match conversation.items.first() {
-        Some(Item::UserMessage(first)) => first
-            .parts
-            .iter()
-            .filter(|part| {
-                part.kind == UserPartKind::Environment
-                    && !part.text.starts_with("<completion_check>\n")
-            })
-            .cloned()
-            .collect::<Vec<_>>(),
-        _ => Vec::new(),
-    };
+    // 最初の環境に加え、要約で消える範囲の途中の環境の変化（create_project の後など）も順に残す。
+    // 要約の入力は依頼と舵取りだけなので、残さないと、次の変化までモデルは古い環境を見る。
+    let mut parts = conversation
+        .items
+        .iter()
+        .take(start.max(1))
+        .filter_map(|item| match item {
+            Item::UserMessage(message) => Some(&message.parts),
+            Item::AssistantTurn(_) | Item::ToolResult(_) => None,
+        })
+        .flatten()
+        .filter(|part| {
+            part.kind == UserPartKind::Environment && !part.text.starts_with("<completion_check>\n")
+        })
+        .cloned()
+        .collect::<Vec<_>>();
     let mut body = format!(
         "<compacted_summary>\n{}\n</compacted_summary>",
         sanitize(summary)

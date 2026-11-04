@@ -2259,6 +2259,26 @@ def render(template: List[str], values: Dict[str, str]) -> List[str]:
     return [part.format(**values) for part in template]
 
 
+# DeepSeek Harness の CLI の場所は手元ごとに違うので、型板の {dsh_cli} を環境変数から置き換える。
+# DSH_ で始まる名前は子の環境から除くので使わない（dsh_environment）。
+DSH_CLI_ENV = 'SKILL_EVAL_DSH_CLI'
+
+
+def template_values(template: List[str]) -> Dict[str, str]:
+    """型板が {dsh_cli} を使うときだけ、その値を返す。"""
+    if not any('{dsh_cli}' in part for part in template):
+        return {}
+    cli = os.environ.get(DSH_CLI_ENV, '')
+    if not os.path.isabs(cli):
+        raise ValueError('%s must be the absolute path of deepseek-harness apps/cli/lib/bin.js' % DSH_CLI_ENV)
+    return {'dsh_cli': cli}
+
+
+def harness_version_command(harness: Dict[str, object]) -> List[str]:
+    template = list(harness['version'])  # type: ignore
+    return render(template, template_values(template))
+
+
 def version_of(command: List[str], env: Optional[Dict[str, str]] = None, cleanup_group: bool = False) -> str:
     if cleanup_group:
         # agy の背後の更新のプロセスが出力を持っていても、問い合わせを待ち続けない。
@@ -2317,8 +2337,12 @@ def prepare_stage(task: Task, workspace: str, number: int) -> str:
             os.makedirs(target, exist_ok=True)
             if not stat.S_ISDIR(os.lstat(target).st_mode):
                 raise ValueError('workspace materials path is not a regular directory')
-        if os.path.lexists(destination) and not stat.S_ISREG(os.lstat(destination).st_mode):
-            raise ValueError('workspace material is not a regular file')
+        if os.path.lexists(destination):
+            if not stat.S_ISREG(os.lstat(destination).st_mode):
+                raise ValueError('workspace material is not a regular file')
+            # 前の段のエージェントが外のファイルへのハードリンクに替えていても、その先を書き換えない。
+            # 名前を消して新しく作る（P5-33 の情報 4）。
+            os.unlink(destination)
         shutil.copyfile(task_path(task.dir, path), destination)
     body = prepare_stage_prompt(task, number)
     return (PROMPT.format(limit=task.attempt_limit) + '\n\n' if number == 1 else '') + body
@@ -2731,6 +2755,7 @@ def run_trial(task: Task, trial_dir: str, benitoite: str, harness_name: str, har
                 values = dict(harness.get('options', {}))  # type: ignore
                 values.update(workspace=workspace, trial=trial_dir, model=model,
                               prompt=PROMPT.format(limit=task.attempt_limit))
+                values.update(template_values(list(harness['start'])))  # type: ignore
                 command = render(list(harness['start']), values)  # type: ignore
                 cwd = str(harness.get('cwd', '{workspace}')).format(**values)
             stdout_path = os.path.join(trial_dir, 'harness.stdout')
@@ -2740,7 +2765,7 @@ def run_trial(task: Task, trial_dir: str, benitoite: str, harness_name: str, har
             cleanup = {'cleanup_group': True} if is_agy else {}
             if is_agy:
                 settings_before = agy_user_settings_state()
-                harness_version_start = version_of(list(harness['version']), env, cleanup_group=True)
+                harness_version_start = version_of(harness_version_command(harness), env, cleanup_group=True)
             try:
                 if is_agy:
                     permission_errors.extend(agy_permissions(workspace, False))
@@ -2750,7 +2775,7 @@ def run_trial(task: Task, trial_dir: str, benitoite: str, harness_name: str, har
             finally:
                 if is_agy:
                     permission_errors.extend(agy_permissions(workspace, True))
-                    harness_version_end = version_of(list(harness['version']), env, cleanup_group=True)
+                    harness_version_end = version_of(harness_version_command(harness), env, cleanup_group=True)
                     try:
                         settings_changed = settings_before != agy_user_settings_state()
                     except ValueError:
@@ -3416,7 +3441,7 @@ def evaluation_header(args: argparse.Namespace, benitoite: str, harness_name: st
             # 更新後の版を見出しに使わず、最初の試行の開始時に得た版を使う。
             harness_version = first['harness_version_start']
         else:
-            harness_version = version_of(list(harness['version']), version_env)
+            harness_version = version_of(harness_version_command(harness), version_env)
     with open(benitoite, 'rb') as f:
         processor_hash = hashlib.sha256(f.read()).hexdigest()
     options = harness.get('options', {})

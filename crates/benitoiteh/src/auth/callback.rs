@@ -226,7 +226,18 @@ fn accepted(
 ) -> Result<Option<TcpStream>, AuthError> {
     match result {
         Ok((socket, _)) => Ok(Some(socket)),
-        Err(error) if transient_accept(&error) => Ok(None),
+        Err(error) if transient_accept(&error) => {
+            // 記述子や記憶が尽きると、受け付けられない接続が待ち行列に残り、poll がすぐ戻る。
+            // 休まずに戻ると、期限か取り消しまで空回りする（秘密の入力の補助の受け付けと同じ扱い）。
+            use rustix::io::Errno;
+            if [Errno::MFILE, Errno::NFILE, Errno::NOBUFS, Errno::NOMEM]
+                .iter()
+                .any(|errno| error.raw_os_error() == Some(errno.raw_os_error()))
+            {
+                std::thread::sleep(Duration::from_millis(25));
+            }
+            Ok(None)
+        }
         Err(_) => Err(AuthError::Communication),
     }
 }
