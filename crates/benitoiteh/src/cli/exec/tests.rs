@@ -66,7 +66,7 @@ fn prepare_with_trust(
 
 /// テストが手放したセッションを開く。prepare と同じく、ほかのテストの fork が継承した錠は
 /// exec まで残るので、Locked だけを短時間待つ
-/// （docs/2026-11-02/03-other-test-files.md「直し方と確かめ」）。
+/// （docs/plan/results/P5-42-other-test-files.md「直し方と確かめ」）。
 fn open_released(paths: &DataPaths, id: &SessionId) -> Result<Session, SessionError> {
     let started = Instant::now();
     loop {

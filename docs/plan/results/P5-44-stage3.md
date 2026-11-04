@@ -1,6 +1,8 @@
 # 段 3: 通信の制限
 
-[04](04-oss-feature-review.md)の「段 3: 通信の制限（BH-046、BH-040）」を、設計者の指示で進めた記録である。確かめは、[01](01-cloud-linux-check.md)の環境（x86_64 の Linux、Alpine 3.22.7 の rootfs、root でない利用者）で行った。macOS での確かめは別途とする。
+> 2026-11-04 に、`docs/2026-11-02/` の `06-stage3.md` から本ディレクトリへ移した。本文は当時の記録のままとし、リンクだけを張り直した。
+
+[04-oss-feature-review](../../2026-11-02/04-oss-feature-review.md)の「段 3: 通信の制限（BH-046、BH-040）」を、設計者の指示で進めた記録である。確かめは、[P5-42-cloud-linux-check](P5-42-cloud-linux-check.md)の環境（x86_64 の Linux、Alpine 3.22.7 の rootfs、root でない利用者）で行った。macOS での確かめは別途とする。
 
 ## 設計者の決定
 

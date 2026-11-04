@@ -61,8 +61,9 @@ Benitoite のプロジェクトは改造の途中であることが多い。処�
 | `docs/workflow/` | 公開の共通依頼文、作業文書の雛形、文書構成の対応表 | 個人の設定を含めない。共通依頼文は `docs/plan/00-common.md` と `scripts/check.sh` の変更に合わせて保守する |
 | `crates/benitoiteh/` | 試作のクレート（ライブラリと実行ファイル） | 「実装の規約」に従う |
 | `crates/sandbox-probe/` | OS のサンドボックスのテストが起動する補助のクレート | 試作の実行ファイルと配布物には含めない |
-| `scripts/` | ビルドとテストをまとめて走らせる道具 | `check.sh --inside-codex` は Codex 内で走らせられる検査を行う |
+| `scripts/` | ビルドとテストをまとめて走らせる道具 | `check.sh --inside-codex` は Codex 内で走らせられる検査を行う。`cloud-linux-setup.sh` と `cloud-linux-run.sh` は、使い捨てのクラウドの x86_64 の Linux でテストを走らせる |
 | `docs/plan/results/` | 実装プランの作業で確かめた結果 | 作業の文書から参照する |
+| `docs/2026-11-02/` | 2026-11-02〜03 にクラウドのセッションで行った作業（P5-42〜P5-47）の一覧と残っていること、キャッチアップの案、処理系への要望と処理系の側とのやり取り | 確かめの記録は `docs/plan/results/` に移した。処理系の側からの依頼は受け取ったまま置く |
 | `assets/benitoite/` | Benitoite のリリースから取り込んだ文書（同梱の Agent Skill など） | 手で直さない。取り込み直すときは「Benitoite の処理系と事前検討の参照」に従う |
 | `tools/` | 評価と測定の道具 | LLM を呼ぶ評価は設計者の了承を得てから行う |
 | `.claude/skills/` | 公開のプロジェクト固有のスキル（`git-workflow`、`test-audit`、`archive-and-bundle`）と、非公開のスキルへのシンボリックリンク（あれば） | 公開のスキルはここに実体を置き、`.agents/skills/` から相対のシンボリックリンクで指す。非公開のスキルとそのリンクは git で追跡しない |

@@ -1,6 +1,8 @@
 # 時々失敗するセッションのテストの調べと修正
 
-本書は、[クラウドの Linux での検査](01-cloud-linux-check.md)で再現した、`tests/session.rs` の時々失敗するテスト（[P5-37](../plan/tasks/P5-37-post-release-followups.md) の「時々失敗したテスト」の一行目）の調べと、テストの側の修正を記録する。修正の方針は、2026-11-02 の設計者の決定に従った。まとめは [README](README.md) にある。
+> 2026-11-04 に、`docs/2026-11-02/` の `02-session-flaky-tests.md` から本ディレクトリへ移した。本文は当時の記録のままとし、リンクだけを張り直した。
+
+本書は、[クラウドの Linux での検査](P5-42-cloud-linux-check.md)で再現した、`tests/session.rs` の時々失敗するテスト（[P5-37](../tasks/P5-37-post-release-followups.md) の「時々失敗したテスト」の一行目）の調べと、テストの側の修正を記録する。修正の方針は、2026-11-02 の設計者の決定に従った。まとめは [README](../../2026-11-02/README.md) にある。
 
 本物の LLM は呼んでいない。macOS で確かめる項目（Seatbelt、評価の道具の判定）と aarch64 の Linux（Apple の `container`）は、この環境にないので扱わず、別途とする。
 

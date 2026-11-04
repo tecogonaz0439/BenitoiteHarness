@@ -1707,7 +1707,7 @@ fn stale_placeholder_records_are_reaped_without_removing_user_data_or_locked_pat
     drop(lock);
     // ほかのテストの fork が継承した錠は exec まで残るので、回収されるまで短時間だけ準備を
     // やり直す。錠を放さない退行は 2 秒で失敗にする
-    // （docs/2026-11-02/03-other-test-files.md「直し方と確かめ」）。
+    // （docs/plan/results/P5-42-other-test-files.md「直し方と確かめ」）。
     let started = std::time::Instant::now();
     loop {
         drop(f.command(f.config(), &[OsStr::new("socketpair")])?);
