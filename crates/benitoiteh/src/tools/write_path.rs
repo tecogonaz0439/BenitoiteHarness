@@ -101,33 +101,39 @@ impl WriteTarget {
         context: &ToolContext,
         approval: ApprovalStatus,
     ) -> Result<Option<ToolOutput>, ToolError> {
-        let within = if context.mode == Mode::Normal {
-            match &context.shell {
-                Some(shell) => shell
-                    .writable_roots
-                    .iter()
-                    .any(|root| self.real_path.starts_with(root)),
-                None => {
-                    self.real_path.starts_with(context.project.real_path())
-                        || self.real_path.starts_with(context.temporary.real_path())
-                }
+        let roots: Vec<&Path> = match (&context.shell, context.mode) {
+            (Some(shell), Mode::Normal) => {
+                shell.writable_roots.iter().map(PathBuf::as_path).collect()
             }
-        } else {
-            self.real_path.starts_with(context.project.real_path())
-                || self.real_path.starts_with(context.temporary.real_path())
+            _ => vec![context.project.real_path(), context.temporary.real_path()],
+        };
+        let within = roots.iter().any(|root| self.real_path.starts_with(root));
+        // 根の直下の守る名前がシンボリックリンクなら、その先に書くことも守る名前の下に書くことと同じに扱う。
+        // 実のパスはリンクを解いた後なので、名前の比べだけでは捕まらない（設計書 01-03「書く道具のパスの規則」）。
+        let linked = |name: &str| {
+            roots.iter().any(|root| {
+                let link = root.join(name);
+                std::fs::symlink_metadata(&link).is_ok_and(|metadata| metadata.is_symlink())
+                    && std::fs::canonicalize(&link)
+                        .is_ok_and(|target| self.real_path.starts_with(target))
+            })
         };
         // 根自体が守る名前を含む場合も、実のパスの全要素で検査する。
         // （設計書 01-03「書く道具のパスの規則」）。
         let protected = self.real_path.components().any(|part| {
             let name = part.as_os_str().as_encoded_bytes();
-            name.eq_ignore_ascii_case(b".git") || name.eq_ignore_ascii_case(b".benitoiteh")
-        });
+            crate::sandbox::same_protected_name(name, ".git")
+                || crate::sandbox::same_protected_name(name, ".benitoiteh")
+        }) || linked(".git")
+            || linked(".benitoiteh");
         // .agents は、どちらのモードでも書くたびに利用者の確認を受ける（設計書 01-03「書く道具のパスの規則」）。
+        // まだない部分は要求の綴りのままなので、APFS で `.agents` と同じ名前になる綴りも捕まえる。
         let agents = self.real_path.components().any(|part| {
-            part.as_os_str()
-                .as_encoded_bytes()
-                .eq_ignore_ascii_case(crate::sandbox::AGENTS.as_bytes())
-        });
+            crate::sandbox::same_protected_name(
+                part.as_os_str().as_encoded_bytes(),
+                crate::sandbox::AGENTS,
+            )
+        }) || linked(crate::sandbox::AGENTS);
         if context.mode == Mode::Restricted {
             if !within {
                 return Err(ToolError::OutsideScope);

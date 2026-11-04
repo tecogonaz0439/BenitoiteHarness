@@ -1,6 +1,7 @@
 //! 中継の判断と転送を、本物のソケットと手元の模擬の宛先で確かめる（設計書 03-02「通信の中継」）。
 
 use super::*;
+use crate::approval::ApprovalAnswer;
 use std::error::Error;
 use std::sync::mpsc;
 
@@ -42,7 +43,7 @@ fn gate(allowed: &[&str], port: u16, ask: bool) -> NetworkGate {
 fn start(run: &Arc<ProxyRun>) -> Result<(u16, ProxyServer), Box<dyn Error>> {
     let listener = TcpListener::bind("127.0.0.1:0")?;
     let port = listener.local_addr()?.port();
-    Ok((port, serve(listener, Arc::clone(run))?))
+    Ok((port, serve(vec![listener], Arc::clone(run))?))
 }
 
 fn exchange(port: u16, request: &str) -> Result<String, Box<dyn Error>> {
@@ -172,6 +173,9 @@ fn unknown_domains_follow_the_users_answer_and_record_denials() -> TestResult {
     assert!(!response.starts_with("HTTP/1.1 403"), "{response}");
     let response = exchange(port, "CONNECT once.example.com:443 HTTP/1.1\r\n\r\n")?;
     assert!(response.contains(text::NETWORK_USER_DECLINED), "{response}");
+    // 同じコマンドの中で断ったドメインは、再試行でも尋ね直さずに断る（答える糸は三つで終わる）。
+    let response = exchange(port, "CONNECT once.example.com:443 HTTP/1.1\r\n\r\n")?;
+    assert!(response.contains(text::NETWORK_USER_DECLINED), "{response}");
     drop(server);
     let seen = answers.join().map_err(|_| "answers")?;
     assert_eq!(
@@ -239,11 +243,19 @@ fn private_addresses_ip_literals_and_missing_tokens_are_refused() -> TestResult 
         assert!(response.contains(reason), "{request}: {response}");
     }
     let (upstream_port, _received) = upstream(b"secured")?;
-    let gate = gate_with_token(upstream_port);
-    let run = ProxyRun::new(Arc::new(gate), "curl".into(), PathBuf::from("/project"));
+    let run = ProxyRun::with_token(
+        Arc::new(self::gate(&["example.com"], upstream_port, false)),
+        "curl".into(),
+        PathBuf::from("/project"),
+        "token".into(),
+    );
     let (port, _server) = start(&run)?;
     let response = exchange(port, "CONNECT example.com:443 HTTP/1.1\r\n\r\n")?;
     assert!(response.starts_with("HTTP/1.1 407"), "{response}");
+    // 合言葉のない要求は、解釈で断る形でも 407 で断り、断った記録（道具の結果に載る文）を残さない。
+    let response = exchange(port, "GET https://injected.example/ HTTP/1.1\r\n\r\n")?;
+    assert!(response.starts_with("HTTP/1.1 407"), "{response}");
+    assert!(run.denials().is_empty(), "{:?}", run.denials());
     let response = exchange(
         port,
         &format!(
@@ -255,8 +267,37 @@ fn private_addresses_ip_literals_and_missing_tokens_are_refused() -> TestResult 
     Ok(())
 }
 
-fn gate_with_token(port: u16) -> NetworkGate {
-    gate(&["example.com"], port, false).with_token("token".into())
+// 作成時の関門: コマンドが終わった後は、答えを待っていた接続も断り、遅れて届いた答えをどの許可にも
+// 加えない。終わった後に来た接続は尋ねない（設計書 03-02「通信の中継」）。
+#[test]
+fn finished_runs_drop_pending_confirmations_and_late_answers() -> TestResult {
+    let gate = Arc::new(gate(&[], 9, true));
+    let (prompts, requests) = mpsc::channel::<ApprovalPrompt>();
+    gate.connect_prompts(prompts);
+    let run = ProxyRun::new(Arc::clone(&gate), "curl".into(), PathBuf::from("/project"));
+    let (port, _server) = start(&run)?;
+    let client = std::thread::spawn(move || {
+        exchange(port, "CONNECT late.example.com:443 HTTP/1.1\r\n\r\n").map_err(|e| e.to_string())
+    });
+    let prompt = requests.recv_timeout(Duration::from_secs(10))?;
+    run.finish();
+    let response = client.join().map_err(|_| "client")??;
+    assert!(response.starts_with("HTTP/1.1 403"), "{response}");
+    let _late = prompt.reply.send(ApprovalAnswer {
+        outcome: ApprovalOutcome::ApprovedForSession,
+        message: None,
+    });
+    let response = exchange(port, "CONNECT late.example.com:443 HTTP/1.1\r\n\r\n")?;
+    assert!(response.starts_with("HTTP/1.1 403"), "{response}");
+    assert!(requests.try_recv().is_err());
+    assert!(
+        !gate
+            .session
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .contains("late.example.com")
+    );
+    Ok(())
 }
 
 // 作成時の関門: 承認の方針が尋ねることを許さない門は、画面につながっていても尋ねずに断る。

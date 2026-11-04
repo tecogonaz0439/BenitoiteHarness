@@ -353,10 +353,17 @@ fn prepare(
 }
 
 /// 一回のコマンドの中継。断った記録を結果に添えるまで保つ。macOS では待ち受けもここで持つ。
+/// 落とすときにコマンドが終わった印を立て、残った接続に尋ねさせない（設計書 03-02「通信の中継」）。
 struct ProxyGuard {
     run: Arc<crate::sandbox::proxy::ProxyRun>,
     #[cfg(not(target_os = "linux"))]
     _server: crate::sandbox::proxy::ProxyServer,
+}
+
+impl Drop for ProxyGuard {
+    fn drop(&mut self) {
+        self.run.finish();
+    }
 }
 
 /// 中継の方式なら、このコマンドの中継を用意し、子にプロキシの変数を渡す（設計書 03-02「通信の中継」）。
@@ -375,24 +382,33 @@ fn proxy(
     else {
         return Ok((policy, None));
     };
-    let run = crate::sandbox::proxy::ProxyRun::new(Arc::clone(gate), command.into(), cwd.into());
     #[cfg(target_os = "linux")]
     let (policy, guard, port) = (
         policy,
-        ProxyGuard { run },
+        ProxyGuard {
+            run: crate::sandbox::proxy::ProxyRun::new(Arc::clone(gate), command.into(), cwd.into()),
+        },
         crate::sandbox::proxy::LINUX_PORT,
     );
     // macOS では、主のプロセスがループバックで待ち受け、方針でそのポートへの接続だけを許す。
+    // 待ち受けは手元のほかのプロセスからも届くので、呼び出しごとの合言葉を求める。
     #[cfg(not(target_os = "linux"))]
     let (policy, guard, port) = {
-        let listener = std::net::TcpListener::bind(("127.0.0.1", 0))?;
-        let port = listener.local_addr()?.port();
+        let (listeners, port) = loopback_listeners()?;
+        let mut random = [0_u8; 16];
+        getrandom::fill(&mut random).map_err(|e| failure(&e))?;
+        let run = crate::sandbox::proxy::ProxyRun::with_token(
+            Arc::clone(gate),
+            command.into(),
+            cwd.into(),
+            format!("{:032x}", u128::from_ne_bytes(random)),
+        );
         let mut config = policy.config().clone();
         config.network_proxy = false;
         config.allow_loopback_port = std::num::NonZeroU16::new(port);
         let policy = crate::sandbox::SandboxPolicy::new(config).map_err(|e| failure(&e))?;
         let server =
-            crate::sandbox::proxy::serve(listener, Arc::clone(&run)).map_err(|e| failure(&e))?;
+            crate::sandbox::proxy::serve(listeners, Arc::clone(&run)).map_err(|e| failure(&e))?;
         (
             policy,
             ProxyGuard {
@@ -402,7 +418,7 @@ fn proxy(
             port,
         )
     };
-    let url = OsString::from(gate.proxy_url(port));
+    let url = OsString::from(guard.run.proxy_url(port));
     for name in [
         "HTTP_PROXY",
         "HTTPS_PROXY",
@@ -417,6 +433,30 @@ fn proxy(
         env.remove(std::ffi::OsStr::new(name));
     }
     Ok((policy, Some(guard)))
+}
+
+/// 同じ番号で、IPv4 と IPv6 のループバックの両方に待ち受けを作る。Seatbelt の `localhost:<番号>` の規則は
+/// `127.0.0.1` と `::1` の両方への接続を許すので、片方だけを持つと、ほかのプロセスがもう片方の同じ番号で
+/// 待ち受けたときに、中継を通らずにそこへ届く（BH-119）。IPv6 のループバックがない機械では、そこで待ち受ける
+/// ものもないので、IPv4 だけでよい。
+#[cfg(not(target_os = "linux"))]
+fn loopback_listeners() -> Result<(Vec<std::net::TcpListener>, u16), ToolError> {
+    let mut last = None;
+    for _ in 0..16 {
+        let v4 = std::net::TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0))?;
+        let port = v4.local_addr()?.port();
+        match std::net::TcpListener::bind((std::net::Ipv6Addr::LOCALHOST, port)) {
+            Ok(v6) => return Ok((vec![v4, v6], port)),
+            Err(error) if error.kind() == std::io::ErrorKind::AddrNotAvailable => {
+                return Ok((vec![v4], port));
+            }
+            // 同じ番号の IPv6 がほかで使われている。両方を閉じて別の番号で取り直す。
+            Err(error) => last = Some(error),
+        }
+    }
+    Err(last
+        .unwrap_or_else(|| std::io::Error::from(std::io::ErrorKind::AddrInUse))
+        .into())
 }
 
 /// `PATH` の項目のうち、書ける場所に届くものを除いて並べ直す。

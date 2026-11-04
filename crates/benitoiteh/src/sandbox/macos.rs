@@ -2,7 +2,11 @@
 
 use std::ffi::OsString;
 
+#[cfg(target_os = "macos")]
+use super::{PolicyConfig, SandboxError, text};
 use super::{ProgramAccess, ReadAccess, SandboxPolicy};
+#[cfg(target_os = "macos")]
+use std::path::Path;
 
 /// Seatbelt の方針の文と `sandbox-exec -D` に渡す値。
 #[derive(Debug)]
@@ -37,6 +41,44 @@ fn protected_name_pattern(name: &str) -> String {
         }
     }
     pattern
+}
+
+/// 書ける場所の中で、守る名前（根の直下と 3 段までの深さ）がシンボリックリンクなら起動しない。
+/// Seatbelt の守りは、リンクを解いた後のパスに名前を当てるので、リンクの先（例: `.agents -> tools/agents`）
+/// を守らない。Linux と同じく閉じる側に倒す（設計書 03-02「Linux のファイルシステムの見え方」「.agents の守り」）。
+#[cfg(target_os = "macos")]
+pub(super) fn reject_protected_links(config: &PolicyConfig) -> Result<(), SandboxError> {
+    for root in &config.writable {
+        scan_protected_links(config, root, 1)?;
+    }
+    Ok(())
+}
+
+#[cfg(target_os = "macos")]
+fn scan_protected_links(config: &PolicyConfig, dir: &Path, depth: u8) -> Result<(), SandboxError> {
+    let entries = match std::fs::read_dir(dir) {
+        Ok(entries) => entries,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(error) => return Err(SandboxError::Io(error)),
+    };
+    for entry in entries {
+        let entry = entry.map_err(SandboxError::Io)?;
+        // lstat の結果で辿るので、リンクの先の木は探さない。
+        let file_type = entry.file_type().map_err(SandboxError::Io)?;
+        let name = entry.file_name();
+        if config
+            .protected_names
+            .iter()
+            .any(|protected| super::same_protected_name(name.as_encoded_bytes(), protected))
+        {
+            if file_type.is_symlink() {
+                return Err(SandboxError::InvalidPolicy(text::WRITABLE_SYMLINK));
+            }
+        } else if depth < 3 && file_type.is_dir() {
+            scan_protected_links(config, &entry.path(), depth.saturating_add(1))?;
+        }
+    }
+    Ok(())
 }
 
 impl SandboxPolicy {

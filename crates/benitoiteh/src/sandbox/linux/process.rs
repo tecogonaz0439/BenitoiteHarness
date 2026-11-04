@@ -156,7 +156,7 @@ impl PreparedSandbox {
                 // 補助が設定に失敗すれば、記述子は届かず通り道が閉じる。中継なしで子の失敗を待つ。
                 let proxy = self.proxy.take().and_then(|run| {
                     receive_listener(&control)
-                        .and_then(|listener| crate::sandbox::proxy::serve(listener, run))
+                        .and_then(|listener| crate::sandbox::proxy::serve(vec![listener], run))
                         .ok()
                 });
                 Ok(SandboxChild {

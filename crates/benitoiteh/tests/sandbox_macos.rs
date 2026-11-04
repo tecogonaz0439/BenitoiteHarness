@@ -535,6 +535,44 @@ fn protected_names_match_ascii_case_insensitively() -> TestResult {
     Ok(())
 }
 
+// 関門: 書ける場所の中の守る名前（根の直下と入れ子）がシンボリックリンクなら起動しない。Seatbelt の守りは
+// リンクを解いた後のパスに名前を当てるので、リンクの先を守れないからである（設計書 03-02「.agents の守り」）。
+// 正の対照として、守る名前でないリンクと、リンクのない木では起動する。
+#[test]
+fn protected_name_links_refuse_to_start() -> TestResult {
+    use std::os::unix::fs::symlink;
+    let f = Fixture::new(false)?;
+    let target = f.writable.join("tools/agents");
+    fs::create_dir_all(&target)?;
+    f.run(
+        f.config(),
+        &[OsStr::new("mkdir"), f.writable.join("ok").as_os_str()],
+        0,
+    )?;
+    symlink("tools/agents", f.writable.join("plain-link"))?;
+    f.run(
+        f.config(),
+        &[OsStr::new("mkdir"), f.writable.join("ok2").as_os_str()],
+        0,
+    )?;
+    for link in [f.writable.join(".agents"), f.writable.join("a/b/.Agents")] {
+        if let Some(parent) = link.parent() {
+            fs::create_dir_all(parent)?;
+        }
+        symlink(&target, &link)?;
+        let error = f
+            .command(
+                f.config(),
+                &[OsStr::new("mkdir"), f.writable.join("x").as_os_str()],
+            )
+            .err()
+            .ok_or("started with a protected-name link")?;
+        assert!(error.to_string().contains("symlink"), "{error}");
+        fs::remove_file(&link)?;
+    }
+    Ok(())
+}
+
 // 作成時の関門: 通常モードでも書ける場所の実行を常に拒む退行を、本物の bash からの起動で捕まえる。
 #[test]
 fn writable_executables_can_run_when_policy_allows_them() -> TestResult {

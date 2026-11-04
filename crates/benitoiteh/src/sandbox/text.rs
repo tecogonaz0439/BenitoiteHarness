@@ -7,7 +7,7 @@ pub const INVALID_PROTECTED: &str = "Protected names must be single components u
 pub const DENIED_WRITABLE: &str = "A denied path must not contain a writable root.";
 #[cfg(target_os = "linux")]
 pub const WRITABLE_HELPER: &str = "The sandbox helper must be outside every writable root.";
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 pub const WRITABLE_SYMLINK: &str =
     "A protected or denied path must not pass through a symlink in a writable root.";
 #[cfg(target_os = "linux")]
@@ -136,7 +136,9 @@ pub fn network_denied(host: &str, port: u16, reason: &str) -> String {
     format!("benitoiteh blocked network access to {host}:{port}: {reason}.")
 }
 
-/// 確認の要約。
+/// 確認の要約。許可はドメインのすべてのポートに効くので、そのことを示す（設計書 03-03「通信の確認」）。
 pub fn network_summary(host: &str, port: u16) -> String {
-    format!("Allow the command to connect to {host}:{port}?")
+    format!(
+        "Allow the command to connect to {host}:{port}? Allowing it covers every port of {host}."
+    )
 }

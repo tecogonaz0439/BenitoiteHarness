@@ -67,7 +67,7 @@ pub(super) fn directory_at(parent: &File, name: &OsStr, target: Target) -> io::R
 fn protected(name: &[u8]) -> bool {
     crate::sandbox::PROTECTED_NAMES.iter().any(|protected| {
         if cfg!(target_os = "macos") {
-            name.eq_ignore_ascii_case(protected.as_bytes())
+            crate::sandbox::same_protected_name(name, protected)
         } else {
             name == protected.as_bytes()
         }
