@@ -46,6 +46,9 @@ pub fn restricted_policy(
         }
     }
     project_secrets(&locations.project, 1, &mut config.denied_read)?;
+    // macOS では、探す深さ（3 段）より深いものと、起動の後に作られたものも、正規表現の規則で塞ぐ。
+    // 探す仕組みは、秘密の名前のリンクの先を塞ぐために残す（設計書 03-02「制限モードの方針」）。
+    config.secret_name_roots = vec![locations.project.clone()];
     SandboxPolicy::new(config)
 }
 

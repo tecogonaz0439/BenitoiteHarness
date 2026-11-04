@@ -24,7 +24,8 @@ fn permission_errno(message: &str) -> bool {
 }
 
 // 関門: File.Read を確認した制限モードのスクリプトも、道具が読まない名前のファイル（.env と鍵の形）を、
-// 根から 3 段まで読めない。例のファイルと普通のファイルは読め、4 段目は保証の外（設計書 03-02「制限モードの方針」）。
+// 根から 3 段まで読めない。macOS はどの深さでも読めない。例のファイル、普通のファイル、Benitoite のソースは
+// 読め、秘密のディレクトリの中のソースは読めない。Linux の 4 段目は保証の外（設計書 03-02「制限モードの方針」）。
 #[test]
 fn restricted_scripts_cannot_read_project_secret_names() -> TestResult {
     let mut f = Fixture::new()?;
@@ -36,9 +37,14 @@ fn restricted_scripts_cannot_read_project_secret_names() -> TestResult {
         ("keys/server.pem", false),
         (".env.example", true),
         ("notes.txt", true),
-        ("a/b/c/.env", true),
+        ("a/b/c/.env", cfg!(target_os = "linux")),
+        ("a/b/c/d/e/keys/deploy.key", cfg!(target_os = "linux")),
         // Benitoite のソースは処理系が読むので塞がない。取り込みと診断は別の規則で扱う。
         (".env.bnt", true),
+        ("a/b/c/d/.env.example", true),
+        (".ssh/helper.bnt", false),
+        // 探す深さより深い秘密のディレクトリの中のソースは、macOS では正規表現の規則だけが塞ぐ。
+        ("a/b/c/d/.ssh/helper.bnt", cfg!(target_os = "linux")),
     ] {
         let path = f.project.join(relative);
         fs::create_dir_all(path.parent().ok_or("parent")?)?;
