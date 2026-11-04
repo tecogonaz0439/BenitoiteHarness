@@ -50,6 +50,25 @@ pub(super) fn receive_stdin() -> io::Result<OwnedFd> {
     Ok(control)
 }
 
+/// 名前空間の中で作った待ち受けを、制御の通り道で親へ渡す（設計書 03-02「通信の中継」）。
+pub(super) fn send_listener(control: &OwnedFd, listener: &std::net::TcpListener) -> io::Result<()> {
+    use rustix::net::{SendAncillaryBuffer, SendAncillaryMessage, SendFlags, sendmsg};
+    use std::os::fd::AsFd;
+    let mut space = [MaybeUninit::uninit(); rustix::cmsg_space!(ScmRights(1))];
+    let mut ancillary = SendAncillaryBuffer::new(&mut space);
+    let descriptors = [listener.as_fd()];
+    if !ancillary.push(SendAncillaryMessage::ScmRights(&descriptors)) {
+        return Err(io::Error::other(text::CONTROL));
+    }
+    sendmsg(
+        control,
+        &[std::io::IoSlice::new(b"L")],
+        &mut ancillary,
+        SendFlags::NOSIGNAL,
+    )?;
+    Ok(())
+}
+
 pub(super) fn supervise(
     control: OwnedFd,
     child: Child,

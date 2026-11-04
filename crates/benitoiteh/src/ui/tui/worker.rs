@@ -26,6 +26,8 @@ enum Job {
         cancelled: Arc<AtomicBool>,
     },
     Status,
+    /// モデルと推論の度合いを替える。None は今の値を示すだけ。
+    Model(Option<(String, Option<String>)>),
     ListCheckpoints,
     ListBranches,
     ListForkRequests,
@@ -58,6 +60,7 @@ enum Reply {
     Run(RunReport),
     Compact(CompactReport),
     Status(AgentStatus, TokenCounts),
+    Model(AgentStatus, String, bool),
     ListCheckpoints(Vec<CheckpointInfo>),
     ListBranches(Vec<BranchTreeRow>),
     ListForkRequests(Vec<BranchTreeRow>),
@@ -102,6 +105,8 @@ pub struct Worker {
     status: AgentStatus,
     rewinding: bool,
     ended: bool,
+    /// 書き出しで記録を読むためのセッションのディレクトリ（設計書 01-05「会話の書き出し」）。
+    session_directory: std::path::PathBuf,
 }
 
 impl Worker {
@@ -111,6 +116,7 @@ impl Worker {
         let (events, receiver) = mpsc::sync_channel(64);
         let (done, completions) = mpsc::sync_channel(1);
         let status = agent.status();
+        let session_directory = session.directory().to_path_buf();
         let secrets = agent.take_secret_requests();
         let askpass = agent.askpass_broker();
         let thread = thread::Builder::new().name("agent".into()).spawn(move || {
@@ -168,6 +174,17 @@ impl Worker {
                             .and(result.map(Reply::Compact))
                     }
                     Job::Status => Ok(Reply::Status(agent.status(), tokens.clone())),
+                    Job::Model(change) => {
+                        let changed = change.is_some();
+                        if let Some((model, effort)) = change {
+                            agent.switch_model(&model, effort.as_deref());
+                        }
+                        Ok(Reply::Model(
+                            agent.status(),
+                            agent.effort().to_owned(),
+                            changed,
+                        ))
+                    }
                     Job::ListCheckpoints => agent.checkpoints().map(Reply::ListCheckpoints),
                     Job::ListBranches => agent.branch_tree().map(Reply::ListBranches),
                     Job::ListForkRequests => agent.branch_tree().map(Reply::ListForkRequests),
@@ -224,6 +241,7 @@ impl Worker {
             status,
             rewinding: false,
             ended: false,
+            session_directory,
         })
     }
 
@@ -238,6 +256,16 @@ impl Worker {
 
     /// 各依頼に新しい取り消しの印を作る。実行中に二つ目を送らない。
     pub fn submit(&mut self, request: String, control: RunControl) -> Result<(), AgentError> {
+        self.submit_with_images(request, Vec::new(), control)
+    }
+
+    /// 添付の画像のパスとともに依頼を送る（設計書 05-02「入力の操作」）。
+    pub fn submit_with_images(
+        &mut self,
+        request: String,
+        attachments: Vec<std::path::PathBuf>,
+        control: RunControl,
+    ) -> Result<(), AgentError> {
         if self.is_running() {
             return Err(AgentError::Worker);
         }
@@ -251,6 +279,7 @@ impl Worker {
                     cancel_step: Arc::clone(&control.cancel_step),
                     cancel_run: Arc::clone(&control.cancel_run),
                     steering: receiver,
+                    attachments,
                 },
             })
             .map_err(|_| AgentError::Worker)?;
@@ -367,6 +396,16 @@ impl Worker {
     pub(super) fn end(&mut self) -> Result<(), AgentError> {
         self.command(Job::End, RunControl::default())
     }
+    /// モデルと推論の度合いを替えるか、今の値を示す（設計書 05-02「`/` で始まるコマンド」）。
+    pub fn model(&mut self, change: Option<(String, Option<String>)>) -> Result<(), AgentError> {
+        self.command(Job::Model(change), RunControl::default())
+    }
+
+    /// セッションの記録のディレクトリ。
+    pub(super) fn session_directory(&self) -> &std::path::Path {
+        &self.session_directory
+    }
+
     pub(super) fn current_status(&self) -> &AgentStatus {
         &self.status
     }
@@ -444,10 +483,13 @@ impl Worker {
                 screen.before_rewind = None;
                 screen.operation = None;
                 match completion.result {
-                    Ok(Reply::Run(report)) => screen.finished(
-                        report.outcome == Outcome::Cancelled,
-                        self.pending_steering.drain(..).collect(),
-                    ),
+                    Ok(Reply::Run(report)) => {
+                        screen.notify(super::Notification::Finished);
+                        screen.finished(
+                            report.outcome == Outcome::Cancelled,
+                            self.pending_steering.drain(..).collect(),
+                        )
+                    }
                     Ok(Reply::Compact(report)) => {
                         if report.outcome == CompactOutcome::Cancelled {
                             screen.finished(true, Vec::new());
@@ -456,6 +498,10 @@ impl Worker {
                     }
                     Ok(Reply::Status(status, tokens)) => {
                         screen.command_status(&status, &tokens);
+                        self.status = status;
+                    }
+                    Ok(Reply::Model(status, effort, changed)) => {
+                        screen.model_result(&status, &effort, changed);
                         self.status = status;
                     }
                     Ok(Reply::ListCheckpoints(points)) => screen.select_checkpoints(points),

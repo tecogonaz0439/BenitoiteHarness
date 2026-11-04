@@ -33,6 +33,7 @@ fn destination(server: &MockProvider) -> Destination {
 fn conversation() -> Conversation {
     Conversation {
         items: vec![Item::UserMessage(UserMessage {
+            images: Vec::new(),
             parts: vec![
                 UserPart {
                     kind: UserPartKind::Environment,
@@ -57,12 +58,14 @@ fn tools() -> Vec<ToolSpec> {
                 kind: ArgumentType::String,
                 required: true,
                 description: "File path.".into(),
+                items: Vec::new(),
             },
             ArgumentSpec {
                 name: "limit".into(),
                 kind: ArgumentType::Integer,
                 required: false,
                 description: "Line limit.".into(),
+                items: Vec::new(),
             },
         ],
     }]
@@ -183,6 +186,7 @@ fn requests_follow_capabilities_and_do_not_authenticate_without_a_key() -> TestR
                 previous_last_item: Some(0),
                 disable_tools: key,
                 prompt_cache_key: Some("session-test"),
+                output_schema: None,
             },
         )?;
         assert!(!format!("{adapter:?} {request:?}").contains(KEY));
@@ -1769,5 +1773,53 @@ fn chatgpt_errors_keep_only_safe_codes_types_and_numeric_retry_after() -> TestRe
         assert_eq!(retry_after.as_deref(), expected_retry.then_some(retry));
         server.shutdown()?;
     }
+    Ok(())
+}
+
+// 作成時の関門: 利用者の添付の画像は、利用者の発言の中に input_image の部分として送る
+// （設計書 02-01「画像の受け渡し」）。
+#[test]
+fn user_attachments_are_input_image_parts_of_the_user_message() -> TestResult {
+    let mut server = MockProvider::start(vec![
+        ResponseScript::sse(simple()),
+        ResponseScript::sse(simple()),
+    ])?;
+    for enabled in [true, false] {
+        let adapter = OpenAiResponsesAdapter::new(
+            destination(&server),
+            Capabilities {
+                image_input: enabled,
+                ..Capabilities::default()
+            },
+            KEY.into(),
+        );
+        request(
+            &adapter,
+            &image_support::user_attachment(true),
+            RequestOptions::default(),
+        )?;
+    }
+    let requests = server.requests()?;
+    let content = |index: usize| {
+        requests
+            .get(index)
+            .and_then(|request| request.body.pointer("/input/0/content"))
+            .cloned()
+    };
+    assert_eq!(
+        content(0),
+        Some(json!([
+            {"type":"input_text", "text":"Look."},
+            {"type":"input_image", "image_url":"data:image/png;base64,Zm9vYmFy", "detail":"auto"}
+        ]))
+    );
+    assert_eq!(
+        content(1),
+        Some(json!([
+            {"type":"input_text", "text":"Look."},
+            {"type":"input_text", "text":"(Image omitted: the current provider does not accept images.)"}
+        ]))
+    );
+    server.shutdown()?;
     Ok(())
 }

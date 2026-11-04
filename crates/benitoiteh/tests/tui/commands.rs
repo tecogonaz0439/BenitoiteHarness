@@ -50,6 +50,20 @@ fn command_grammar_busy_rules_and_literal_slashes_apply_only_at_submission() -> 
         ),
         ("/fork before", Action::Command(Command::ForkBefore)),
         ("/fork x", Action::None),
+        ("/init", Action::Command(Command::Init)),
+        ("/model", Action::Command(Command::Model(None))),
+        (
+            "/model other-model",
+            Action::Command(Command::Model(Some(("other-model".into(), None)))),
+        ),
+        (
+            "/model other-model  low ",
+            Action::Command(Command::Model(Some((
+                "other-model".into(),
+                Some("low".into()),
+            )))),
+        ),
+        ("/model a b c", Action::None),
         ("/quit", Action::Quit),
         (
             "/compact keep names\nand paths",
@@ -65,7 +79,9 @@ fn command_grammar_busy_rules_and_literal_slashes_apply_only_at_submission() -> 
         let mut screen = Screen::new((120, 24), status());
         assert_eq!(submit(&mut screen, raw, false, false), expected, "{raw:?}");
     }
-    for command in ["/help", "/status", "/rewind", "/tree", "/new", "/quit"] {
+    for command in [
+        "/help", "/status", "/rewind", "/tree", "/new", "/quit", "/init",
+    ] {
         let mut screen = Screen::new((120, 24), status());
         assert_eq!(
             submit(&mut screen, &format!("{command} unwanted"), false, false),
@@ -1223,7 +1239,11 @@ fn accepted_rewind_finishes_before_quit_and_repeated_keyboard_interrupts() -> Te
                 "saved"
             }
         );
-        assert!(safe_output(&output.0.borrow())?.contains("Waiting for rewind to finish"));
+        // 一つの入力の束の中で、y が巻き戻しを始め、続く Ctrl+C は巻き戻しの途中として扱われる
+        // （巻き戻しの状態は束の後の受信で初めて戻る）。途中でなければ /quit の後の Ctrl+C で 130 を
+        // 返すので、上の 0 が、取り消さずに待つ枝を通ったことを示す。待ちの文を描いたかは
+        // 確かめない。理由: 小さな巻き戻しは次の画面を描く前に終わりえ、終わると文を消す。
+        // 負荷をかけると 1,200 回のうち 838 回で描かれなかった（2026-11-03）。
         assert!(screen.checkpoint_before_rewind().is_none());
         assert!(
             read_records(f.session.directory())?
@@ -1486,6 +1506,7 @@ fn new_after_project_creation_uses_the_project_from_the_event() -> TestResult {
                 root: f.root.clone(),
                 project: destination.clone(),
                 paths: f.paths.clone(),
+                image_input: false,
             });
             let mut prepared = next
                 .new_session_in_mode(&server, Mode::Restricted)
@@ -1714,6 +1735,510 @@ fn fork_before_ignores_non_requests_and_restores_a_literal_slash_request() -> Te
         matches!(read_records(&old_dir)?.last(), Some(Record::SessionEnd { reason, .. }) if reason == "New session started.")
     );
     assert_eq!(server.requests()?.len(), 3);
+    server.shutdown()?;
+    Ok(())
+}
+
+// 作成時の関門: 利用者の定義するコマンドは、引数を埋めた文を依頼として送り、`/help` に説明とともに
+// 並ぶ。説明の制御の文字は目に見える形で示す。`/init` は AGENTS.md がなければ決まった依頼を送り、
+// あれば送らない（設計書 05-02「利用者の定義するコマンド」「`/` で始まるコマンド」）。
+#[test]
+fn prompt_templates_and_init_send_requests_from_the_input_only() -> TestResult {
+    let mut server = MockProvider::start(vec![
+        ResponseScript::sse(response(json!({"content":"reviewed"}), "stop")),
+        ResponseScript::sse(response(json!({"content":"initialized"}), "stop")),
+    ])?;
+    let f = Fixture::new()?;
+    let prompts = f.root.join("prompts");
+    fs::create_dir(&prompts)?;
+    fs::write(
+        prompts.join("review.md"),
+        "---\ndescription: Review \u{1b}[2J the change\n---\nReview $ARGUMENTS carefully.\n",
+    )?;
+    let exclude = ExcludeRules::new(
+        &f.project,
+        &f.paths,
+        &f.root.join("spill"),
+        &ReadConfig::default(),
+        &ReadConfig::default(),
+    )?;
+    let templates =
+        benitoiteh::context::prompts::collect(&prompts, &f.project, &f.paths.home, false, &exclude);
+    assert!(templates.notices.is_empty(), "{:?}", templates.notices);
+    let (worker, _directory) = f.worker(&server)?;
+    let mut with_templates = status();
+    with_templates.templates = std::sync::Arc::new(templates);
+    let mut screen = Screen::new((160, 30), with_templates);
+    let mut output = Output::default();
+    let mut input = Driver::new(
+        output.clone(),
+        vec![
+            ("", send("/help")),
+            ("Prompt templates:", send("/review src/a.rs")),
+            ("reviewed", send("/init")),
+            ("initialized", send("/quit")),
+        ],
+    );
+    assert_eq!(
+        run(
+            &mut screen,
+            worker,
+            &mut input,
+            &mut output,
+            &AtomicBool::new(false),
+            |_| {},
+            &mut |_, _, _| Err("should not prepare".into())
+        )?,
+        0
+    );
+    let visible = safe_output(&output.0.borrow())?;
+    assert!(visible.contains("/review"), "{visible}");
+    assert!(visible.contains("Review \\x1b[2J the change"), "{visible}");
+    let requests = server.requests()?;
+    let last_user = |index: usize| {
+        requests
+            .get(index)
+            .and_then(|request| request.body.pointer("/messages"))
+            .and_then(serde_json::Value::as_array)
+            .and_then(|messages| messages.last())
+            .map(serde_json::Value::to_string)
+            .unwrap_or_default()
+    };
+    assert!(
+        last_user(0).contains("Review src/a.rs carefully."),
+        "{}",
+        last_user(0)
+    );
+    assert!(
+        last_user(1).contains("Create an AGENTS.md file"),
+        "{}",
+        last_user(1)
+    );
+    assert_eq!(requests.len(), 2);
+    server.shutdown()?;
+
+    // AGENTS.md があるときは送らない。
+    fs::write(f.project.join("AGENTS.md"), "rules\n")?;
+    let mut server = MockProvider::start(vec![])?;
+    let (worker, _directory) = f.worker(&server)?;
+    let mut screen = Screen::new((160, 30), status());
+    let mut output = Output::default();
+    let mut input = Driver::new(
+        output.clone(),
+        vec![("", send("/init")), ("already exists", send("/quit"))],
+    );
+    assert_eq!(
+        run(
+            &mut screen,
+            worker,
+            &mut input,
+            &mut output,
+            &AtomicBool::new(false),
+            |_| {},
+            &mut |_, _, _| Err("should not prepare".into())
+        )?,
+        0
+    );
+    assert!(server.requests()?.is_empty());
+    server.shutdown()?;
+    Ok(())
+}
+
+// 作成時の関門: 一連の処理を終えたときの知らせは、前面を離れた端末でだけ、設定のコマンドを
+// 決まった文を最後の引数にして起動する。前面にあるときは起動しない（設計書 05-02「通知」）。
+#[test]
+fn finished_runs_start_the_notification_command_only_when_unfocused() -> TestResult {
+    use benitoiteh::config::NotificationsConfig;
+    use benitoiteh::ui::tui::Notifier;
+    let f = Fixture::new()?;
+    let log = f.root.join("notified.log");
+    let notifier = Notifier::new(&NotificationsConfig {
+        terminal: false,
+        command: vec![
+            "/bin/sh".into(),
+            "-c".into(),
+            format!("printf '%s\\n' \"$1\" >> '{}'", log.display()),
+            "sh".into(),
+        ],
+    });
+    for focus in [Event::FocusGained, Event::FocusLost] {
+        let mut server = MockProvider::start(vec![ResponseScript::sse(response(
+            json!({"content":"LLM done"}),
+            "stop",
+        ))])?;
+        let (worker, _directory) = f.worker(&server)?;
+        let mut screen = Screen::new((160, 30), status()).with_notifier(notifier.clone());
+        let mut output = Output::default();
+        let mut first = vec![focus.clone()];
+        first.extend(send("ordinary request"));
+        let mut input = Driver::new(
+            output.clone(),
+            vec![("", first), ("LLM done", send("/quit"))],
+        );
+        assert_eq!(
+            run(
+                &mut screen,
+                worker,
+                &mut input,
+                &mut output,
+                &AtomicBool::new(false),
+                |_| {},
+                &mut |_, _, _| Err("should not prepare".into())
+            )?,
+            0
+        );
+        server.shutdown()?;
+        if focus == Event::FocusGained {
+            // 起動していないことは、次の起動の知らせが一行だけであることで確かめる。
+            continue;
+        }
+        let started = Instant::now();
+        while !fs::read_to_string(&log).is_ok_and(|text| text.ends_with('\n')) {
+            assert!(started.elapsed() < Duration::from_secs(5));
+            thread::sleep(Duration::from_millis(10));
+        }
+        assert_eq!(
+            fs::read_to_string(&log)?,
+            "benitoiteh finished the request.\n"
+        );
+    }
+    Ok(())
+}
+
+// 作成時の関門: `/export` は今の枝を、まだないファイルにだけ利用者だけが読める権限で書き、既にある
+// ファイルは上書きしない。パスがなければプロジェクトの下に決まった名前で書く（設計書 01-05「会話の書き出し」）。
+#[test]
+fn export_command_writes_new_private_files_only() -> TestResult {
+    use std::os::unix::fs::PermissionsExt;
+    let mut server = MockProvider::start(vec![ResponseScript::sse(response(
+        json!({"content":"LLM done"}),
+        "stop",
+    ))])?;
+    let f = Fixture::new()?;
+    fs::write(f.project.join("taken.md"), "keep me")?;
+    let (worker, directory) = f.worker(&server)?;
+    let id = directory
+        .file_name()
+        .ok_or("id")?
+        .to_string_lossy()
+        .into_owned();
+    let mut screen = Screen::new((160, 30), status());
+    let mut output = Output::default();
+    let mut input = Driver::new(
+        output.clone(),
+        vec![
+            ("", send("export me please")),
+            ("LLM done", send("/export out.md")),
+            ("Exported the conversation", send("/export taken.md")),
+            ("Could not export the conversation", send("/export")),
+            ("Exported the conversation", send("/quit")),
+        ],
+    );
+    assert_eq!(
+        run(
+            &mut screen,
+            worker,
+            &mut input,
+            &mut output,
+            &AtomicBool::new(false),
+            |_| {},
+            &mut |_, _, _| Err("should not prepare".into())
+        )?,
+        0
+    );
+    server.shutdown()?;
+    for path in [
+        f.project.join("out.md"),
+        f.project.join(format!("benitoiteh-{id}.md")),
+    ] {
+        let written = fs::read_to_string(&path)?;
+        assert!(written.contains("## User\n\nexport me please"), "{written}");
+        assert!(written.contains("## Assistant\n\nLLM done"), "{written}");
+        assert_eq!(fs::metadata(&path)?.permissions().mode() & 0o777, 0o600);
+    }
+    assert_eq!(fs::read_to_string(f.project.join("taken.md"))?, "keep me");
+    Ok(())
+}
+
+// 作成時の関門: Ctrl+G は入力欄を外部のエディタで書き、書いた文で入力欄を置き換える。下書きは
+// 入力の履歴のディレクトリに置いて終えたら消し、エディタが失敗したら入力を保つ。エディタがなければ
+// 知らせる（設計書 05-02「入力の操作」）。
+#[test]
+fn external_editor_replaces_the_input_and_removes_the_draft() -> TestResult {
+    let mut server = MockProvider::start(vec![ResponseScript::sse(response(
+        json!({"content":"LLM done"}),
+        "stop",
+    ))])?;
+    let f = Fixture::new()?;
+    let ctrl_g = key(KeyCode::Char('g'), KeyModifiers::CONTROL);
+    let editor = |script: &str| {
+        Some(vec![
+            "/bin/sh".to_owned(),
+            "-c".to_owned(),
+            script.to_owned(),
+            "sh".to_owned(),
+        ])
+    };
+    // 失敗するエディタ、書き換えるエディタ、エディタなしの順に確かめる。
+    for (command, expected) in [
+        (editor("exit 3"), "The editor exited with an error"),
+        (
+            editor("printf 'edited %s\\n' \"$(cat \"$1\")\" > \"$1\""),
+            "LLM done",
+        ),
+        (None, "Set VISUAL or EDITOR"),
+    ] {
+        let (worker, _directory) = f.worker(&server)?;
+        let mut screen = Screen::new((160, 30), status()).with_editor(command.clone());
+        screen.load_history(&f.paths, &f.project);
+        let mut output = Output::default();
+        let edits = command
+            .as_ref()
+            .is_some_and(|c| c.get(2).is_some_and(|s| s.starts_with("printf")));
+        let mut first = vec![Event::Paste("draft".into()), ctrl_g.clone()];
+        let mut last = Vec::new();
+        if edits {
+            first.push(key(KeyCode::Enter, KeyModifiers::NONE));
+        } else {
+            // 保った入力を Ctrl+C で空にしてから終える。
+            last.push(key(KeyCode::Char('c'), KeyModifiers::CONTROL));
+        }
+        last.extend(send("/quit"));
+        let mut input = Driver::new(output.clone(), vec![("", first), (expected, last)]);
+        assert_eq!(
+            run(
+                &mut screen,
+                worker,
+                &mut input,
+                &mut output,
+                &AtomicBool::new(false),
+                |_| {},
+                &mut |_, _, _| Err("should not prepare".into())
+            )?,
+            0
+        );
+        let drafts = fs::read_dir(&f.paths.history_dir)?
+            .filter_map(Result::ok)
+            .filter(|entry| entry.file_name().to_string_lossy().starts_with(".draft-"))
+            .count();
+        assert_eq!(drafts, 0);
+    }
+    let requests = server.requests()?;
+    assert_eq!(requests.len(), 1);
+    let sent = requests
+        .first()
+        .and_then(|request| request.body.pointer("/messages"))
+        .map(serde_json::Value::to_string)
+        .unwrap_or_default();
+    assert!(sent.contains("edited draft"), "{sent}");
+    assert!(!sent.contains("edited draft\\n"), "{sent}");
+    server.shutdown()?;
+    Ok(())
+}
+
+// 作成時の関門: `@` の後の Tab はプロジェクトのファイルのパスに替え、続けて押すと次の候補に替える。
+// `.` で始まる名前、根の .gitignore が除くもの、リンクは候補にしない（設計書 05-02「入力の操作」）。
+#[test]
+fn tab_completes_project_paths_after_at_signs() -> TestResult {
+    let f = Fixture::new()?;
+    fs::create_dir_all(f.project.join("src"))?;
+    fs::create_dir_all(f.project.join(".hidden"))?;
+    fs::write(f.project.join("src/main.rs"), "")?;
+    fs::write(f.project.join("src/mapping.rs"), "")?;
+    fs::write(f.project.join(".hidden/secret.rs"), "")?;
+    fs::write(f.project.join(".gitignore"), "*.log\n")?;
+    fs::write(f.project.join("build.log"), "")?;
+    std::os::unix::fs::symlink("/etc/hostname", f.project.join("linked.txt"))?;
+    let tab = || key(KeyCode::Tab, KeyModifiers::NONE);
+    let enter = || key(KeyCode::Enter, KeyModifiers::NONE);
+    for (typed, tabs, expected) in [
+        ("look at @main", 1, "look at @src/main.rs"),
+        ("look at @ma", 2, "look at @src/mapping.rs"),
+        ("look at @ma", 3, "look at @src/main.rs"),
+        ("@secret", 1, "@secret"),
+        ("@build", 1, "@build"),
+        ("@linked", 1, "@linked"),
+        ("no mention", 1, "no mention"),
+    ] {
+        let mut screen = Screen::new((120, 24), status());
+        screen.load_history(&f.paths, &f.project);
+        screen.input(Event::Paste(typed.into()), Duration::ZERO, false);
+        for _ in 0..tabs {
+            assert_eq!(screen.input(tab(), Duration::ZERO, false), Action::None);
+        }
+        assert_eq!(
+            screen.input(enter(), Duration::ZERO, false),
+            Action::Submit(expected.into()),
+            "{typed} with {tabs} tab(s)"
+        );
+    }
+    // ほかのキーを挟むと、次の Tab は候補を選び直す。
+    let mut screen = Screen::new((120, 24), status());
+    screen.load_history(&f.paths, &f.project);
+    screen.input(Event::Paste("@ma".into()), Duration::ZERO, false);
+    screen.input(tab(), Duration::ZERO, false);
+    screen.input(Event::Paste(" @map".into()), Duration::ZERO, false);
+    screen.input(tab(), Duration::ZERO, false);
+    assert_eq!(
+        screen.input(enter(), Duration::ZERO, false),
+        Action::Submit("@src/main.rs @src/mapping.rs".into())
+    );
+    Ok(())
+}
+
+// 作成時の関門: 処理の途中でないときに貼った画像のファイルの絶対パスは、文ではなく添付になり、
+// 状態の行に名前が出て、次の依頼とともに read と同じ規則で読んで送る。中身は objects/ に置き、
+// 記録には参照だけを書く。読まないファイルは添付せず、依頼も送らない（設計書 05-02「入力の操作」）。
+#[test]
+fn pasted_image_paths_are_attached_with_the_read_rules() -> TestResult {
+    let mut png = Vec::new();
+    image::RgbImage::new(2, 2)
+        .write_to(&mut std::io::Cursor::new(&mut png), image::ImageFormat::Png)?;
+    let mut server = MockProvider::start(vec![ResponseScript::sse(response(
+        json!({"content":"LLM done"}),
+        "stop",
+    ))])?;
+    let mut f = Fixture::new()?;
+    f.image_input = true;
+    let picture = f.project.join("shot one.png");
+    fs::write(&picture, &png)?;
+    let secret = f.project.join(".env.png");
+    fs::write(&secret, &png)?;
+    let (worker, directory) = f.worker(&server)?;
+    let mut screen = Screen::new((160, 30), status());
+    let mut output = Output::default();
+    let quoted = format!("'{}'", picture.display());
+    let mut input = Driver::new(
+        output.clone(),
+        vec![
+            ("", vec![Event::Paste(quoted)]),
+            ("images: shot one.png", send("describe this")),
+            ("LLM done", vec![Event::Paste(secret.display().to_string())]),
+            ("images: .env.png", send("and this")),
+            ("Could not attach", send("/quit")),
+        ],
+    );
+    assert_eq!(
+        run(
+            &mut screen,
+            worker,
+            &mut input,
+            &mut output,
+            &AtomicBool::new(false),
+            |_| {},
+            &mut |_, _, _| Err("should not prepare".into())
+        )?,
+        0
+    );
+    let requests = server.requests()?;
+    assert_eq!(
+        requests.len(),
+        1,
+        "the excluded attachment must not be sent"
+    );
+    let content = requests
+        .first()
+        .and_then(|request| request.body.pointer("/messages/1/content"))
+        .and_then(serde_json::Value::as_array)
+        .ok_or("content")?;
+    let expected = format!("data:image/png;base64,{}", base64_encode(&png));
+    assert!(
+        content.iter().any(|part| part
+            .pointer("/image_url/url")
+            .and_then(serde_json::Value::as_str)
+            == Some(expected.as_str())),
+        "{content:?}"
+    );
+    assert!(
+        !content
+            .iter()
+            .any(|part| part.to_string().contains("shot one.png"))
+    );
+    let records = read_records(&directory)?;
+    let attached = records
+        .iter()
+        .find_map(|record| {
+            if let Record::User { message, .. } = record
+                && !message.images.is_empty()
+            {
+                Some(message.images.clone())
+            } else {
+                None
+            }
+        })
+        .ok_or("recorded attachment")?;
+    let hash = attached
+        .first()
+        .map(|image| image.sha256.clone())
+        .ok_or("hash")?;
+    assert_eq!(fs::read(directory.join("objects").join(&hash))?, png);
+    assert!(!fs::read_to_string(directory.join("session.jsonl"))?.contains("base64"));
+    server.shutdown()?;
+    Ok(())
+}
+
+fn base64_encode(data: &[u8]) -> String {
+    const ALPHABET: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let mut output = String::new();
+    for chunk in data.chunks(3) {
+        let byte = |index: usize| u32::from(chunk.get(index).copied().unwrap_or(0));
+        let value = byte(0) << 16 | byte(1) << 8 | byte(2);
+        for (index, shift) in [18, 12, 6, 0].into_iter().enumerate() {
+            if index <= chunk.len() {
+                let symbol = usize::try_from((value >> shift) & 63)
+                    .ok()
+                    .and_then(|position| ALPHABET.get(position))
+                    .copied()
+                    .unwrap_or(b'=');
+                output.push(char::from(symbol));
+            } else {
+                output.push('=');
+            }
+        }
+    }
+    output
+}
+
+// 作成時の関門: `/model` は今の提供者とモデルと推論の度合いを示し、名前を添えると次の依頼から
+// そのモデルへ送り、状態の行を替える（設計書 05-02「`/` で始まるコマンド」）。
+#[test]
+fn model_command_switches_the_model_for_the_next_request() -> TestResult {
+    let mut server = MockProvider::start(vec![ResponseScript::sse(response(
+        json!({"content":"LLM done"}),
+        "stop",
+    ))])?;
+    let f = Fixture::new()?;
+    let (worker, _directory) = f.worker(&server)?;
+    let mut screen = Screen::new((160, 30), status());
+    let mut output = Output::default();
+    let mut input = Driver::new(
+        output.clone(),
+        vec![
+            ("", send("/model")),
+            (
+                "model: mock-model; effort: high",
+                send("/model other-model low"),
+            ),
+            ("prompt cache starts over", send("ordinary request")),
+            ("LLM done", send("/quit")),
+        ],
+    );
+    assert_eq!(
+        run(
+            &mut screen,
+            worker,
+            &mut input,
+            &mut output,
+            &AtomicBool::new(false),
+            |_| {},
+            &mut |_, _, _| Err("should not prepare".into())
+        )?,
+        0
+    );
+    let requests = server.requests()?;
+    let body = &requests.first().ok_or("request")?.body;
+    assert_eq!(body.get("model"), Some(&json!("other-model")));
+    assert!(safe_output(&output.0.borrow())?.contains("mock/other-model"));
     server.shutdown()?;
     Ok(())
 }

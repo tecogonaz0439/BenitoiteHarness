@@ -52,6 +52,7 @@ pub(super) fn prepare(
                 env: child_environment(
                     std::env::vars_os(),
                     &config.referenced_env_vars(),
+                    &config.secrets.pass_env,
                     &probe.write,
                     Some(("restricted", false)),
                 ),

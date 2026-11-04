@@ -6,6 +6,10 @@ use serde_json::Value;
 pub const READ: (&str, &str) = prompt_parts(include_str!("../../prompts/tools/read.md"));
 pub const READ_PLAIN: (&str, &str) =
     prompt_parts(include_str!("../../prompts/tools/read-plain.md"));
+pub const EDIT_MULTIPLE: (&str, &str) =
+    prompt_parts(include_str!("../../prompts/tools/edit-multiple.md"));
+pub const UPDATE_PLAN: (&str, &str) =
+    prompt_parts(include_str!("../../prompts/tools/update_plan.md"));
 pub const GLOB: (&str, &str) = prompt_parts(include_str!("../../prompts/tools/glob.md"));
 pub const GREP: (&str, &str) = prompt_parts(include_str!("../../prompts/tools/grep.md"));
 pub const WRITE: (&str, &str) = prompt_parts(include_str!("../../prompts/tools/write.md"));
@@ -80,6 +84,11 @@ pub fn argument(name: &str) -> &'static str {
         "old_string" => "Text to replace.",
         "new_string" => "Replacement text.",
         "replace_all" => "Replace every occurrence.",
+        "edits" => "Replacements to apply to the file.",
+        "explanation" => "Why the plan changed.",
+        "plan" => "All steps of the plan, in order.",
+        "step" => "Short description of the step.",
+        "status" => "One of pending, in_progress, or completed.",
         _ => "Argument value.",
     }
 }
@@ -103,6 +112,7 @@ pub fn wrong_type(name: &str, kind: ArgumentType) -> String {
         ArgumentType::Integer => "an integer",
         ArgumentType::Boolean => "a boolean",
         ArgumentType::StringArray => "an array of strings",
+        ArgumentType::ObjectArray => "an array of objects",
     };
     format!("Argument {name:?} must be {expected}.")
 }
@@ -123,9 +133,11 @@ pub fn positive(name: &str, zero_allowed: bool) -> String {
     };
     format!("Argument {name:?} must be {range}.")
 }
-pub fn write_approval(path: &std::path::Path, protected: bool) -> String {
+pub fn write_approval(path: &std::path::Path, protected: bool, agents: bool) -> String {
     let reason = if protected {
         "inside a protected location (.git or .benitoiteh)"
+    } else if agents {
+        "inside .agents (agent skills and settings)"
     } else {
         "outside the writable roots"
     };
@@ -147,6 +159,26 @@ pub fn edit_multiple(path: &str, count: usize) -> String {
         "Found {count} occurrences of old_string in {path}. Add surrounding lines to make it unique, or set replace_all to true."
     )
 }
+/// 複数の置き換えの一つの誤り。どの要素かを先に示し、続けて一つの置き換えと同じ文を添える。
+pub fn edit_item(index: usize, message: &str) -> String {
+    format!("edits[{index}]: {message}")
+}
+pub fn edit_overlap(first: usize, second: usize, path: &str) -> String {
+    format!(
+        "edits[{first}] and edits[{second}] overlap in {path}. Merge them into one edit or target disjoint regions. No change was made."
+    )
+}
+pub const PLAN_UPDATED: &str = "Plan updated.";
+pub fn plan_status(index: usize, status: &str) -> String {
+    format!("Invalid status {status:?} for plan[{index}]. Use pending, in_progress, or completed.")
+}
+pub fn plan_empty_step(index: usize) -> String {
+    format!("plan[{index}].step must not be empty.")
+}
+pub fn plan_in_progress(count: usize) -> String {
+    format!("At most one step can be in_progress; found {count}. No change was made.")
+}
+pub const EDITS_EMPTY: &str = "edits must contain at least one replacement.";
 pub fn edit_unchanged(path: &str) -> String {
     format!("old_string and new_string are identical. No change was made to {path}.")
 }
@@ -409,6 +441,8 @@ pub const BENITOITE_RUN: (&str, &str) =
     prompt_parts(include_str!("../../prompts/tools/benitoite_run.md"));
 pub const RUN_ARGS: &str = "Arguments passed to the Benitoite script.";
 pub const RUN_STDIN: &str = "Text written to the script's standard input; empty when omitted.";
+pub const RUN_WRITE_AGENTS: &str = "Set to true only when this run must write under .agents/ (agent skills and settings). The user confirms each such run; otherwise .agents/ stays read-only.";
+pub const WRITE_AGENTS_WITHOUT_FILE_WRITE: &str = "write_agents requires a script whose effects include File.Write. Remove write_agents, or write the files from main.";
 pub const RUN_CONTEXT: &str =
     "The Benitoite script execution context is unavailable. Stop and report.";
 pub const RUN_PATH: &str =
@@ -630,3 +664,7 @@ pub fn read_resized_image(
         "Read image file {media_type} ({width}x{height}, {bytes} bytes; resized from {original_width}x{original_height})"
     )
 }
+
+/// 添付の画像を読めなかった理由（設計書 05-02「入力の操作」）。
+pub const ATTACH_NOT_UTF8: &str = "the path is not UTF-8";
+pub const ATTACH_NOT_IMAGE: &str = "the file is not a PNG, JPEG, GIF or WebP image";

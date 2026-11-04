@@ -1628,6 +1628,7 @@ fn only_latest_request_checkpoint_is_associated_with_the_next_request() -> TestR
         node: 1,
         kind: session::UserKind::Request,
         message: benitoiteh::provider::UserMessage {
+            images: Vec::new(),
             parts: vec![benitoiteh::provider::UserPart {
                 kind: benitoiteh::provider::UserPartKind::Request,
                 text: "accepted request".into(),
@@ -1778,6 +1779,7 @@ fn branches_without_checkpoints_can_preview_and_move_conversation_only() -> Test
         node,
         kind: session::UserKind::Request,
         message: UserMessage {
+            images: Vec::new(),
             parts: vec![UserPart {
                 kind: UserPartKind::Request,
                 text: text.into(),

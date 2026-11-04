@@ -2,7 +2,7 @@
 
 use std::net::{IpAddr, Ipv4Addr};
 
-pub(super) fn allowed(address: IpAddr) -> bool {
+pub(crate) fn allowed(address: IpAddr) -> bool {
     match address {
         IpAddr::V4(ip) => ipv4(ip),
         IpAddr::V6(ip) => {

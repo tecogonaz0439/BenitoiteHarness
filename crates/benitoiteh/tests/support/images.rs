@@ -58,3 +58,24 @@ pub fn sized_history(available: bool, is_error: bool, count: usize, bytes: u64) 
     }
     Conversation { items }
 }
+
+/// 利用者が一枚の画像を添えた依頼だけの会話（設計書 02-01「画像の受け渡し」）。
+#[allow(dead_code)]
+pub fn user_attachment(available: bool) -> Conversation {
+    Conversation {
+        items: vec![Item::UserMessage(benitoiteh::provider::UserMessage {
+            parts: vec![benitoiteh::provider::UserPart {
+                kind: benitoiteh::provider::UserPartKind::Request,
+                text: "Look.".into(),
+            }],
+            images: vec![ToolImage {
+                media_type: "image/png".into(),
+                sha256: "0".repeat(64),
+                width: 1,
+                height: 1,
+                bytes: 6,
+                data: available.then(|| std::sync::Arc::from(b"foobar".as_slice())),
+            }],
+        })],
+    }
+}

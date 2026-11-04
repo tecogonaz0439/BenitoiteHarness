@@ -19,6 +19,14 @@ pub enum Command {
     PreviewRewind(String, crate::rewind::RewindScope),
     /// 木で選んだ移動先と範囲を、働き手で確かめる。
     PreviewBranch(crate::agent::BranchTarget, crate::rewind::RewindScope),
+    /// `AGENTS.md` を書く依頼を送る（設計書 05-02「`/` で始まるコマンド」）。
+    Init,
+    /// モデルと推論の度合いを替える。None は今の値を示す（設計書 05-02「`/` で始まるコマンド」）。
+    Model(Option<(String, Option<String>)>),
+    /// 入力欄を外部のエディタで書く（設計書 05-02「入力の操作」）。
+    Editor,
+    /// 今の枝を Markdown に書き出す。パスがなければプロジェクトの下に決まった名前で書く。
+    Export(Option<String>),
 }
 
 /// 新しいセッションの準備。端末と panic の書き先は CLI が設定する。
@@ -89,15 +97,17 @@ impl Screen {
             .get(boundary..)
             .unwrap_or_default()
             .trim_start_matches(char::is_whitespace);
-        if !name.is_empty() && !name.bytes().all(|byte| byte.is_ascii_lowercase()) {
+        if !name.is_empty() && !crate::context::prompts::valid_name(name) {
             return send(raw);
         }
         if running && (name != "quit" || !arguments.trim().is_empty()) {
             self.notice(text::COMMAND_RUNNING);
             return Action::None;
         }
-        if matches!(name, "help" | "status" | "rewind" | "tree" | "new" | "quit")
-            && !arguments.trim().is_empty()
+        if matches!(
+            name,
+            "help" | "status" | "rewind" | "tree" | "new" | "quit" | "init"
+        ) && !arguments.trim().is_empty()
         {
             self.notice(text::COMMAND_ARGUMENTS);
             return Action::None;
@@ -120,10 +130,37 @@ impl Screen {
                 }
             },
             "quit" => Action::Quit,
-            _ => {
-                self.notice(text::UNKNOWN_COMMAND);
-                Action::None
+            "init" => Action::Command(Command::Init),
+            "model" => {
+                let mut words = arguments.split_whitespace();
+                match (words.next(), words.next(), words.next()) {
+                    (None, _, _) => Action::Command(Command::Model(None)),
+                    (Some(model), effort, None)
+                        if model.chars().all(|c| !c.is_control())
+                            && effort.is_none_or(|e| e.chars().all(|c| !c.is_control())) =>
+                    {
+                        Action::Command(Command::Model(Some((
+                            model.to_owned(),
+                            effort.map(str::to_owned),
+                        ))))
+                    }
+                    _ => {
+                        self.notice(text::MODEL_USAGE);
+                        Action::None
+                    }
+                }
             }
+            "export" => Action::Command(Command::Export(
+                (!arguments.trim().is_empty()).then(|| arguments.trim().to_owned()),
+            )),
+            // 雛形は、引数を埋めた文を利用者の依頼として送る（設計書 05-02「利用者の定義するコマンド」）。
+            _ => match self.status.templates.get(name) {
+                Some(template) => send(template.expand(arguments)),
+                None => {
+                    self.notice(text::UNKNOWN_COMMAND);
+                    Action::None
+                }
+            },
         }
     }
 
@@ -143,6 +180,21 @@ impl Screen {
         for line in text::session_status(status, tokens).lines() {
             self.notice(line);
         }
+    }
+
+    pub(super) fn model_result(
+        &mut self,
+        status: &crate::agent::AgentStatus,
+        effort: &str,
+        changed: bool,
+    ) {
+        self.status.model.clone_from(&status.model);
+        self.notice(&text::model_result(
+            &status.provider,
+            &status.model,
+            effort,
+            changed,
+        ));
     }
 
     pub(super) fn compact_result(&mut self, report: &crate::agent::CompactReport) {

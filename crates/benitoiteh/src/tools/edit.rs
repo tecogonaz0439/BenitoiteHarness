@@ -9,6 +9,19 @@ use super::{
 };
 use serde_json::Value;
 
+/// 一つの置き換え。
+struct Replacement<'a> {
+    old: &'a str,
+    new: &'a str,
+    all: bool,
+}
+
+/// 置き換える範囲と、どの置き換えから来たか。
+struct Located {
+    range: Range<usize>,
+    index: usize,
+}
+
 pub(super) fn execute(
     context: &ToolContext,
     arguments: &Value,
@@ -16,12 +29,21 @@ pub(super) fn execute(
     invocation: super::Invocation<'_>,
 ) -> Result<ToolOutput, ToolError> {
     let path = string(arguments, "path")?;
-    let old = string(arguments, "old_string")?;
-    let new = string(arguments, "new_string")?;
-    let all = arguments
-        .get("replace_all")
-        .and_then(Value::as_bool)
-        .unwrap_or(false);
+    // `edits` は評価用の複数の置き換えの形だけが受ける（設計書 01-03「複数の置き換え」）。
+    // 引数の検証が道具の定義にない欄を拒むので、`edits` があれば、その形の道具である。
+    let multiple = arguments.get("edits").is_some();
+    let replacements = if let Some(edits) = arguments.get("edits") {
+        let edits = edits.as_array().ok_or(ToolError::State)?;
+        if edits.is_empty() {
+            return Err(ToolError::InvalidArguments(text::EDITS_EMPTY.to_owned()));
+        }
+        edits
+            .iter()
+            .map(replacement)
+            .collect::<Result<Vec<_>, _>>()?
+    } else {
+        vec![replacement(arguments)?]
+    };
     let target = WriteTarget::resolve(context, Path::new(path))?;
     let version = target.version()?;
     if let Some(output) = target.approval(context, approval)? {
@@ -31,55 +53,58 @@ pub(super) fn execute(
     target.check_read(context, &version)?;
     let bytes = target.read(&version)?;
     let before = std::str::from_utf8(&bytes).map_err(|_| ToolError::NotText)?;
-    if old.is_empty() {
-        return Err(ToolError::InvalidArguments(text::EMPTY_OLD.to_owned()));
-    }
-    if old == new {
-        return Err(ToolError::InvalidArguments(text::edit_unchanged(path)));
-    }
     let body = before.strip_prefix('\u{feff}').unwrap_or(before);
-    let matches = matches(body, old);
-    let ranges = if matches.is_empty() {
-        let normalized = Normalized::new(body);
-        let needle = Normalized::new(old);
-        matches_nonempty(&normalized.text, &needle.text)
-            .into_iter()
-            .map(|range| {
-                let start = normalized
-                    .original
-                    .get(range.start)
-                    .ok_or(ToolError::State)?
-                    .start;
-                let end = normalized
-                    .original
-                    .get(range.end.saturating_sub(1))
-                    .ok_or(ToolError::State)?
-                    .end;
-                Ok(start..end)
-            })
-            .collect::<Result<Vec<_>, ToolError>>()?
-    } else {
-        matches
+    // 一つの形の誤りの文は変えず、複数の形ではどの要素かを先に示す。
+    let failure = |index: usize, message: String| {
+        ToolError::InvalidArguments(if multiple {
+            text::edit_item(index, &message)
+        } else {
+            message
+        })
     };
-    if ranges.is_empty() {
-        return Err(ToolError::InvalidArguments(text::edit_not_found(path)));
+    let mut located = Vec::new();
+    let mut replaced = Vec::with_capacity(replacements.len());
+    for (index, replacement) in replacements.iter().enumerate() {
+        if replacement.old.is_empty() {
+            return Err(failure(index, text::EMPTY_OLD.to_owned()));
+        }
+        // 複数の形では、変えない要素があっても全体が変われば書く（Pi の edit-diff.ts に倣う）。
+        if !multiple && replacement.old == replacement.new {
+            return Err(ToolError::InvalidArguments(text::edit_unchanged(path)));
+        }
+        let ranges = locate(body, replacement.old)?;
+        if ranges.is_empty() {
+            return Err(failure(index, text::edit_not_found(path)));
+        }
+        if ranges.len() > 1 && !replacement.all {
+            return Err(failure(index, text::edit_multiple(path, ranges.len())));
+        }
+        located.extend(ranges.into_iter().map(|range| Located { range, index }));
+        replaced.push(line_endings(replacement.new, body));
     }
-    if ranges.len() > 1 && !all {
-        return Err(ToolError::InvalidArguments(text::edit_multiple(
-            path,
-            ranges.len(),
-        )));
+    // どの要素も元のファイルで照合し、重なる範囲を拒む。理由: 前の置き換えの結果に
+    // 次の要素が合う形にすると、要素の順で結果が変わり、LLM が予想しにくい。
+    located.sort_by_key(|item| (item.range.start, item.index));
+    for pair in located.windows(2) {
+        if let [previous, current] = pair
+            && previous.range.end > current.range.start
+        {
+            return Err(ToolError::InvalidArguments(text::edit_overlap(
+                previous.index.min(current.index),
+                previous.index.max(current.index),
+                path,
+            )));
+        }
     }
-    let replacement = line_endings(new, body);
     let mut after = String::new();
     if before.starts_with('\u{feff}') {
         after.push('\u{feff}');
     }
     let mut cursor = 0;
-    for range in ranges {
-        after.push_str(body.get(cursor..range.start).ok_or(ToolError::State)?);
-        after.push_str(&replacement);
-        cursor = range.end;
+    for item in located {
+        after.push_str(body.get(cursor..item.range.start).ok_or(ToolError::State)?);
+        after.push_str(replaced.get(item.index).ok_or(ToolError::State)?);
+        cursor = item.range.end;
     }
     after.push_str(body.get(cursor..).ok_or(ToolError::State)?);
     if after == before {
@@ -99,6 +124,43 @@ pub(super) fn execute(
         write::output(path, before, &after),
         invocation.cancelled,
     ))
+}
+
+fn replacement(value: &Value) -> Result<Replacement<'_>, ToolError> {
+    Ok(Replacement {
+        old: string(value, "old_string")?,
+        new: string(value, "new_string")?,
+        all: value
+            .get("replace_all")
+            .and_then(Value::as_bool)
+            .unwrap_or(false),
+    })
+}
+
+/// 字面で探し、なければ寄せた形で探して、元のバイト列の範囲を返す。
+fn locate(body: &str, old: &str) -> Result<Vec<Range<usize>>, ToolError> {
+    let exact = matches(body, old);
+    if !exact.is_empty() {
+        return Ok(exact);
+    }
+    let normalized = Normalized::new(body);
+    let needle = Normalized::new(old);
+    matches_nonempty(&normalized.text, &needle.text)
+        .into_iter()
+        .map(|range| {
+            let start = normalized
+                .original
+                .get(range.start)
+                .ok_or(ToolError::State)?
+                .start;
+            let end = normalized
+                .original
+                .get(range.end.saturating_sub(1))
+                .ok_or(ToolError::State)?
+                .end;
+            Ok(start..end)
+        })
+        .collect()
 }
 
 fn matches(input: &str, needle: &str) -> Vec<Range<usize>> {

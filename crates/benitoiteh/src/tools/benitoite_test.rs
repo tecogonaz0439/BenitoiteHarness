@@ -117,7 +117,15 @@ pub(super) fn execute(
         .copied()
         .filter(|e| *e != Effect::AssertCheck)
         .collect();
+    let write_agents = super::benitoite_process::write_agents(arguments);
+    if write_agents && !confirmation.contains(&Effect::FileWrite) {
+        return Ok(ToolOutput {
+            processor_launches: 1,
+            ..ToolOutput::error(text::WRITE_AGENTS_WITHOUT_FILE_WRITE)
+        });
+    }
     let mut facts = ApprovalFacts {
+        agents_write: write_agents,
         targets: targets.clone(),
         effects: effects::names(&confirmation, false),
         shell_reference: report.shell_reference && report.effects.contains(&Effect::ProcessRun),
@@ -142,7 +150,7 @@ pub(super) fn execute(
         });
     }
     if !previous.is_some_and(|effects| confirmation.is_subset(effects))
-        || (facts.unread_imports > 0 && approval == ApprovalStatus::Unapproved)
+        || ((facts.unread_imports > 0 || write_agents) && approval == ApprovalStatus::Unapproved)
     {
         if approval == ApprovalStatus::Approved {
             return Ok(ToolOutput {
@@ -164,7 +172,7 @@ pub(super) fn execute(
         output.processor_launches = 1;
         return Ok(output);
     }
-    let result = execute_report(context, &targets, report, &invocation);
+    let result = execute_report(context, &targets, report, &invocation, write_agents);
     // 失敗した起動も問い合わせの一回は数える。起動に到達した分は実行側で加算する。
     Ok(match result {
         Ok(mut output) => {
@@ -183,6 +191,7 @@ fn execute_report(
     targets: &[PathBuf],
     report: InspectionReport,
     invocation: &Invocation<'_>,
+    write_agents: bool,
 ) -> Result<ToolOutput, ToolError> {
     let (Some(run), Some(session)) = (&context.run, &context.session) else {
         return Err(ToolError::InvalidArguments(text::TEST_CONTEXT.into()));
@@ -197,7 +206,8 @@ fn execute_report(
         .into(),
     ];
     args.extend(targets.iter().map(|p| p.as_os_str().to_owned()));
-    let command = prepare(run, &report.effects, args, false, false).map_err(|e| failure(&e))?;
+    let command =
+        prepare(run, &report.effects, args, false, false, write_agents).map_err(|e| failure(&e))?;
     let stdout = Arc::new(Mutex::new(Results::new(Output::new(
         session
             .spill_writer(&format!("{}-stdout", invocation.call_id))

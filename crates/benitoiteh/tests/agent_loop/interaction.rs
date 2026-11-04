@@ -51,6 +51,7 @@ fn steering_is_grouped_recorded_and_sent_after_results_in_all_three_adapters() -
         let (mut agent, directory) = f.agent(f.config(&server, kind))?;
         let (steering, receiver) = mpsc::channel();
         let control = RunControl {
+            attachments: Vec::new(),
             cancel_step: Arc::new(AtomicBool::new(false)),
             cancel_run: Arc::new(AtomicBool::new(false)),
             steering: receiver,
@@ -156,6 +157,7 @@ fn steering_before_final_answer_continues_and_unapplied_steering_is_returned_on_
         let step = Arc::new(AtomicBool::new(false));
         let run = Arc::new(AtomicBool::new(false));
         let control = RunControl {
+            attachments: Vec::new(),
             cancel_step: Arc::clone(&step),
             cancel_run: Arc::clone(&run),
             steering: receiver,
@@ -340,6 +342,7 @@ fn escape_declines_one_approval_and_remaining_calls_in_the_response_still_execut
             sandbox_disabled: true,
             context_window: None,
             estimate: 0,
+            templates: Default::default(),
         },
     );
     let (report, _) = controlled(

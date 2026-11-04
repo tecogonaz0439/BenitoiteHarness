@@ -208,6 +208,19 @@ impl Agent {
             return Ok(output);
         };
         summary.checks = summary.checks.saturating_add(output.processor_launches);
+        // 非対話の .agents への書き込みは、--allow-agents-write があるときだけ許す。エフェクトの確認は、
+        // 続けて許可の集合でも確かめる（設計書 03-03「.agents への書き込み」）。
+        if request.facts.agents_write
+            && (self.tool_context.noninteractive || self.config.allow_agents_write)
+        {
+            if !self.config.allow_agents_write {
+                summary.approvals.policy_denied = summary.approvals.policy_denied.saturating_add(1);
+                return Ok(ToolOutput::error(approval::AGENTS_WRITE_DENIED));
+            }
+            if request.kind == approval::ApprovalKind::WriteScope {
+                return Ok(self.execute_approved(call, validated, cancelled));
+            }
+        }
         if request.kind == approval::ApprovalKind::CreateProject && self.tool_context.noninteractive
         {
             let permitted = self.config.project_parent.as_deref().is_some_and(|parent| {
@@ -513,6 +526,36 @@ impl Agent {
             output.text.push_str(&text::repeated(count));
         }
         output.text = crate::tools::truncate::cap_middle(&output.text);
+        // 結果の上限の後に加え、切り詰めで指示の途中を落とさない。指示は一つ 32 KiB、
+        // 合計 64 KiB までに抑える（設計書 01-04「下のディレクトリの指示のファイル」）。
+        if !output.is_error
+            && let Some(nested) = &mut self.nested_instructions
+            && let Some(directory) = touched_directory(
+                self.tool_context.project.real_path(),
+                &call.name,
+                &call.arguments,
+            )
+        {
+            let found = nested.visit(
+                &self.tool_context.project,
+                &directory,
+                &self.tool_context.exclude,
+            );
+            for file in &found.files {
+                output.text.push_str("\n\n");
+                output.text.push_str(&file.render());
+            }
+            if !found.files.is_empty() || !found.skipped.is_empty() {
+                self.emit(
+                    events,
+                    AgentEvent::NestedInstructions {
+                        call_id: call.id.clone(),
+                        paths: found.files.into_iter().map(|file| file.path).collect(),
+                        skipped: found.skipped,
+                    },
+                )?;
+            }
+        }
         let result = ToolResult {
             id: call.id.clone(),
             provider_id: call.provider_id.clone(),
@@ -550,6 +593,45 @@ impl Agent {
         self.push_item(Item::ToolResult(result));
         Ok(())
     }
+}
+
+/// ファイルを扱う道具の `path` から、プロジェクトの根からの相対のディレクトリを得る。
+/// 根そのもの、根の外、`..` を含むパスは対象にしない。理由: 根から上の指示は起動のときに読んだ。
+fn touched_directory(
+    project: &std::path::Path,
+    name: &str,
+    arguments: &serde_json::Value,
+) -> Option<std::path::PathBuf> {
+    use std::path::{Component, Path, PathBuf};
+    let path = Path::new(arguments.get("path")?.as_str()?);
+    let joined = if path.is_absolute() {
+        path.to_path_buf()
+    } else {
+        project.join(path)
+    };
+    let mut relative = PathBuf::new();
+    for component in joined.strip_prefix(project).ok()?.components() {
+        match component {
+            Component::Normal(part) => relative.push(part),
+            Component::CurDir => {}
+            Component::ParentDir | Component::RootDir | Component::Prefix(_) => return None,
+        }
+    }
+    let directory = match name {
+        "read" | "write" | "edit" => relative.parent()?.to_path_buf(),
+        // 探す道具の path はディレクトリが多い。リンクは辿らずに判定し、範囲は開くときに確かめる。
+        "glob" | "grep" => {
+            if std::fs::symlink_metadata(project.join(&relative))
+                .is_ok_and(|metadata| metadata.is_dir())
+            {
+                relative
+            } else {
+                relative.parent()?.to_path_buf()
+            }
+        }
+        _ => return None,
+    };
+    (!directory.as_os_str().is_empty()).then_some(directory)
 }
 
 #[cfg(test)]
@@ -636,6 +718,7 @@ mod tests {
             agent: Default::default(),
             project_parent: None,
             allow_effects: None,
+            allow_agents_write: false,
             mode: Mode::Normal,
             destination: Destination {
                 provider: "mock".into(),

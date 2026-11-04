@@ -9,8 +9,12 @@ use serde::{Deserialize, Deserializer, Serialize};
 use super::{SandboxError, text};
 
 /// 既定の守る名前。一時ディレクトリの削除もこの名前の項目を残す
-/// （設計書 01-05「一時ディレクトリ」）。
-pub const PROTECTED_NAMES: [&str; 2] = [".git", ".benitoiteh"];
+/// （設計書 01-05「一時ディレクトリ」）。`.agents` は、利用者が一回ごとに承認した実行でだけ外す
+/// （設計書 03-02「.agents の守り」）。
+pub const PROTECTED_NAMES: [&str; 3] = [".git", ".benitoiteh", AGENTS];
+
+/// エージェントの設定とスキルを置く名前。承認した実行でだけ守りを外せる。
+pub const AGENTS: &str = ".agents";
 
 /// 読み取りを許す範囲。どちらも `denied_read` を除く。
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -62,6 +66,10 @@ pub struct PolicyConfig {
     /// 製品の経路は None のまま使う（実装プラン P5-34、2026-10-21 の決定）。
     #[serde(default)]
     pub allow_loopback_port: Option<NonZeroU16>,
+    /// 通信を benitoiteh の中継にだけ通すか（設計書 03-02「通信の中継」）。Linux では、ネットワークの
+    /// 名前空間を分け、補助が名前空間の中で待ち受けて、その記述子を親へ渡す。`allow_ip` とは並べない。
+    #[serde(default)]
+    pub network_proxy: bool,
     /// 起動を許すプログラム。
     pub programs: ProgramAccess,
     /// 書ける場所での実行と実行可能なマッピングを拒むか。省略時も拒む。
@@ -103,6 +111,7 @@ impl PolicyConfig {
             protected_names: PROTECTED_NAMES.iter().map(|&name| name.into()).collect(),
             allow_ip: false,
             allow_loopback_port: None,
+            network_proxy: false,
             programs: ProgramAccess::Unrestricted,
             deny_exec_in_writable: default_deny_exec_in_writable(),
         }
@@ -133,6 +142,9 @@ impl SandboxPolicy {
         reject_loopback_port(config)?;
         if config.require_writable == config.writable.is_empty() {
             return Err(SandboxError::InvalidPolicy(text::EMPTY_WRITABLE));
+        }
+        if config.network_proxy && config.allow_ip {
+            return Err(SandboxError::InvalidPolicy(text::PROXY_WITH_IP));
         }
         for name in &config.protected_names {
             if name.is_empty()

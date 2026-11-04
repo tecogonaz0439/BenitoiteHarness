@@ -1541,3 +1541,192 @@ fn a_closed_retry_receiver_remains_an_infrastructure_error_without_a_compaction_
     server.shutdown()?;
     Ok(())
 }
+
+// 作成時の関門: 評価用の道具の結果の刈り込み（設計書 01-04「道具の結果の刈り込み」）。
+// 刈り込みの退行は、次の要求の本文、要約の要求の有無、記録からの再生に現れる。
+// 既定で刈り込まないこと、LLM がまだ読んでいない結果を残すこと、閾値を下回れば
+// 要約しないこと、下回らなければ要約すること、超過でも刈り込んでから要約することを並べる。
+#[test]
+fn pruning_trims_read_tool_results_before_summarizing_and_replays_from_records() -> TestResult {
+    #[derive(Clone, Copy, Debug, PartialEq)]
+    enum Case {
+        Disabled,
+        BelowAfterPruning,
+        AboveAfterPruning,
+        Overflow,
+    }
+    let kind = AdapterKind::OpenAiChat;
+    for case in [
+        Case::Disabled,
+        Case::BelowAfterPruning,
+        Case::AboveAfterPruning,
+        Case::Overflow,
+    ] {
+        let f = Fixture::new()?;
+        for (name, prefix) in [("big.bnt", "a"), ("big2.bnt", "b")] {
+            let contents = (0..1_500)
+                .map(|line| format!("{prefix}-line-{line:04}\n"))
+                .collect::<String>();
+            fs::write(f.project.join(name), contents)?;
+        }
+        // 60,000 バイトの応答は、一つ目の番の後では閾値（30,000）に届かず、刈り込んだ後の
+        // 会話の全体のバイト数からの見積もりでは届く。
+        let first_text = if case == Case::AboveAfterPruning {
+            "old".repeat(20_000)
+        } else {
+            "first".into()
+        };
+        // 超過では、最大の入力の量を文脈の上限の代わりにする。
+        let mut script = vec![
+            response(
+                kind,
+                &first_text,
+                Some(("read", json!({"path":"big.bnt"}))),
+                if case == Case::Overflow { 24_000 } else { 10 },
+            ),
+            response(
+                kind,
+                "recent",
+                Some(("read", json!({"path":"big2.bnt"}))),
+                if case == Case::Overflow {
+                    12_000
+                } else {
+                    50_000
+                },
+            ),
+        ];
+        if case == Case::Overflow {
+            script.push(overflow()?);
+        }
+        let summarizes = case != Case::BelowAfterPruning;
+        if summarizes {
+            script.push(response(kind, "private-summary", None, 1_000));
+        }
+        script.push(response(kind, "Done.", None, 10));
+        let mut server = MockProvider::start(script)?;
+        let mut config = f.config(&server, kind);
+        if case != Case::Overflow {
+            config.capabilities.context_window = Some(60_000);
+        }
+        config.compaction.prune_tool_results = case != Case::Disabled;
+        let (mut agent, directory) = f.agent(config)?;
+        let (report, events) = complete(&mut agent)?;
+        assert_eq!(report.outcome, Outcome::Completed, "{case:?}");
+        assert_eq!(
+            report.summary.compactions,
+            u64::from(summarizes),
+            "{case:?}"
+        );
+        let pruned = events
+            .iter()
+            .position(|event| matches!(event, AgentEvent::ToolResultsPruned { .. }));
+        let compacted = events
+            .iter()
+            .position(|event| matches!(event, AgentEvent::Compaction { .. }));
+        assert_eq!(pruned.is_some(), case != Case::Disabled, "{case:?}");
+        assert_eq!(compacted.is_some(), summarizes, "{case:?}");
+        if let (Some(pruned), Some(compacted)) = (pruned, compacted) {
+            assert!(pruned < compacted, "{case:?}");
+        }
+        if let Some(AgentEvent::ToolResultsPruned {
+            results,
+            removed_chars,
+            ..
+        }) = pruned.and_then(|index| events.get(index))
+        {
+            // 最後の応答の後の big2.bnt の結果は、LLM がまだ読んでいないので残す。
+            assert_eq!(results.len(), 1, "{case:?}");
+            assert!(*removed_chars > 10_000, "{case:?}");
+        }
+        let requests = server.requests()?;
+        let after_pruning = &requests
+            .get(2)
+            .ok_or("missing request after the second turn")?
+            .body
+            .to_string();
+        let marker = "characters were removed from the middle of this earlier tool result";
+        // 超過の行では、三つ目の要求が超過した番の要求で、要約の要求は結果を縮めるので、
+        // 刈り込みは記録とイベントで確かめる。
+        if case == Case::Disabled {
+            assert!(!after_pruning.contains(marker));
+        } else if case != Case::Overflow {
+            // 頭と尾を残し、中ほどを印に替える。要約の要求は、残す範囲を含めないか、超過では
+            // 長い結果を縮めるので、読んでいない結果の全文は、要約しない番の要求で確かめる。
+            assert!(after_pruning.contains(marker), "{case:?}");
+            assert!(after_pruning.contains("a-line-0000"), "{case:?}");
+            assert!(after_pruning.contains("a-line-1499"), "{case:?}");
+            assert!(!after_pruning.contains("a-line-0700"), "{case:?}");
+            assert_eq!(
+                after_pruning.contains("b-line-0700"),
+                case == Case::BelowAfterPruning,
+                "{case:?}"
+            );
+        }
+        assert_eq!(
+            requests.len(),
+            if case == Case::Overflow {
+                5
+            } else {
+                3 + usize::from(summarizes)
+            },
+            "{case:?}"
+        );
+        let records = read_records(&directory)?;
+        assert_eq!(
+            records
+                .iter()
+                .any(|record| matches!(record, Record::ToolResultsPruned { .. })),
+            case != Case::Disabled,
+            "{case:?}"
+        );
+        assert_eq!(replay(&directory)?, *agent.conversation(), "{case:?}");
+        server.shutdown()?;
+    }
+    Ok(())
+}
+
+// 作成時の関門: 下のディレクトリの指示を添えたことは、会話を置き換えると忘れる
+// （設計書 01-04「下のディレクトリの指示のファイル」）。要約で指示が会話から消えても、
+// 次に触れたときに添え直されることを、本物の圧縮と道具の実行で確かめる。読む条件は
+// exec の入口のテストで確かめる。
+#[test]
+fn nested_instructions_are_attached_again_after_compaction() -> TestResult {
+    let f = Fixture::new()?;
+    fs::create_dir(f.project.join("sub"))?;
+    fs::write(f.project.join("sub/AGENTS.md"), "sub rule")?;
+    fs::write(f.project.join("sub/x.txt"), "x")?;
+    let kind = AdapterKind::OpenAiChat;
+    let read = || Some(("read", json!({"path":"sub/x.txt"})));
+    let mut server = MockProvider::start(vec![
+        response(kind, "", read(), 10),
+        response(kind, "", read(), 10),
+        response(kind, "Done.", None, 10),
+        response(kind, "summary", None, 10),
+        response(kind, "", read(), 10),
+        response(kind, "Done.", None, 10),
+    ])?;
+    let mut config = f.config(&server, kind);
+    config.agent.nested_instructions = true;
+    let (mut agent, directory) = f.agent(config)?;
+    complete(&mut agent)?;
+    let (report, _) = compact(&mut agent, options(false))?;
+    assert_eq!(report.outcome, CompactOutcome::Compacted);
+    complete(&mut agent)?;
+    let attached = read_records(&directory)?
+        .iter()
+        .filter_map(|record| {
+            if let Record::ToolResult { result, .. } = record {
+                Some(
+                    result.text.contains("<project_instructions path=\"")
+                        && result.text.ends_with("sub rule</project_instructions>"),
+                )
+            } else {
+                None
+            }
+        })
+        .collect::<Vec<_>>();
+    // 同じ会話の二度目は添えず、圧縮の後の一度目は添える。
+    assert_eq!(attached, [true, false, true]);
+    server.shutdown()?;
+    Ok(())
+}

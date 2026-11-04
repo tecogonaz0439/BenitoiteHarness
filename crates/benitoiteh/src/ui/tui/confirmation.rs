@@ -46,9 +46,18 @@ pub(super) fn is_interrupt(event: &Event) -> bool {
         && key.modifiers.contains(KeyModifiers::CONTROL) && matches!(key.code, KeyCode::Char('c' | 'C')))
 }
 
+/// 信頼の確認の答え。真が信頼する。`Remember` は保存し、`Session` はこの起動だけに使う。
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum TrustChoice {
+    Remember(bool),
+    Session(bool),
+}
+
 pub(super) struct Confirmation {
     pub prompt: Option<ApprovalPrompt>,
     rewind: Option<RewindConfirmation>,
+    /// 起動のときのプロジェクトの信頼の確認の事実（設計書 03-01「プロジェクトの信頼」）。
+    trust: Option<Vec<(&'static str, String)>>,
     secret: Option<SecretConfirmation>,
     pub guard: ConfirmationGuard,
     pub message: Option<String>,
@@ -84,6 +93,9 @@ impl Confirmation {
         if self.secret.is_some() {
             return text::SECRET_TITLE;
         }
+        if self.trust.is_some() {
+            return text::TRUST_TITLE;
+        }
         if let Some(rewind) = &self.rewind {
             if rewind.branch && rewind.incomplete {
                 text::INCOMPLETE_BRANCH_TITLE
@@ -100,6 +112,12 @@ impl Confirmation {
     }
 
     fn facts(&self, width: u16, compact: bool) -> Vec<FactRow> {
+        if let Some(trust) = &self.trust {
+            return trust
+                .iter()
+                .flat_map(|(label, value)| fact(label, value, width, compact))
+                .collect();
+        }
         if let Some(secret) = &self.secret {
             let prompt = &secret.prompt;
             let cwd = SafeText::path(&prompt.facts.cwd);
@@ -227,6 +245,10 @@ impl Confirmation {
                     rows.extend(fact(text::SHELL, text::SHELL_REFERENCE, width, compact));
                 }
             }
+            // 一回だけの .agents への書き込みは、どの確認でも別の行で示す（設計書 03-03「.agents への書き込み」）。
+            if request.facts.agents_write {
+                rows.extend(fact(text::AGENTS, text::AGENTS_WRITE, width, compact));
+            }
             rows
         } else {
             fact(text::WARNING, text::MODE_CHANGE_WARNING, width, compact)
@@ -234,6 +256,9 @@ impl Confirmation {
     }
 
     fn answer_keys(&self) -> &'static str {
+        if self.trust.is_some() {
+            return text::TRUST_KEYS;
+        }
         if let Some(secret) = &self.secret {
             return if secret.prompt.touch() {
                 text::SECRET_TOUCH_KEYS
@@ -618,9 +643,11 @@ fn fact(label: &str, value: &str, width: u16, compact: bool) -> Vec<FactRow> {
 impl Screen {
     /// 値を通常の入力と履歴から切り離して、同じ入力の守りを掛ける。
     pub fn open_secret(&mut self, prompt: crate::askpass::Prompt) {
+        self.notify(super::Notification::Approval);
         self.flush_pending();
         self.confirmation = Some(Confirmation {
             prompt: None,
+            trust: None,
             rewind: None,
             secret: Some(SecretConfirmation {
                 prompt,
@@ -694,9 +721,11 @@ impl Screen {
 
     /// 確認前のイベントを読み終えた画面に要求を渡す。
     pub fn open_approval(&mut self, prompt: ApprovalPrompt) {
+        self.notify(super::Notification::Approval);
         self.flush_pending();
         self.confirmation = Some(Confirmation {
             prompt: Some(prompt),
+            trust: None,
             rewind: None,
             secret: None,
             guard: ConfirmationGuard::default(),
@@ -705,12 +734,39 @@ impl Screen {
         });
     }
 
+    /// 起動のときのプロジェクトの信頼の確認にも、同じ入力の守りを掛ける。
+    pub fn open_trust(&mut self, root: &std::path::Path, loads: &[&str]) {
+        let facts = vec![
+            (text::TRUST_ROOT, SafeText::path(root).as_str().to_owned()),
+            (text::TRUST_LOADS, loads.join(", ")),
+            (text::WARNING, text::TRUST_WARNING.to_owned()),
+        ];
+        self.flush_pending();
+        self.confirmation_result = None;
+        self.trust_result = None;
+        self.confirmation = Some(Confirmation {
+            prompt: None,
+            rewind: None,
+            trust: Some(facts),
+            secret: None,
+            guard: ConfirmationGuard::default(),
+            message: None,
+            message_overflow: false,
+        });
+    }
+
+    /// 信頼の確認の答えを一回だけ読む。断ったときと取り消したときは `None` を返す。
+    pub fn take_trust_result(&mut self) -> Option<TrustChoice> {
+        self.trust_result.take()
+    }
+
     /// 再開時のモードの変更にも、同じ入力の守りを掛ける。
     pub fn open_mode_change(&mut self) {
         self.flush_pending();
         self.confirmation_result = None;
         self.confirmation = Some(Confirmation {
             prompt: None,
+            trust: None,
             rewind: None,
             secret: None,
             guard: ConfirmationGuard::default(),
@@ -796,6 +852,7 @@ impl Screen {
         self.confirmation = Some(Confirmation {
             prompt: None,
             secret: None,
+            trust: None,
             rewind: Some(RewindConfirmation {
                 facts,
                 extra,
@@ -984,6 +1041,33 @@ impl Screen {
         let KeyCode::Char(ch) = key.code else {
             return Action::None;
         };
+        if confirmation.trust.is_some() {
+            // 信頼する答えは、確認の全体が見えるときだけ受け付ける。断る答えはいつでも受け付ける。
+            let fits = confirmation.fits(self.size);
+            let choice = match ch.to_ascii_lowercase() {
+                'y' if fits => Some(TrustChoice::Remember(true)),
+                's' if fits => Some(TrustChoice::Session(true)),
+                'n' => Some(TrustChoice::Session(false)),
+                'd' => Some(TrustChoice::Remember(false)),
+                _ => None,
+            };
+            if let Some(choice) = choice {
+                self.trust_result = Some(choice);
+                let trusted = matches!(
+                    choice,
+                    TrustChoice::Remember(true) | TrustChoice::Session(true)
+                );
+                self.answer(
+                    if trusted {
+                        ApprovalOutcome::Approved
+                    } else {
+                        ApprovalOutcome::Denied
+                    },
+                    None,
+                );
+            }
+            return Action::None;
+        }
         match ch.to_ascii_lowercase() {
             'f' if confirmation.fits(self.size)
                 && confirmation
@@ -1008,7 +1092,10 @@ impl Screen {
                 self.answer(ApprovalOutcome::ApprovedForSession, None)
             }
             's' if confirmation.fits(self.size)
-                && confirmation.kind() == Some(ApprovalKind::WebFetch) =>
+                && matches!(
+                    confirmation.kind(),
+                    Some(ApprovalKind::WebFetch | ApprovalKind::Network)
+                ) =>
             {
                 self.answer(ApprovalOutcome::ApprovedForSession, None)
             }
@@ -1137,6 +1224,7 @@ mod tests {
                 sandbox_disabled: false,
                 context_window: None,
                 estimate: 0,
+                templates: Default::default(),
             },
         );
         screen.open_secret(receiver.recv()?);

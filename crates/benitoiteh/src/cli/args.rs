@@ -40,6 +40,10 @@ pub struct ExecArgs {
     /// 非対話でプロジェクトの作成を許す親。起動時に実のパスへ変換する。
     pub project_parent: Option<PathBuf>,
     pub allow: Option<BTreeSet<crate::benitoite::Effect>>,
+    /// 非対話で、.agents に書く要求を確認なしに許す（設計書 03-03「.agents への書き込み」）。
+    pub allow_agents_write: bool,
+    /// 非対話で、この一回だけプロジェクトを信頼する（設計書 03-01「プロジェクトの信頼」）。
+    pub trust_project: bool,
     pub resume: Option<String>,
     pub continue_session: bool,
     pub sandbox: Option<Sandbox>,
@@ -55,6 +59,12 @@ pub struct ExecArgs {
     pub max_run_tokens: Option<u64>,
     pub json: bool,
     pub output_last_message: Option<PathBuf>,
+    /// セッションの記録を残さない（設計書 01-05「記録を残さないセッション」）。
+    pub ephemeral: bool,
+    /// 最後の応答の形を決める JSON Schema のファイル（設計書 05-01「exec の出力」）。
+    pub output_schema: Option<PathBuf>,
+    /// `debug prompt-input` から使う。最初の要求を作って示し、送らない。
+    pub preview: bool,
     pub request: Request,
 }
 
@@ -83,6 +93,25 @@ impl ExecArgs {
         Self::parse_mode(args, false)
     }
 
+    /// `debug prompt-input` の後ろを解釈する。exec と同じ指定を受け付け、出力と記録の指定と
+    /// 既存のセッションの指定を拒む（設計書 05-01「debug prompt-input」）。
+    pub fn parse_preview(
+        args: impl IntoIterator<Item = impl Into<OsString>>,
+    ) -> Result<Self, ArgsError> {
+        let mut result = Self::parse_mode(args, false)?;
+        if result.json
+            || result.output_last_message.is_some()
+            || result.ephemeral
+            || result.resume.is_some()
+            || result.continue_session
+        {
+            return Err(ArgsError::Invalid);
+        }
+        result.ephemeral = true;
+        result.preview = true;
+        Ok(result)
+    }
+
     /// 対話の形の引数を解釈し、非対話専用と後続作業の指定を拒む。
     pub fn parse_interactive(
         args: impl IntoIterator<Item = impl Into<OsString>>,
@@ -103,6 +132,8 @@ impl ExecArgs {
             sandbox: None,
             approval: None,
             no_sandbox: false,
+            allow_agents_write: false,
+            trust_project: false,
             mode: None,
             project: None,
             provider: None,
@@ -113,6 +144,9 @@ impl ExecArgs {
             max_run_tokens: None,
             json: false,
             output_last_message: None,
+            ephemeral: false,
+            output_schema: None,
+            preview: false,
             request: Request::Stdin,
         };
         let mut seen = BTreeSet::new();
@@ -146,7 +180,15 @@ impl ExecArgs {
             if !seen.insert(option.to_owned()) {
                 return Err(ArgsError::Duplicate(option.to_owned()));
             }
-            let flag = matches!(option, "--json" | "--continue" | "--no-sandbox");
+            let flag = matches!(
+                option,
+                "--json"
+                    | "--continue"
+                    | "--no-sandbox"
+                    | "--allow-agents-write"
+                    | "--trust-project"
+                    | "--ephemeral"
+            );
             let known = matches!(
                 option,
                 "--mode"
@@ -159,6 +201,7 @@ impl ExecArgs {
                     | "--max-run-tokens"
                     | "--json"
                     | "--output-last-message"
+                    | "--output-schema"
                     | "--sandbox"
                     | "--approval"
                     | "--allow"
@@ -166,6 +209,9 @@ impl ExecArgs {
                     | "--resume"
                     | "--continue"
                     | "--no-sandbox"
+                    | "--allow-agents-write"
+                    | "--trust-project"
+                    | "--ephemeral"
             );
             if !known || (flag && attached.is_some()) {
                 return Err(ArgsError::Invalid);
@@ -202,6 +248,7 @@ impl ExecArgs {
                 "--max-run-tokens" => result.max_run_tokens = Some(number(string()?)?),
                 "--json" => result.json = true,
                 "--output-last-message" => result.output_last_message = Some(PathBuf::from(value)),
+                "--output-schema" => result.output_schema = Some(PathBuf::from(value)),
                 "--sandbox" => {
                     result.sandbox = Some(match string()? {
                         "read-only" => Sandbox::ReadOnly,
@@ -233,17 +280,27 @@ impl ExecArgs {
                 "--resume" => result.resume = Some(string()?.to_owned()),
                 "--continue" => result.continue_session = true,
                 "--no-sandbox" => result.no_sandbox = true,
+                "--allow-agents-write" => result.allow_agents_write = true,
+                "--trust-project" => result.trust_project = true,
+                "--ephemeral" => result.ephemeral = true,
                 _ => return Err(ArgsError::Invalid),
             }
         }
-        if result.resume.is_some() && result.continue_session {
+        // 記録を残さないセッションは、既存の記録を続けない。
+        if (result.resume.is_some() && result.continue_session)
+            || (result.ephemeral && (result.resume.is_some() || result.continue_session))
+        {
             return Err(ArgsError::Invalid);
         }
         if interactive {
             if result.project_parent.is_some()
                 || result.allow.is_some()
+                || result.allow_agents_write
+                || result.trust_project
                 || result.json
                 || result.output_last_message.is_some()
+                || result.ephemeral
+                || result.output_schema.is_some()
                 || request == Some(Request::Stdin)
             {
                 return Err(ArgsError::Invalid);

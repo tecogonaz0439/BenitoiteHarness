@@ -9,6 +9,8 @@ use std::path::PathBuf;
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct SessionSafety {
     pub network: bool,
+    /// 通信を中継にだけ通す（設計書 03-02「通信の中継」）。
+    pub network_proxy: bool,
     /// プロジェクトとセッションの一時領域を除く、追加の書ける場所。
     pub writable_roots: Vec<PathBuf>,
     pub allowed_programs: Vec<PathBuf>,
@@ -39,6 +41,9 @@ pub struct AgentStatus {
     pub plugin_notices: Vec<SkippedInstruction>,
     pub skills: Vec<RecordedSkill>,
     pub skipped_skills: Vec<SkippedInstruction>,
+    /// 信頼を要する資源があったときの、探す範囲の根と決定。
+    pub project_trust: Option<std::path::PathBuf>,
+    pub project_trusted: bool,
 }
 
 impl Agent {
@@ -87,6 +92,11 @@ impl Agent {
             plugin_notices: self.environment.skills().plugin_notices.clone(),
             skills: self.environment.skills().recorded(),
             skipped_skills: self.environment.skills().skipped.clone(),
+            project_trust: self.project_trust.as_ref().map(|(root, _)| root.clone()),
+            project_trusted: self
+                .project_trust
+                .as_ref()
+                .is_some_and(|(_, trusted)| *trusted),
         }
     }
 

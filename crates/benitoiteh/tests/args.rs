@@ -66,6 +66,7 @@ fn exec_arguments_preserve_explicit_values_and_the_request_source() -> Result<()
         Some("id")
     );
     assert!(ExecArgs::parse(["--continue", "request"])?.continue_session);
+    assert!(ExecArgs::parse(["--ephemeral", "request"])?.ephemeral);
     let path = OsString::from_vec(vec![b'p', 0xff]);
     let args = ExecArgs::parse([
         OsString::from("--project"),
@@ -126,6 +127,10 @@ fn exec_arguments_reject_duplicates_invalid_values_and_unavailable_options() {
         vec!["--json=true", "request"],
         vec!["one", "two"],
         vec!["--resume", "id", "--continue", "request"],
+        // 記録を残さないセッションは、既存の記録を続けない。
+        vec!["--ephemeral", "--resume", "id", "request"],
+        vec!["--ephemeral", "--continue", "request"],
+        vec!["--ephemeral=true", "request"],
     ] {
         assert!(ExecArgs::parse(args.clone()).is_err(), "{args:?}");
     }
@@ -135,6 +140,29 @@ fn exec_arguments_reject_duplicates_invalid_values_and_unavailable_options() {
     );
     assert!(matches!(
         ExecArgs::parse_interactive(["--project-parent", "/project"]),
+        Err(ArgsError::Invalid)
+    ));
+    // 対話では、.agents への書き込みは一回ごとの確認で決めるので、許す指定を受け付けない。
+    assert!(
+        ExecArgs::parse(["--allow-agents-write", "request"])
+            .is_ok_and(|args| args.allow_agents_write)
+    );
+    for args in [
+        vec!["--allow-agents-write=yes", "request"],
+        vec!["--allow-agents-write", "--allow-agents-write", "request"],
+    ] {
+        assert!(ExecArgs::parse(args.clone()).is_err(), "{args:?}");
+    }
+    assert!(matches!(
+        ExecArgs::parse_interactive(["--allow-agents-write"]),
+        Err(ArgsError::Invalid)
+    ));
+    // 信頼は対話では確認で決めるので、--trust-project も exec の非対話の形だけで受け付ける。
+    assert!(ExecArgs::parse(["--trust-project", "request"]).is_ok_and(|args| args.trust_project));
+    assert!(ExecArgs::parse(["--trust-project=yes", "request"]).is_err());
+    assert!(ExecArgs::parse(["--trust-project", "--trust-project", "request"]).is_err());
+    assert!(matches!(
+        ExecArgs::parse_interactive(["--trust-project"]),
         Err(ArgsError::Invalid)
     ));
 }
@@ -174,5 +202,25 @@ fn allow_accepts_atomic_effects_and_rejects_aliases_duplicates_and_interactive_u
         ExecArgs::parse_interactive(["--allow", "Assert.Check"]),
         Err(ArgsError::Invalid)
     ));
+    Ok(())
+}
+
+// 作成時の関門: `debug prompt-input` は exec と同じ指定を受け、出力と記録と既存のセッションの指定を
+// 拒み、記録を残さない形にする（設計書 05-01「debug prompt-input」）。
+#[test]
+fn prompt_input_arguments_reject_output_and_session_options() -> Result<(), ArgsError> {
+    let args = ExecArgs::parse_preview(["--mode", "normal", "request"])?;
+    assert!(args.preview && args.ephemeral);
+    assert_eq!(args.mode, Some(Mode::Normal));
+    for args in [
+        vec!["--json", "request"],
+        vec!["--output-last-message", "file", "request"],
+        vec!["--ephemeral", "request"],
+        vec!["--resume", "id", "request"],
+        vec!["--continue", "request"],
+        vec![],
+    ] {
+        assert!(ExecArgs::parse_preview(args.clone()).is_err(), "{args:?}");
+    }
     Ok(())
 }

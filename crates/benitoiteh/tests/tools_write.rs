@@ -293,19 +293,64 @@ fn final_links_including_dangling_hooks_and_multiple_hardlinks_are_never_written
     Ok(())
 }
 
+// 関門: 制限モードの .agents の .bnt は、エラーではなく一回ごとの確認を求め、承認後に書ける。
+// .bnt でないファイルは、確認を求める前に拒む（設計書 01-03「書く道具のパスの規則」）。
+#[test]
+fn restricted_writes_to_agents_scripts_need_one_time_approval() -> TestResult {
+    let f = Fixture::new(Mode::Restricted)?;
+    let script = f.project.join(".agents/skills/demo/helper.bnt");
+    for tool in ["write", "edit"] {
+        let output = f.tools.execute(&f.context, tool, args(tool, json!(script)));
+        let request = output.approval.as_ref().ok_or("approval")?;
+        assert!(request.facts.agents_write, "{tool}: {}", output.text);
+        assert!(!script.exists());
+    }
+    let call = f.tools.validate("write", args("write", json!(script)))?;
+    let output = f.tools.execute_validated(
+        &f.context,
+        &call,
+        ApprovalStatus::Approved,
+        Invocation {
+            confirmed_effects: &std::collections::BTreeMap::new(),
+            session_domains: &Default::default(),
+            call_id: "agents-write",
+            cancelled: &std::sync::atomic::AtomicBool::new(false),
+        },
+    );
+    assert!(!output.is_error, "{}", output.text);
+    assert_eq!(fs::read(&script)?, b"after\n");
+    let skill = f.project.join(".agents/skills/demo/SKILL.md");
+    let output = f
+        .tools
+        .execute(&f.context, "write", args("write", json!(skill)));
+    assert!(
+        output.is_error && output.approval.is_none(),
+        "{}",
+        output.text
+    );
+    assert!(!skill.exists());
+    Ok(())
+}
+
 #[test]
 fn normal_mode_requests_approval_before_any_mutation_and_accepts_trusted_approval() -> TestResult {
     let f = Fixture::new(Mode::Normal)?;
     fs::create_dir(f.project.join(".git"))?;
     symlink(".git", f.project.join("alias"))?;
-    for (path, protected) in [
-        (f.directory.join("outside/new.bnt"), false),
-        (f.project.join(".git/hooks/new.bnt"), true),
-        (f.project.join(".benitoiteh/new.bnt"), true),
-        (f.project.join("sub/.git/config"), true),
-        (f.project.join(".GIT/config"), true),
-        (f.project.join("alias/through-link"), true),
-        (f.temporary.join(".benitoiteh/config"), true),
+    let outside = "outside the writable roots";
+    let protected = "protected location";
+    // .agents は書くたびに確認し、その事実を確認の要求に載せる（設計書 01-03「書く道具のパスの規則」）。
+    let agents = "inside .agents";
+    for (path, reason) in [
+        (f.directory.join("outside/new.bnt"), outside),
+        (f.project.join(".git/hooks/new.bnt"), protected),
+        (f.project.join(".benitoiteh/new.bnt"), protected),
+        (f.project.join("sub/.git/config"), protected),
+        (f.project.join(".GIT/config"), protected),
+        (f.project.join("alias/through-link"), protected),
+        (f.temporary.join(".benitoiteh/config"), protected),
+        (f.project.join(".agents/skills/demo/SKILL.md"), agents),
+        (f.project.join("sub/.AGENTS/hooks.json"), agents),
     ] {
         let parent_existed = path.parent().is_some_and(|parent| parent.exists());
         for tool in ["write", "edit"] {
@@ -315,12 +360,15 @@ fn normal_mode_requests_approval_before_any_mutation_and_accepts_trusted_approva
                 "{}",
                 output.text
             );
-            let reason = if protected {
-                "protected location"
-            } else {
-                "outside the writable roots"
-            };
             assert!(output.text.contains(reason) && output.text.contains("Ask the user"));
+            assert_eq!(
+                output
+                    .approval
+                    .as_ref()
+                    .is_some_and(|request| request.facts.agents_write),
+                reason == agents,
+                "{path:?}"
+            );
             assert_eq!(
                 path.parent().is_some_and(|parent| parent.exists()),
                 parent_existed
@@ -495,6 +543,176 @@ fn folded_edits_preserve_untouched_bytes_bom_and_crlf_and_replace_all() -> TestR
         json!({"path":"source.bnt", "old_string":"‘x’\n", "new_string":"y\n", "replace_all":true}),
     );
     assert_eq!(fs::read(f.project.join("source.bnt"))?, b"y\r\ny\r\n");
+    Ok(())
+}
+
+// 作成時の関門: 評価用の複数の置き換えの形（設計書 01-03「複数の置き換え」）の契約。
+// 元のファイルでの照合、要素ごとの照合と全置換、重なりの拒否、失敗の時に書かないことを
+// 実行器の境界で確かめる。既定の形が `edits` を受けないことも確かめる。
+#[test]
+fn multiple_edits_match_the_original_reject_overlaps_and_write_nothing_on_failure() -> TestResult {
+    let f = Fixture::new(Mode::Restricted)?;
+    let tools = ToolSet::new(Mode::Restricted).multiple_edits();
+    let edit = |edits: Value| {
+        tools.execute(
+            &f.context,
+            "edit",
+            json!({"path":"source.bnt", "edits":edits}),
+        )
+    };
+    for (before, edits, expected) in [
+        // 順に当てる形なら、二つ目の one が二つになって失敗する。
+        (
+            "one\ntwo\nthree\n",
+            json!([{"old_string":"three","new_string":"one"},{"old_string":"one","new_string":"three"}]),
+            "three\ntwo\none\n",
+        ),
+        (
+            "x x\r\n‘q’  \r\nend\r\n",
+            json!([{"old_string":"x","new_string":"y","replace_all":true},{"old_string":"'q'\nend","new_string":"r\ns"}]),
+            "y y\r\nr\r\ns\r\n",
+        ),
+        (
+            "a b\n",
+            json!([{"old_string":"a","new_string":"a"},{"old_string":"b","new_string":"c"}]),
+            "a c\n",
+        ),
+        (
+            "abcd\n",
+            json!([{"old_string":"cd","new_string":"y"},{"old_string":"ab","new_string":"x"}]),
+            "xy\n",
+        ),
+        (
+            "s1\n",
+            json!(r#"[{"old_string":"s1","new_string":"s2"}]"#),
+            "s2\n",
+        ),
+    ] {
+        f.success("write", json!({"path":"source.bnt", "content":before}));
+        let output = edit(edits);
+        assert!(!output.is_error, "{}", output.text);
+        assert_eq!(fs::read_to_string(f.project.join("source.bnt"))?, expected);
+    }
+    f.success(
+        "write",
+        json!({"path":"source.bnt", "content":"one two\none\n"}),
+    );
+    let not_found = "Could not find old_string in source.bnt. It must match the file exactly, including whitespace and line breaks. Read the file again if it may have changed.";
+    for (edits, error) in [
+        (
+            json!([{"old_string":"one two","new_string":"x"},{"old_string":"two","new_string":"y"}]),
+            "edits[0] and edits[1] overlap in source.bnt. Merge them into one edit or target disjoint regions. No change was made.".to_owned(),
+        ),
+        (
+            json!([{"old_string":"two","new_string":"2"},{"old_string":"zzz","new_string":"x"}]),
+            format!("edits[1]: {not_found}"),
+        ),
+        (
+            json!([{"old_string":"one","new_string":"1"}]),
+            "edits[0]: Found 2 occurrences of old_string in source.bnt. Add surrounding lines to make it unique, or set replace_all to true.".to_owned(),
+        ),
+        (
+            json!([{"old_string":"two","new_string":"2"},{"old_string":"","new_string":"x"}]),
+            "edits[1]: old_string must not be empty. Use write to create a file.".to_owned(),
+        ),
+        (json!([]), "edits must contain at least one replacement.".to_owned()),
+        (
+            json!([{"old_string":"two","new_string":"two"}]),
+            "old_string and new_string are identical. No change was made to source.bnt.".to_owned(),
+        ),
+    ] {
+        let output = edit(edits);
+        assert!(output.is_error);
+        assert_eq!(output.text, error);
+        assert_eq!(fs::read_to_string(f.project.join("source.bnt"))?, "one two\none\n");
+    }
+    for (arguments, prefix) in [
+        (
+            json!({"path":"source.bnt", "edits":[{"old_string":"two","new_string":"2","old_text":"x"}]}),
+            "Unknown argument \"edits[0].old_text\".",
+        ),
+        (
+            json!({"path":"source.bnt", "edits":[{"old_string":"two"}]}),
+            "Missing required argument \"edits[0].new_string\".",
+        ),
+        (
+            json!({"path":"source.bnt", "old_string":"two", "edits":[{"old_string":"two","new_string":"2"}]}),
+            "Unknown argument \"old_string\".",
+        ),
+    ] {
+        let output = tools.execute(&f.context, "edit", arguments);
+        assert!(
+            output.is_error && output.text.starts_with(prefix),
+            "{}",
+            output.text
+        );
+    }
+    let output = f.tools.execute(
+        &f.context,
+        "edit",
+        json!({"path":"source.bnt", "edits":[{"old_string":"two","new_string":"2"}]}),
+    );
+    assert!(output.is_error && output.text.starts_with("Unknown argument \"edits\"."));
+    assert_eq!(
+        fs::read_to_string(f.project.join("source.bnt"))?,
+        "one two\none\n"
+    );
+    Ok(())
+}
+
+// 作成時の関門: 評価用の計画を書く道具（設計書 01-03「update_plan」）の契約。
+// 状態の値と「進めている段は一つまで」の検査、画面に示す一覧、既定で道具がないことを
+// 実行器の境界で確かめる。ファイルを書く道具ではないが、同じ実行器の準備を使う。
+#[test]
+fn plan_tool_validates_statuses_and_shows_the_checklist_only_when_enabled() -> TestResult {
+    let f = Fixture::new(Mode::Restricted)?;
+    let tools = ToolSet::new(Mode::Restricted).with_plan();
+    let output = tools.execute(
+        &f.context,
+        "update_plan",
+        json!({"explanation":"Split\nthe work.","plan":[
+            {"step":"Read the\n input","status":"completed"},
+            {"step":"Write main.bnt","status":"in_progress"},
+            {"step":"Run tests","status":"pending"}
+        ]}),
+    );
+    assert!(!output.is_error, "{}", output.text);
+    assert_eq!(output.text, "Plan updated.");
+    assert_eq!(
+        output.display.as_deref(),
+        Some("Split the work.\n[x] Read the input\n[>] Write main.bnt\n[ ] Run tests")
+    );
+    let output = tools.execute(&f.context, "update_plan", json!({"plan":[]}));
+    assert!(!output.is_error && output.display.as_deref() == Some(""));
+    for (plan, error) in [
+        (
+            json!([{"step":"a","status":"done"}]),
+            "Invalid status \"done\" for plan[0]. Use pending, in_progress, or completed.",
+        ),
+        (
+            json!([{"step":"a","status":"in_progress"},{"step":"b","status":"in_progress"}]),
+            "At most one step can be in_progress; found 2. No change was made.",
+        ),
+        (
+            json!([{"step":"a","status":"pending"},{"step":" ","status":"pending"}]),
+            "plan[1].step must not be empty.",
+        ),
+    ] {
+        let output = tools.execute(&f.context, "update_plan", json!({ "plan": plan }));
+        assert!(output.is_error);
+        assert_eq!(output.text, error);
+    }
+    let output = tools.execute(&f.context, "update_plan", json!({"plan":[{"step":"a"}]}));
+    assert!(
+        output.is_error
+            && output
+                .text
+                .starts_with("Missing required argument \"plan[0].status\".")
+    );
+    let output = f
+        .tools
+        .execute(&f.context, "update_plan", json!({"plan":[]}));
+    assert!(output.is_error && output.text.starts_with("Unknown tool \"update_plan\"."));
     Ok(())
 }
 

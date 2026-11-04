@@ -88,6 +88,10 @@ impl Input {
                 if key.modifiers.contains(KeyModifiers::ALT) && key.code != KeyCode::Enter {
                     return Action::None;
                 }
+                // 外部のエディタで入力欄を書く（設計書 05-02「入力の操作」）。
+                if control && key.code == KeyCode::Char('g') {
+                    return Action::Command(super::commands::Command::Editor);
+                }
                 match key.code {
                     KeyCode::Enter if key.modifiers.contains(KeyModifiers::SHIFT) => {
                         self.insert("\n")
@@ -195,6 +199,13 @@ impl Input {
     fn reset_interrupt(&mut self) {
         self.last_interrupt = None;
         self.quit_hint = false;
+    }
+
+    /// 外部のエディタで書いた文で、入力欄を置き換える。
+    pub fn replace(&mut self, text: String) {
+        self.cursor = text.len();
+        self.text = text;
+        self.history_index = None;
     }
 
     fn insert(&mut self, text: &str) {

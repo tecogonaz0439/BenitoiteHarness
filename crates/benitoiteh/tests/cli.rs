@@ -83,6 +83,8 @@ fn help_lists_command_forms() -> Result<(), Box<dyn Error>> {
         "--continue",
         "--json",
         "--output-last-message <file>",
+        "--ephemeral",
+        "--output-schema <file>",
     ] {
         assert!(help.lines().any(|line| line.trim() == option), "{help}");
     }
@@ -124,6 +126,8 @@ fn interactive_requires_terminals_before_creating_data_and_rejects_exec_options(
         vec!["request"],
         vec!["--json"],
         vec!["--output-last-message", "result"],
+        vec!["--ephemeral"],
+        vec!["--output-schema", "schema.json"],
         vec!["-"],
         vec!["--approval", "on-request"],
         vec!["--resume", "session-id"],

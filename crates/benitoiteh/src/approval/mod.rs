@@ -3,6 +3,7 @@
 mod interactive;
 mod text;
 pub use interactive::{ApprovalPrompt, InteractiveApprover};
+pub use text::AGENTS_WRITE_DENIED;
 
 pub use crate::benitoite::report::{ApprovalSource, ContentHash};
 use crate::config::{Approval, Sandbox};
@@ -29,6 +30,8 @@ pub enum ApprovalKind {
     Effects,
     /// テストのエフェクトの確認。
     TestEffects,
+    /// サンドボックスの中のコマンドの、ドメインへの通信（設計書 03-02「通信の中継」）。
+    Network,
 }
 
 /// ハーネスが確かめた操作の事実。LLM の説明とは別に渡す。
@@ -58,6 +61,9 @@ pub struct ApprovalFacts {
     /// 制限モードで、承認後の再検査が使いうる OS の範囲。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub restricted: Option<RestrictedFacts>,
+    /// この一回で `.agents` に書く（設計書 03-03「.agents への書き込み」）。覚えず、毎回確かめる。
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub agents_write: bool,
 }
 
 /// 確認したエフェクトの和に対応するサンドボックスの範囲（設計書 03-03）。
@@ -126,6 +132,11 @@ pub fn decide(
                 Approval::OnRequest | Approval::Untrusted => Decision::Ask,
             }
         }
+        // 通信の中継は、ループを通さずに自分で決めてから尋ねる（設計書 03-02「通信の中継」）。
+        ApprovalKind::Network => match policy.approval {
+            Approval::Never => Decision::Deny,
+            Approval::OnRequest | Approval::Untrusted => Decision::Ask,
+        },
         ApprovalKind::WebFetch => {
             if facts
                 .domain
@@ -162,7 +173,10 @@ pub fn decide_in_mode(
     allowed: &BTreeSet<String>,
     domains: &BTreeSet<String>,
 ) -> Decision {
+    // 制限モードの書く道具は、.agents の .bnt に書くときだけ確認を求める（設計書 03-03「.agents への書き込み」）。
+    let agents_write = kind == ApprovalKind::WriteScope && facts.agents_write;
     if mode == crate::config::Mode::Restricted
+        && !agents_write
         && !matches!(
             kind,
             ApprovalKind::CreateProject
@@ -268,7 +282,7 @@ pub fn policy_denial_message(kind: ApprovalKind) -> &'static str {
         ApprovalKind::WriteScope => text::POLICY_WRITE_DENIED,
         ApprovalKind::Command => text::POLICY_COMMAND_DENIED,
         ApprovalKind::Escalate => text::POLICY_ESCALATE_DENIED,
-        ApprovalKind::WebFetch => text::POLICY_WEB_DENIED,
+        ApprovalKind::WebFetch | ApprovalKind::Network => text::POLICY_WEB_DENIED,
         ApprovalKind::Effects => text::POLICY_EFFECTS_DENIED,
         ApprovalKind::TestEffects => text::POLICY_TEST_EFFECTS_DENIED,
     }
@@ -286,7 +300,7 @@ pub fn user_denial_message(
         ApprovalKind::WriteScope => text::USER_WRITE_DENIED.to_owned(),
         ApprovalKind::Command => text::USER_COMMAND_DENIED.to_owned(),
         ApprovalKind::Escalate => text::USER_ESCALATE_DENIED.to_owned(),
-        ApprovalKind::WebFetch => text::USER_WEB_DENIED.to_owned(),
+        ApprovalKind::WebFetch | ApprovalKind::Network => text::USER_WEB_DENIED.to_owned(),
         ApprovalKind::Effects | ApprovalKind::TestEffects => {
             text::effects_denied(kind, facts, project)
         }

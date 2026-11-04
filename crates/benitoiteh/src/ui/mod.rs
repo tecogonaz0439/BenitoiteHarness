@@ -144,6 +144,12 @@ impl ExecOutput {
                 Some(text::project_changed(project_dir))
             }
             AgentEvent::ImagesRemoved { .. } => Some(text::IMAGES_REMOVED.into()),
+            AgentEvent::NestedInstructions { paths, skipped, .. } => {
+                Some(text::nested_instructions(paths, skipped))
+            }
+            AgentEvent::ToolResultsPruned { results, .. } => {
+                Some(text::tool_results_pruned(results.len()))
+            }
             AgentEvent::Checkpoint { checkpoint } => Some(text::checkpoint(checkpoint)),
             AgentEvent::HardLinks { paths } => Some(text::hard_links(paths)),
             AgentEvent::Error { .. } => None,

@@ -27,6 +27,21 @@ pub struct Fixture {
 }
 impl Fixture {
     pub fn new(sandbox: Sandbox) -> Result<Self, Box<dyn Error>> {
+        Self::with_path(sandbox, |_| "/bin:/usr/bin".into())
+    }
+    /// 子に渡す `PATH` を、準備の根（正規化したもの）から作る。
+    pub fn with_path(
+        sandbox: Sandbox,
+        path: impl FnOnce(&std::path::Path) -> String,
+    ) -> Result<Self, Box<dyn Error>> {
+        Self::with_network(sandbox, path, None)
+    }
+    /// 中継の方式の門を渡すと、方針を中継の方式にする（設計書 03-02「通信の中継」）。
+    pub fn with_network(
+        sandbox: Sandbox,
+        path: impl FnOnce(&std::path::Path) -> String,
+        network: Option<std::sync::Arc<benitoiteh::sandbox::proxy::NetworkGate>>,
+    ) -> Result<Self, Box<dyn Error>> {
         let mut random = [0; 16];
         getrandom::fill(&mut random)?;
         let root =
@@ -48,11 +63,13 @@ impl Fixture {
         } else {
             let mut config = PolicyConfig::new(writable_roots.clone());
             config.deny_exec_in_writable = false;
+            config.network_proxy = network.is_some();
             Some(SandboxPolicy::new(config)?)
         };
+        let path = path(&root);
         let env = child_environment(
             [
-                ("PATH", "/bin:/usr/bin"),
+                ("PATH", path.as_str()),
                 ("OPENAI_API_KEY", "synthetic-openai"),
                 ("ANTHROPIC_API_KEY", "synthetic-anthropic"),
                 ("CUSTOM_PROVIDER_KEY", "synthetic-custom"),
@@ -60,6 +77,7 @@ impl Fixture {
             .into_iter()
             .map(|(k, v)| (k.into(), v.into())),
             &["CUSTOM_PROVIDER_KEY".into()].into_iter().collect(),
+            &Default::default(),
             session.temporary_dir(),
             policy.as_ref().map(|_| (sandbox.name(), false)),
         );
@@ -89,6 +107,7 @@ impl Fixture {
             sandbox,
             sandboxed: sandbox != Sandbox::DangerFullAccess,
             approval: Approval::Never,
+            network,
         });
         Ok(Self {
             root,

@@ -70,6 +70,7 @@ fn resume_starts_with_empty_session_command_approvals() -> Result<(), Box<dyn st
         agent: Default::default(),
         project_parent: None,
         allow_effects: None,
+        allow_agents_write: false,
         mode: Mode::Normal,
         destination: Destination {
             provider: "test".into(),
@@ -233,6 +234,7 @@ fn web_session_answers_are_remembered_by_the_loop_before_cancelled_execution()
             agent: Default::default(),
             project_parent: None,
             allow_effects: None,
+            allow_agents_write: false,
             mode: Mode::Normal,
             destination: Destination {
                 provider: "test".into(),
@@ -333,6 +335,7 @@ fn image_results_are_restored_only_when_enabled_and_metadata_and_hash_match()
         agent: Default::default(),
         project_parent: None,
         allow_effects: None,
+        allow_agents_write: false,
         mode: Mode::Normal,
         destination: Destination {
             provider: "test".into(),
@@ -613,6 +616,7 @@ fn branch_preparation_failure_preserves_log_and_memory_until_commit()
         agent: Default::default(),
         project_parent: None,
         allow_effects: None,
+        allow_agents_write: false,
         mode: Mode::Normal,
         destination: Destination {
             provider: "test".into(),
@@ -693,5 +697,278 @@ fn branch_preparation_failure_preserves_log_and_memory_until_commit()
     );
     assert_eq!(session::replay(session.directory())?, agent.conversation);
     server.shutdown()?;
+    Ok(())
+}
+
+// 作成時の関門: 利用者の添付の画像は、記録には参照だけを書き、再開のときに中身をハッシュと
+// 照合して戻し、戻せなければ除いて断りを添える（設計書 02-01「画像の受け渡し」）。
+#[test]
+fn user_attachments_are_recorded_by_reference_and_restored_on_resume()
+-> Result<(), Box<dyn std::error::Error>> {
+    let id = session::SessionId::generate(std::time::SystemTime::now())?;
+    let directory = std::env::temp_dir().join(format!("benitoiteh-resume-attach-{id}"));
+    std::fs::create_dir(&directory)?;
+    let fixture = Fixture(std::fs::canonicalize(directory)?);
+    for name in ["home", "project", "tmp"] {
+        std::fs::create_dir(fixture.0.join(name))?;
+    }
+    let paths = DataPaths::from_values(
+        Some(&fixture.0.join("home")),
+        Some(&fixture.0.join("config")),
+        Some(&fixture.0.join("state")),
+        Some(&fixture.0.join("tmp")),
+    )?;
+    let project = fixture.0.join("project");
+    let bytes = b"GIF89a\x01\0\x01\0";
+    std::fs::write(project.join("picture.gif"), bytes)?;
+    let session = Session::create(&paths, id)?;
+    let mut server =
+        mock_provider::MockProvider::start(vec![mock_provider::ResponseScript::sse(format!(
+            "data: {}\n\ndata: [DONE]\n\n",
+            serde_json::json!({"choices":[{"delta":{"content":"seen"},"finish_reason":"stop"}]})
+        ))])?;
+    let config = AgentConfig {
+        compaction: Default::default(),
+        agent: Default::default(),
+        project_parent: None,
+        allow_effects: None,
+        allow_agents_write: false,
+        mode: Mode::Normal,
+        destination: Destination {
+            provider: "test".into(),
+            base_url: server.base_url(),
+            model: "model".into(),
+        },
+        kind: AdapterKind::OpenAiChat,
+        capabilities: Capabilities {
+            image_input: true,
+            ..Capabilities::default()
+        },
+        effort: "high".into(),
+        limits: Limits::default(),
+        http_timeouts: HttpTimeouts::default(),
+        retry_initial: Duration::from_millis(1),
+    };
+    let environment = Environment::capture(
+        &project,
+        Mode::Normal,
+        &[],
+        false,
+        std::time::SystemTime::now(),
+    )?;
+    let mut agent = Agent::new(
+        config.clone(),
+        String::new(),
+        tool_context(&paths, &project, &session)?.with_image_input(true),
+        environment.clone(),
+        session.clone(),
+    )?;
+    let (sender, receiver) = std::sync::mpsc::sync_channel(64);
+    let mut control = RunControl::without_steering(
+        Arc::new(AtomicBool::new(false)),
+        Arc::new(AtomicBool::new(false)),
+    );
+    control.attachments = vec![project.join("picture.gif")];
+    agent.run_controlled("Look at this".into(), control, sender)?;
+    let _events = receiver.into_iter().collect::<Vec<_>>();
+    let requests = server.requests()?;
+    assert!(
+        requests
+            .first()
+            .ok_or("missing request")?
+            .body
+            .to_string()
+            .contains("data:image/gif;base64,R0lGODlhAQABAA==")
+    );
+    let log = std::fs::read_to_string(session.directory().join("session.jsonl"))?;
+    assert!(!log.contains("R0lGODlhAQABAA=="));
+    drop(agent);
+    let attached = |agent: &Agent| {
+        agent
+            .conversation()
+            .items
+            .iter()
+            .find_map(|item| match item {
+                Item::UserMessage(message)
+                    if message.parts.iter().any(|part| part.text == "Look at this") =>
+                {
+                    Some(message.clone())
+                }
+                Item::UserMessage(_) | Item::ToolResult(_) | Item::AssistantTurn(_) => None,
+            })
+    };
+    let state = session::ResumeState::read(session.directory())?;
+    let agent = Agent::resume(
+        config.clone(),
+        String::new(),
+        tool_context(&paths, &project, &session)?.with_image_input(true),
+        environment.clone(),
+        session.clone(),
+        state.clone(),
+    )?;
+    let message = attached(&agent).ok_or("missing request")?;
+    let hash = message
+        .images
+        .first()
+        .map(|image| image.sha256.clone())
+        .ok_or("missing attachment")?;
+    assert_eq!(
+        message
+            .images
+            .first()
+            .and_then(|image| image.data.as_deref()),
+        Some(bytes.as_slice())
+    );
+    drop(agent);
+    std::fs::write(
+        session.directory().join("objects").join(&hash),
+        b"corrupted!",
+    )?;
+    let agent = Agent::resume(
+        config,
+        String::new(),
+        tool_context(&paths, &project, &session)?.with_image_input(true),
+        environment,
+        session.clone(),
+        state,
+    )?;
+    let message = attached(&agent).ok_or("missing request")?;
+    assert!(message.images.is_empty());
+    assert!(
+        message
+            .parts
+            .iter()
+            .any(|part| part.text.contains("could not be restored"))
+    );
+    server.shutdown()?;
+    Ok(())
+}
+
+// 作成時の関門: `/model` の切り替えの後の要求は新しいモデルへ送り、前のモデルの推論の文を送らない。
+// 切り替えなければ送る。新しい送り先の開始を記録し、再開ではその送り先を使う。すべての番の推論を
+// 求める提供者では、次の依頼の前に圧縮し、その要約の要求には出力の型を付けない
+// （設計書 05-02「`/` で始まるコマンド」）。
+#[test]
+fn switching_models_stops_reasoning_replay_and_records_the_new_destination()
+-> Result<(), Box<dyn std::error::Error>> {
+    let reply = |content: &str| {
+        mock_provider::ResponseScript::sse(format!(
+            "data: {}\n\ndata: [DONE]\n\n",
+            serde_json::json!({"choices":[{"delta":{"reasoning_content":"Plan","content":content},"finish_reason":"stop"}]})
+        ))
+    };
+    for (switch, replay) in [
+        (false, crate::provider::ReasoningReplay::SameDestination),
+        (true, crate::provider::ReasoningReplay::SameDestination),
+        (true, crate::provider::ReasoningReplay::AllTurns),
+    ] {
+        let id = session::SessionId::generate(std::time::SystemTime::now())?;
+        let directory = std::env::temp_dir().join(format!("benitoiteh-switch-model-{id}"));
+        std::fs::create_dir(&directory)?;
+        let fixture = Fixture(std::fs::canonicalize(directory)?);
+        for name in ["home", "project", "tmp"] {
+            std::fs::create_dir(fixture.0.join(name))?;
+        }
+        let paths = DataPaths::from_values(
+            Some(&fixture.0.join("home")),
+            Some(&fixture.0.join("config")),
+            Some(&fixture.0.join("state")),
+            Some(&fixture.0.join("tmp")),
+        )?;
+        let project = fixture.0.join("project");
+        let session = Session::create(&paths, id)?;
+        let mut server = mock_provider::MockProvider::start(vec![
+            reply("first"),
+            reply("summary"),
+            reply("second"),
+        ])?;
+        let config = AgentConfig {
+            compaction: Default::default(),
+            agent: Default::default(),
+            project_parent: None,
+            allow_effects: None,
+            allow_agents_write: false,
+            mode: Mode::Normal,
+            destination: Destination {
+                provider: "test".into(),
+                base_url: server.base_url(),
+                model: "model-a".into(),
+            },
+            kind: AdapterKind::OpenAiChat,
+            capabilities: Capabilities {
+                reasoning_replay: replay,
+                ..Capabilities::default()
+            },
+            effort: "high".into(),
+            limits: Limits::default(),
+            http_timeouts: HttpTimeouts::default(),
+            retry_initial: Duration::from_millis(1),
+        };
+        let environment = Environment::capture(
+            &project,
+            Mode::Normal,
+            &[],
+            false,
+            std::time::SystemTime::now(),
+        )?;
+        let mut agent = Agent::new(
+            config,
+            String::new(),
+            tool_context(&paths, &project, &session)?,
+            environment,
+            session.clone(),
+        )?
+        .with_output_schema(Some(serde_json::json!({"type": "object"})));
+        for (index, request) in ["one", "two"].into_iter().enumerate() {
+            if index == 1 && switch {
+                agent.switch_model("model-b", Some("low"));
+            }
+            let (sender, receiver) = std::sync::mpsc::sync_channel(64);
+            agent.run(request.into(), Arc::new(AtomicBool::new(false)), sender)?;
+            let _events = receiver.into_iter().collect::<Vec<_>>();
+        }
+        let requests = server.requests()?;
+        let last = requests.last().ok_or("missing request")?;
+        let body = last.body.to_string();
+        let label = format!("{switch} {replay:?}");
+        assert_eq!(
+            last.body.get("model").and_then(serde_json::Value::as_str),
+            Some(if switch { "model-b" } else { "model-a" }),
+            "{label}"
+        );
+        assert_eq!(
+            body.contains("\"reasoning_content\":\"Plan\""),
+            !switch,
+            "{label}: {body}"
+        );
+        // すべての番の推論を求める口では、切り替えの後に要約の要求を一つ挟む。
+        assert_eq!(
+            requests.len(),
+            if replay == crate::provider::ReasoningReplay::AllTurns {
+                3
+            } else {
+                2
+            },
+            "{label}"
+        );
+        // 出力の型は普通の番にだけ付け、圧縮の要約の要求には付けない（設計書 05-01「exec の出力」）。
+        let formats = requests
+            .iter()
+            .map(|request| request.body.get("response_format").is_some())
+            .collect::<Vec<_>>();
+        if replay == crate::provider::ReasoningReplay::AllTurns {
+            assert_eq!(formats, [true, false, true], "{label}");
+        } else {
+            assert!(formats.iter().all(|present| *present), "{label}");
+        }
+        let state = session::ResumeState::read(session.directory())?;
+        assert_eq!(
+            state.destination.model,
+            if switch { "model-b" } else { "model-a" },
+            "{label}"
+        );
+        drop(agent);
+        server.shutdown()?;
+    }
     Ok(())
 }

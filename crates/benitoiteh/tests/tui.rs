@@ -52,13 +52,15 @@ fn status() -> Status {
         sandbox_disabled: false,
         context_window: Some(100_000),
         estimate: 123,
+        templates: Default::default(),
     }
 }
 
 fn controls() -> Result<Regex, regex::Error> {
     // 画面を消す CSI 2J、題名、クリップボード、別画面、端末への問い合わせは許さない。
+    // 前面の報告（?1004）は、通知のために起動と終わりで切り替える（設計書 05-02「通知」）。
     Regex::new(
-        r"\x1b\[(?:[0-9;]*m|[0-9]+[AG]|0?J|[012]?K|\?(?:25|7|2026|2004)[hl]|>[0-9]+u|<[0-9]+u)",
+        r"\x1b\[(?:[0-9;]*m|[0-9]+[AG]|0?J|[012]?K|\?(?:25|7|1004|2026|2004)[hl]|>[0-9]+u|<[0-9]+u)",
     )
 }
 
@@ -236,6 +238,8 @@ struct Fixture {
     root: PathBuf,
     project: PathBuf,
     paths: DataPaths,
+    /// 模擬の提供者が画像を受け付けるか。
+    image_input: bool,
 }
 impl Fixture {
     fn new() -> Result<Self, Box<dyn Error>> {
@@ -260,6 +264,7 @@ impl Fixture {
             root,
             project,
             paths,
+            image_input: false,
         })
     }
 
@@ -305,6 +310,7 @@ impl Fixture {
             agent: Default::default(),
             project_parent: None,
             allow_effects: None,
+            allow_agents_write: false,
             mode,
             destination: Destination {
                 provider: "mock".into(),
@@ -312,7 +318,10 @@ impl Fixture {
                 model: "mock-model".into(),
             },
             kind: AdapterKind::OpenAiChat,
-            capabilities: Capabilities::default(),
+            capabilities: Capabilities {
+                image_input: self.image_input,
+                ..Capabilities::default()
+            },
             effort: "high".into(),
             limits: Limits::default(),
             http_timeouts: HttpTimeouts {
@@ -337,6 +346,7 @@ impl Fixture {
         };
         let mut env = benitoiteh::config::child_environment(
             [("PATH".into(), "/bin:/usr/bin".into())],
+            &Default::default(),
             &Default::default(),
             session.temporary_dir(),
             None,
@@ -374,6 +384,7 @@ impl Fixture {
             sandbox: benitoiteh::config::Sandbox::DangerFullAccess,
             sandboxed: false,
             approval: benitoiteh::config::Approval::Never,
+            network: None,
         });
         if mode == Mode::Restricted {
             context = context.with_skill(support::skills()?);

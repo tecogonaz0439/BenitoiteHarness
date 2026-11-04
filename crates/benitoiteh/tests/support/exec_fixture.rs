@@ -20,7 +20,7 @@ pub(super) const FINAL: &str =
 pub(super) const DISPLAY: &str =
     "Done.\n\t\\x00\\x08\\x1b[31m\\x0d\\x7f\\x80\\x9f\\u{202a}\\u{202e}\\u{2066}\\u{2069}\n";
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum Protocol {
     Chat,
     Anthropic,

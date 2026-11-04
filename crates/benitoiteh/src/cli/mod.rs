@@ -45,6 +45,16 @@ pub fn main() -> ExitCode {
     if argument.as_deref() == Some(std::ffi::OsStr::new("__image")) {
         return crate::tools::run_image_helper(args);
     }
+    // 主のプロセスは、環境に提供者のキーを持ち、記憶に会話と認証のトークンを持つ。ダンプできない形に
+    // して、同じ利用者のほかのプロセス（外で動かすコマンドを含む）から /proc/<pid>/environ・mem を
+    // 読ませず、ptrace で接続させない。execve の後の子には及ばない（設計書 03-02「主のプロセスの守り」）。
+    #[cfg(target_os = "linux")]
+    if let Err(error) =
+        rustix::process::set_dumpable_behavior(rustix::process::DumpableBehavior::NotDumpable)
+    {
+        let _shown = writeln!(io::stderr().lock(), "{}", text::not_dumpable(&error));
+        return ExitCode::from(2);
+    }
     panic::install(None, None);
     match run(argument, args) {
         Ok(status) => ExitCode::from(status),
@@ -88,6 +98,14 @@ fn run(
     if argument == "sessions" {
         return sessions::run(args);
     }
+    if argument == "debug" {
+        let mut args = args;
+        if args.next().as_deref() != Some(std::ffi::OsStr::new("prompt-input")) {
+            return Err(CliError::Usage);
+        }
+        let options = args::ExecArgs::parse_preview(args).map_err(CliError::Arguments)?;
+        return exec::run(options);
+    }
     if argument == "login" || argument == "logout" {
         return login::run(args, argument == "logout");
     }
@@ -125,18 +143,83 @@ fn run(
 }
 
 // XDG の付け替えでも普段の秘密を公開せず、exec と doctor で共有する（設計書 03-02「方針の要素」）。
+// 資格情報、パスワードの保管庫、シェルの履歴、ブラウザのプロファイルの組は、nono の既定の
+// 拒否の組から採った（設計書 03-02「読ませないホームの場所」）。ない場所は方針を作るときに飛ばす。
+const DENIED_HOME: &[&str] = &[
+    ".config/benitoiteh",
+    ".local/state/benitoiteh",
+    // 資格情報
+    ".ssh",
+    ".gnupg",
+    ".aws",
+    ".azure",
+    ".config/gcloud",
+    ".gcloud",
+    ".kube",
+    ".docker",
+    ".git-credentials",
+    ".netrc",
+    ".npmrc",
+    ".bunfig.toml",
+    ".config/bun/bunfig.toml",
+    ".vault-token",
+    ".credentials",
+    ".secrets",
+    ".keys",
+    ".pki",
+    ".terraform.d",
+    ".config/op",
+    ".env",
+    ".envrc",
+    // シェルの起動の設定。zsh がどの起動でも読む .zshenv は、PATH を保つため読めるままにする
+    // （設計書 03-02「読ませないホームの場所」）。
+    ".bashrc",
+    ".bash_profile",
+    ".bash_login",
+    ".bash_logout",
+    ".profile",
+    ".zshrc",
+    ".zprofile",
+    ".zlogin",
+    ".zlogout",
+    ".config/fish",
+    // パスワードの保管庫
+    ".password-store",
+    ".1password",
+    ".op",
+    ".local/share/keyrings",
+    "Library/Keychains",
+    "Library/Group Containers/2BUA8C4S2C.com.1password",
+    "Library/Application Support/1Password",
+    "Library/Containers/com.1password.1password",
+    // シェルの履歴
+    ".bash_history",
+    ".zsh_history",
+    ".history",
+    ".python_history",
+    // ブラウザのプロファイル
+    ".config/google-chrome",
+    ".config/chromium",
+    ".mozilla/firefox",
+    ".config/microsoft-edge",
+    ".config/BraveSoftware",
+    ".config/vivaldi",
+    ".config/opera",
+    "Library/Application Support/Google/Chrome",
+    "Library/Application Support/Chromium",
+    "Library/Application Support/Firefox",
+    "Library/Application Support/Microsoft Edge",
+    "Library/Application Support/Arc",
+    "Library/Application Support/BraveSoftware",
+    "Library/Application Support/Vivaldi",
+    "Library/Application Support/com.operasoftware.Opera",
+    "Library/Safari",
+    "Library/Cookies",
+];
+
 fn denied_candidates(paths: &crate::config::paths::DataPaths) -> Vec<std::path::PathBuf> {
     let mut candidates = vec![paths.config_dir.clone(), paths.data_dir.clone()];
-    candidates.extend(
-        [
-            ".config/benitoiteh",
-            ".local/state/benitoiteh",
-            ".ssh",
-            ".gnupg",
-            ".aws",
-        ]
-        .map(|name| paths.home.join(name)),
-    );
+    candidates.extend(DENIED_HOME.iter().map(|name| paths.home.join(name)));
     candidates.sort();
     candidates.dedup();
     candidates

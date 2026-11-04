@@ -43,6 +43,7 @@ impl Fixture {
             env: crate::config::child_environment(
                 std::env::vars_os(),
                 &Default::default(),
+                &Default::default(),
                 &self.0.join("temporary"),
                 Some(("restricted", false)),
             ),

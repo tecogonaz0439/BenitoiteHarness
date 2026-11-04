@@ -28,3 +28,17 @@ pub fn transmission_notice(provider: &str, model: &str, host: &str) -> String {
 }
 
 pub const SKILL_MISMATCH: &str = "The Benitoite Skill must be given exactly when the Benitoite tools are enabled, and restricted mode requires both.";
+
+/// 雛形を読まなかったことを示す（設計書 05-02「利用者の定義するコマンド」）。
+pub fn prompt_skipped(path: &std::path::Path, reason: &str) -> String {
+    format!("Skipped prompt template {}: {reason}", path.display())
+}
+pub const PROMPT_LINKED_DIRECTORY: &str = "the directory is reached through a symbolic link";
+pub const PROMPT_NOT_REGULAR: &str = "not a regular file";
+pub const PROMPT_INVALID_NAME: &str = "names must start with a lowercase letter and use only lowercase letters, digits and hyphens (up to 64)";
+pub const PROMPT_RESERVED: &str = "the name is a built-in command";
+pub const PROMPT_DUPLICATE: &str = "a template with the same name was loaded first";
+pub const PROMPT_COUNT_LIMIT: &str = "more than 200 templates";
+pub const PROMPT_HARD_LINKS: &str = "the file has more than one hard link";
+pub const PROMPT_FILE_LIMIT: &str = "larger than 64 KiB";
+pub const PROMPT_NOT_UTF8: &str = "not UTF-8";

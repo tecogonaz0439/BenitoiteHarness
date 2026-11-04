@@ -1,6 +1,7 @@
 //! 要約の要求と、記録を起点とする会話の置き換えを管理する（設計書 01-04「圧縮」）。
 
 mod conversation;
+mod prune;
 
 #[cfg(test)]
 mod tests;
@@ -361,6 +362,10 @@ impl Agent {
         self.last_usage = None;
         self.added_bytes = 0;
         self.previous_last_item = None;
+        // 要約した側に添えた指示は会話から消えうるので、次に触れたときに添え直す。
+        if let Some(nested) = &mut self.nested_instructions {
+            nested.reset();
+        }
         summary.compactions = summary.compactions.saturating_add(1);
         report.outcome = CompactOutcome::Compacted;
         report.estimate_after = self.estimate();
@@ -523,6 +528,7 @@ enum SummaryResponse {
 
 fn user(text: String) -> Item {
     Item::UserMessage(UserMessage {
+        images: Vec::new(),
         parts: vec![UserPart {
             kind: UserPartKind::Request,
             text,

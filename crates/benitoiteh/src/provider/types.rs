@@ -56,6 +56,10 @@ pub enum Item {
 pub struct UserMessage {
     /// アダプタはこの順で文の部分に変える。
     pub parts: Vec<UserPart>,
+    /// 利用者が添付した画像（設計書 02-01「画像の受け渡し」）。中身は objects/ に置き、
+    /// 記録には参照だけを書く。前の版の記録にはないので、なければ空とする。
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub images: Vec<ToolImage>,
 }
 
 /// 利用者の発言の文の部分。

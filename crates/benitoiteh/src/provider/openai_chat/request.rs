@@ -22,6 +22,8 @@ pub struct RequestOptions<'a> {
     pub previous_last_item: Option<usize>,
     /// 圧縮のため tool_choice: none を使うか。未対応の口では誤りにする。
     pub disable_tools: bool,
+    /// 最後の応答の形を決める JSON Schema（設計書 05-01「exec の出力」）。圧縮の要求には付けない。
+    pub output_schema: Option<&'a Value>,
 }
 
 /// 認証ヘッダを含む送信専用の要求。Debug は内容を表示しない。
@@ -29,6 +31,13 @@ pub struct OpenAiChatRequest {
     pub(super) uri: Uri,
     pub(super) headers: HeaderMap,
     pub(super) body: Vec<u8>,
+}
+
+impl OpenAiChatRequest {
+    /// 認証の値を除いた形（設計書 05-01「debug prompt-input」）。
+    pub fn preview(&self) -> crate::provider::RequestPreview {
+        crate::provider::RequestPreview::new(&self.uri, &self.headers, &self.body)
+    }
 }
 
 impl fmt::Debug for OpenAiChatRequest {
@@ -96,6 +105,13 @@ impl OpenAiChatAdapter {
         if !tools.is_empty() && options.disable_tools {
             insert(&mut body, "tool_choice", json!("none"))?;
         }
+        if let Some(schema) = options.output_schema {
+            insert(
+                &mut body,
+                "response_format",
+                json!({"type": "json_schema", "json_schema": {"name": "output", "schema": schema, "strict": true}}),
+            )?;
+        }
         if tools.is_empty() {
             let fields = body
                 .as_object_mut()
@@ -144,10 +160,28 @@ impl OpenAiChatAdapter {
                 flush_images(&mut messages, &mut attachments);
             }
             let message = match item {
-                Item::UserMessage(user) => json!({
-                    "role": "user",
-                    "content": user.parts.iter().map(|p| json!({"type": "text", "text": p.text})).collect::<Vec<_>>()
-                }),
+                Item::UserMessage(user) => {
+                    let mut content = user
+                        .parts
+                        .iter()
+                        .map(|p| json!({"type": "text", "text": p.text}))
+                        .collect::<Vec<_>>();
+                    let (images, notices) = crate::provider::images::prepare_user(
+                        user,
+                        self.capabilities.image_input,
+                        &plan,
+                        index,
+                    );
+                    content.extend(images.into_iter().map(|image| json!({
+                        "type": "image_url", "image_url": {"url": crate::provider::images::data_url(image)}
+                    })));
+                    content.extend(
+                        notices
+                            .into_iter()
+                            .map(|notice| json!({"type": "text", "text": notice})),
+                    );
+                    json!({"role": "user", "content": content})
+                }
                 Item::AssistantTurn(turn) => {
                     let same = turn.raw_items.destination == self.destination
                         && turn.raw_items.adapter == AdapterKind::OpenAiChat;

@@ -615,10 +615,19 @@ fn child_process_environment_removes_all_provider_keys_and_replaces_inherited_ma
     let f = Fixture::new()?;
     let temporary = f.dir("tmp")?;
     let user = UserConfig::parse(
-        "[providers.p]\nkind='openai-chat'\nmodel='m'\napi_key={env='CUSTOM_PROVIDER_KEY'}",
+        "[providers.p]\nkind='openai-chat'\nmodel='m'\napi_key={env='CUSTOM_PROVIDER_KEY'}\n[secrets]\npass_env=['GH_TOKEN']",
     )?;
-    // 固定の一覧は実装の定数から写さず、仕様のキーを全て渡す。
+    // 固定の一覧は実装の定数から写さず、仕様のキーと、秘密に見える名前の語ごとの例を全て渡す。
+    // 大小文字の違いと、語が名前の途中にある形も含める（設計書 03-02「子プロセスの環境」）。
     let inherited: BTreeMap<OsString, OsString> = [
+        ("AWS_ACCESS_KEY_ID", "secret-aws-key"),
+        ("client_secret_file", "secret-client"),
+        ("GITHUB_TOKEN", "secret-github"),
+        ("DB_PASSWORD", "secret-db"),
+        ("FTP_PASSWD", "secret-ftp"),
+        ("GOOGLE_APPLICATION_CREDENTIALS", "secret-google"),
+        ("GH_TOKEN", "passed-gh"),
+        ("SSH_AUTH_SOCK", "/agent/socket"),
         ("OPENAI_API_KEY", "secret-openai"),
         ("ANTHROPIC_API_KEY", "secret-anthropic"),
         ("GEMINI_API_KEY", "secret-gemini"),
@@ -646,6 +655,7 @@ fn child_process_environment_removes_all_provider_keys_and_replaces_inherited_ma
         let env = child_environment(
             inherited.clone(),
             &user.referenced_env_vars(),
+            &user.secrets.pass_env,
             &temporary,
             sandbox,
         );
@@ -667,6 +677,9 @@ fn child_process_environment_removes_all_provider_keys_and_replaces_inherited_ma
             "PAGER=cat".into(),
             "GIT_PAGER=cat".into(),
             "KEEP_ME=inherited".into(),
+            // 利用者が通した名前と、段 1 の秘密の仲介に使うエージェントの場所は残る。
+            "GH_TOKEN=passed-gh".into(),
+            "SSH_AUTH_SOCK=/agent/socket".into(),
         ] {
             assert!(output.lines().any(|line| line == expected), "{output}");
         }
@@ -706,6 +719,9 @@ fn evaluation_switches_are_user_only_and_preserve_read_exclusions() -> TestResul
         assert!(config.restricted.after_write_check);
         assert!(config.read.line_numbers);
         assert!(!config.agent.completion_check);
+        assert!(!config.edit.multiple);
+        assert!(!config.agent.nested_instructions);
+        assert!(!config.agent.plan_tool);
         assert_eq!(config.compaction.reserve_tokens, 16_384);
         assert_eq!(config.compaction.keep_tokens, 20_000);
     }
@@ -727,16 +743,23 @@ fn evaluation_switches_are_user_only_and_preserve_read_exclusions() -> TestResul
     assert!(!resolved.plugins.user && !resolved.plugins.project);
     assert_eq!(resolved.read.exclude, ["user.*", "project.*"]);
     // 両端と片方だけの指定も、設定の所有者で解決まで確かめる。
-    for (input, reserve_tokens, keep_tokens) in [
-        ("", 16_384, 20_000),
-        ("[compaction]\nreserve_tokens=0\nkeep_tokens=0", 0, 0),
+    for (input, reserve_tokens, keep_tokens, prune_tool_results) in [
+        ("", 16_384, 20_000, false),
+        ("[compaction]\nreserve_tokens=0\nkeep_tokens=0", 0, 0, false),
         (
             "[compaction]\nreserve_tokens=18446744073709551615\nkeep_tokens=18446744073709551615",
             u64::MAX,
             u64::MAX,
+            false,
         ),
-        ("[compaction]\nreserve_tokens=8192", 8_192, 20_000),
-        ("[compaction]\nkeep_tokens=8000", 16_384, 8_000),
+        ("[compaction]\nreserve_tokens=8192", 8_192, 20_000, false),
+        ("[compaction]\nkeep_tokens=8000", 16_384, 8_000, false),
+        (
+            "[compaction]\nprune_tool_results=true",
+            16_384,
+            20_000,
+            true,
+        ),
     ] {
         let user = UserConfig::parse(&format!(
             "default_provider='p'\n[providers.p]\nkind='openai-chat'\nmodel='m'\n{input}"
@@ -747,13 +770,15 @@ fn evaluation_switches_are_user_only_and_preserve_read_exclusions() -> TestResul
             resolved.compaction,
             CompactionConfig {
                 reserve_tokens,
-                keep_tokens
+                keep_tokens,
+                prune_tool_results,
             }
         );
     }
     for (input, field) in [
         ("[read]\nline_numbers=false", "line_numbers"),
         ("model='discarded'\n[agent]\ncompletion_check=true", "agent"),
+        ("[agent]\nplan_tool=true", "agent"),
         ("[restricted]\nafter_write_check=false", "restricted"),
         ("[skills]\nuser=false", "skills"),
         (
@@ -761,7 +786,9 @@ fn evaluation_switches_are_user_only_and_preserve_read_exclusions() -> TestResul
             "compaction",
         ),
         ("[compaction]\nkeep_tokens=0", "compaction"),
+        ("[compaction]\nprune_tool_results=true", "compaction"),
         ("[plugins]\nuser=false", "plugins"),
+        ("[edit]\nmultiple=true", "edit"),
     ] {
         fs::write(&path, input)?;
         let loaded = ProjectConfig::load(&root);
@@ -782,17 +809,21 @@ fn evaluation_switches_are_user_only_and_preserve_read_exclusions() -> TestResul
         ("[compaction]\nreserve_tokens=18446744073709551616", invalid),
         ("[compaction]\nkeep_tokens=18446744073709551616", invalid),
         ("[compaction]\nkeep_tokens=1.5", invalid),
+        ("[compaction]\nprune_tool_results=1", invalid),
         (
             "[compaction]\nreserve_token=0",
             "unknown configuration field `reserve_token`",
         ),
         ("[agent]\ncompletion_check=1", invalid),
         ("[agent]\ncompletion_check='true'", invalid),
+        ("[agent]\nnested_instructions=1", invalid),
+        ("[agent]\nplan_tool='true'", invalid),
         (
             "[agent]\ncompletion_checks=true",
             "unknown configuration field `completion_checks`",
         ),
         ("[read]\nline_numbers=0", invalid),
+        ("[edit]\nmultiple='true'", invalid),
         ("[restricted]\nafter_write_check='false'", invalid),
     ] {
         let error = UserConfig::parse(input)
@@ -804,7 +835,8 @@ fn evaluation_switches_are_user_only_and_preserve_read_exclusions() -> TestResul
     Ok(())
 }
 
-// 関門: 秘密の仲介を変えられるのは利用者だけ。未知の欄とプロジェクト側の設定を拒む。
+// 関門: 秘密の仲介と通す秘密の名前を変えられるのは利用者だけ。未知の欄、提供者のキー、
+// プロジェクト側の設定を拒む。
 #[test]
 fn askpass_is_enabled_by_default_and_only_user_config_can_disable_it() -> TestResult {
     assert!(UserConfig::default().secrets.askpass);
@@ -814,12 +846,25 @@ fn askpass_is_enabled_by_default_and_only_user_config_can_disable_it() -> TestRe
             .askpass
     );
     assert!(UserConfig::parse("[secrets]\nunknown = true").is_err());
+    // 提供者のキーは、通す名前に書いても通さず、設定の誤りとして示す。
+    for name in ["OPENAI_API_KEY", "CUSTOM_PROVIDER_KEY", "", "A=B"] {
+        let input = format!(
+            "[providers.p]\nkind='openai-chat'\nmodel='m'\napi_key={{env='CUSTOM_PROVIDER_KEY'}}\n[secrets]\npass_env=['{name}']"
+        );
+        assert!(UserConfig::parse(&input).is_err(), "{name}");
+    }
     let fixture = Fixture::new()?;
     let project = fixture.dir("project")?;
     fs::create_dir(project.join(".benitoiteh"))?;
     fs::write(
         project.join(".benitoiteh/config.toml"),
         "[secrets]\naskpass = false",
+    )?;
+    let loaded = ProjectConfig::load(&benitoiteh::safe_fs::ScopeRoot::open(&project)?);
+    assert!(loaded.read && loaded.error.is_some());
+    fs::write(
+        project.join(".benitoiteh/config.toml"),
+        "[secrets]\npass_env = ['GITHUB_TOKEN']",
     )?;
     let loaded = ProjectConfig::load(&benitoiteh::safe_fs::ScopeRoot::open(&project)?);
     assert!(loaded.read && loaded.error.is_some());
@@ -858,5 +903,58 @@ fn chatgpt_authentication_is_only_allowed_for_fixed_responses_destination() -> T
     let root = benitoiteh::safe_fs::ScopeRoot::open(f.0.join("project"))?;
     let loaded = ProjectConfig::load(&root);
     assert!(loaded.error.is_some());
+    Ok(())
+}
+
+// 関門: normal.network は、今までの真偽に加えて "proxy" を受け付け、ほかの文字列を誤りとする。
+// 中継で通すドメインは web_fetch と同じ規則で正規化し、IP アドレスや URL を拒む（設計書 03-02「通信の中継」）。
+#[test]
+fn normal_network_accepts_flags_and_proxy_and_normalizes_allowed_domains() -> TestResult {
+    use benitoiteh::config::NetworkAccess;
+    for (value, expected) in [
+        ("false", NetworkAccess::Off),
+        ("true", NetworkAccess::On),
+        ("\"proxy\"", NetworkAccess::Proxy),
+    ] {
+        let config = UserConfig::parse(&format!("[normal]\nnetwork = {value}\n"))?;
+        assert_eq!(config.normal.network, expected, "{value}");
+    }
+    assert_eq!(UserConfig::default().normal.network, NetworkAccess::Off);
+    assert!(UserConfig::parse("[normal]\nnetwork = \"on\"\n").is_err());
+    let config = UserConfig::parse(
+        "[normal]\nnetwork = \"proxy\"\nallowed_domains = [\"Registry.NPMJS.org.\"]\n",
+    )?;
+    assert_eq!(config.normal.allowed_domains, ["registry.npmjs.org"]);
+    for invalid in [
+        "10.0.0.1",
+        "https://example.com",
+        "*.example.com",
+        "localhost",
+    ] {
+        let input = format!("[normal]\nallowed_domains = [\"{invalid}\"]\n");
+        assert!(UserConfig::parse(&input).is_err(), "{invalid}");
+    }
+    Ok(())
+}
+
+// 作成時の関門: 通知の設定は利用者の設定だけで選べ、端末への知らせを既定で使い、プログラムの名前が
+// 空のコマンドを拒む（設計書 05-02「通知」）。
+#[test]
+fn notifications_default_to_the_terminal_and_reject_an_empty_program() -> TestResult {
+    use benitoiteh::config::{NotificationsConfig, UserConfig};
+    assert_eq!(
+        UserConfig::parse("")?.notifications,
+        NotificationsConfig {
+            terminal: true,
+            command: Vec::new(),
+        }
+    );
+    let config = UserConfig::parse(
+        "[notifications]\nterminal = false\ncommand = [\"notify-send\", \"benitoiteh\"]\n",
+    )?;
+    assert!(!config.notifications.terminal);
+    assert_eq!(config.notifications.command, ["notify-send", "benitoiteh"]);
+    assert!(UserConfig::parse("[notifications]\ncommand = [\"\"]\n").is_err());
+    assert!(UserConfig::parse("[notifications]\nsound = true\n").is_err());
     Ok(())
 }

@@ -93,12 +93,14 @@ fn main() -> Result<(), Box<dyn Error>> {
                 allow_ip: false,
                 programs: vec![processor.clone()],
                 readable: ReadAccess::All,
+                write_agents: false,
             },
             &locations,
             &denied,
         )?;
         let env = child_environment(
             std::env::vars_os(),
+            &Default::default(),
             &Default::default(),
             &locations.temporary,
             Some(("restricted", false)),

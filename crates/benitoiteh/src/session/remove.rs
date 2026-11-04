@@ -38,6 +38,11 @@ pub(super) fn temporary(path: &Path) -> io::Result<()> {
     directory_of(path, Target::Temporary)
 }
 
+/// セッションの記録のディレクトリをパスで消す。`lock` と `session.jsonl` を最後に消す。
+pub(super) fn session(path: &Path) -> io::Result<()> {
+    directory_of(path, Target::Session)
+}
+
 fn directory_of(path: &Path, target: Target) -> io::Result<()> {
     let parent = path.parent().ok_or(io::ErrorKind::InvalidInput)?;
     let name = path.file_name().ok_or(io::ErrorKind::InvalidInput)?;

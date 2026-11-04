@@ -74,6 +74,7 @@ impl Fixture {
             env: benitoiteh::config::child_environment(
                 [("PATH".into(), "/bin:/usr/bin".into())],
                 &Default::default(),
+                &Default::default(),
                 self.session.temporary_dir(),
                 None,
             ),
@@ -81,6 +82,7 @@ impl Fixture {
             sandbox: Sandbox::DangerFullAccess,
             sandboxed: false,
             approval: Approval::Never,
+            network: None,
         }))
     }
     pub fn agent(&self, server: &MockProvider) -> Result<Agent, Box<dyn Error>> {
@@ -98,6 +100,7 @@ impl Fixture {
             agent: Default::default(),
             project_parent: None,
             allow_effects: None,
+            allow_agents_write: false,
             mode: Mode::Normal,
             destination: Destination {
                 provider: "mock".into(),
@@ -143,6 +146,9 @@ impl Fixture {
             compaction: None,
             after_write_check: None,
             read_line_numbers: None,
+            multiple_edits: None,
+            nested_instructions: None,
+            plan_tool: None,
             plugins: Vec::new(),
             skills: Vec::new(),
         }))?;

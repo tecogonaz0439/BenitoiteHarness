@@ -93,16 +93,205 @@ fn redirected_xdg_keeps_default_home_configuration_and_state_unreadable() -> Tes
     Ok(())
 }
 
+// 関門: 非対話の exec では、.agents への書き込みを --allow-agents-write のときだけ許す。
+// 許さないときは確認を待たずに断り、理由を道具の結果で伝える（設計書 03-03「.agents への書き込み」）。
+#[test]
+fn exec_writes_agents_only_with_allow_agents_write() -> TestResult {
+    let protocol = Protocol::Chat;
+    for allowed in [false, true] {
+        let mut server = MockProvider::start(vec![
+            ResponseScript::sse(protocol.response(
+                Some((
+                    "agents",
+                    "write",
+                    json!({"path":".agents/skills/demo/helper.bnt", "content":"function main() -> Unit\nend function\n"}),
+                )),
+                "",
+                false,
+            )),
+            ResponseScript::sse(protocol.response(None, "Done", false)),
+        ])?;
+        let f = Fixture::restricted(protocol, &server)?;
+        let mut command = f.command("Write a skill helper");
+        if allowed {
+            command.arg("--allow-agents-write");
+        }
+        let output = Running::start(command.arg("--json"))?.finish()?;
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let (_, records) = f.records()?;
+        let text = records
+            .iter()
+            .find(|record| {
+                record.get("type") == Some(&json!("tool_result"))
+                    && record.get("name") == Some(&json!("write"))
+            })
+            .and_then(|record| record.pointer("/result/text"))
+            .and_then(Value::as_str)
+            .ok_or("write result")?;
+        let helper = f.root.join("project/.agents/skills/demo/helper.bnt");
+        assert_eq!(helper.exists(), allowed, "{text}");
+        assert_eq!(text.contains("--allow-agents-write"), !allowed, "{text}");
+        server.shutdown()?;
+    }
+    Ok(())
+}
+
+// 関門: 設定の network = "proxy" は、exec の bash を中継の方式で動かす。非対話では尋ねられないので、
+// 一覧にないドメインは断り、その理由を道具の結果に載せる（設計書 03-02「通信の中継」）。
+#[cfg(target_os = "linux")]
+#[test]
+fn exec_proxy_setting_relays_bash_and_refuses_unlisted_domains_without_asking() -> TestResult {
+    let protocol = Protocol::Chat;
+    let command = r#"printf 'proxy=%s\n' "$HTTPS_PROXY"
+exec 3<>/dev/tcp/127.0.0.1/3128
+printf 'CONNECT blocked.example:443 HTTP/1.1\r\n\r\n' >&3
+head -c 12 <&3; echo"#;
+    let mut server = MockProvider::start(vec![
+        ResponseScript::sse(protocol.response(
+            Some(("proxy", "bash", json!({"command": command}))),
+            "",
+            false,
+        )),
+        ResponseScript::sse(protocol.response(None, "Done", false)),
+    ])?;
+    let f = Fixture::restricted(protocol, &server)?;
+    let config = f.root.join("config/benitoiteh/config.toml");
+    let previous = fs::read_to_string(&config)?;
+    fs::write(
+        &config,
+        format!(
+            "{previous}\n[normal]\nnetwork = \"proxy\"\nallowed_domains = [\"allowed.example\"]\n"
+        ),
+    )?;
+    let output = Running::start(f.command("Use the network").args([
+        "--mode",
+        "normal",
+        "--sandbox",
+        "workspace-write",
+        "--approval",
+        "never",
+        "--json",
+    ]))?
+    .finish()?;
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let (_, records) = f.records()?;
+    let text = records
+        .iter()
+        .find(|record| {
+            record.get("type") == Some(&json!("tool_result"))
+                && record.get("name") == Some(&json!("bash"))
+        })
+        .and_then(|record| record.pointer("/result/text"))
+        .and_then(Value::as_str)
+        .ok_or("bash result")?;
+    for expected in [
+        "proxy=http://127.0.0.1:3128",
+        "HTTP/1.1 403",
+        "benitoiteh blocked network access to blocked.example:443: the domain is not in normal.allowed_domains and was not approved.",
+    ] {
+        assert!(text.contains(expected), "{expected}: {text}");
+    }
+    server.shutdown()?;
+    Ok(())
+}
+
+// 関門: サンドボックスの外で動くコマンドも、主のプロセスの環境（提供者のキー）を /proc から読めない
+// （設計書 03-02「主のプロセスの守り」）。親が主のプロセスであることも確かめ、別の理由で通らないようにする。
+#[cfg(target_os = "linux")]
+#[test]
+fn unsandboxed_bash_cannot_read_the_main_process_environment() -> TestResult {
+    let protocol = Protocol::Chat;
+    let command = r#"printf 'parent=%s\n' "$(cat /proc/$PPID/comm)"
+if tr '\0' '\n' < /proc/$PPID/environ; then printf 'UNEXPECTED-READ\n'; else printf 'denied\n'; fi"#;
+    let mut server = MockProvider::start(vec![
+        ResponseScript::sse(protocol.response(
+            Some(("read-parent", "bash", json!({"command":command}))),
+            "",
+            false,
+        )),
+        ResponseScript::sse(protocol.response(None, "Done", false)),
+    ])?;
+    let f = Fixture::restricted(protocol, &server)?;
+    let output = Running::start(f.command("Read the parent").args([
+        "--mode",
+        "normal",
+        "--sandbox",
+        "danger-full-access",
+        "--approval",
+        "never",
+        "--json",
+    ]))?
+    .finish()?;
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let (_, records) = f.records()?;
+    let text = records
+        .iter()
+        .find(|record| {
+            record.get("type") == Some(&json!("tool_result"))
+                && record.get("name") == Some(&json!("bash"))
+        })
+        .and_then(|record| record.pointer("/result/text"))
+        .and_then(Value::as_str)
+        .ok_or("bash result")?;
+    assert!(text.contains("parent=benitoiteh"), "{text}");
+    assert!(text.contains("denied"), "{text}");
+    assert!(!text.contains(KEY), "{text}");
+    assert!(!text.contains("UNEXPECTED-READ"), "{text}");
+    server.shutdown()?;
+    Ok(())
+}
+
 // 関門: 通常モードの bash も同じ HOME の秘密を読めず、公開の読み取りと
 // プロジェクトへの書き込みは続けられることを、OS と exec の境界で確かめる。
 #[test]
 fn redirected_xdg_keeps_default_home_paths_unreadable_from_normal_bash() -> TestResult {
     let protocol = Protocol::Chat;
-    let command = r#"for path in "$HOME/.config/benitoiteh/config.toml" "$HOME/.local/state/benitoiteh/auth/token.json" "$HOME/.local/state/benitoiteh/sessions/fake/session.jsonl"; do
+    // 資格情報・保管庫・履歴・ブラウザの組から、ディレクトリとファイルの例を一つ以上ずつ選ぶ。
+    // 実装の一覧から写さない（設計書 03-02「読ませないホームの場所」）。
+    let secrets = [
+        ".config/benitoiteh/config.toml",
+        ".local/state/benitoiteh/auth/token.json",
+        ".local/state/benitoiteh/sessions/fake/session.jsonl",
+        ".ssh/id_ed25519",
+        ".kube/config",
+        ".config/gcloud/credentials.db",
+        ".netrc",
+        ".git-credentials",
+        ".npmrc",
+        ".env",
+        ".local/share/keyrings/login.keyring",
+        ".bash_history",
+        ".config/google-chrome/Default/Cookies",
+        ".bashrc",
+        ".profile",
+        ".zshrc",
+        ".config/fish/config.fish",
+    ];
+    let paths = secrets
+        .iter()
+        .map(|relative| format!("\"$HOME/{relative}\""))
+        .collect::<Vec<_>>()
+        .join(" ");
+    let command = format!(
+        r#"for path in {paths}; do
 if cat "$path" 2>/dev/null; then printf 'UNEXPECTED-READ\n'; else printf 'denied\n'; fi
 done
 cat "$HOME/public-control.txt"
-printf 'allowed' > output.txt"#;
+cat "$HOME/.zshenv"
+printf 'allowed' > output.txt"#
+    );
     let mut server = MockProvider::start(vec![
         ResponseScript::sse(protocol.response(
             Some(("read-home", "bash", json!({"command":command}))),
@@ -112,16 +301,14 @@ printf 'allowed' > output.txt"#;
         ResponseScript::sse(protocol.response(None, "Done", false)),
     ])?;
     let f = Fixture::restricted(protocol, &server)?;
-    for relative in [
-        ".config/benitoiteh/config.toml",
-        ".local/state/benitoiteh/auth/token.json",
-        ".local/state/benitoiteh/sessions/fake/session.jsonl",
-    ] {
+    for relative in secrets {
         let path = f.root.join("home").join(relative);
         fs::create_dir_all(path.parent().ok_or("secret parent")?)?;
         fs::write(path, "FAKE-SECRET")?;
     }
     fs::write(f.root.join("home/public-control.txt"), "PUBLIC-CONTROL\n")?;
+    // zsh がどの起動でも読む .zshenv は、PATH を保つために読めるままにする。
+    fs::write(f.root.join("home/.zshenv"), "ZSHENV-CONTROL\n")?;
     let output = Running::start(f.command("Read the files").args([
         "--mode",
         "normal",
@@ -147,8 +334,9 @@ printf 'allowed' > output.txt"#;
         .and_then(|record| record.pointer("/result/text"))
         .and_then(Value::as_str)
         .ok_or("bash result")?;
-    assert_eq!(text.matches("denied").count(), 3, "{text}");
+    assert_eq!(text.matches("denied").count(), secrets.len(), "{text}");
     assert!(text.contains("PUBLIC-CONTROL"), "{text}");
+    assert!(text.contains("ZSHENV-CONTROL"), "{text}");
     assert!(!text.contains("FAKE-SECRET"), "{text}");
     assert!(!text.contains("UNEXPECTED-READ"), "{text}");
     assert_eq!(

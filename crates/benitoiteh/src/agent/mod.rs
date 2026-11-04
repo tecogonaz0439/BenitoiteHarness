@@ -52,6 +52,8 @@ pub struct AgentConfig {
     pub project_parent: Option<std::path::PathBuf>,
     /// Some は非対話で許す集合、None は対話の確認。
     pub allow_effects: Option<BTreeSet<crate::benitoite::Effect>>,
+    /// 非対話で、.agents に書く要求を確認なしに許す（設計書 03-03「.agents への書き込み」）。
+    pub allow_agents_write: bool,
     pub mode: Mode,
     pub destination: Destination,
     pub kind: AdapterKind,
@@ -69,6 +71,7 @@ impl From<ResolvedExec> for AgentConfig {
     fn from(config: ResolvedExec) -> Self {
         Self {
             allow_effects: None,
+            allow_agents_write: false,
             project_parent: None,
             mode: config.mode,
             destination: config.destination,
@@ -100,6 +103,8 @@ pub struct RunControl {
     pub cancel_step: Arc<AtomicBool>,
     pub cancel_run: Arc<AtomicBool>,
     pub steering: Receiver<String>,
+    /// 依頼に添える画像のパス（設計書 05-02「入力の操作」）。
+    pub attachments: Vec<std::path::PathBuf>,
 }
 
 impl RunControl {
@@ -110,6 +115,7 @@ impl RunControl {
             cancel_step,
             cancel_run,
             steering,
+            attachments: Vec::new(),
         }
     }
 }
@@ -154,6 +160,8 @@ pub enum AgentError {
     Worker,
     /// やり直しのゆらぎ用の乱数が得られない。
     Random,
+    /// 添付の画像を読めなかった。依頼は送らない。
+    Attachment(String),
 }
 
 impl fmt::Display for AgentError {
@@ -174,6 +182,7 @@ impl fmt::Display for AgentError {
             Self::ReceiverClosed => f.write_str(text::CHANNEL_CLOSED),
             Self::Worker => f.write_str(text::WORKER_FAILED),
             Self::Random => f.write_str(text::RANDOM_FAILED),
+            Self::Attachment(message) => f.write_str(message),
         }
     }
 }
@@ -219,6 +228,7 @@ impl AgentError {
             Self::ReceiverClosed => "event_receiver",
             Self::Worker => "worker",
             Self::Random => "random",
+            Self::Attachment(_) => "attachment",
         }
     }
 }
@@ -248,6 +258,8 @@ pub struct Agent {
     approver: Box<dyn Approver>,
     approval_policy: ApprovalPolicy,
     session_safety: SessionSafety,
+    /// 起動のときに決めたプロジェクトの信頼。/new と /fork が同じ根で使い回す（設計書 03-01「プロジェクトの信頼」）。
+    project_trust: Option<(std::path::PathBuf, bool)>,
     allowed_commands: BTreeSet<String>,
     session_domains: BTreeSet<String>,
     confirmed_effects: BTreeMap<crate::tools::ConfirmKey, BTreeSet<crate::benitoite::Effect>>,
@@ -260,10 +272,16 @@ pub struct Agent {
     check_limit: BTreeMap<std::path::PathBuf, String>,
     completion_prompted: bool,
     resuming: bool,
+    /// `/model` で送り先を替えた。次の依頼の前に、新しい送り先の開始を記録する。
+    destination_changed: bool,
+    /// `exec --output-schema` の JSON Schema。普通の番の要求にだけ付ける。
+    output_schema: Option<serde_json::Value>,
     resume_compaction: bool,
     resume_has_reasoning: bool,
     resume_results: Vec<Record>,
     environment_changes: Option<String>,
+    /// 評価用の下のディレクトリの指示のファイル。通常モードで有効にしたときだけ持つ。
+    nested_instructions: Option<crate::context::instructions::NestedInstructions>,
 }
 
 // 準備を終えるまで Agent に触れず、記録の追記後は代入だけで反映できる値。
@@ -338,6 +356,24 @@ impl Agent {
         } else {
             tools.plain_read()
         };
+        let tools = if tool_context.multiple_edits {
+            tools.multiple_edits()
+        } else {
+            tools
+        };
+        // 計画の道具はファイルにもプロセスにも触れないので、両モードで加えられる。
+        let tools = if config.agent.plan_tool {
+            tools.with_plan()
+        } else {
+            tools
+        };
+        // 制限モードは指示のファイルを読まないので、下のディレクトリのものも読まない（BH-042）。
+        let nested = config.agent.nested_instructions && config.mode == Mode::Normal;
+        let nested_instructions = nested.then(|| {
+            crate::context::instructions::NestedInstructions::new(
+                environment.project_instructions(),
+            )
+        });
         let skill = tool_context
             .skill
             .as_ref()
@@ -379,6 +415,9 @@ impl Agent {
                     .then_some(config.compaction.into()),
                 after_write_check: (!tool_context.after_write_check).then_some(false),
                 read_line_numbers: (!tool_context.read_line_numbers).then_some(false),
+                multiple_edits: tool_context.multiple_edits.then_some(true),
+                nested_instructions: nested.then_some(true),
+                plan_tool: config.agent.plan_tool.then_some(true),
                 plugins: environment.skills().plugins.clone(),
                 skills: environment.skills().recorded(),
             }))?;
@@ -429,6 +468,7 @@ impl Agent {
             approver: Box::new(NonInteractiveApprover),
             approval_policy,
             session_safety: SessionSafety::default(),
+            project_trust: None,
             allowed_commands: BTreeSet::new(),
             session_domains: BTreeSet::new(),
             confirmed_effects: BTreeMap::new(),
@@ -441,10 +481,13 @@ impl Agent {
             check_limit: BTreeMap::new(),
             completion_prompted: false,
             resuming: false,
+            destination_changed: false,
+            output_schema: None,
             resume_compaction: false,
             resume_has_reasoning: false,
             resume_results: Vec::new(),
             environment_changes: None,
+            nested_instructions,
         };
         if let Some(mut state) = state {
             agent.files = std::mem::take(&mut state.files);
@@ -541,6 +584,9 @@ impl Agent {
         self.added_bytes = 0;
         self.largest_input = None;
         self.repeated = None;
+        if let Some(nested) = &mut self.nested_instructions {
+            nested.reset();
+        }
     }
 
     fn commit_branch(&mut self, branch: &Record, prepared: PreparedPath) -> Result<(), AgentError> {
@@ -608,10 +654,68 @@ impl Agent {
             .take_requests()
     }
 
+    /// 起動のときに決めたプロジェクトの信頼を持たせる。
+    pub fn with_project_trust(mut self, trust: Option<(std::path::PathBuf, bool)>) -> Self {
+        self.project_trust = trust;
+        self
+    }
+
+    /// 対話の確認の受け手をつなぎ、通信の中継にも同じ画面への口を渡す（設計書 03-02「通信の中継」）。
+    pub fn with_interactive_approver(self, approver: crate::approval::InteractiveApprover) -> Self {
+        if let Some(gate) = self
+            .tool_context
+            .shell
+            .as_ref()
+            .and_then(|shell| shell.network.as_ref())
+        {
+            gate.connect_prompts(approver.prompts());
+        }
+        self.with_approver(Box::new(approver))
+    }
+
     /// 準備で決めた方針を保ち、対話の確認の受け手だけを接続する。
     pub fn with_approver(mut self, approver: Box<dyn Approver>) -> Self {
         self.approver = approver;
         self
+    }
+
+    /// 同じ提供者の設定の中で、モデルと推論の度合いを替える（設計書 05-02「`/` で始まるコマンド」）。
+    ///
+    /// 機能の表は提供者の設定ごとなので変えない。前のモデルの推論の内容は、アダプタが応答ごとの
+    /// 送り先で照合して送らない。すべての番の推論を求める提供者では、再開と同じく次の依頼の前に
+    /// 圧縮する。次の依頼の前に、新しい送り先の開始を記録し、再開でもその送り先を使う。
+    pub fn switch_model(&mut self, model: &str, effort: Option<&str>) {
+        if self.config.destination.model != model {
+            self.config.destination.model = model.to_owned();
+            self.adapter.set_model(model);
+            if self.config.capabilities.reasoning_replay
+                == crate::provider::ReasoningReplay::AllTurns
+            {
+                let turns = self
+                    .conversation
+                    .items
+                    .iter()
+                    .filter_map(|item| match item {
+                        Item::AssistantTurn(turn) => Some(turn),
+                        Item::UserMessage(_) | Item::ToolResult(_) => None,
+                    })
+                    .collect::<Vec<_>>();
+                if !turns.is_empty() {
+                    self.resume_compaction = true;
+                    self.resume_has_reasoning |=
+                        turns.iter().any(|turn| reasoning::has_reasoning(turn));
+                }
+            }
+        }
+        if let Some(effort) = effort {
+            self.config.effort = effort.to_owned();
+        }
+        self.destination_changed = self.started;
+    }
+
+    /// 今の推論の度合い。
+    pub fn effort(&self) -> &str {
+        &self.config.effort
     }
 
     /// 履歴の保存先を分けるための、実のプロジェクトのディレクトリ。
@@ -650,7 +754,8 @@ impl Agent {
         let started = Instant::now();
         let mut summary = Summary::default();
         self.flush_resume_results()?;
-        if !self.started || self.resuming {
+        if !self.started || self.resuming || self.destination_changed {
+            self.destination_changed = false;
             let host = provider_host(&self.config.destination)?;
             self.emit(
                 &events,
@@ -747,6 +852,17 @@ impl Agent {
         self.completion_prompted = false;
         self.effects_denied = 0;
         let cancelled = &*control.cancel_step;
+        // 添付は、記録と時点を残す前に read と同じ規則で読む。一つでも読めなければ依頼を送らない。
+        // 理由: 利用者が添えたつもりの画像を黙って欠いて送らない（設計書 05-02「入力の操作」）。
+        let mut images = Vec::new();
+        for path in &control.attachments {
+            match self.tool_context.attach_image(path, cancelled) {
+                Ok(image) => images.push(image),
+                Err(reason) => {
+                    return Err(AgentError::Attachment(text::attach_failed(path, &reason)));
+                }
+            }
+        }
         self.resuming = false;
         if self.resume_compaction {
             let report = self.perform_compaction(
@@ -777,24 +893,9 @@ impl Agent {
                 recorder.capture(crate::rewind::CheckpointReason::Request, None, cancelled)?;
         }
         self.checkpoint_notices(events)?;
-        let mut parts = Vec::new();
-        if !self.started {
-            parts.push(UserPart {
-                kind: UserPartKind::Environment,
-                text: self.environment.render(),
-            });
-        }
-        if let Some(changes) = self.environment_changes.take() {
-            parts.push(UserPart {
-                kind: UserPartKind::Environment,
-                text: changes,
-            });
-        }
-        parts.push(UserPart {
-            kind: UserPartKind::Request,
-            text: request,
-        });
-        let message = UserMessage { parts };
+        let changes = self.environment_changes.take();
+        let mut message = self.request_message(changes, request);
+        message.images = images;
         self.append_node(Record::User {
             node: 0,
             kind: UserKind::Request,
@@ -804,6 +905,32 @@ impl Agent {
         self.started = true;
         self.repeated = None;
         self.run_inner(control, events, summary)
+    }
+
+    /// 依頼の利用者の発言。最初の依頼の前に環境を、変わったときに変わった点を置く。
+    /// `debug prompt-input` も同じ形を使う（設計書 05-01「debug prompt-input」）。
+    fn request_message(&self, changes: Option<String>, request: String) -> UserMessage {
+        let mut parts = Vec::new();
+        if !self.started {
+            parts.push(UserPart {
+                kind: UserPartKind::Environment,
+                text: self.environment.render(),
+            });
+        }
+        if let Some(changes) = changes {
+            parts.push(UserPart {
+                kind: UserPartKind::Environment,
+                text: changes,
+            });
+        }
+        parts.push(UserPart {
+            kind: UserPartKind::Request,
+            text: request,
+        });
+        UserMessage {
+            parts,
+            images: Vec::new(),
+        }
     }
 
     fn run_inner(
@@ -825,6 +952,7 @@ impl Agent {
             }
             if let Some(changes) = self.environment_changes.take() {
                 let message = UserMessage {
+                    images: Vec::new(),
                     parts: vec![UserPart {
                         kind: UserPartKind::Environment,
                         text: changes,
@@ -839,7 +967,12 @@ impl Agent {
             }
             // 道具の呼び出しは前の番で全て結果と対応済みなので、実行途中では圧縮しない
             // （設計書 01-04「圧縮」）。一つの番の前では一度だけ判定する。
-            if self.threshold_reached() {
+            // 刈り込みで閾値を下回れば、要約の要求を送らない（設計書 01-04「道具の結果の刈り込み」）。
+            if self.threshold_reached()
+                && !(self.config.compaction.prune_tool_results
+                    && self.prune_tool_results(events)?
+                    && !self.threshold_reached())
+            {
                 let report = self.perform_compaction(
                     CompactOptions::for_reason(CompactionReason::Threshold),
                     cancelled,
@@ -863,6 +996,10 @@ impl Agent {
             // （設計書 01-01「やり直し」）。
             let received = match self.request_and_receive(cancelled, events) {
                 Err(AgentError::Provider(ProviderError::ContextOverflow)) => {
+                    // 超過では刈り込んだ後も要約する。刈り込みは要約に渡す会話を減らす。
+                    if self.config.compaction.prune_tool_results {
+                        self.prune_tool_results(events)?;
+                    }
                     let report = self.perform_compaction(
                         CompactOptions::for_reason(CompactionReason::Overflow),
                         cancelled,
@@ -993,6 +1130,7 @@ impl Agent {
                 && summary.turns < self.config.limits.max_turns
             {
                 let message = UserMessage {
+                    images: Vec::new(),
                     parts: vec![UserPart {
                         kind: UserPartKind::Environment,
                         text: format!(
@@ -1032,7 +1170,10 @@ impl Agent {
         if parts.is_empty() {
             return Ok(false);
         }
-        let message = UserMessage { parts };
+        let message = UserMessage {
+            parts,
+            images: Vec::new(),
+        };
         self.append_node(Record::User {
             node: 0,
             kind: UserKind::Steer,

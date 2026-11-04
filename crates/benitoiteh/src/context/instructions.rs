@@ -30,6 +30,17 @@ pub struct InstructionFile {
     pub omitted_bytes: u64,
 }
 
+impl InstructionFile {
+    /// 環境の情報と道具の結果に入れる形。中身の `<` などを文字参照にして、囲みを閉じさせない。
+    pub fn render(&self) -> String {
+        format!(
+            "<project_instructions path=\"{}\">{}</project_instructions>",
+            super::environment::escape_attribute(&self.path.to_string_lossy()),
+            super::environment::escape(&self.contents),
+        )
+    }
+}
+
 /// 環境に入れる指示と、画面・記録に残す除外理由。
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct ProjectInstructions {
@@ -109,40 +120,115 @@ pub fn collect(
     directories.reverse();
     for directory in directories {
         let relative = directory.strip_prefix(scope).unwrap_or(Path::new(""));
-        let agents = relative.join("AGENTS.md");
-        let candidate = match ScopeRelPath::new(&agents).and_then(|rel| root.metadata(&rel)) {
-            Ok(_) => agents,
-            Err(SafeFsError::NotFound(_)) => relative.join("CLAUDE.md"),
-            Err(error) => {
-                collector.skip(scope.join(agents), error);
-                continue;
-            }
-        };
-        let path = scope.join(&candidate);
-        let result = (|| {
-            let rel = ScopeRelPath::new(candidate)?;
-            // 不在は診断しない。壊れたリンクは存在する候補として診断する。
-            match root.metadata(&rel) {
-                Err(SafeFsError::NotFound(_)) => return Ok(None),
-                other => {
-                    other?;
-                }
-            }
-            let file = root.open_read(&rel)?;
-            let real = safe_fs::resolved_path(&file)?;
-            if let Some(reason) = exclude.reason(&real) {
-                collector.skip(path.clone(), reason);
-                return Ok(None);
-            }
-            collector.read(&file, true).map(Some)
-        })();
-        match result {
-            Ok(Some(value)) => collector.finish(path, Ok(value)),
-            Ok(None) => {}
-            Err(error) => collector.skip(path, error),
-        }
+        read_candidate(&mut collector, &root, scope, relative, exclude);
     }
     collector.result
+}
+
+/// 一つのディレクトリの `AGENTS.md`、ないときの `CLAUDE.md` を、範囲の根から相対に読む。
+fn read_candidate(
+    collector: &mut Collector,
+    root: &ScopeRoot,
+    scope: &Path,
+    relative: &Path,
+    exclude: &ExcludeRules,
+) {
+    let agents = relative.join("AGENTS.md");
+    let candidate = match ScopeRelPath::new(&agents).and_then(|rel| root.metadata(&rel)) {
+        Ok(_) => agents,
+        Err(SafeFsError::NotFound(_)) => relative.join("CLAUDE.md"),
+        Err(error) => {
+            collector.skip(scope.join(agents), error);
+            return;
+        }
+    };
+    let path = scope.join(&candidate);
+    let result = (|| {
+        let rel = ScopeRelPath::new(candidate)?;
+        // 不在は診断しない。壊れたリンクは存在する候補として診断する。
+        match root.metadata(&rel) {
+            Err(SafeFsError::NotFound(_)) => return Ok(None),
+            other => {
+                other?;
+            }
+        }
+        let file = root.open_read(&rel)?;
+        let real = safe_fs::resolved_path(&file)?;
+        if let Some(reason) = exclude.reason(&real) {
+            collector.skip(path.clone(), reason);
+            return Ok(None);
+        }
+        collector.read(&file, true).map(Some)
+    })();
+    match result {
+        Ok(Some(value)) => collector.finish(path, Ok(value)),
+        Ok(None) => {}
+        Err(error) => collector.skip(path, error),
+    }
+}
+
+/// プロジェクトのディレクトリより下の指示のファイルを、道具が触れたディレクトリごとに一度だけ読む
+/// （設計書 01-04「下のディレクトリの指示のファイル」）。起動のときと同じ条件で読む。
+#[derive(Default)]
+pub struct NestedInstructions {
+    /// 起動のときに読んだファイル。リンクで同じファイルを二度入れない。
+    startup: HashSet<(u64, u64)>,
+    /// 見たディレクトリ。プロジェクトのディレクトリからの相対のパス。
+    visited: HashSet<PathBuf>,
+    collector: Collector,
+}
+
+impl NestedInstructions {
+    /// 起動のときに環境へ入れた指示のファイルを、もう読んだものとして始める。
+    pub fn new(startup: &[InstructionFile]) -> Self {
+        let mut nested = Self {
+            startup: startup
+                .iter()
+                .filter_map(|file| fs::metadata(&file.path).ok())
+                .map(|metadata| (metadata.dev(), metadata.ino()))
+                .collect(),
+            ..Self::default()
+        };
+        nested.reset();
+        nested
+    }
+
+    /// 会話を置き換えたときに、見たディレクトリと合計の量を忘れる。理由: 要約や枝の移動で、
+    /// 前に添えた指示が会話から消えうる。
+    pub fn reset(&mut self) {
+        self.visited.clear();
+        self.collector = Collector {
+            identities: self.startup.clone(),
+            ..Collector::default()
+        };
+    }
+
+    /// `directory`（プロジェクトの根からの相対のディレクトリ）と、プロジェクトの根より下の
+    /// その上の各ディレクトリのうち、まだ見ていないものを、根の側から読む。
+    pub fn visit(
+        &mut self,
+        root: &ScopeRoot,
+        directory: &Path,
+        exclude: &ExcludeRules,
+    ) -> ProjectInstructions {
+        let mut directories = directory
+            .ancestors()
+            .filter(|path| !path.as_os_str().is_empty())
+            .collect::<Vec<_>>();
+        directories.reverse();
+        for relative in directories {
+            if self.visited.insert(relative.to_path_buf()) {
+                read_candidate(
+                    &mut self.collector,
+                    root,
+                    root.real_path(),
+                    relative,
+                    exclude,
+                );
+            }
+        }
+        std::mem::take(&mut self.collector.result)
+    }
 }
 
 pub(super) fn search_root<'a>(project: &'a Path, home: &Path) -> &'a Path {

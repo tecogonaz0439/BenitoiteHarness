@@ -6,6 +6,8 @@ pub const HELP: &str = "Usage:
     benitoiteh exec [options] <request>
     benitoiteh doctor [--project <dir>] [--json]
     benitoiteh sessions [--project <dir>] [--json]
+    benitoiteh sessions export <ID>
+    benitoiteh debug prompt-input [options] <request>
     benitoiteh login chatgpt
     benitoiteh logout chatgpt
     benitoiteh --help | --version | --licenses
@@ -29,7 +31,11 @@ Options (interactive and exec):
 Options (exec only):
     --json
     --output-last-message <file>
+    --ephemeral
+    --output-schema <file>
     --allow <effects>
+    --allow-agents-write
+    --trust-project
     --project-parent <dir>
 
 Use - as the exec request to read standard input.
@@ -39,6 +45,12 @@ exec only supports --approval never.
 
 /// 使い方の誤りに共通の案内。
 pub const INVALID_ARGUMENTS: &str = "benitoiteh: invalid arguments; use --help for usage";
+
+/// 主のプロセスをダンプできない形にできなかったときの文言。
+#[cfg(target_os = "linux")]
+pub fn not_dumpable(error: &dyn std::fmt::Display) -> String {
+    format!("benitoiteh: could not make the process non-dumpable: {error}")
+}
 
 /// 重複した指定を示す。
 pub fn duplicate_option(option: &str) -> String {
@@ -101,6 +113,46 @@ pub fn agent_error(error: &crate::agent::AgentError) -> String {
 }
 
 /// 読んだプロジェクト設定の場所を示す。
+/// 信頼しないプロジェクトで読まなかったものと、信頼する方法。
+pub fn project_untrusted(
+    root: &std::path::Path,
+    skills: bool,
+    plugins: bool,
+    prompts: bool,
+    model: bool,
+) -> String {
+    let parts = [
+        (skills, "project skills"),
+        (plugins, "project plugins"),
+        (prompts, "project prompt templates"),
+        (model, "the project model setting"),
+    ]
+    .into_iter()
+    .filter_map(|(present, name)| present.then_some(name))
+    .collect::<Vec<_>>()
+    .join(", ");
+    format!(
+        "Not loaded because {} is not trusted: {parts}. Start benitoiteh interactively in it to choose whether to trust it, or pass --trust-project to exec for one run.",
+        root.display()
+    )
+}
+
+/// 保存した信頼の決定を読めなかった。
+pub fn trust_unreadable(root: &std::path::Path, error: &std::io::Error) -> String {
+    format!(
+        "Could not read the saved trust decision for {}: {error}",
+        root.display()
+    )
+}
+
+/// 信頼の決定を保存できなかった。この起動の答えは使う。
+pub fn trust_unsaved(root: &std::path::Path, error: &std::io::Error) -> String {
+    format!(
+        "Could not save the trust decision for {}; it applies to this session only: {error}",
+        root.display()
+    )
+}
+
 pub fn project_loaded(root: &std::path::Path) -> String {
     format!(
         "Loaded project configuration: {}",
@@ -175,3 +227,12 @@ pub const CHATGPT_STORAGE: &str =
     "Could not read saved ChatGPT authorization securely. Run benitoiteh login chatgpt.";
 
 pub const CHATGPT_DESTINATION: &str = "ChatGPT authentication requires https://api.openai.com/v1.";
+
+/// 出力の型のファイルを使えない（設計書 05-01「exec の出力」）。
+pub fn invalid_output_schema(path: &std::path::Path, reason: &str) -> String {
+    format!(
+        "benitoiteh: cannot use {} as --output-schema: {reason}",
+        path.display()
+    )
+}
+pub const SCHEMA_NOT_OBJECT: &str = "the file must contain a JSON object of at most 1 MiB";

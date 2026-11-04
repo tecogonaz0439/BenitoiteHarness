@@ -56,8 +56,13 @@ pub fn effects_summary(
     } else {
         "Run"
     };
+    let agents = if facts.agents_write {
+        ", and let it write .agents/ (agent skills and settings) this time"
+    } else {
+        ""
+    };
     format!(
-        "{prefix} {} with effects: {}",
+        "{prefix} {} with effects: {}{agents}",
         target(kind, facts, project),
         effects(facts)
     )
@@ -79,6 +84,7 @@ pub fn effects_denied(
     )
 }
 
+pub const AGENTS_WRITE_DENIED: &str = "Writing under .agents/ (agent skills and settings) needs confirmation, and this non-interactive run does not allow it. Rerun exec with --allow-agents-write, or stop and report.";
 pub const POLICY_TEST_EFFECTS_DENIED: &str = "Tool call was denied by the never approval policy: running Benitoite tests requires confirming their effects. Stop and report.";
 pub fn allow_denied(
     kind: super::ApprovalKind,

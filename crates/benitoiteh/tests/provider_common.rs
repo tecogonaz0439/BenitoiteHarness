@@ -115,24 +115,51 @@ fn tool_spec() -> ToolSpec {
                 kind: ArgumentType::String,
                 required: true,
                 description: "Path".into(),
+                items: Vec::new(),
             },
             ArgumentSpec {
                 name: "limit".into(),
                 kind: ArgumentType::Integer,
                 required: false,
                 description: "Limit".into(),
+                items: Vec::new(),
             },
             ArgumentSpec {
                 name: "enabled".into(),
                 kind: ArgumentType::Boolean,
                 required: false,
                 description: "Enabled".into(),
+                items: Vec::new(),
             },
             ArgumentSpec {
                 name: "names".into(),
                 kind: ArgumentType::StringArray,
                 required: false,
                 description: "Names".into(),
+                items: Vec::new(),
+            },
+            // 要素の欄にも、各提供者の strict の規則が掛かることを確かめる。
+            ArgumentSpec {
+                name: "changes".into(),
+                kind: ArgumentType::ObjectArray,
+                required: false,
+                description: "Changes".into(),
+                items: vec![
+                    ArgumentSpec {
+                        name: "from".into(),
+                        kind: ArgumentType::String,
+                        required: true,
+                        description: "From".into(),
+                        items: Vec::new(),
+                    },
+                    ArgumentSpec {
+                        name: "all".into(),
+                        kind: ArgumentType::Boolean,
+                        required: false,
+                        description: "All".into(),
+                        items: Vec::new(),
+                    },
+                ],
             },
         ],
     }
@@ -149,7 +176,15 @@ fn tool_schemas_match_each_provider_contract() {
                     "path": {"type": "string", "description": "Path"},
                     "limit": {"type": "integer", "description": "Limit"},
                     "enabled": {"type": "boolean", "description": "Enabled"},
-                    "names": {"type": "array", "items": {"type": "string"}, "description": "Names"}
+                    "names": {"type": "array", "items": {"type": "string"}, "description": "Names"},
+                    "changes": {"type": "array", "description": "Changes", "items": {
+                        "type": "object",
+                        "properties": {
+                            "from": {"type": "string", "description": "From"},
+                            "all": {"type": "boolean", "description": "All"}
+                        },
+                        "required": ["from"]
+                    }}
                 },
                 "required": ["path"]
             }),
@@ -162,7 +197,16 @@ fn tool_schemas_match_each_provider_contract() {
                     "path": {"type": "string", "description": "Path"},
                     "limit": {"type": "integer", "description": "Limit"},
                     "enabled": {"type": "boolean", "description": "Enabled"},
-                    "names": {"type": "array", "items": {"type": "string"}, "description": "Names"}
+                    "names": {"type": "array", "items": {"type": "string"}, "description": "Names"},
+                    "changes": {"type": "array", "description": "Changes", "items": {
+                        "type": "object",
+                        "properties": {
+                            "from": {"type": "string", "description": "From"},
+                            "all": {"type": "boolean", "description": "All"}
+                        },
+                        "required": ["from"],
+                        "additionalProperties": false
+                    }}
                 },
                 "required": ["path"],
                 "additionalProperties": false
@@ -176,9 +220,18 @@ fn tool_schemas_match_each_provider_contract() {
                     "path": {"type": "string", "description": "Path"},
                     "limit": {"type": ["integer", "null"], "description": "Limit"},
                     "enabled": {"type": ["boolean", "null"], "description": "Enabled"},
-                    "names": {"type": ["array", "null"], "items": {"type": "string"}, "description": "Names"}
+                    "names": {"type": ["array", "null"], "items": {"type": "string"}, "description": "Names"},
+                    "changes": {"type": ["array", "null"], "description": "Changes", "items": {
+                        "type": "object",
+                        "properties": {
+                            "from": {"type": "string", "description": "From"},
+                            "all": {"type": ["boolean", "null"], "description": "All"}
+                        },
+                        "required": ["from", "all"],
+                        "additionalProperties": false
+                    }}
                 },
-                "required": ["path", "limit", "enabled", "names"],
+                "required": ["path", "limit", "enabled", "names", "changes"],
                 "additionalProperties": false
             }),
         ),
@@ -203,6 +256,10 @@ fn openai_null_normalization_only_omits_known_optional_arguments() {
         (
             json!({"path": "x", "limit": null, "enabled": null, "names": null}),
             json!({"path": "x"}),
+        ),
+        (
+            json!({"path": "x", "changes": [{"from": "a", "all": null}, {"from": null, "all": true}, null]}),
+            json!({"path": "x", "changes": [{"from": "a"}, {"from": null, "all": true}, null]}),
         ),
         (
             json!({"path": null, "unknown": null, "limit": 0, "enabled": false, "names": []}),
@@ -289,6 +346,7 @@ fn assistant_turn_json_preserves_order_ids_opaque_data_and_unreported_usage()
     let conversation = Conversation {
         items: vec![
             Item::UserMessage(UserMessage {
+                images: Vec::new(),
                 parts: vec![
                     UserPart {
                         kind: UserPartKind::Environment,

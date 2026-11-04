@@ -86,6 +86,7 @@ impl Fixture {
             agent: Default::default(),
             project_parent: None,
             allow_effects: None,
+            allow_agents_write: false,
             mode: Mode::Normal,
             destination: Destination {
                 provider: "mock".into(),
@@ -197,6 +198,7 @@ impl Fixture {
             let mut env = benitoiteh::config::child_environment(
                 [("PATH".into(), "/bin:/usr/bin".into())],
                 &Default::default(),
+                &Default::default(),
                 session.temporary_dir(),
                 sandboxed.then_some((sandbox.name(), false)),
             );
@@ -215,6 +217,7 @@ impl Fixture {
                 sandbox,
                 sandboxed,
                 writable_roots,
+                network: None,
             });
         }
         let environment = Environment::capture(

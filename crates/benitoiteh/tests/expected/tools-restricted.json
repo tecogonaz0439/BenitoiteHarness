@@ -172,6 +172,10 @@
         "timeout": {
           "description": "Time limit in seconds (1-600; default 120).",
           "type": "integer"
+        },
+        "write_agents": {
+          "description": "Set to true only when this run must write under .agents/ (agent skills and settings). The user confirms each such run; otherwise .agents/ stays read-only.",
+          "type": "boolean"
         }
       },
       "required": [
@@ -191,6 +195,10 @@
             "type": "string"
           },
           "type": "array"
+        },
+        "write_agents": {
+          "description": "Set to true only when this run must write under .agents/ (agent skills and settings). The user confirms each such run; otherwise .agents/ stays read-only.",
+          "type": "boolean"
         }
       },
       "required": [
@@ -218,6 +226,10 @@
         "stdin": {
           "description": "Text written to the script's standard input; empty when omitted.",
           "type": "string"
+        },
+        "write_agents": {
+          "description": "Set to true only when this run must write under .agents/ (agent skills and settings). The user confirms each such run; otherwise .agents/ stays read-only.",
+          "type": "boolean"
         }
       },
       "required": [

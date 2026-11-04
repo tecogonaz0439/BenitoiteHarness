@@ -122,6 +122,12 @@ impl WriteTarget {
             let name = part.as_os_str().as_encoded_bytes();
             name.eq_ignore_ascii_case(b".git") || name.eq_ignore_ascii_case(b".benitoiteh")
         });
+        // .agents は、どちらのモードでも書くたびに利用者の確認を受ける（設計書 01-03「書く道具のパスの規則」）。
+        let agents = self.real_path.components().any(|part| {
+            part.as_os_str()
+                .as_encoded_bytes()
+                .eq_ignore_ascii_case(crate::sandbox::AGENTS.as_bytes())
+        });
         if context.mode == Mode::Restricted {
             if !within {
                 return Err(ToolError::OutsideScope);
@@ -132,10 +138,17 @@ impl WriteTarget {
             if self.real_path.extension().is_none_or(|ext| ext != "bnt") {
                 return Err(ToolError::RestrictedExtension);
             }
-        } else if (!within || protected) && approval == ApprovalStatus::Unapproved {
+        }
+        let needs = if context.mode == Mode::Restricted {
+            agents
+        } else {
+            !within || protected || agents
+        };
+        if needs && approval == ApprovalStatus::Unapproved {
             return Ok(Some(ToolOutput::needs_approval(ApprovalRequest {
                 kind: ApprovalKind::WriteScope,
                 facts: ApprovalFacts {
+                    agents_write: agents && within && !protected,
                     path: Some(self.real_path.clone()),
                     cwd: Some(context.project.real_path().to_owned()),
                     sandbox_policy: Some(
@@ -149,7 +162,7 @@ impl WriteTarget {
                     ..ApprovalFacts::default()
                 },
                 justification: None,
-                summary: text::write_approval(&self.real_path, protected),
+                summary: text::write_approval(&self.real_path, protected, agents),
             })));
         }
         Ok(None)

@@ -443,7 +443,7 @@ fn dev_null_accepts_writes_without_allowing_other_outside_files() -> TestResult 
 #[test]
 fn root_protection_blocks_creation_writing_removal_and_replacement() -> TestResult {
     let f = Fixture::new()?;
-    for name in [".git", ".benitoiteh"] {
+    for name in [".git", ".benitoiteh", ".agents"] {
         let target = f.writable.join(name);
         for operation in ["write", "mkdir", "remove-dir"] {
             f.run(f.config(), &[OsStr::new(operation), target.as_os_str()], 11)?;
@@ -527,6 +527,65 @@ fn gitdir_targets_and_existing_nested_metadata_are_read_only() -> TestResult {
     Ok(())
 }
 
+// 作成時の関門: すでにある入れ子の守る場所を、祖先の名前の付け替えでその位置から外し、
+// 空いた位置に新しい .git を作らせない（設計書 03-02「Linux のファイルシステムの見え方」）。
+#[test]
+fn existing_nested_metadata_ancestors_cannot_be_renamed_away() -> TestResult {
+    let f = Fixture::new()?;
+    let other = f.writable.join("other");
+    fs::create_dir(&other)?;
+    // 根の .git が指す、書ける場所の中の gitdir の祖先も同じに留める。
+    fs::create_dir_all(f.writable.join("meta/repo"))?;
+    fs::write(f.writable.join(".git"), b"gitdir: meta/repo\n")?;
+    for (name, ancestor) in [
+        ("a/.git", "a"),
+        ("a/b/.git", "a"),
+        ("a/b/.git", "a/b"),
+        ("meta/repo", "meta"),
+    ] {
+        let target = f.writable.join(name);
+        fs::create_dir_all(&target)?;
+        let data = target.join("config");
+        fs::write(&data, b"protected")?;
+        let ancestor = f.writable.join(ancestor);
+        // 同じ親の中の付け替えと、ディレクトリをまたぐ付け替えの両方を試す。終了状態 11 は
+        // ほかの誤りでも返るので、留めたマウントによる拒否だと確かめる。祖先そのものがマウントの
+        // 場所なら EBUSY、移す先の親が別のマウントにあれば EXDEV になる（rename(2)）。
+        // Landlock の Refer の拒否も EXDEV だが、留めのない版ではこの付け替えが通った。
+        for moved in [f.writable.join("moved"), other.join("moved")] {
+            let args = [
+                OsStr::new("rename"),
+                ancestor.as_os_str(),
+                moved.as_os_str(),
+            ];
+            let output = f.command(f.config(), &args)?.output()?;
+            check(&output, 11, &format!("args={args:?}"));
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            assert!(
+                stderr.contains("ResourceBusy") || stderr.contains("CrossesDevices"),
+                "args={args:?} stderr={stderr}"
+            );
+            assert!(!moved.exists());
+            assert_eq!(fs::read(&data)?, b"protected");
+        }
+        // 留めを外してから付け替える道筋も塞がれている。
+        f.run(
+            f.config(),
+            &[OsStr::new("umount"), ancestor.as_os_str()],
+            10,
+        )?;
+        // 祖先の中には、これまでどおり書ける。
+        let sibling = ancestor.join("sibling");
+        f.run(f.config(), &[OsStr::new("write"), sibling.as_os_str()], 0)?;
+        assert_eq!(fs::read(&sibling)?, b"sandbox-probe\n");
+        fs::remove_dir_all(
+            f.writable
+                .join(name.split('/').next().ok_or("Missing name")?),
+        )?;
+    }
+    Ok(())
+}
+
 // 作成時の関門: 保証の範囲を広く見せない。未作成の入れ子と深さ 4 以上は範囲外（設計書 03-02）。
 #[test]
 fn uncreated_nested_and_deep_metadata_and_uncreated_uppercase_root_are_outside_guarantee()
@@ -583,6 +642,81 @@ fn protected_and_denied_mounts_cannot_be_removed_or_overmounted() -> TestResult 
         assert_eq!(fs::read(&file)?, b"secret-file");
         assert!(!f.writable.join(".git").exists());
         assert!(!f.writable.join(".benitoiteh").exists());
+    }
+    Ok(())
+}
+
+// 作成時の関門: 中継の方式では、名前空間の中の子は外へ直接つなげず、benitoiteh の中継を通して
+// だけ、許したドメインへ届く。許していないドメインは、理由つきの 403 と断った記録になる
+// （設計書 03-02「通信の中継」）。
+#[test]
+fn proxied_network_reaches_allowed_domains_only_through_the_relay() -> TestResult {
+    use benitoiteh::sandbox::proxy::{LINUX_PORT, NetworkGate, ProxyRun};
+    use std::sync::Arc;
+    let f = Fixture::new()?;
+    let upstream = TcpListener::bind("127.0.0.1:0")?;
+    let port = upstream.local_addr()?.port();
+    let server = std::thread::spawn(move || -> io::Result<Vec<u8>> {
+        let (mut stream, _) = upstream.accept()?;
+        stream.set_read_timeout(Some(std::time::Duration::from_secs(10)))?;
+        let mut head = Vec::new();
+        let mut chunk = [0_u8; 1024];
+        while !head.windows(4).any(|window| window == b"\r\n\r\n") {
+            let count = io::Read::read(&mut stream, &mut chunk)?;
+            if count == 0 {
+                break;
+            }
+            head.extend_from_slice(chunk.get(..count).unwrap_or_default());
+        }
+        stream.write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 5\r\n\r\nhello")?;
+        Ok(head)
+    });
+    let gate = Arc::new(
+        NetworkGate::new(["example.com".to_owned()].into_iter().collect(), false).with_upstream(
+            Arc::new(move |_, _| Ok(vec![std::net::SocketAddr::from(([127, 0, 0, 1], port))])),
+            |_| true,
+        ),
+    );
+    let run = ProxyRun::new(gate, "probe".into(), f.root.clone());
+    let mut config = f.config();
+    config.network_proxy = true;
+    let relay = LINUX_PORT.to_string();
+    for (request, expected) in [
+        ("GET http://example.com/ HTTP/1.1\r\n\r\n", "hello"),
+        ("GET http://other.example/ HTTP/1.1\r\n\r\n", "HTTP/1.1 403"),
+    ] {
+        let output = f
+            .command(
+                config.clone(),
+                &[
+                    OsStr::new("http-exchange"),
+                    OsStr::new(&relay),
+                    OsStr::new(request),
+                ],
+            )?
+            .with_proxy(Arc::clone(&run))
+            .output()?;
+        check(&output, 0, request);
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        assert!(stdout.contains(expected), "{request}: {stdout}");
+    }
+    let head = server.join().map_err(|_| "upstream")??;
+    assert!(String::from_utf8(head)?.starts_with("GET / HTTP/1.1\r\nHost: example.com\r\n"));
+    assert_eq!(run.denials().len(), 1, "{:?}", run.denials());
+    assert!(
+        run.denials()
+            .iter()
+            .all(|line| line.contains("other.example:80"))
+    );
+    // 外の手元のサーバにも、外のアドレスにも、名前空間の中から直接はつなげない。
+    for address in [format!("127.0.0.1:{port}"), "93.184.216.34:443".into()] {
+        let output = f
+            .command(
+                config.clone(),
+                &[OsStr::new("tcp-connect"), OsStr::new(&address)],
+            )?
+            .output()?;
+        assert_ne!(output.status.code(), Some(0), "{address}");
     }
     Ok(())
 }
@@ -1571,7 +1705,17 @@ fn stale_placeholder_records_are_reaped_without_removing_user_data_or_locked_pat
     }
     drop(prepared);
     drop(lock);
-    drop(f.command(f.config(), &[OsStr::new("socketpair")])?);
+    // ほかのテストの fork が継承した錠は exec まで残るので、回収されるまで短時間だけ準備を
+    // やり直す。錠を放さない退行は 2 秒で失敗にする
+    // （docs/2026-11-02/03-other-test-files.md「直し方と確かめ」）。
+    let started = std::time::Instant::now();
+    loop {
+        drop(f.command(f.config(), &[OsStr::new("socketpair")])?);
+        if !locked.exists() || started.elapsed() >= std::time::Duration::from_secs(2) {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
     assert!(!locked.exists());
     assert!(!locked_record.exists());
     Ok(())

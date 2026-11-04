@@ -2,7 +2,7 @@
 
 use std::collections::{BTreeSet, HashSet, VecDeque};
 
-use super::{Conversation, Item, ToolImage, ToolResult, text};
+use super::{Conversation, Item, ToolImage, ToolResult, UserMessage, text};
 
 const MAX_BYTES: u64 = 12_582_912;
 const TARGET_BYTES: u64 = 6_291_456;
@@ -33,13 +33,13 @@ pub(crate) fn plan(conversation: &Conversation, enabled: bool) -> ImagePlan {
     let mut bytes = 0_u64;
     if enabled {
         for (item_index, item) in conversation.items.iter().enumerate() {
-            let Item::ToolResult(result) = item else {
-                continue;
+            // 利用者の添付と道具の結果の画像を、会話の順に同じ上限で数える。
+            let images = match item {
+                Item::ToolResult(result) if !result.is_error => &result.images,
+                Item::UserMessage(message) => &message.images,
+                Item::ToolResult(_) | Item::AssistantTurn(_) => continue,
             };
-            if result.is_error {
-                continue;
-            }
-            for (image_index, image) in result.images.iter().enumerate() {
+            for (image_index, image) in images.iter().enumerate() {
                 if image.data.is_none() {
                     continue;
                 }
@@ -71,8 +71,19 @@ pub(crate) fn remove_images(
     let results = results.map(|ids| ids.iter().map(String::as_str).collect::<HashSet<_>>());
     let mut removed = Vec::new();
     for item in &mut conversation.items {
-        let Item::ToolResult(result) = item else {
-            continue;
+        let result = match item {
+            Item::ToolResult(result) => result,
+            // 利用者の添付は、すべてを外すときだけ外す。記録の印は道具の結果の ID だけを持つので、
+            // 再開すると添付は戻る（設計書 02-01「画像の受け渡し」）。
+            Item::UserMessage(message) if results.is_none() && !message.images.is_empty() => {
+                message.images.clear();
+                message.parts.push(super::UserPart {
+                    kind: super::UserPartKind::Request,
+                    text: text::IMAGE_REMOVED.to_owned(),
+                });
+                continue;
+            }
+            Item::UserMessage(_) | Item::AssistantTurn(_) => continue,
         };
         if result.images.is_empty()
             || results
@@ -122,6 +133,35 @@ pub(super) fn prepare<'a>(
         }
     }
     (body, images)
+}
+
+/// 利用者の発言の添付を、送る画像と、送らなかった断りの文に分ける。
+pub(super) fn prepare_user<'a>(
+    message: &'a UserMessage,
+    enabled: bool,
+    plan: &ImagePlan,
+    item: usize,
+) -> (Vec<&'a ToolImage>, Vec<&'static str>) {
+    let mut images = Vec::new();
+    let mut notices = Vec::new();
+    for (index, image) in message.images.iter().enumerate() {
+        let notice = if !enabled {
+            Some(text::IMAGE_UNSUPPORTED)
+        } else if image.data.is_none() {
+            Some(text::IMAGE_UNAVAILABLE)
+        } else if plan.dropped(item, index) {
+            Some(text::IMAGE_REMOVED)
+        } else {
+            images.push(image);
+            None
+        };
+        if let Some(notice) = notice
+            && !notices.contains(&notice)
+        {
+            notices.push(notice);
+        }
+    }
+    (images, notices)
 }
 
 pub(super) fn data_url(image: &ToolImage) -> String {
@@ -275,5 +315,41 @@ mod tests {
         ] {
             assert_eq!(super::encode(input.as_bytes()), expected);
         }
+    }
+
+    // 作成時の関門: 利用者の添付は道具の結果と同じ上限で古い順に数え、すべてを外すときだけ外して
+    // 断りの文を残す（設計書 02-01「画像の受け渡し」）。
+    #[test]
+    fn user_attachments_share_the_bound_and_are_removed_only_with_all_images() {
+        let attachment = |bytes| {
+            Item::UserMessage(UserMessage {
+                parts: Vec::new(),
+                images: vec![ToolImage {
+                    media_type: "image/png".into(),
+                    sha256: "0".repeat(64),
+                    width: 1,
+                    height: 1,
+                    bytes,
+                    data: Some(std::sync::Arc::from(b"x".as_slice())),
+                }],
+            })
+        };
+        let mut conversation = Conversation {
+            items: vec![attachment(MAX_BYTES), result(1, 1, true, false)],
+        };
+        let bounded = plan(&conversation, true);
+        assert!(bounded.dropped(0, 0));
+        assert!(!bounded.dropped(1, 0));
+        assert!(remove_images(&mut conversation, Some(&["result".to_owned()])).len() == 1);
+        assert!(
+            matches!(conversation.items.first(), Some(Item::UserMessage(message)) if message.images.len() == 1)
+        );
+        remove_images(&mut conversation, None);
+        assert!(matches!(
+            conversation.items.first(),
+            Some(Item::UserMessage(message))
+                if message.images.is_empty()
+                    && message.parts.iter().any(|part| part.text == text::IMAGE_REMOVED)
+        ));
     }
 }

@@ -109,3 +109,34 @@ pub const USER_NAMESPACES: &str = "user namespaces";
 
 #[cfg(target_os = "linux")]
 pub const LOOPBACK_UNSUPPORTED: &str = "Port-scoped loopback access is unsupported on Linux.";
+
+// 通信の中継（設計書 03-02「通信の中継」）。
+pub const PROXY_WITH_IP: &str = "network_proxy cannot be combined with allow_ip.";
+#[cfg(target_os = "linux")]
+pub const PROXY_LISTENER: &str = "proxy listener";
+pub const NETWORK_NOT_ALLOWED: &str =
+    "the domain is not in normal.allowed_domains and was not approved";
+pub const NETWORK_USER_DECLINED: &str = "the user declined";
+pub const NETWORK_INVALID_HOST: &str =
+    "only domain names are allowed, not IP addresses or invalid names";
+pub const NETWORK_PRIVATE_ADDRESS: &str =
+    "the name resolves to a private or special-purpose address";
+pub const NETWORK_UNRESOLVED: &str = "the name could not be resolved";
+pub const NETWORK_CONNECT_FAILED: &str = "the connection to the destination failed";
+pub const NETWORK_TLS_WITHOUT_CONNECT: &str =
+    "https:// requests must use CONNECT through the proxy";
+pub const NETWORK_CREDENTIALS: &str = "URLs with user names or passwords are not relayed";
+pub const NETWORK_BAD_REQUEST: &str = "benitoiteh: the proxy request was not understood";
+pub const NETWORK_PROXY_AUTH: &str =
+    "benitoiteh: the proxy requires the credentials from HTTPS_PROXY";
+pub const NETWORK_BUSY: &str = "benitoiteh: too many proxy connections";
+
+/// 断った宛先と理由。道具の結果と、子への応答の本文に使う。
+pub fn network_denied(host: &str, port: u16, reason: &str) -> String {
+    format!("benitoiteh blocked network access to {host}:{port}: {reason}.")
+}
+
+/// 確認の要約。
+pub fn network_summary(host: &str, port: u16) -> String {
+    format!("Allow the command to connect to {host}:{port}?")
+}

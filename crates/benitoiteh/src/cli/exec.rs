@@ -128,6 +128,26 @@ pub(super) struct Prepared {
     pub status: crate::ui::tui::Status,
     pub diagnostics: Vec<String>,
     pub panic_record: std::fs::File,
+    /// 対話の画面の知らせ方（設計書 05-02「通知」）。
+    pub notifications: crate::config::NotificationsConfig,
+}
+
+/// 起動のときに利用者へ尋ねる、プロジェクトの信頼（設計書 03-01「プロジェクトの信頼」）。
+pub(super) struct TrustRequest {
+    /// 決定を覚える根（git のリポジトリの根か、リポジトリの外ならプロジェクトのディレクトリ）。
+    pub root: PathBuf,
+    pub skills: bool,
+    pub plugins: bool,
+    /// 範囲の中に `.agents/prompts` がある（設計書 05-02「利用者の定義するコマンド」）。
+    pub prompts: bool,
+    pub model: bool,
+}
+
+/// 信頼の確認への答え。真が信頼する。`Remember` は保存し、`Session` はこの起動だけに使う。
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) enum TrustAnswer {
+    Remember(bool),
+    Session(bool),
 }
 
 /// 記録した制限モードから通常モードへの変更。
@@ -149,6 +169,8 @@ pub(super) struct SessionOverrides {
     // URL とキーを別の時点から組み合わせないよう、固定するのは名前だけとする。
     provider_model: Option<(String, String)>,
     fork_session: Option<Session>,
+    /// 同じ画面の前の起動で決めた信頼。根が同じときだけ使う。
+    project_trust: Option<(PathBuf, bool)>,
 }
 
 impl From<&crate::agent::AgentStatus> for SessionOverrides {
@@ -164,6 +186,10 @@ impl From<&crate::agent::AgentStatus> for SessionOverrides {
             forked_from: None,
             provider_model: None,
             fork_session: None,
+            project_trust: current
+                .project_trust
+                .clone()
+                .map(|root| (root, current.project_trusted)),
         }
     }
 }
@@ -209,6 +235,7 @@ pub(super) fn prepare(
     check_sandbox: impl FnOnce(&Path, &Path) -> Result<(), SandboxError>,
     query_launcher: QueryLauncher,
     confirm_mode_change: &mut dyn FnMut(&ModeChange) -> bool,
+    confirm_trust: &mut dyn FnMut(&TrustRequest) -> Option<TrustAnswer>,
 ) -> Result<Prepared, PreparationError> {
     let mut diagnostics = Vec::new();
     let result = (|| {
@@ -226,7 +253,13 @@ pub(super) fn prepare(
                 args.provider = Some(provider.clone());
                 args.model = Some(model.clone());
             }
-            user.normal.network = fixed.safety.network;
+            user.normal.network = if fixed.safety.network_proxy {
+                crate::config::NetworkAccess::Proxy
+            } else if fixed.safety.network {
+                crate::config::NetworkAccess::On
+            } else {
+                crate::config::NetworkAccess::Off
+            };
             user.normal
                 .writable_roots
                 .clone_from(&fixed.safety.writable_roots);
@@ -247,6 +280,12 @@ pub(super) fn prepare(
             }
         }
         let args = &args;
+        // 出力の型は、セッションを作る前に読んで確かめる（設計書 05-01「exec の出力」）。
+        let output_schema = args
+            .output_schema
+            .as_deref()
+            .map(read_output_schema)
+            .transpose()?;
         let cwd = std::env::current_dir().map_err(StartupError::Io)?;
         let opened = if let Some(session) = overrides.and_then(|fixed| fixed.fork_session.as_ref())
         {
@@ -280,13 +319,52 @@ pub(super) fn prepare(
             .or(args.project.as_deref())
             .unwrap_or(&cwd);
         let root = ScopeRoot::open(requested).map_err(StartupError::SafeFs)?;
-        let project = ProjectConfig::load(&root);
+        let mut project = ProjectConfig::load(&root);
         if project.read {
             diagnostics.push(text::project_loaded(root.real_path()));
         }
         if let Some(error) = &project.error {
             diagnostics.push(text::project_ignored(error));
         }
+        // プロジェクトの Skill・プラグイン・モデルの指定は、信頼の確認の後にだけ使う。
+        // 除外を足すだけの read.exclude は守りを強める向きなので、いつも使う（設計書 03-01「プロジェクトの信頼」）。
+        let resources =
+            skills::project_resources(root.real_path(), &paths.home, &user.skills, &user.plugins);
+        let request = TrustRequest {
+            root: resources.root.clone(),
+            skills: resources.skills,
+            plugins: resources.plugins,
+            prompts: crate::context::prompts::project_has_prompts(root.real_path(), &paths.home),
+            model: project.config.model.is_some(),
+        };
+        let mut project_prompts = request.prompts;
+        let project_trust = if request.skills || request.plugins || request.prompts || request.model
+        {
+            let trusted = decide_trust(
+                args,
+                overrides,
+                paths,
+                &request,
+                confirm_trust,
+                &mut diagnostics,
+            )?;
+            if !trusted {
+                diagnostics.push(text::project_untrusted(
+                    &request.root,
+                    request.skills,
+                    request.plugins,
+                    request.prompts,
+                    request.model,
+                ));
+                project.config.model = None;
+                project_prompts = false;
+                user.skills.project = false;
+                user.plugins.project = false;
+            }
+            Some((request.root.clone(), trusted))
+        } else {
+            None
+        };
         let resolved = match &resume {
             Some(state) => {
                 user.resolve_resume(args, &project.config, &cwd, state, args.interactive)
@@ -334,11 +412,17 @@ pub(super) fn prepare(
         } else {
             Approval::Never
         };
-        let chatgpt = chatgpt_tokens(&resolved, paths)?;
+        // 送らない要求には、認証の値を読まない（設計書 05-01「debug prompt-input」）。
+        let chatgpt = if args.preview {
+            None
+        } else {
+            chatgpt_tokens(&resolved, paths)?
+        };
         diagnostics.push(text::destination(&resolved.destination));
         let key = resolved
             .api_key
             .as_ref()
+            .filter(|_| !args.preview)
             .map(|key| key.resolve())
             .transpose()
             .map_err(StartupError::Credentials)?;
@@ -418,6 +502,9 @@ pub(super) fn prepare(
                 }
                 session
             }
+            None if args.ephemeral => {
+                Session::create_ephemeral(paths, id).map_err(StartupError::Session)?
+            }
             None => Session::create(paths, id).map_err(StartupError::Session)?,
         };
         let usage =
@@ -474,6 +561,7 @@ pub(super) fn prepare(
                     env: child_environment(
                         std::env::vars_os(),
                         &user.referenced_env_vars(),
+                        &user.secrets.pass_env,
                         &locations.temporary,
                         launcher.environment_policy(),
                     ),
@@ -531,11 +619,23 @@ pub(super) fn prepare(
             let mut env = child_environment(
                 std::env::vars_os(),
                 &user.referenced_env_vars(),
+                &user.secrets.pass_env,
                 &locations.temporary,
-                policy
-                    .as_ref()
-                    .map(|policy| (selected.name(), policy.config().allow_ip)),
+                // 中継の方式は通信できる方針なので、通信できない印を付けない。
+                policy.as_ref().map(|policy| {
+                    (
+                        selected.name(),
+                        policy.config().allow_ip || policy.config().network_proxy,
+                    )
+                }),
             );
+            // 中継の門はセッションの間で一つにし、このセッションに許したドメインを覚える。尋ねられるのは、
+            // 対話の起動で、承認の方針が尋ねることを許すときだけ（設計書 03-02「通信の中継」）。
+            let network = policy
+                .as_ref()
+                .filter(|policy| policy.config().network_proxy)
+                .map(|_| network_gate(&user, args.interactive, approval))
+                .transpose()?;
             // OS の制限が使えなくても、書く道具の確認には選んだ方針を使う。
             // （設計書 03-03「通常モードの承認の方針」）。
             let writable_roots = match selected {
@@ -591,6 +691,7 @@ pub(super) fn prepare(
                 placeholders: placeholders.clone(),
                 env,
                 approval,
+                network,
             })
         } else {
             None
@@ -638,6 +739,19 @@ pub(super) fn prepare(
             &resolved.plugins,
             &exclude,
         );
+        // 雛形は対話の画面のコマンドなので、exec では読まない。
+        let templates = if args.interactive {
+            crate::context::prompts::collect(
+                &paths.config_dir.join("prompts"),
+                root.real_path(),
+                &paths.home,
+                project_prompts,
+                &exclude,
+            )
+        } else {
+            crate::context::prompts::PromptTemplates::default()
+        };
+        diagnostics.extend(templates.notices.iter().cloned());
         let mut context = ToolContext::new(
             resolved.mode,
             root,
@@ -650,6 +764,7 @@ pub(super) fn prepare(
             user.restricted.after_write_check,
             resolved.read_line_numbers,
         )
+        .with_multiple_edits(user.edit.multiple)
         .with_project_creation(paths.clone(), helper.clone())
         .with_benitoite(processor.clone())
         .with_session(session.clone())
@@ -690,6 +805,7 @@ pub(super) fn prepare(
                 env: child_environment(
                     std::env::vars_os(),
                     &user.referenced_env_vars(),
+                    &user.secrets.pass_env,
                     &locations.temporary,
                     Some(("restricted", false)),
                 ),
@@ -745,12 +861,17 @@ pub(super) fn prepare(
             sandbox_disabled,
             context_window: resolved.capabilities.context_window,
             estimate: 0,
+            templates: Arc::new(templates),
         };
-        let normal_network = resolved.mode == Mode::Normal && user.normal.network;
+        let normal_network = resolved.mode == Mode::Normal
+            && user.normal.network == crate::config::NetworkAccess::On;
+        let normal_proxy = resolved.mode == Mode::Normal
+            && user.normal.network == crate::config::NetworkAccess::Proxy;
         let mut config: crate::agent::AgentConfig = resolved.into();
         config.project_parent = project_parent;
         config.allow_effects = (!args.interactive && config.mode == Mode::Restricted)
             .then(|| args.allow.clone().unwrap_or_default());
+        config.allow_agents_write = args.allow_agents_write;
         let mut agent = match resume {
             Some(state) => Agent::resume(
                 config,
@@ -769,6 +890,8 @@ pub(super) fn prepare(
                 .map_err(StartupError::Agent)?;
         }
         agent = agent
+            .with_output_schema(output_schema)
+            .with_project_trust(project_trust)
             .with_approvals(Box::new(NonInteractiveApprover), approval_policy)
             .with_session_safety(crate::agent::SessionSafety {
                 scratch_auto_effects: if status.mode == Mode::Restricted {
@@ -777,6 +900,7 @@ pub(super) fn prepare(
                     vec![]
                 },
                 network: normal_network,
+                network_proxy: normal_proxy,
                 writable_roots: locations.additional,
                 allowed_programs,
             });
@@ -786,6 +910,7 @@ pub(super) fn prepare(
             status,
             diagnostics: std::mem::take(&mut diagnostics),
             panic_record,
+            notifications: user.notifications.clone(),
         })
     })();
     result.map_err(|error| PreparationError { error, diagnostics })
@@ -837,6 +962,8 @@ pub(super) fn run(args: ExecArgs) -> Result<u8, CliError> {
         sandbox::check_availability,
         QueryLauncher::Sandboxed,
         &mut |_| false,
+        // 非対話では尋ねられないので、決めていなければこの一回は信頼しない。
+        &mut |_| Some(TrustAnswer::Session(false)),
     )
     .map_err(CliError::Preparation)?;
     panic::install(Some(panic_record), None);
@@ -847,6 +974,17 @@ pub(super) fn run(args: ExecArgs) -> Result<u8, CliError> {
         .request
         .read(&mut io::stdin().lock())
         .map_err(CliError::Output)?;
+    if args.preview {
+        let preview = agent.preview_request(request).map_err(CliError::Agent)?;
+        let mut stdout = io::stdout().lock();
+        io::Write::write_all(&mut stdout, &preview_json(&preview))
+            .and_then(|()| io::Write::write_all(&mut stdout, b"\n"))
+            .map_err(CliError::Output)?;
+        drop(agent);
+        drop(session);
+        panic::install(None, None);
+        return Ok(0);
+    }
     let mut output = ExecOutput::new(args.json);
     let (sender, receiver) = mpsc::sync_channel(64);
     let control = crate::agent::RunControl::without_steering(
@@ -919,6 +1057,111 @@ pub(super) fn run(args: ExecArgs) -> Result<u8, CliError> {
     })
 }
 
+/// `--output-schema` のファイルを、1 MiB までの JSON のオブジェクトとして読む。
+/// 中身の JSON Schema としての正しさは提供者が確かめる。
+fn read_output_schema(path: &Path) -> Result<serde_json::Value, StartupError> {
+    use std::io::Read as _;
+    let invalid = |reason: &str| {
+        StartupError::Io(io::Error::new(
+            io::ErrorKind::InvalidData,
+            text::invalid_output_schema(path, reason),
+        ))
+    };
+    let mut bytes = Vec::new();
+    std::fs::File::open(path)
+        .and_then(|file| file.take(1024 * 1024 + 1).read_to_end(&mut bytes))
+        .map_err(|error| invalid(&error.to_string()))?;
+    if bytes.len() > 1024 * 1024 {
+        return Err(invalid(text::SCHEMA_NOT_OBJECT));
+    }
+    match serde_json::from_slice::<serde_json::Value>(&bytes) {
+        Ok(value @ serde_json::Value::Object(_)) => Ok(value),
+        Ok(_) | Err(_) => Err(invalid(text::SCHEMA_NOT_OBJECT)),
+    }
+}
+
+/// 送らずに作った要求を、読みやすい JSON にする。本文が JSON でなければ文字列で示す。
+fn preview_json(preview: &crate::provider::RequestPreview) -> Vec<u8> {
+    let body = serde_json::from_slice::<serde_json::Value>(&preview.body).unwrap_or_else(|_| {
+        serde_json::Value::String(String::from_utf8_lossy(&preview.body).into_owned())
+    });
+    let headers = preview
+        .headers
+        .iter()
+        .map(|(name, value)| (name.clone(), serde_json::Value::String(value.clone())))
+        .collect::<serde_json::Map<_, _>>();
+    serde_json::to_vec_pretty(&serde_json::json!({
+        "url": preview.url,
+        "headers": headers,
+        "body": body,
+    }))
+    .unwrap_or_default()
+}
+
+/// 中継の門を作る。macOS の待ち受けは手元のほかのプロセスからも届くので、合言葉を持たせる。
+fn network_gate(
+    user: &UserConfig,
+    interactive: bool,
+    approval: Approval,
+) -> Result<Arc<sandbox::proxy::NetworkGate>, StartupError> {
+    let gate = sandbox::proxy::NetworkGate::new(
+        user.normal.allowed_domains.iter().cloned().collect(),
+        interactive && approval != Approval::Never,
+    );
+    #[cfg(target_os = "macos")]
+    let gate = {
+        let mut random = [0_u8; 16];
+        getrandom::fill(&mut random)
+            .map_err(|error| StartupError::Io(io::Error::other(error.to_string())))?;
+        gate.with_token(format!("{:032x}", u128::from_ne_bytes(random)))
+    };
+    Ok(Arc::new(gate))
+}
+
+/// オプション、同じ画面の前の決定、保存した決定、利用者への確認の順で信頼を決める。
+/// 保存できなくても、その起動の答えは使う（設計書 03-01「プロジェクトの信頼」）。
+fn decide_trust(
+    args: &ExecArgs,
+    overrides: Option<&SessionOverrides>,
+    paths: &DataPaths,
+    request: &TrustRequest,
+    confirm_trust: &mut dyn FnMut(&TrustRequest) -> Option<TrustAnswer>,
+    diagnostics: &mut Vec<String>,
+) -> Result<bool, StartupError> {
+    if args.trust_project {
+        return Ok(true);
+    }
+    if let Some((_, trusted)) = overrides
+        .and_then(|fixed| fixed.project_trust.as_ref())
+        .filter(|(root, _)| *root == request.root)
+    {
+        return Ok(*trusted);
+    }
+    let store = crate::config::trust::TrustStore::open(paths);
+    let stored = match &store {
+        Ok(store) => store.get(&request.root).unwrap_or_else(|error| {
+            diagnostics.push(text::trust_unreadable(&request.root, &error));
+            None
+        }),
+        Err(error) => {
+            diagnostics.push(text::trust_unreadable(&request.root, error));
+            None
+        }
+    };
+    if let Some(trusted) = stored {
+        return Ok(trusted);
+    }
+    match confirm_trust(request).ok_or(StartupError::Declined)? {
+        TrustAnswer::Session(trusted) => Ok(trusted),
+        TrustAnswer::Remember(trusted) => {
+            if let Err(error) = store.and_then(|store| store.set(&request.root, trusted)) {
+                diagnostics.push(text::trust_unsaved(&request.root, &error));
+            }
+            Ok(trusted)
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests;
 
@@ -941,6 +1184,8 @@ pub(super) fn prepare_new(
         check_sandbox,
         query_launcher,
         &mut |_| false,
+        // 画面の途中では尋ねない。前の決定と保存した決定がなければ、信頼しない。
+        &mut |_| Some(TrustAnswer::Session(false)),
     )
 }
 
@@ -980,6 +1225,7 @@ pub(super) fn prepare_fork(
         check_sandbox,
         query_launcher,
         &mut |_| false,
+        &mut |_| Some(TrustAnswer::Session(false)),
     )
     .map(|prepared| (prepared, request))
     .map_err(|mut error| {

@@ -132,6 +132,8 @@ pub(super) fn setup(writer: &mut impl Write) -> io::Result<()> {
     queue!(
         bytes,
         event::EnableBracketedPaste,
+        // 前面の報告は、通知を前面にないときだけ出すために使う（設計書 05-02「通知」）。
+        event::EnableFocusChange,
         event::PushKeyboardEnhancementFlags(
             event::KeyboardEnhancementFlags::DISAMBIGUATE_ESCAPE_CODES
         )
@@ -150,6 +152,7 @@ pub fn restoration(rows_below_cursor: u16) -> io::Result<Vec<u8>> {
         cursor::Show,
         terminal::EnableLineWrap,
         event::DisableBracketedPaste,
+        event::DisableFocusChange,
         event::PopKeyboardEnhancementFlags
     )?;
     for _ in 0..=rows_below_cursor {

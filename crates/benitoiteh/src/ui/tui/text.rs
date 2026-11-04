@@ -124,6 +124,11 @@ pub const MESSAGE_TOO_LONG: &str = "Message input is limited to 64 KiB; excess i
 pub const WARNING: &str = "Warning";
 pub const APPROVAL_BORDER: &str = "╰────────────────────────────";
 pub const MODE_CHANGE: &str = "╭─ Resume in normal mode?";
+pub const TRUST_TITLE: &str = "╭─ Trust this project?";
+pub const TRUST_KEYS: &str = "[y] trust and remember  [s] trust this session  [n] not this session  [d] do not trust and do not ask again";
+pub const TRUST_ROOT: &str = "Project";
+pub const TRUST_LOADS: &str = "Loads";
+pub const TRUST_WARNING: &str = "Trusting lets the project add skills and plugins that the model reads and follows, and choose the model. It does not change approvals or the OS sandbox.";
 pub const MODE_CHANGE_WARNING: &str = "The previous context may contain untrusted content. Normal mode allows shell commands and broader file access.";
 pub const DECLINE_MESSAGE: &str = "Decline with a message: ";
 pub const CANCEL_EFFECTS: &str =
@@ -138,6 +143,7 @@ pub fn approval_title(kind: crate::approval::ApprovalKind) -> &'static str {
         ApprovalKind::Escalate => "╭─ Run outside the sandbox?",
         ApprovalKind::WriteScope => "╭─ Write outside the allowed scope?",
         ApprovalKind::WebFetch => "╭─ Fetch web page?",
+        ApprovalKind::Network => "╭─ Allow network access?",
         ApprovalKind::Effects => "╭─ Run Benitoite script?",
         ApprovalKind::TestEffects => "╭─ Run Benitoite tests?",
     }
@@ -161,6 +167,9 @@ pub fn answer_keys(kind: Option<crate::approval::ApprovalKind>) -> &'static str 
         Some(ApprovalKind::WriteScope) => "[y] write  [n] decline  [m] decline with a message",
         Some(ApprovalKind::WebFetch) => {
             "[y] fetch once  [s] allow this domain for this session  [n] decline  [m] decline with a message"
+        }
+        Some(ApprovalKind::Network) => {
+            "[y] allow for this command  [s] allow this domain for this session  [n] decline"
         }
         None => "[y] resume in normal mode  [n] decline",
     }
@@ -201,6 +210,23 @@ pub fn decline_keys(kind: Option<crate::approval::ApprovalKind>) -> &'static str
     }
 }
 
+pub const INIT_RESTRICTED: &str =
+    "/init is not available in restricted mode because it cannot write files.";
+pub fn init_exists(path: &std::path::Path) -> String {
+    format!(
+        "{} already exists; /init did not send a request.",
+        path.display()
+    )
+}
+/// 雛形の一覧の見出し。
+pub const TEMPLATES_HEADING: &str = "Prompt templates:";
+/// 雛形の一行。名前と説明は信頼しない文字列なので、示す前に制御の文字を替える。
+pub fn template_line(name: &str, description: Option<&str>) -> String {
+    match description {
+        Some(description) => format!("/{name:<22} {description}"),
+        None => format!("/{name}"),
+    }
+}
 pub const UNKNOWN_COMMAND: &str = "Unknown command. Type /help for available commands.";
 pub const COMMAND_ARGUMENTS: &str = "This command does not accept arguments. Type /help for usage.";
 pub const COMMAND_RUNNING: &str = "This command is unavailable while processing.";
@@ -256,12 +282,16 @@ pub const HELP: &str = "/help                  Show commands and input controls.
 /tree                  Show the session tree and move to a branch or request.
 /fork [before]         Copy a path into a new session.
 /new                   Start a new session.
+/model [name [effort]] Show or switch the model of the current provider.
+/init                  Ask the model to write AGENTS.md for this project.
+/export [path]         Write the current branch to a new Markdown file.
 /quit                  Quit.
 Enter: send a request, or steer while processing.
 Alt+Enter: queue a follow-up while processing.
 Shift+Enter or Ctrl+J: insert a newline.
 ESC: cancel the current step; twice: cancel the run.
 Ctrl+C: clear input; twice on empty input: quit.
+Ctrl+G: edit the input in $VISUAL or $EDITOR.
 Up/Down: browse input history when input is one line.
 //: send a literal leading slash.";
 
@@ -562,6 +592,8 @@ pub fn interpreter(path: Option<&std::path::Path>, version: Option<&str>) -> Str
 pub const TARGETS: &str = "Targets";
 pub const EFFECTS: &str = "Effects";
 pub const SHELL: &str = "Shell";
+pub const AGENTS: &str = ".agents";
+pub const AGENTS_WRITE: &str = "This call may write agent skills and settings under .agents/. This approval covers this call only.";
 pub const NO_EFFECTS: &str = "none";
 pub const SHELL_REFERENCE: &str = "The script references Process.shell; the OS sandbox blocks starting a shell in restricted mode.";
 
@@ -639,6 +671,9 @@ pub fn skill_skipped(path: &std::path::Path, reason: &str) -> String {
     super::super::text::skill_skipped(path, reason)
 }
 
+pub fn tool_results_pruned(count: usize) -> String {
+    format!("Pruned {count} earlier tool results before compaction.")
+}
 pub const IMAGES_REMOVED: &str = "Images were removed and the request was sent again successfully.";
 
 pub const FORK_USAGE: &str = "Usage: /fork [before]";
@@ -671,3 +706,56 @@ pub fn secret_history(call_id: &str, outcome: &str) -> String {
 
 pub const SECRET_CLOSED: &str =
     "Secret input closed by the command; typed characters were discarded. [Esc] continue";
+
+/// 通知の文（設計書 05-02「通知」）。
+pub const NOTIFY_APPROVAL: &str = "benitoiteh is waiting for your confirmation.";
+pub const NOTIFY_FINISHED: &str = "benitoiteh finished the request.";
+
+/// 書き出しの結果（設計書 01-05「会話の書き出し」）。
+pub fn exported(path: &std::path::Path) -> String {
+    format!("Exported the conversation to {}", path.display())
+}
+pub fn export_failed(error: &str) -> String {
+    format!("Could not export the conversation: {error}")
+}
+
+/// 外部のエディタの知らせ（設計書 05-02「入力の操作」）。
+pub const EDITOR_UNSET: &str = "Set VISUAL or EDITOR to edit the input in an external editor.";
+pub const EDITOR_UNAVAILABLE: &str =
+    "The external editor is unavailable because the input history directory could not be opened.";
+pub const EDITOR_EXITED: &str = "The editor exited with an error; the input was kept.";
+pub const EDITOR_TOO_LARGE: &str = "The edited input is larger than 1 MiB; the input was kept.";
+pub fn editor_failed(error: &str) -> String {
+    format!("Could not use the external editor: {error}")
+}
+
+/// 状態の行に示す添付の画像の名前（設計書 05-02「入力の操作」）。
+pub fn attachments(paths: &[std::path::PathBuf]) -> String {
+    if paths.is_empty() {
+        return String::new();
+    }
+    let names = paths
+        .iter()
+        .map(|path| {
+            path.file_name().map_or_else(
+                || path.display().to_string(),
+                |name| name.to_string_lossy().into_owned(),
+            )
+        })
+        .collect::<Vec<_>>()
+        .join(", ");
+    format!(" | images: {names}")
+}
+
+/// `/model` の使い方と結果（設計書 05-02「`/` で始まるコマンド」）。
+pub const MODEL_USAGE: &str = "Usage: /model [name [effort]]";
+pub fn model_result(provider: &str, model: &str, effort: &str, changed: bool) -> String {
+    let current = format!("Provider: {provider}; model: {model}; effort: {effort}");
+    if changed {
+        format!(
+            "{current}. Earlier reasoning is not sent to the new model, and the prompt cache starts over."
+        )
+    } else {
+        current
+    }
+}

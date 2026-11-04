@@ -21,6 +21,11 @@ impl InteractiveApprover {
         let (requests, receiver) = mpsc::channel();
         (Self { requests }, receiver)
     }
+
+    /// 同じ画面へ確認を送る口。通信の中継が、コマンドの実行の途中に尋ねるときに使う。
+    pub fn prompts(&self) -> Sender<ApprovalPrompt> {
+        self.requests.clone()
+    }
 }
 
 impl Approver for InteractiveApprover {

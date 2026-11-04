@@ -211,8 +211,13 @@ fn normal_sort_is_warning_free_with_the_measured_sysctls() -> TestResult {
             temporary,
             additional: Vec::new(),
         };
-        let policy = normal_policy(Sandbox::WorkspaceWrite, &locations, false, &[])?
-            .ok_or("Missing normal sandbox policy")?;
+        let policy = normal_policy(
+            Sandbox::WorkspaceWrite,
+            &locations,
+            benitoiteh::config::NetworkAccess::Off,
+            &[],
+        )?
+        .ok_or("Missing normal sandbox policy")?;
         let input_path = f.writable.join("input.txt");
         fs::write(&input_path, input)?;
         let sandbox = SandboxCommand {

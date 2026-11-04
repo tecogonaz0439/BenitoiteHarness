@@ -43,6 +43,8 @@ pub const TOTAL_LIMIT: &str =
 
 pub const INVALID_OBJECT: &str = "Invalid checkpoint object or content hash.";
 
+pub const ATTACHMENT_RESTORE_OMITTED: &str =
+    "(An attached image could not be restored from the session and was omitted.)";
 pub const IMAGE_RESTORE_OMITTED: &str =
     "(An image from this result could not be restored from the session and was omitted.)";
 
@@ -147,4 +149,17 @@ pub fn cleanup_skipped(path: &std::path::Path, reason: &str) -> String {
     let path = crate::benitoite::display::one_line(&path.to_string_lossy());
     let reason = crate::benitoite::display::one_line(reason);
     format!("Skipped cleanup of {path}: {reason}")
+}
+
+/// 書き出しの見出しと注記（設計書 01-05「会話の書き出し」）。
+pub const EXPORT_USER: &str = "User";
+pub const EXPORT_STEERING: &str = "User (steering)";
+pub const EXPORT_SUMMARY: &str = "Summary of earlier conversation";
+pub const EXPORT_ENVIRONMENT: &str = "Environment";
+pub const EXPORT_TOOL_RESULT: &str = "Tool result";
+pub const EXPORT_TOOL_ERROR: &str = "Tool error";
+pub const EXPORT_COMPACTED: &str =
+    "The conversation was compacted here; the model saw the summary instead of the turns above.";
+pub fn export_images(count: usize) -> String {
+    format!("({count} image(s) omitted from the export.)")
 }

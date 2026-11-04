@@ -1,5 +1,6 @@
 //! セッションの記録、ロック、一時領域、保持期間の掃除（設計書 01-05、05-01「データの置き場所」）。
 
+mod export;
 mod files;
 mod fork;
 mod id;
@@ -15,12 +16,13 @@ mod temporary;
 pub(crate) mod text;
 mod tree;
 
+pub use export::export_markdown;
 pub use files::FileHistory;
 pub use fork::{ForkTarget, ForkedSession};
 pub use id::SessionId;
 pub use quota::{StorageUsage, TOTAL_LIMIT, storage_usage};
 pub use record::*;
-pub use replay::{SessionTree, read_records, replay, request_text};
+pub use replay::{SessionTree, apply_pruned, read_records, replay, request_text};
 pub use resume::{ReasoningContext, ResumeState};
 pub use scan::{
     SessionEntry, continue_session, list_sessions, previous_benitoite, recorded_benitoite,
@@ -143,6 +145,8 @@ struct SessionState {
     limit_notified: AtomicBool,
     resume: Mutex<Option<ResumeState>>,
     notices: Vec<String>,
+    /// 記録を残さないセッション。最後の参照が消えるときに、記録のディレクトリごと消す。
+    ephemeral: bool,
 }
 
 impl Session {
@@ -196,6 +200,7 @@ impl Session {
                 limit_notified: AtomicBool::new(false),
                 resume: Mutex::new(Some(resume)),
                 notices,
+                ephemeral: false,
             }),
         })
     }
@@ -250,6 +255,7 @@ impl Session {
                     limit_notified: AtomicBool::new(false),
                     resume: Mutex::new(None),
                     notices: Vec::new(),
+                    ephemeral: false,
                 }),
             })
         })();
@@ -259,6 +265,27 @@ impl Session {
             let _cleanup = remove::directory(&path);
         }
         result
+    }
+
+    /// 記録を残さないセッションを作る（設計書 01-05「記録を残さないセッション」）。
+    ///
+    /// 錠を取った後に、記録のディレクトリを墓標の名前へ替える。ID では開けず、一覧にも
+    /// 出ない。途中で止まっても、次の起動の掃除が錠を取れた墓標として消す。
+    pub fn create_ephemeral(paths: &DataPaths, id: SessionId) -> Result<Self, SessionError> {
+        let session = Self::create(paths, id)?;
+        let Ok(mut state) = Arc::try_unwrap(session.inner) else {
+            return Err(SessionError::Invalid(text::UNSAFE_PATH));
+        };
+        // 名前を替えられなくても、落とすときに作った記録を消す。
+        state.ephemeral = true;
+        let sessions = sessions_root(&paths.sessions_dir)?;
+        let tombstone = temporary::session_tombstone(&state.id)?;
+        rustix::fs::renameat(&sessions, state.id.as_str(), &sessions, tombstone.as_str())?;
+        let directory = open_directory_at(&sessions, &tombstone)?;
+        state.path = crate::safe_fs::resolved_path(&directory)?;
+        Ok(Self {
+            inner: Arc::new(state),
+        })
     }
 
     /// このセッションの ID。
@@ -295,6 +322,11 @@ impl Drop for SessionState {
             // 一時領域の中のリンクの先は消さない。ロックはこの後に解放される。
             // （設計書 01-05「一時ディレクトリ」）。失敗時は次の起動の掃除で再試行する。
             let _cleanup = remove::temporary(&self.temporary);
+        }
+        if self.ephemeral {
+            // 錠を持ったまま記録を消す。消せなければ、次の起動の掃除が墓標として消す
+            // （設計書 01-05「記録を残さないセッション」）。
+            let _removed = remove::session(&self.path);
         }
     }
 }

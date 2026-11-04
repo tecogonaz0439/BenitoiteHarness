@@ -126,6 +126,12 @@ impl fmt::Debug for AnthropicAdapter {
 }
 
 impl AnthropicAdapter {
+    /// 同じ提供者の設定の中でモデルを替える（設計書 05-02「`/` で始まるコマンド」）。
+    /// 推論の内容は応答ごとの送り先で照合するので、前のモデルの推論は送らなくなる。
+    pub fn set_model(&mut self, model: &str) {
+        self.destination.model = model.to_owned();
+    }
+
     /// 送り先と機能と、解決済みの API キーを受け取る。
     pub fn new(destination: Destination, capabilities: Capabilities, api_key: String) -> Self {
         Self {

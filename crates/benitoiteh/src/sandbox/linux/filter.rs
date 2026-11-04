@@ -16,7 +16,8 @@ pub(super) fn compile_policy(
     config: &super::super::PolicyConfig,
 ) -> std::result::Result<BpfProgram, super::super::SandboxError> {
     super::super::policy::reject_loopback_port(config)?;
-    compile(config.allow_ip)
+    // 中継の方式では、名前空間の中にループバックしかないので、IP のソケットを許しても外へ出られない。
+    compile(config.allow_ip || config.network_proxy)
         .map_err(|error| super::super::SandboxError::Io(std::io::Error::other(error)))
 }
 

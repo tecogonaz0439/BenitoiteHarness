@@ -16,6 +16,177 @@ mod support;
 mod fixture;
 use fixture::*;
 
+// 作成時の関門: 評価用の下のディレクトリの指示のファイル（設計書 01-04「下のディレクトリの
+// 指示のファイル」）。利用者の設定から道具の結果と記録とイベントまでを、起動のときの指示の
+// 読み込みと合わせて確かめる。既定で添えないこと、一度だけ添えること、誤りの結果では見た
+// ことにしないこと、起動で読んだファイルへのリンクと固いリンクを読まないことを並べる。
+#[test]
+fn nested_instructions_reach_tool_results_once_under_the_startup_reading_rules() -> TestResult {
+    for enabled in [false, true] {
+        let protocol = Protocol::Chat;
+        let calls = [
+            ("read", json!({"path":"other/missing.txt"})),
+            ("read", json!({"path":"sub/deep/file.txt"})),
+            ("read", json!({"path":"sub/deep/file.txt"})),
+            ("read", json!({"path":"other/ok.txt"})),
+            ("read", json!({"path":"linked/x.txt"})),
+            ("glob", json!({"pattern":"*","path":"hard"})),
+        ];
+        let mut script = calls
+            .iter()
+            .enumerate()
+            .map(|(index, (name, arguments))| {
+                ResponseScript::sse(protocol.response(
+                    Some((&format!("call_{index}"), name, arguments.clone())),
+                    "",
+                    false,
+                ))
+            })
+            .collect::<Vec<_>>();
+        script.push(ResponseScript::sse(protocol.response(None, "done", false)));
+        let mut server = MockProvider::start(script)?;
+        let f = Fixture::new(protocol, &server)?;
+        let project = f.root.join("project");
+        for directory in ["sub/deep", "other", "linked", "hard"] {
+            fs::create_dir_all(project.join(directory))?;
+        }
+        for (path, contents) in [
+            ("AGENTS.md", "root rule"),
+            ("sub/AGENTS.md", "sub <rule>"),
+            ("sub/deep/CLAUDE.md", "deep rule"),
+            ("sub/deep/file.txt", "file"),
+            ("other/AGENTS.md", "other rule"),
+            ("other/ok.txt", "ok"),
+            ("linked/x.txt", "x"),
+            ("hard/AGENTS.md", "hard rule"),
+        ] {
+            fs::write(project.join(path), contents)?;
+        }
+        std::os::unix::fs::symlink("../AGENTS.md", project.join("linked/AGENTS.md"))?;
+        fs::hard_link(project.join("hard/AGENTS.md"), project.join("hard-copy.md"))?;
+        if enabled {
+            let path = f.root.join("config/benitoiteh/config.toml");
+            let contents = fs::read_to_string(&path)?;
+            fs::write(
+                path,
+                format!("{contents}\n[agent]\nnested_instructions=true\n"),
+            )?;
+        }
+        let output = f.command("read the files").arg("--json").output()?;
+        assert_eq!(
+            output.status.code(),
+            Some(0),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let (_, records) = f.records()?;
+        assert_eq!(
+            records
+                .first()
+                .and_then(|header| header.get("nested_instructions")),
+            enabled.then_some(&json!(true))
+        );
+        let texts = records
+            .iter()
+            .filter(|record| record.get("type").and_then(Value::as_str) == Some("tool_result"))
+            .map(|record| {
+                record
+                    .pointer("/result/text")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default()
+                    .to_owned()
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(texts.len(), calls.len());
+        let tag = |path: &str, contents: &str| {
+            format!(
+                "<project_instructions path=\"{}\">{contents}</project_instructions>",
+                project.join(path).display()
+            )
+        };
+        let sub = tag("sub/AGENTS.md", "sub &lt;rule&gt;");
+        let deep = tag("sub/deep/CLAUDE.md", "deep rule");
+        let other = tag("other/AGENTS.md", "other rule");
+        for (index, expected) in [
+            (0, Vec::new()),
+            (1, vec![sub.as_str(), deep.as_str()]),
+            (2, Vec::new()),
+            (3, vec![other.as_str()]),
+            (4, Vec::new()),
+            (5, Vec::new()),
+        ] {
+            let text = texts.get(index).ok_or("tool result")?;
+            let found = text.matches("<project_instructions").count();
+            if enabled {
+                assert_eq!(found, expected.len(), "{index}: {text}");
+                // 根の側から順に、結果の後に並べる。
+                let suffix = expected
+                    .iter()
+                    .map(|tag| format!("\n\n{tag}"))
+                    .collect::<String>();
+                assert!(text.ends_with(&suffix), "{index}: {text}");
+            } else {
+                assert_eq!(found, 0, "{index}: {text}");
+            }
+        }
+        assert!(
+            texts
+                .iter()
+                .all(|text| !text.contains("root rule") && !text.contains("hard rule"))
+        );
+        let events = lines(&output.stdout)?;
+        let notices = events
+            .iter()
+            .filter(|event| {
+                event.get("type").and_then(Value::as_str) == Some("nested_instructions")
+            })
+            .collect::<Vec<_>>();
+        if enabled {
+            let skipped = notices
+                .iter()
+                .flat_map(|event| {
+                    event
+                        .get("skipped")
+                        .and_then(Value::as_array)
+                        .cloned()
+                        .unwrap_or_default()
+                })
+                .map(|entry| {
+                    (
+                        entry
+                            .get("path")
+                            .and_then(Value::as_str)
+                            .unwrap_or_default()
+                            .to_owned(),
+                        entry
+                            .get("reason")
+                            .and_then(Value::as_str)
+                            .unwrap_or_default()
+                            .to_owned(),
+                    )
+                })
+                .collect::<Vec<_>>();
+            assert_eq!(
+                skipped,
+                [
+                    (
+                        project.join("linked/AGENTS.md").display().to_string(),
+                        "This file has already been included.".to_owned()
+                    ),
+                    (
+                        project.join("hard/AGENTS.md").display().to_string(),
+                        "Multiple hard links are not allowed.".to_owned()
+                    ),
+                ]
+            );
+        } else {
+            assert!(notices.is_empty());
+        }
+        server.shutdown()?;
+    }
+    Ok(())
+}
+
 // 関門: 設定の値が起動の準備から read とプロンプトとヘッダへ届く契約。
 // 道具単体では見つけられない接続漏れを、普段の設定を使わない exec で捕まえる。
 #[test]
@@ -41,7 +212,7 @@ fn evaluation_switches_reach_read_and_recorded_hashes_from_user_config() -> Test
             fs::write(
                 path,
                 format!(
-                    "{contents}\n[restricted]\nafter_write_check=false\n[read]\nline_numbers=false\n[compaction]\nreserve_tokens=8192\nkeep_tokens=8000\n"
+                    "{contents}\n[restricted]\nafter_write_check=false\n[read]\nline_numbers=false\n[edit]\nmultiple=true\n[agent]\nplan_tool=true\n[compaction]\nreserve_tokens=8192\nkeep_tokens=8000\nprune_tool_results=true\n"
                 ),
             )?;
         }
@@ -59,11 +230,14 @@ fn evaluation_switches_reach_read_and_recorded_hashes_from_user_config() -> Test
         assert_eq!(
             header.get("compaction"),
             (!enabled).then_some(&json!({
-                "reserve_tokens": 8192, "keep_tokens": 8000,
+                "reserve_tokens": 8192, "keep_tokens": 8000, "prune_tool_results": true,
             }))
         );
         for key in ["after_write_check", "read_line_numbers"] {
             assert_eq!(header.get(key), (!enabled).then_some(&Value::Bool(false)));
+        }
+        for key in ["multiple_edits", "plan_tool"] {
+            assert_eq!(header.get(key), (!enabled).then_some(&Value::Bool(true)));
         }
         hashes.push((
             header
@@ -95,6 +269,29 @@ fn evaluation_switches_reach_read_and_recorded_hashes_from_user_config() -> Test
                 })
             })
             .ok_or("read definition")?;
+        let edit = request
+            .get("tools")
+            .and_then(Value::as_array)
+            .and_then(|tools| {
+                tools.iter().find(|tool| {
+                    tool.pointer("/function/name").and_then(Value::as_str) == Some("edit")
+                })
+            })
+            .ok_or("edit definition")?;
+        assert_eq!(
+            edit.pointer("/function/parameters/properties/edits")
+                .is_some(),
+            !enabled
+        );
+        assert_eq!(
+            request
+                .get("tools")
+                .and_then(Value::as_array)
+                .is_some_and(|tools| tools.iter().any(|tool| {
+                    tool.pointer("/function/name").and_then(Value::as_str) == Some("update_plan")
+                })),
+            !enabled
+        );
         assert_eq!(
             read.pointer("/function/description")
                 .and_then(Value::as_str),
@@ -241,6 +438,8 @@ fn exec_completes_tools_and_preserves_output_records_and_original_items() -> Tes
                     "danger-full-access",
                     "--max-turns",
                     "4",
+                    // プロジェクトのモデルの指定は、信頼したときだけ使う（設計書 03-01「プロジェクトの信頼」）。
+                    "--trust-project",
                 ])
                 .arg("--output-last-message")
                 .arg(f.root.join("last-message.txt"));
@@ -715,7 +914,22 @@ fn closed_event_output_still_finishes_the_session_record() -> TestResult {
     temporary_cleanup::check_temporary_root(temporary.path())?;
     temporary_cleanup::check_temporary_root(&f.root.join("tmp"))?;
     no_secret(&output, &records);
-    server.shutdown()?;
+    // 子は出力が閉じたと知った時点で終えるので、模擬の提供者への接続は、要求を送る前
+    // （模擬の側の UnexpectedEof）か、応答の途中（BrokenPipe）で切れうる。この切断は
+    // 確かめたい振る舞いの結果であり、テストの失敗にしない（2026-11-03 に 900 回で 8 回再現）。
+    match server.shutdown() {
+        Err(error)
+            if !matches!(
+                error.kind(),
+                io::ErrorKind::UnexpectedEof
+                    | io::ErrorKind::BrokenPipe
+                    | io::ErrorKind::ConnectionReset
+            ) =>
+        {
+            return Err(error.into());
+        }
+        Ok(()) | Err(_) => {}
+    }
     Ok(())
 }
 
@@ -1290,5 +1504,319 @@ fn chatgpt_exec_without_saved_tokens_stops_at_startup() -> TestResult {
         }
         server.shutdown()?;
     }
+    Ok(())
+}
+
+// 作成時の関門: `--ephemeral` の exec は、長い出力を置く記録の場所を使って道具を動かし、
+// 終えた後に記録と一時ディレクトリを残さない（設計書 01-05「記録を残さないセッション」）。
+#[test]
+fn ephemeral_exec_runs_tools_and_leaves_no_session_record() -> TestResult {
+    let protocol = Protocol::Chat;
+    let mut server = MockProvider::start(vec![
+        ResponseScript::sse(protocol.response(
+            Some(("large", "bash", json!({"command":"cat input"}))),
+            "",
+            false,
+        )),
+        ResponseScript::sse(protocol.response(None, "Done.", false)),
+    ])?;
+    let f = Fixture::new(protocol, &server)?;
+    let all = (1..=2001)
+        .map(|n| format!("line-{n}\n"))
+        .collect::<String>();
+    fs::write(f.root.join("project/input"), &all)?;
+    let mut command = f.command("Run the command.");
+    command.args([
+        "--mode",
+        "normal",
+        "--sandbox",
+        "danger-full-access",
+        "--json",
+        "--ephemeral",
+    ]);
+    let output = Running::start(&mut command)?.finish()?;
+    assert_eq!(
+        output.status.code(),
+        Some(0),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let events = lines(&output.stdout)?;
+    assert!(
+        events
+            .iter()
+            .any(|event| event.get("type") == Some(&json!("tool_result"))
+                && event.get("is_error") == Some(&json!(false)))
+    );
+    assert_eq!(
+        fs::read_dir(f.root.join("state/benitoiteh/sessions"))?.count(),
+        0
+    );
+    let leftovers = fs::read_dir(f.root.join("tmp"))?
+        .map(|entry| entry.map(|entry| entry.file_name()))
+        .collect::<Result<Vec<_>, _>>()?;
+    assert!(
+        !leftovers
+            .iter()
+            .any(|name| name.to_string_lossy().starts_with("benitoiteh-")),
+        "{leftovers:?}"
+    );
+    server.shutdown()?;
+    Ok(())
+}
+
+// 作成時の関門: `debug prompt-input` が示す本文は、同じ依頼で exec が最初に送る本文と同じであり、
+// 認証の値を含まず、何も送らず、記録を残さない。鍵の環境の変数がなくても示せる
+// （設計書 05-01「debug prompt-input」）。
+#[test]
+fn prompt_input_matches_the_first_exec_request_without_sending_or_keys() -> TestResult {
+    for protocol in [Protocol::Chat, Protocol::Anthropic, Protocol::Responses] {
+        let mut server = MockProvider::start(vec![ResponseScript::sse(
+            protocol.response(None, "ok", false),
+        )])?;
+        let f = Fixture::new(protocol, &server)?;
+        fs::write(f.root.join("project/AGENTS.md"), "Project rules.\n")?;
+        let output =
+            Running::start(f.command("Show the files.").args(["--trust-project"]))?.finish()?;
+        assert_eq!(
+            output.status.code(),
+            Some(0),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let sent = server.requests()?;
+        let [sent] = sent.as_slice() else {
+            return Err(format!("{protocol:?}: {} requests", sent.len()).into());
+        };
+        fs::remove_dir_all(f.root.join("state/benitoiteh/sessions"))?;
+        for with_key in [true, false] {
+            let arguments = [
+                "debug",
+                "prompt-input",
+                "Show the files.",
+                "--trust-project",
+                "--no-sandbox",
+            ];
+            let mut command = Command::new(env!("CARGO_BIN_EXE_benitoiteh"));
+            command
+                .args(arguments)
+                .current_dir(f.root.join("project"))
+                .env("HOME", f.root.join("home"))
+                .env("XDG_CONFIG_HOME", f.root.join("config"))
+                .env("XDG_STATE_HOME", f.root.join("state"))
+                .env("TMPDIR", f.root.join("tmp"))
+                .stdin(Stdio::null())
+                .stdout(Stdio::piped())
+                .stderr(Stdio::piped());
+            if with_key {
+                command.env("BENITOITEH_EXEC_TEST_KEY", KEY);
+            }
+            let output = Running::start(&mut command)?.finish()?;
+            assert_eq!(
+                output.status.code(),
+                Some(0),
+                "{protocol:?}: {}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+            let stdout = std::str::from_utf8(&output.stdout)?;
+            assert!(!stdout.contains(KEY), "{stdout}");
+            let shown: Value = serde_json::from_str(stdout)?;
+            let mut body = shown.get("body").cloned().ok_or("body")?;
+            let mut expected = sent.body.clone();
+            // Responses のキャッシュの鍵はセッションの ID なので、起動ごとに違う。
+            for value in [&mut body, &mut expected] {
+                if let Some(fields) = value.as_object_mut() {
+                    fields.remove("prompt_cache_key");
+                }
+            }
+            // 書ける場所に入るセッションの一時ディレクトリも、起動ごとに違う。
+            assert_eq!(
+                without_session_directory(&body.to_string()),
+                without_session_directory(&expected.to_string()),
+                "{protocol:?}"
+            );
+            assert!(
+                shown
+                    .get("url")
+                    .and_then(Value::as_str)
+                    .is_some_and(|url| url.ends_with(&sent.path)),
+                "{shown}"
+            );
+            let headers = shown
+                .get("headers")
+                .and_then(Value::as_object)
+                .ok_or("headers")?;
+            assert!(
+                !headers.contains_key("authorization") && !headers.contains_key("x-api-key"),
+                "{headers:?}"
+            );
+            assert_eq!(server.requests()?.len(), 1, "{protocol:?}");
+            assert_eq!(
+                fs::read_dir(f.root.join("state/benitoiteh/sessions"))?.count(),
+                0
+            );
+        }
+        server.shutdown()?;
+    }
+    Ok(())
+}
+
+/// `tmp/benitoiteh-<セッションの ID>` の ID を伏せる。
+fn without_session_directory(text: &str) -> String {
+    let marker = "tmp/benitoiteh-";
+    let mut result = String::new();
+    let mut rest = text;
+    while let Some(index) = rest.find(marker) {
+        let (before, after) = rest.split_at(index.saturating_add(marker.len()));
+        result.push_str(before);
+        result.push_str("SESSION");
+        let end = after
+            .find(|c: char| !(c.is_ascii_alphanumeric() || c == '-'))
+            .unwrap_or(after.len());
+        rest = after.get(end..).unwrap_or_default();
+    }
+    result.push_str(rest);
+    result
+}
+
+// 作成時の関門: `sessions export <ID>` は記録した会話を Markdown で標準出力に書き、誤った ID と
+// 余計な引数を使い方の誤りにする（設計書 05-01「sessions」）。
+#[test]
+fn sessions_export_prints_the_recorded_conversation() -> TestResult {
+    let protocol = Protocol::Chat;
+    let mut server = MockProvider::start(vec![ResponseScript::sse(protocol.response(
+        None,
+        "Answer text.",
+        false,
+    ))])?;
+    let f = Fixture::new(protocol, &server)?;
+    let output = Running::start(&mut f.command("Question text."))?.finish()?;
+    assert_eq!(output.status.code(), Some(0));
+    let (directory, _) = f.records()?;
+    let id = directory
+        .file_name()
+        .ok_or("id")?
+        .to_string_lossy()
+        .into_owned();
+    let sessions = |arguments: &[&str]| {
+        Command::new(env!("CARGO_BIN_EXE_benitoiteh"))
+            .arg("sessions")
+            .args(arguments)
+            .env("HOME", f.root.join("home"))
+            .env("XDG_CONFIG_HOME", f.root.join("config"))
+            .env("XDG_STATE_HOME", f.root.join("state"))
+            .env("TMPDIR", f.root.join("tmp"))
+            .output()
+    };
+    let exported = sessions(&["export", &id])?;
+    assert_eq!(exported.status.code(), Some(0));
+    let markdown = String::from_utf8(exported.stdout)?;
+    assert!(markdown.starts_with(&format!("# benitoiteh session {id}\n")));
+    assert!(markdown.contains("## User\n\nQuestion text."), "{markdown}");
+    assert!(
+        markdown.contains("## Assistant\n\nAnswer text."),
+        "{markdown}"
+    );
+    for arguments in [
+        vec!["export"],
+        vec!["export", "not-an-id"],
+        vec!["export", &id, "extra"],
+    ] {
+        assert_eq!(
+            sessions(&arguments)?.status.code(),
+            Some(2),
+            "{arguments:?}"
+        );
+    }
+    server.shutdown()?;
+    Ok(())
+}
+
+// 作成時の関門: `--output-schema` の JSON Schema は、三つの口のそれぞれの形で、道具を呼ぶ番を含む
+// 普通の番の要求に付く。読めないファイルと JSON のオブジェクトでないファイルは、何も送らずに起動を
+// 止める（設計書 05-01「exec の出力」）。
+#[test]
+fn output_schema_reaches_every_turn_in_each_provider_format() -> TestResult {
+    let schema = json!({
+        "type": "object",
+        "properties": {"answer": {"type": "string"}},
+        "required": ["answer"],
+        "additionalProperties": false
+    });
+    for protocol in [Protocol::Chat, Protocol::Anthropic, Protocol::Responses] {
+        let mut server = MockProvider::start(vec![
+            ResponseScript::sse(protocol.response(
+                Some(("read", "read", json!({"path":"a.bnt"}))),
+                "",
+                false,
+            )),
+            ResponseScript::sse(protocol.response(None, "{\"answer\":\"done\"}", false)),
+        ])?;
+        let f = Fixture::new(protocol, &server)?;
+        let path = f.root.join("schema.json");
+        fs::write(&path, serde_json::to_vec(&schema)?)?;
+        let mut command = f.command("Answer as JSON.");
+        command.arg("--output-schema").arg(&path);
+        let output = Running::start(&mut command)?.finish()?;
+        assert_eq!(
+            output.status.code(),
+            Some(0),
+            "{protocol:?}: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert_eq!(
+            std::str::from_utf8(&output.stdout)?.trim(),
+            "{\"answer\":\"done\"}"
+        );
+        let requests = server.requests()?;
+        assert_eq!(requests.len(), 2, "{protocol:?}");
+        for request in &requests {
+            let (pointer, expected) = match protocol {
+                Protocol::Chat => (
+                    "/response_format",
+                    json!({"type":"json_schema","json_schema":{"name":"output","schema":schema,"strict":true}}),
+                ),
+                Protocol::Responses => (
+                    "/text/format",
+                    json!({"type":"json_schema","name":"output","schema":schema,"strict":true}),
+                ),
+                Protocol::Anthropic => (
+                    "/output_config/format",
+                    json!({"type":"json_schema","schema":schema}),
+                ),
+            };
+            assert_eq!(
+                request.body.pointer(pointer),
+                Some(&expected),
+                "{protocol:?}"
+            );
+        }
+        // Anthropic では、推論の度合いと同じ output_config に並べる。
+        if protocol == Protocol::Anthropic {
+            assert!(
+                requests
+                    .iter()
+                    .all(|request| request.body.pointer("/output_config/effort").is_some())
+            );
+        }
+        server.shutdown()?;
+    }
+    let mut server = MockProvider::start(Vec::new())?;
+    let f = Fixture::new(Protocol::Chat, &server)?;
+    fs::write(f.root.join("list.json"), "[1, 2]")?;
+    fs::write(f.root.join("broken.json"), "{")?;
+    for name in ["missing.json", "list.json", "broken.json"] {
+        let mut command = f.command("Answer as JSON.");
+        command.arg("--output-schema").arg(f.root.join(name));
+        let output = Running::start(&mut command)?.finish()?;
+        assert_ne!(output.status.code(), Some(0), "{name}");
+        assert!(
+            String::from_utf8_lossy(&output.stderr).contains("--output-schema"),
+            "{name}: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+    assert!(server.requests()?.is_empty());
+    server.shutdown()?;
     Ok(())
 }

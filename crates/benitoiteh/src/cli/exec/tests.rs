@@ -25,8 +25,20 @@ fn prepare(
     args: &ExecArgs,
     overrides: Option<&SessionOverrides>,
     paths: &DataPaths,
+    check: impl FnMut(&Path, &Path) -> Result<(), SandboxError>,
+    confirm: &mut dyn FnMut(&ModeChange) -> bool,
+) -> Result<Prepared, PreparationError> {
+    prepare_with_trust(args, overrides, paths, check, confirm, &mut |_| {
+        Some(TrustAnswer::Session(false))
+    })
+}
+fn prepare_with_trust(
+    args: &ExecArgs,
+    overrides: Option<&SessionOverrides>,
+    paths: &DataPaths,
     mut check: impl FnMut(&Path, &Path) -> Result<(), SandboxError>,
     confirm: &mut dyn FnMut(&ModeChange) -> bool,
+    confirm_trust: &mut dyn FnMut(&TrustRequest) -> Option<TrustAnswer>,
 ) -> Result<Prepared, PreparationError> {
     // 並行するテストの fork が継承した錠は exec まで残る。再開時の Locked だけを
     // 短時間待ち、本当に錠を放さない退行とほかの誤りは失敗にする（設計書 07-01）。
@@ -39,11 +51,27 @@ fn prepare(
             &mut check,
             QueryLauncher::TestDirect,
             confirm,
+            confirm_trust,
         ) {
             Err(PreparationError {
                 error: StartupError::Session(SessionError::Locked),
                 ..
             }) if args.resume.is_some() && started.elapsed() < Duration::from_secs(2) => {
+                thread::sleep(Duration::from_millis(20));
+            }
+            result => return result,
+        }
+    }
+}
+
+/// テストが手放したセッションを開く。prepare と同じく、ほかのテストの fork が継承した錠は
+/// exec まで残るので、Locked だけを短時間待つ
+/// （docs/2026-11-02/03-other-test-files.md「直し方と確かめ」）。
+fn open_released(paths: &DataPaths, id: &SessionId) -> Result<Session, SessionError> {
+    let started = Instant::now();
+    loop {
+        match Session::open(paths, id) {
+            Err(SessionError::Locked) if started.elapsed() < Duration::from_secs(2) => {
                 thread::sleep(Duration::from_millis(20));
             }
             result => return result,
@@ -100,6 +128,161 @@ impl Drop for Fixture {
     fn drop(&mut self) {
         let _removed = fs::remove_dir_all(&self.0);
     }
+}
+
+// 関門: プロジェクトの Skill とモデルの指定は、信頼した後にだけ使う。覚える答えは根ごとに保存して
+// 次の起動で尋ねず、この起動だけの答えと --trust-project は保存しない。/new は同じ決定を使い回す。
+// 信頼を要するものがないプロジェクトでは尋ねない（設計書 03-01「プロジェクトの信頼」）。
+#[test]
+fn project_skills_and_model_follow_the_trust_decision() -> Result<(), Box<dyn Error>> {
+    let f = Fixture::new()?;
+    let paths = f.paths("sandbox = 'danger-full-access'")?;
+    let project = f.0.join("project");
+    let asked = Cell::new(0_u32);
+    let start = |options: &[&str], answer: TrustAnswer| -> Result<Prepared, Box<dyn Error>> {
+        prepare_with_trust(
+            &f.args(options)?,
+            None,
+            &paths,
+            |_, _| Ok(()),
+            &mut |_| false,
+            &mut |request| {
+                assert_eq!(request.root, project);
+                asked.set(asked.get().saturating_add(1));
+                Some(answer)
+            },
+        )
+        .map_err(|error| error.to_string().into())
+    };
+    let loaded = |prepared: &Prepared| {
+        let status = prepared.agent.status();
+        (
+            status.skills.iter().any(|skill| skill.name == "demo"),
+            status.model == "project-model",
+        )
+    };
+    drop(start(&["--mode", "normal"], TrustAnswer::Session(true))?);
+    assert_eq!(asked.get(), 0);
+    fs::create_dir_all(project.join(".agents/skills/demo"))?;
+    fs::write(
+        project.join(".agents/skills/demo/SKILL.md"),
+        "---\nname: demo\ndescription: Demo skill.\n---\nBody\n",
+    )?;
+    fs::create_dir_all(project.join(".benitoiteh"))?;
+    fs::write(
+        project.join(".benitoiteh/config.toml"),
+        "model = 'project-model'\n",
+    )?;
+    // この起動だけの答えは保存しないので、毎回尋ねる。
+    for (answer, expected) in [
+        (TrustAnswer::Session(false), (false, false)),
+        (TrustAnswer::Session(true), (true, true)),
+    ] {
+        let before = asked.get();
+        let prepared = start(&["--mode", "normal"], answer)?;
+        assert_eq!(asked.get(), before.saturating_add(1));
+        assert_eq!(loaded(&prepared), expected, "{answer:?}");
+        assert_eq!(
+            prepared
+                .diagnostics
+                .iter()
+                .any(|line| line.contains("is not trusted")),
+            !expected.0,
+            "{:?}",
+            prepared.diagnostics
+        );
+        if expected.0 {
+            // /new は、尋ねずに同じ決定を使い回す。
+            let status = prepared.agent.status();
+            let renewed = prepare_new(&f.args(&["--mode", "normal"])?, &status, &paths, |_, _| {
+                Ok(())
+            })
+            .map_err(|error| error.to_string())?;
+            assert_eq!(loaded(&renewed), (true, true));
+        }
+    }
+    // 覚える答えは保存し、次の起動では尋ねない。
+    drop(start(&["--mode", "normal"], TrustAnswer::Remember(false))?);
+    let before = asked.get();
+    let prepared = start(&["--mode", "normal"], TrustAnswer::Session(true))?;
+    assert_eq!(asked.get(), before);
+    assert_eq!(loaded(&prepared), (false, false));
+    drop(prepared);
+    // --trust-project は、その一回だけ信頼し、保存した決定を変えない。
+    let prepared = start(
+        &["--mode", "normal", "--trust-project"],
+        TrustAnswer::Session(false),
+    )?;
+    assert_eq!(asked.get(), before);
+    assert_eq!(loaded(&prepared), (true, true));
+    drop(prepared);
+    assert_eq!(
+        crate::config::trust::TrustStore::open(&paths)?.get(&project)?,
+        Some(false)
+    );
+    drop(start(&["--mode", "normal"], TrustAnswer::Session(true))?);
+    assert_eq!(asked.get(), before);
+    Ok(())
+}
+
+// 作成時の関門: プロジェクトの雛形だけでも信頼を尋ね、信頼したときだけ読む。利用者の雛形はいつも読み、
+// exec（非対話）ではどちらも読まない（設計書 05-02「利用者の定義するコマンド」）。
+#[test]
+fn project_prompt_templates_follow_the_trust_decision() -> Result<(), Box<dyn Error>> {
+    let f = Fixture::new()?;
+    let paths = f.paths("sandbox = 'danger-full-access'")?;
+    let project = f.0.join("project");
+    fs::create_dir_all(paths.config_dir.join("prompts"))?;
+    fs::write(paths.config_dir.join("prompts/mine.md"), "Mine.")?;
+    fs::create_dir_all(project.join(".agents/prompts"))?;
+    fs::write(project.join(".agents/prompts/plan.md"), "Plan.")?;
+    let asked = Cell::new(0_u32);
+    for (interactive, answer, expected) in [
+        (true, false, vec!["mine"]),
+        (true, true, vec!["mine", "plan"]),
+        (false, true, vec![]),
+    ] {
+        let mut args = if interactive {
+            ExecArgs::parse_interactive(["--mode", "normal"])?
+        } else {
+            f.args(&["--mode", "normal"])?
+        };
+        args.project = Some(project.clone());
+        let before = asked.get();
+        let prepared = prepare_with_trust(
+            &args,
+            None,
+            &paths,
+            |_, _| Ok(()),
+            &mut |_| false,
+            &mut |request| {
+                assert!(request.prompts && !request.skills && !request.plugins);
+                asked.set(asked.get().saturating_add(1));
+                Some(TrustAnswer::Session(answer))
+            },
+        )
+        .map_err(|error| error.to_string())?;
+        assert_eq!(asked.get(), before.saturating_add(1));
+        assert_eq!(
+            prepared
+                .status
+                .templates
+                .iter()
+                .map(|template| template.name.as_str())
+                .collect::<Vec<_>>(),
+            expected
+        );
+        assert_eq!(
+            prepared
+                .diagnostics
+                .iter()
+                .any(|line| line.contains("project prompt templates")),
+            !answer,
+            "{:?}",
+            prepared.diagnostics
+        );
+    }
+    Ok(())
 }
 
 // 関門: cleanup の報告だけでは起動処理による通知の取り落としを捕まえない。
@@ -420,17 +603,7 @@ fn declined_normal_resume_preserves_record_bytes_and_releases_lock() -> Result<(
     ));
     assert!(confirmed.get());
     assert_eq!(fs::read(&record)?, before);
-    // prepare と同じく、ほかのテストの fork が継承した錠だけを短時間待つ。
-    let started = Instant::now();
-    let reopened = loop {
-        match Session::open(&paths, &id) {
-            Err(SessionError::Locked) if started.elapsed() < Duration::from_secs(2) => {
-                thread::sleep(Duration::from_millis(20));
-            }
-            result => break result?,
-        }
-    };
-    drop(reopened);
+    drop(open_released(&paths, &id)?);
     assert_eq!(fs::read(&record)?, before);
     args.interactive = false;
     let result = prepare(&args, None, &paths, |_, _| Ok(()), &mut |_| {
@@ -1026,6 +1199,7 @@ fn query_launcher_and_environment_follow_actual_sandbox_state() -> Result<(), Bo
                 ("OPENAI_API_KEY".into(), "secret".into()),
             ],
             &Default::default(),
+            &Default::default(),
             Path::new("/temporary"),
             launcher.environment_policy(),
         );
@@ -1612,7 +1786,7 @@ fn fork_retains_copy_when_current_provider_was_removed() -> Result<(), Box<dyn E
     assert!(copied.error.is_none());
     let id = copied.id.parse::<SessionId>()?;
     assert!(error.diagnostics.contains(&text::fork_retained(&id)));
-    let retained = Session::open(&paths, &id)?;
+    let retained = open_released(&paths, &id)?;
     assert_eq!(retained.take_resume_state()?.destination.provider, "mock");
     assert_eq!(
         copied
@@ -1687,6 +1861,7 @@ fn fork_preparation_reuses_the_locked_session_and_cached_resume_state() -> Resul
         },
         QueryLauncher::TestDirect,
         &mut |_| false,
+        &mut |_| Some(TrustAnswer::Session(false)),
     )
     .map_err(|error| error.to_string())?;
     assert_eq!(prepared.session.id(), &id);

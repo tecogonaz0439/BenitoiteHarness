@@ -36,6 +36,11 @@ pub trait InputSource {
     fn termination_count(&mut self) -> io::Result<usize> {
         Ok(0)
     }
+    /// 端末を外部のプログラムに渡して `task` を動かし、終わったら取り戻す。
+    /// 端末を持たない入力元では、そのまま動かす（設計書 05-02「入力の操作」）。
+    fn suspend(&mut self, task: &mut dyn FnMut() -> io::Result<bool>) -> io::Result<bool> {
+        task()
+    }
 }
 
 /// 画面の書き込みか、ループと記録の失敗。
@@ -163,7 +168,7 @@ pub fn run(
             }
             let (approver, approvals) = crate::approval::InteractiveApprover::channel();
             worker = Worker::start(
-                prepared.agent.with_approver(Box::new(approver)),
+                prepared.agent.with_interactive_approver(approver),
                 prepared.session,
             )
             .map_err(TuiError::Io)?
@@ -201,6 +206,12 @@ pub fn run(
                 if let Err(failure) =
                     screen.draw(output, processing_since.map(|time| time.elapsed()))
                 {
+                    error = Some(TuiError::Io(failure));
+                    output_failed = true;
+                    exiting = true;
+                    worker.cancel();
+                }
+                if !output_failed && let Err(failure) = screen.deliver_notification(output) {
                     error = Some(TuiError::Io(failure));
                     output_failed = true;
                     exiting = true;
@@ -281,11 +292,10 @@ pub fn run(
                         }
                         screen.operation = Some(super::text::WAIT_REWIND);
                     }
-                    Event::Key(_)
-                    | Event::Paste(_)
-                    | Event::FocusGained
-                    | Event::FocusLost
-                    | Event::Mouse(_) => {}
+                    Event::FocusGained | Event::FocusLost => {
+                        screen.focus(&event);
+                    }
+                    Event::Key(_) | Event::Paste(_) | Event::Mouse(_) => {}
                 }
                 continue;
             }
@@ -299,7 +309,10 @@ pub fn run(
                 Action::Submit(request) => {
                     screen.original_submission = None;
                     screen.show_request(&request);
-                    if let Err(failure) = worker.submit(request, RunControl::default()) {
+                    let attachments = screen.take_attachments();
+                    if let Err(failure) =
+                        worker.submit_with_images(request, attachments, RunControl::default())
+                    {
                         error = Some(TuiError::Agent(failure));
                         exiting = true;
                     }
@@ -321,9 +334,52 @@ pub fn run(
                             for line in super::text::HELP.lines() {
                                 screen.notice(line);
                             }
+                            let templates = std::sync::Arc::clone(&screen.status.templates);
+                            if !templates.is_empty() {
+                                screen.notice(super::text::TEMPLATES_HEADING);
+                                for template in templates.iter() {
+                                    screen.notice(&super::text::template_line(
+                                        &template.name,
+                                        template.description.as_deref(),
+                                    ));
+                                }
+                            }
                             Ok(())
                         }
+                        Command::Editor if worker.is_running() => {
+                            screen.notice(super::text::COMMAND_RUNNING);
+                            Ok(())
+                        }
+                        Command::Editor => {
+                            if let Err(notice) = edit(screen, input, output) {
+                                screen.notice(&notice);
+                            }
+                            Ok(())
+                        }
+                        Command::Export(path) => {
+                            screen.notice(&match export(
+                                worker.session_directory(),
+                                worker.current_status(),
+                                path.as_deref(),
+                            ) {
+                                Ok(written) => super::text::exported(&written),
+                                Err(error) => super::text::export_failed(&error),
+                            });
+                            Ok(())
+                        }
+                        Command::Init => match init_request(worker.current_status()) {
+                            Ok(request) => {
+                                screen.original_submission = None;
+                                screen.show_request(&request);
+                                worker.submit(request, RunControl::default())
+                            }
+                            Err(notice) => {
+                                screen.notice(&notice);
+                                Ok(())
+                            }
+                        },
                         Command::Status => worker.status(),
+                        Command::Model(change) => worker.model(change),
                         Command::Compact(instructions) => {
                             screen.operation = Some(super::text::COMPACTING);
                             worker.compact(instructions)
@@ -501,4 +557,121 @@ pub fn confirm(
             }
         }
     }
+}
+
+/// `/init` の依頼。制限モードと、`AGENTS.md` がすでにあるときは送らない
+/// （設計書 05-02「`/` で始まるコマンド」）。
+fn init_request(status: &crate::agent::AgentStatus) -> Result<String, String> {
+    if status.mode == crate::config::Mode::Restricted {
+        return Err(super::text::INIT_RESTRICTED.to_owned());
+    }
+    let path = status.project.join("AGENTS.md");
+    if std::fs::symlink_metadata(&path).is_ok() {
+        return Err(super::text::init_exists(&path));
+    }
+    Ok(include_str!("../../../prompts/init.md").to_owned())
+}
+
+/// 今の枝を Markdown にして、まだないファイルに書く（設計書 01-05「会話の書き出し」）。
+/// 相対のパスはプロジェクトのディレクトリから数える。既にあるファイルは上書きしない。
+fn export(
+    directory: &std::path::Path,
+    status: &crate::agent::AgentStatus,
+    path: Option<&str>,
+) -> Result<std::path::PathBuf, String> {
+    use std::io::Write as _;
+    use std::os::unix::fs::OpenOptionsExt;
+    let markdown = crate::session::export_markdown(directory).map_err(|error| error.to_string())?;
+    let target = match path {
+        Some(path) => status.project.join(path),
+        None => status
+            .project
+            .join(format!("benitoiteh-{}.md", status.session_id)),
+    };
+    // 読んだファイルの中身を含みうるので、利用者だけが読める権限で作る。
+    let mut file = std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .mode(0o600)
+        .open(&target)
+        .map_err(|error| format!("{}: {error}", target.display()))?;
+    file.write_all(markdown.as_bytes())
+        .and_then(|()| file.sync_all())
+        .map_err(|error| format!("{}: {error}", target.display()))?;
+    Ok(target)
+}
+
+/// 下書きの大きさの上限。
+const DRAFT_LIMIT: u64 = 1024 * 1024;
+
+/// 入力欄を外部のエディタで書く。下書きはサンドボックスから読めない入力の履歴の
+/// ディレクトリに、利用者だけが読める権限で置き、終えたら消す（設計書 05-02「入力の操作」）。
+/// 理由: 一時ディレクトリに置くと、サンドボックスの中のコマンドが下書きを読み書きできる。
+fn edit(
+    screen: &mut Screen,
+    input: &mut impl InputSource,
+    output: &mut impl Write,
+) -> Result<(), String> {
+    use std::io::Read as _;
+    use std::os::unix::fs::OpenOptionsExt;
+    let Some((program, arguments)) = screen.editor.clone().and_then(|command| {
+        command
+            .split_first()
+            .map(|(program, arguments)| (program.clone(), arguments.to_vec()))
+    }) else {
+        return Err(super::text::EDITOR_UNSET.to_owned());
+    };
+    let Some(directory) = screen.private_dir.clone() else {
+        return Err(super::text::EDITOR_UNAVAILABLE.to_owned());
+    };
+    let mut random = [0_u8; 8];
+    getrandom::fill(&mut random).map_err(|error| error.to_string())?;
+    let path = directory.join(format!(".draft-{:016x}.md", u64::from_be_bytes(random)));
+    std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .mode(0o600)
+        .open(&path)
+        .and_then(|mut file| file.write_all(screen.input.text.as_bytes()))
+        .map_err(|error| super::text::editor_failed(&error.to_string()))?;
+    let result = (|| -> Result<String, String> {
+        screen
+            .detach(output)
+            .and_then(|()| output.write_all(&super::restoration(0)?))
+            .and_then(|()| output.flush())
+            .map_err(|error| super::text::editor_failed(&error.to_string()))?;
+        let finished = input.suspend(&mut || {
+            std::process::Command::new(&program)
+                .args(&arguments)
+                .arg(&path)
+                .status()
+                .map(|status| status.success())
+        });
+        // 端末を取り戻したら、入力の拡張を有効にし直す。
+        super::control::setup(output)
+            .map_err(|error| super::text::editor_failed(&error.to_string()))?;
+        match finished {
+            Ok(true) => {}
+            Ok(false) => return Err(super::text::EDITOR_EXITED.to_owned()),
+            Err(error) => return Err(super::text::editor_failed(&error.to_string())),
+        }
+        let mut contents = String::new();
+        std::fs::File::open(&path)
+            .and_then(|file| {
+                file.take(DRAFT_LIMIT.saturating_add(1))
+                    .read_to_string(&mut contents)
+            })
+            .map_err(|error| super::text::editor_failed(&error.to_string()))?;
+        if u64::try_from(contents.len()).unwrap_or(u64::MAX) > DRAFT_LIMIT {
+            return Err(super::text::EDITOR_TOO_LARGE.to_owned());
+        }
+        // エディタが足す最後の改行は、送る文に含めない。
+        if contents.ends_with('\n') {
+            contents.pop();
+        }
+        Ok(contents)
+    })();
+    let _removed = std::fs::remove_file(&path);
+    screen.input.replace(result?);
+    Ok(())
 }

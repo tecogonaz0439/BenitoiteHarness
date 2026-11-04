@@ -3,9 +3,10 @@
 pub mod credentials;
 pub(crate) mod domain;
 mod environment;
-pub use environment::child_environment;
+pub use environment::{child_environment, remark_child_environment};
 pub mod paths;
 mod text;
+pub mod trust;
 pub mod writable;
 
 use std::collections::{BTreeMap, BTreeSet};
@@ -245,8 +246,39 @@ impl Default for RestrictedConfig {
 pub struct NormalConfig {
     pub sandbox: Sandbox,
     pub approval: Approval,
-    pub network: bool,
+    pub network: NetworkAccess,
+    /// 中継の方式で、確認なしに通すドメイン（正規化した完全一致）。
+    pub allowed_domains: Vec<String>,
     pub writable_roots: Vec<PathBuf>,
+}
+
+/// 通常モードの子の通信（設計書 03-02「通信の中継」）。設定では `false`・`true`・`"proxy"` と書く。
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum NetworkAccess {
+    /// 通信させない。
+    #[default]
+    Off,
+    /// IP の通信をすべて許す。
+    On,
+    /// benitoiteh の中継だけを通し、許したドメインにだけ届ける。
+    Proxy,
+}
+
+impl<'de> Deserialize<'de> for NetworkAccess {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        #[derive(Deserialize)]
+        #[serde(untagged)]
+        enum Raw {
+            Flag(bool),
+            Name(String),
+        }
+        match Raw::deserialize(deserializer)? {
+            Raw::Flag(true) => Ok(Self::On),
+            Raw::Flag(false) => Ok(Self::Off),
+            Raw::Name(name) if name == "proxy" => Ok(Self::Proxy),
+            Raw::Name(_) => Err(serde::de::Error::custom(text::INVALID_NETWORK)),
+        }
+    }
 }
 
 /// 一連の処理の上限。
@@ -298,6 +330,14 @@ impl Default for UserReadConfig {
     }
 }
 
+/// 利用者だけが選べる `edit` の形（設計書 01-03「複数の置き換え」）。
+#[derive(Clone, Debug, Default, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct UserEditConfig {
+    /// 真なら、`edit` は複数の置き換えを `edits` の配列で受ける。
+    pub multiple: bool,
+}
+
 /// 利用者だけが Skill の探索元を切り替えられる設定（設計書 01-04）。
 #[derive(Clone, Debug, Deserialize)]
 #[serde(default, deny_unknown_fields)]
@@ -332,6 +372,24 @@ impl Default for UserPluginsConfig {
     }
 }
 
+/// 端末が前面にないときの通知（設計書 05-02「通知」）。利用者の設定だけで選ぶ。
+#[derive(Clone, Debug, Deserialize, PartialEq, Eq)]
+#[serde(default, deny_unknown_fields)]
+pub struct NotificationsConfig {
+    /// 端末に OSC 9 の通知と BEL を送る。
+    pub terminal: bool,
+    /// 起動するコマンドと引数。知らせの文を最後の引数に加える。空なら起動しない。
+    pub command: Vec<String>,
+}
+impl Default for NotificationsConfig {
+    fn default() -> Self {
+        Self {
+            terminal: true,
+            command: Vec::new(),
+        }
+    }
+}
+
 /// セッションを残す期間。
 #[derive(Clone, Debug, Deserialize)]
 #[serde(default, deny_unknown_fields)]
@@ -344,15 +402,21 @@ impl Default for SessionsConfig {
     }
 }
 
-/// 利用者だけが選べる秘密の仲介の設定（設計書 03-04「段 2」）。
+/// 利用者だけが選べる秘密の仲介と、子プロセスへ通す秘密の名前の設定
+/// （設計書 03-04「段 2」、03-02「子プロセスの環境」）。
 #[derive(Clone, Debug, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct SecretsConfig {
     pub askpass: bool,
+    /// 秘密に見える名前でも子プロセスへ通す環境変数の名前。完全に一致する名前だけを通す。
+    pub pass_env: BTreeSet<String>,
 }
 impl Default for SecretsConfig {
     fn default() -> Self {
-        Self { askpass: true }
+        Self {
+            askpass: true,
+            pass_env: BTreeSet::new(),
+        }
     }
 }
 
@@ -361,6 +425,11 @@ impl Default for SecretsConfig {
 #[serde(default, deny_unknown_fields)]
 pub struct AgentBehaviorConfig {
     pub completion_check: bool,
+    /// 道具が触れた下のディレクトリの指示のファイルを、道具の結果に添える
+    /// （設計書 01-04「下のディレクトリの指示のファイル」）。
+    pub nested_instructions: bool,
+    /// 計画を書く道具 `update_plan` を加える（設計書 01-03「update_plan」）。
+    pub plan_tool: bool,
 }
 
 /// 圧縮の予備と残す量。利用者だけが変更できる（設計書 01-04「圧縮の値を比べる設定」）。
@@ -371,6 +440,9 @@ pub struct CompactionConfig {
     pub reserve_tokens: u64,
     /// 残す会話の目安。文脈の上限の 4 分の 1 までに抑える。
     pub keep_tokens: u64,
+    /// 閾値の圧縮の前に、LLM が読んだ後の長い道具の結果を頭と尾だけにする
+    /// （設計書 01-04「道具の結果の刈り込み」）。
+    pub prune_tool_results: bool,
 }
 
 impl Default for CompactionConfig {
@@ -378,6 +450,7 @@ impl Default for CompactionConfig {
         Self {
             reserve_tokens: 16_384,
             keep_tokens: 20_000,
+            prune_tool_results: false,
         }
     }
 }
@@ -397,10 +470,12 @@ pub struct UserConfig {
     pub compaction: CompactionConfig,
     pub web_fetch: WebFetchConfig,
     pub read: UserReadConfig,
+    pub edit: UserEditConfig,
     pub skills: UserSkillsConfig,
     pub plugins: UserPluginsConfig,
     pub sessions: SessionsConfig,
     pub secrets: SecretsConfig,
+    pub notifications: NotificationsConfig,
 }
 
 impl UserConfig {
@@ -422,9 +497,21 @@ impl UserConfig {
         if config.limits.max_check_fix == 0 {
             return Err(ConfigError::Invalid(text::CHECK_FIX_POSITIVE));
         }
+        if config
+            .notifications
+            .command
+            .first()
+            .is_some_and(|program| program.is_empty())
+        {
+            return Err(ConfigError::Invalid(text::INVALID_NOTIFY_COMMAND));
+        }
         for domain in &mut config.web_fetch.allowed_domains {
             *domain = self::domain::normalize(domain)
                 .ok_or(ConfigError::Invalid(text::INVALID_DOMAIN))?;
+        }
+        for domain in &mut config.normal.allowed_domains {
+            *domain = self::domain::normalize(domain)
+                .ok_or(ConfigError::Invalid(text::INVALID_NETWORK_DOMAIN))?;
         }
         if config
             .restricted
@@ -474,6 +561,17 @@ impl UserConfig {
             if let Some(reference) = &provider.api_key {
                 reference.validate()?;
             }
+        }
+        // 提供者のキーは、通す名前に書いても通さない。黙って除くと、利用者は通したつもりになる。
+        // （設計書 03-02「子プロセスの環境」）
+        let referenced = config.referenced_env_vars();
+        if config.secrets.pass_env.iter().any(|name| {
+            name.is_empty()
+                || name.contains(['=', '\0'])
+                || PROVIDER_KEY_ENV_VARS.contains(&name.as_str())
+                || referenced.contains(name)
+        }) {
+            return Err(ConfigError::Invalid(text::INVALID_PASS_ENV));
         }
         Ok(config)
     }

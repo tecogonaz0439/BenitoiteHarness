@@ -12,6 +12,7 @@ mod definitions;
 mod edit;
 pub mod exclude;
 mod paths;
+mod plan;
 pub(crate) mod process_output;
 mod read;
 pub(crate) use read::run_image_helper;
@@ -20,6 +21,8 @@ mod search_notices;
 pub(crate) mod text;
 pub mod truncate;
 mod web_fetch;
+/// `web_fetch` と通信の中継が共有する、私的なアドレスの判定（設計書 01-03「web_fetch」）。
+pub(crate) use web_fetch::address_allowed;
 mod write;
 mod write_path;
 
@@ -80,6 +83,8 @@ pub enum ToolId {
     CreateProject,
     /// HTTPS の本文の取得。
     WebFetch,
+    /// 評価用の計画の記録（設計書 01-03「update_plan」）。
+    UpdatePlan,
 }
 
 impl ToolId {
@@ -100,6 +105,7 @@ impl ToolId {
             Self::BenitoiteReference => "benitoite_reference",
             Self::WebFetch => "web_fetch",
             Self::CreateProject => "create_project",
+            Self::UpdatePlan => "update_plan",
         }
     }
 }
@@ -171,6 +177,31 @@ impl ToolSet {
                 tool.spec.description = text::READ_PLAIN.0.into();
                 tool.rules = &[text::READ_PLAIN.1];
             }
+        }
+        self
+    }
+
+    /// 評価用に `edit` を、複数の置き換えを一度に受ける形へ替える（設計書 01-03「複数の置き換え」）。
+    pub fn multiple_edits(mut self) -> Self {
+        for tool in &mut self.definitions {
+            if tool.id == ToolId::Edit {
+                tool.summary = text::EDIT_MULTIPLE.0;
+                tool.spec.description = text::EDIT_MULTIPLE.0.into();
+                tool.rules = &[text::EDIT_MULTIPLE.1];
+                tool.spec.arguments = definitions::multiple_edit_arguments();
+            }
+        }
+        self
+    }
+
+    /// 評価用に、計画を書く道具を最後に加える（設計書 01-03「update_plan」）。
+    pub fn with_plan(mut self) -> Self {
+        if !self
+            .definitions
+            .iter()
+            .any(|tool| tool.id == ToolId::UpdatePlan)
+        {
+            self.definitions.push(definitions::plan_definition());
         }
         self
     }
@@ -303,6 +334,7 @@ impl ToolSet {
                 create_project::execute(context, &call.arguments, approval, invocation)
             }
             ToolId::WebFetch => web_fetch::execute(context, &call.arguments, approval, invocation),
+            ToolId::UpdatePlan => plan::execute(&call.arguments),
         };
         let mut output = match result {
             Ok(output) => output,
@@ -365,6 +397,8 @@ pub struct ShellContext {
     pub sandboxed: bool,
     /// 承認の方針。
     pub approval: Approval,
+    /// 中継の方式のときの、セッションで共有する門（設計書 03-02「通信の中継」）。
+    pub network: Option<Arc<crate::sandbox::proxy::NetworkGate>>,
 }
 
 /// 起動時に固定したウェブの取得の設定（設計書 01-03「web_fetch」）。
@@ -381,6 +415,7 @@ pub struct ToolContext {
     pub(crate) image_input: bool,
     pub(crate) after_write_check: bool,
     pub(crate) read_line_numbers: bool,
+    pub(crate) multiple_edits: bool,
     pub(crate) noninteractive: bool,
     pub(crate) project_parent: Option<PathBuf>,
     pub mode: Mode,
@@ -454,6 +489,25 @@ impl Default for SearchLimits {
 }
 
 impl ToolContext {
+    /// 利用者が添付した画像を、`read` と同じ規則（範囲、読まないファイル、縮小、保存）で読む
+    /// （設計書 05-02「入力の操作」）。画像でないファイルは誤りとし、中身を返さない。
+    pub fn attach_image(
+        &self,
+        path: &Path,
+        cancelled: &AtomicBool,
+    ) -> Result<crate::provider::ToolImage, String> {
+        let path = path
+            .to_str()
+            .ok_or_else(|| text::ATTACH_NOT_UTF8.to_owned())?;
+        let output = read::execute(self, &serde_json::json!({"path": path}), cancelled)
+            .map_err(|error| error.to_string())?;
+        output
+            .images
+            .into_iter()
+            .next()
+            .ok_or_else(|| text::ATTACH_NOT_IMAGE.to_owned())
+    }
+
     /// 起動時に開いた範囲と、除外の規則を受け取る。
     pub fn new(
         mode: Mode,
@@ -467,6 +521,7 @@ impl ToolContext {
             noninteractive: false,
             after_write_check: true,
             read_line_numbers: true,
+            multiple_edits: false,
             project_parent: None,
             project_creation: None,
             project_candidates: Mutex::new(BTreeMap::new()),
@@ -508,6 +563,12 @@ impl ToolContext {
     pub fn with_eval_switches(mut self, after_write_check: bool, read_line_numbers: bool) -> Self {
         self.after_write_check = after_write_check;
         self.read_line_numbers = read_line_numbers;
+        self
+    }
+
+    /// 利用者の設定だけから、`edit` を複数の置き換えの形にするかを固定する（設計書 01-03「複数の置き換え」）。
+    pub fn with_multiple_edits(mut self, enabled: bool) -> Self {
+        self.multiple_edits = enabled;
         self
     }
 
@@ -866,7 +927,8 @@ impl ConfirmKey {
             | ApprovalKind::WriteScope
             | ApprovalKind::Command
             | ApprovalKind::Escalate
-            | ApprovalKind::WebFetch => None,
+            | ApprovalKind::WebFetch
+            | ApprovalKind::Network => None,
         }
     }
 }

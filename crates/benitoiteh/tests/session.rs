@@ -10,6 +10,7 @@ use std::fs::{self, OpenOptions};
 use std::io::{self, Write};
 use std::os::unix::fs::{DirBuilderExt, PermissionsExt, symlink};
 use std::path::PathBuf;
+use std::sync::{PoisonError, RwLock, RwLockReadGuard, RwLockWriteGuard};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use benitoiteh::config::Mode;
@@ -35,6 +36,7 @@ fn tree_rows_preserve_preorder_branch_depth_and_combined_marks() -> TestResult {
         node,
         kind: UserKind::Request,
         message: UserMessage {
+            images: Vec::new(),
             parts: vec![UserPart {
                 kind: UserPartKind::Request,
                 text: text.into(),
@@ -106,13 +108,47 @@ fn tree_rows_preserve_preorder_branch_depth_and_combined_marks() -> TestResult {
     Ok(())
 }
 
+// 子プロセスを起こすテストを、セッションの錠を扱うほかのテストと同じプロセスの中で重ねない。
+// flock の錠は複製した記述子にも及ぶので、別のスレッドが起こした子が exec するまで、
+// 落とした Session の錠が残り、後始末や再開がその項目を使用中と見る
+// （docs/2026-11-02/02-session-flaky-tests.md「推定する原因」）。
+// 子プロセスを起こすテストは Fixture::spawning() で準備する。
+static CHILD_PROCESSES: RwLock<()> = RwLock::new(());
+
 struct Fixture {
     root: PathBuf,
     paths: DataPaths,
+    // 錠はフィールドとして Drop の本体の後に落ちるので、根を消してから手放す。
+    _shared: Option<RwLockReadGuard<'static, ()>>,
+    _exclusive: Option<RwLockWriteGuard<'static, ()>>,
 }
 
 impl Fixture {
     fn new() -> Result<Self, Box<dyn Error>> {
+        let shared = CHILD_PROCESSES
+            .read()
+            .unwrap_or_else(PoisonError::into_inner);
+        Self::with_guards(Some(shared), None)
+    }
+
+    /// 子プロセスを起こすテストの準備。テストの間、ほかの Fixture を待たせる。
+    fn spawning() -> Result<Self, Box<dyn Error>> {
+        let exclusive = CHILD_PROCESSES
+            .write()
+            .unwrap_or_else(PoisonError::into_inner);
+        Self::with_guards(None, Some(exclusive))
+    }
+
+    /// 同じテストの二つ目の準備。同じスレッドで読みの錠を重ねて取ると、待っている書きの錠と
+    /// 互いに待ち合うので、錠を持つ `self` より先に落とす前提で、錠を取らない。
+    fn sibling(&self) -> Result<Self, Box<dyn Error>> {
+        Self::with_guards(None, None)
+    }
+
+    fn with_guards(
+        shared: Option<RwLockReadGuard<'static, ()>>,
+        exclusive: Option<RwLockWriteGuard<'static, ()>>,
+    ) -> Result<Self, Box<dyn Error>> {
         let id = SessionId::generate(SystemTime::now())?;
         let root = std::env::temp_dir().join(format!("benitoiteh-session-test-{id}"));
         fs::create_dir(&root)?;
@@ -125,7 +161,12 @@ impl Fixture {
             Some(&root.join("state")),
             Some(&root.join("tmp")),
         )?;
-        Ok(Self { root, paths })
+        Ok(Self {
+            root,
+            paths,
+            _shared: shared,
+            _exclusive: exclusive,
+        })
     }
 
     fn session(&self) -> Result<Session, Box<dyn Error>> {
@@ -166,6 +207,9 @@ fn header(session: &Session) -> Record {
         compaction: None,
         after_write_check: None,
         read_line_numbers: None,
+        multiple_edits: None,
+        nested_instructions: None,
+        plan_tool: None,
         plugins: Vec::new(),
         skills: Vec::new(),
     })
@@ -247,6 +291,7 @@ fn records_replay_conversation_losslessly_and_finish_with_summary() -> TestResul
     writer.append(&header(&session))?;
     assert!(summary_writer.append(&header(&session)).is_err());
     let message = UserMessage {
+        images: Vec::new(),
         parts: vec![
             UserPart {
                 kind: UserPartKind::Environment,
@@ -386,6 +431,7 @@ fn replay_ignores_only_torn_tail_and_fills_missing_tool_results_before_next_mess
         stderr_spill: None,
     })?;
     let message = UserMessage {
+        images: Vec::new(),
         parts: vec![UserPart {
             kind: UserPartKind::Steering,
             text: "check files".to_owned(),
@@ -1029,7 +1075,7 @@ fn cleanup_reports_failures_continues_and_retries_without_losing_locks() -> Test
             }
         }
     }
-    let fixture = Fixture::new()?;
+    let fixture = Fixture::spawning()?;
     let blocked = fixture.session()?;
     let id = blocked.id().clone();
     let directory = blocked.directory().to_owned();
@@ -1133,7 +1179,7 @@ fn deep_cleanup_and_session_drop_do_not_depend_on_thread_stack_depth() -> TestRe
     use rustix::process::{Resource, getrlimit, setrlimit};
     const CHILD: &str = "BENITOITEH_DEEP_CLEANUP_CHILD";
     const DEPTH: usize = 750;
-    let fixture = Fixture::new()?;
+    let fixture = Fixture::spawning()?;
     if std::env::var_os(CHILD).is_none() {
         let output = std::process::Command::new(std::env::current_exe()?)
             .args([
@@ -1322,7 +1368,7 @@ fn pinned_temporary_directory_uses_an_alternate_name_on_resume() -> TestResult {
         ),
     ];
     for (program, args, undo_program, undo_args) in cases {
-        let fixture = Fixture::new()?;
+        let fixture = Fixture::spawning()?;
         let session = fixture.session()?;
         session.writer()?.append(&header(&session))?;
         let id = session.id().clone();
@@ -1536,6 +1582,7 @@ fn replay_selects_only_the_path_and_its_reasoning_segments() -> TestResult {
         node,
         kind: UserKind::Request,
         message: UserMessage {
+            images: Vec::new(),
             parts: vec![UserPart {
                 kind: UserPartKind::Request,
                 text: text.into(),
@@ -1699,7 +1746,10 @@ fn invalid_trees_are_rejected_before_resume_touches_temporary_files() -> TestRes
     let user = |node| Record::User {
         node,
         kind: UserKind::Request,
-        message: UserMessage { parts: vec![] },
+        message: UserMessage {
+            parts: vec![],
+            images: Vec::new(),
+        },
     };
     let cases = vec![
         vec![
@@ -1784,6 +1834,7 @@ fn fork_copies_the_whole_selected_path_and_only_its_assets() -> TestResult {
         node,
         kind: UserKind::Request,
         message: UserMessage {
+            images: Vec::new(),
             parts: vec![UserPart {
                 kind: UserPartKind::Request,
                 text: value.into(),
@@ -1894,6 +1945,7 @@ fn fork_copies_the_whole_selected_path_and_only_its_assets() -> TestResult {
     let compacted = Conversation {
         items: vec![
             Item::UserMessage(UserMessage {
+                images: Vec::new(),
                 parts: vec![UserPart {
                     kind: UserPartKind::Request,
                     text: "summary".into(),
@@ -2193,7 +2245,7 @@ fn fork_failures_leave_no_destination_and_preserve_the_source() -> TestResult {
 #[test]
 fn fork_copies_more_references_than_the_descriptor_limit() -> TestResult {
     const CHILD: &str = "BENITOITEH_FORK_FD_CHILD";
-    let f = Fixture::new()?;
+    let f = Fixture::spawning()?;
     if std::env::var_os(CHILD).is_none() {
         let output = std::process::Command::new(std::env::current_exe()?)
             .args([
@@ -2288,8 +2340,16 @@ fn fork_rewrites_only_complete_spill_paths_owned_by_each_result() -> TestResult 
         spill: Some(other.clone()),
         stderr_spill: None,
     })?;
-    writer.append(&Record::Compaction {
+    // 刈り込んだ文にも、元の結果の保存先が残りうる。
+    writer.append(&Record::ToolResultsPruned {
         node: 3,
+        results: vec![benitoiteh::session::PrunedResult {
+            id: "first".into(),
+            text: body.clone(),
+        }],
+    })?;
+    writer.append(&Record::Compaction {
+        node: 4,
         conversation: Conversation {
             items: vec![Item::ToolResult(first)],
         },
@@ -2313,6 +2373,7 @@ fn fork_rewrites_only_complete_spill_paths_owned_by_each_result() -> TestResult 
     let records = read_records(copied.directory())?;
     assert!(records.iter().any(|record| matches!(record, Record::ToolResult { result, .. } if result.id == "first" && result.text == expected)));
     assert!(records.iter().any(|record| matches!(record, Record::Compaction { conversation, .. } if matches!(conversation.items.first(), Some(Item::ToolResult(result)) if result.text == expected))));
+    assert!(records.iter().any(|record| matches!(record, Record::ToolResultsPruned { results, .. } if matches!(results.first(), Some(pruned) if pruned.text == expected))));
     Ok(())
 }
 
@@ -2361,7 +2422,7 @@ fn fork_origin_ids_are_checked_by_both_listing_and_opening() -> TestResult {
 #[test]
 fn shared_temporary_cleanup_preserves_foreign_live_entries_and_unrecorded_helpers() -> TestResult {
     let first = Fixture::new()?;
-    let second = Fixture::new()?;
+    let second = first.sibling()?;
     let mut second_paths = second.paths.clone();
     second_paths.temporary_root = first.paths.temporary_root.clone();
     let foreign = Session::create(&second_paths, SessionId::generate(SystemTime::now())?)?;
@@ -2538,5 +2599,146 @@ fn cleanup_uses_cleanup_specific_diagnostic_for_nonprivate_parent() -> TestResul
     );
     assert!(!message.contains("mediation was disabled"), "{message}");
     assert_eq!(fs::read(parent.join("keep"))?, b"keep");
+    Ok(())
+}
+
+// 作成時の関門: 記録を残さないセッションは、使う間も ID で開けず一覧に出ず、手放すと記録と
+// 一時ディレクトリが消える。落ちて残ったものは、次の起動の掃除が消す（設計書 01-05「記録を残さないセッション」）。
+#[test]
+fn ephemeral_sessions_are_hidden_while_used_and_removed_when_released() -> TestResult {
+    let fixture = Fixture::new()?;
+    let session =
+        Session::create_ephemeral(&fixture.paths, SessionId::generate(SystemTime::now())?)?;
+    let id = session.id().clone();
+    session.writer()?.append(&header(&session))?;
+    let directory = session.directory().to_owned();
+    let temporary = session.temporary_dir().to_owned();
+    assert!(directory.join("session.jsonl").is_file());
+    assert!(
+        directory
+            .file_name()
+            .and_then(|name| name.to_str())
+            .is_some_and(|name| name.starts_with(&format!(".removing-{id}-")))
+    );
+    assert!(session_support::open_created_session(&fixture.paths, &id).is_err());
+    assert!(benitoiteh::session::list_sessions(&fixture.paths)?.is_empty());
+    // 使っている間は錠を持つので、ほかの起動の掃除は消さない。
+    let report = cleanup(&fixture.paths, DEFAULT_RETENTION_DAYS, SystemTime::now())?;
+    assert!(report.failures.is_empty(), "{:?}", report.failures);
+    assert!(directory.join("session.jsonl").is_file());
+    assert!(temporary.is_dir());
+    drop(session);
+    assert_eq!(fs::read_dir(&fixture.paths.sessions_dir)?.count(), 0);
+    assert!(!temporary.exists());
+    // 手放す処理を経ずに残った場合（強制の終了）を、錠のない墓標と一時ディレクトリで作る。
+    let leftover =
+        Session::create_ephemeral(&fixture.paths, SessionId::generate(SystemTime::now())?)?;
+    leftover.writer()?.append(&header(&leftover))?;
+    let leftover_directory = leftover.directory().to_owned();
+    let leftover_temporary = leftover.temporary_dir().to_owned();
+    std::mem::forget(leftover);
+    // forget した錠の記述子はこのプロセスに残るので、錠のファイルを替えて錠のない状態にする。
+    fs::remove_file(leftover_directory.join("lock"))?;
+    fs::write(leftover_directory.join("lock"), b"")?;
+    fs::set_permissions(
+        leftover_directory.join("lock"),
+        fs::Permissions::from_mode(0o600),
+    )?;
+    let report = cleanup(&fixture.paths, DEFAULT_RETENTION_DAYS, SystemTime::now())?;
+    assert!(report.failures.is_empty(), "{:?}", report.failures);
+    assert_eq!(fs::read_dir(&fixture.paths.sessions_dir)?.count(), 0);
+    assert!(!leftover_temporary.exists());
+    Ok(())
+}
+
+// 作成時の関門: 書き出しは今の枝だけを順に書き、圧縮の前の番も、圧縮の印と要約とともに残す。
+// 中身の囲みで書き出しの囲みを閉じさせず、推論の中身は書かない（設計書 01-05「会話の書き出し」）。
+#[test]
+fn export_writes_the_current_branch_with_compaction_and_safe_fences() -> TestResult {
+    use benitoiteh::session::export_markdown;
+    let fixture = Fixture::new()?;
+    let session = fixture.session()?;
+    let mut writer = session.writer()?;
+    writer.append(&header(&session))?;
+    let user = |node, kind, text: &str| Record::User {
+        node,
+        kind: UserKind::Request,
+        message: UserMessage {
+            images: Vec::new(),
+            parts: vec![UserPart {
+                kind,
+                text: text.into(),
+            }],
+        },
+    };
+    writer.append(&user(1, UserPartKind::Request, "Write the file."))?;
+    writer.append(&Record::Assistant {
+        node: 2,
+        turn: 1,
+        response: response(&[call("first")]),
+    })?;
+    writer.append(&Record::ToolResult {
+        node: 3,
+        turn: 1,
+        name: "write".into(),
+        result: ToolResult {
+            id: "first".into(),
+            provider_id: None,
+            text: "```\nclosing fence\n````".into(),
+            is_error: true,
+            images: Vec::new(),
+        },
+        spill: None,
+        stderr_spill: None,
+    })?;
+    writer.append(&Record::Compaction {
+        node: 4,
+        conversation: Conversation {
+            items: vec![Item::UserMessage(UserMessage {
+                images: Vec::new(),
+                parts: vec![UserPart {
+                    kind: UserPartKind::Summary,
+                    text: "Summary text.".into(),
+                }],
+            })],
+        },
+        reason: Default::default(),
+        summarized_items: 3,
+        kept_items: 0,
+        usage: None,
+        kept_estimate: None,
+    })?;
+    writer.append(&user(5, UserPartKind::Request, "Abandoned request."))?;
+    writer.append(&Record::Branch {
+        to: Some(4),
+        from: Some(5),
+        checkpoint: None,
+    })?;
+    writer.append(&user(6, UserPartKind::Request, "Final request."))?;
+    drop(writer);
+    let exported = export_markdown(session.directory())?;
+    assert!(exported.starts_with(&format!("# benitoiteh session {}\n", session.id())));
+    let order = [
+        "## User\n\nWrite the file.",
+        "## Assistant\n\nrunning tools",
+        "### Tool call: `write`",
+        "\"path\": \"a.bnt\"",
+        "### Tool error: `write`\n\n`````text\n```\nclosing fence\n````\n`````",
+        "> The conversation was compacted here",
+        "Summary text.",
+        "## User\n\nFinal request.",
+    ];
+    let mut position = 0;
+    for expected in order {
+        let found = exported
+            .get(position..)
+            .and_then(|rest| rest.find(expected))
+            .ok_or_else(|| format!("missing {expected:?} after {position} in:\n{exported}"))?;
+        position = position
+            .saturating_add(found)
+            .saturating_add(expected.len());
+    }
+    assert!(!exported.contains("Abandoned request."), "{exported}");
+    assert!(!exported.contains("opaque"), "{exported}");
     Ok(())
 }

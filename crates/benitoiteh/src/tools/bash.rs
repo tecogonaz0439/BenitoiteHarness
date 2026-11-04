@@ -1,8 +1,10 @@
 //! 通常モードのシェルを確認後に起動し、出力の末尾と保存を管理する（設計書 01-03「bash（通常モード）」）。
 
-use std::ffi::OsString;
+use std::ffi::{OsStr, OsString};
+use std::os::unix::ffi::{OsStrExt, OsStringExt};
+use std::os::unix::fs::MetadataExt;
 use std::os::unix::process::ExitStatusExt;
-use std::path::Path;
+use std::path::{Component, Path, PathBuf};
 
 use std::sync::{Arc, Mutex, PoisonError};
 use std::time::Duration;
@@ -116,7 +118,7 @@ pub(super) fn execute(
     } else {
         None
     };
-    let launch = prepare(
+    let (launch, proxy) = prepare(
         shell,
         context.project.real_path(),
         command,
@@ -239,6 +241,12 @@ pub(super) fn execute(
     if blocked {
         append(&mut contents, text::BASH_SANDBOX);
     }
+    // 中継が断った宛先と理由を、推定でなく事実として返す（設計書 03-02「通信の中継」）。
+    if let Some(proxy) = &proxy {
+        for denial in proxy.run.denials() {
+            append(&mut contents, &denial);
+        }
+    }
     Ok(ToolOutput {
         screen: Some(text::screen_exit(code)),
         spill,
@@ -273,7 +281,7 @@ fn prepare(
     sandboxed: bool,
     secret_call: Option<&crate::askpass::CallGuard>,
     changed_directory: &mut bool,
-) -> Result<RunCommand, ToolError> {
+) -> Result<(RunCommand, Option<ProxyGuard>), ToolError> {
     let path = if Path::new("/bin/bash").is_file() {
         Path::new("/bin/bash")
     } else {
@@ -293,11 +301,13 @@ fn prepare(
     }
     if sandboxed {
         let program = path.canonicalize()?;
-        let command = SandboxCommand {
-            policy: shell
-                .policy
-                .clone()
-                .ok_or_else(|| ToolError::InvalidArguments(text::BASH_CONTEXT.into()))?,
+        let policy = shell
+            .policy
+            .clone()
+            .ok_or_else(|| ToolError::InvalidArguments(text::BASH_CONTEXT.into()))?;
+        let (policy, guard) = proxy(shell, cwd, command, policy, &mut env)?;
+        let sandbox = SandboxCommand {
+            policy,
             args: shell_arguments(&program, command),
             program,
             cwd: cwd.to_owned(),
@@ -306,21 +316,31 @@ fn prepare(
         };
         #[cfg(target_os = "linux")]
         {
-            command
+            let prepared = sandbox
                 .prepare(&shell.helper, &shell.scratch, &shell.placeholders)
-                .map(Into::into)
-                .map_err(|e| failure(&e))
+                .map_err(|e| failure(&e))?;
+            let prepared = match &guard {
+                Some(guard) => prepared.with_proxy(Arc::clone(&guard.run)),
+                None => prepared,
+            };
+            Ok((prepared.into(), guard))
         }
         #[cfg(not(target_os = "linux"))]
         {
-            command
-                .to_command(&shell.helper)
-                .map(Into::into)
-                .map_err(|e| failure(&e))
+            let launch = sandbox.to_command(&shell.helper).map_err(|e| failure(&e))?;
+            Ok((launch.into(), guard))
         }
     } else {
         env.remove(std::ffi::OsStr::new("BENITOITEH_SANDBOX"));
         env.remove(std::ffi::OsStr::new("BENITOITEH_SANDBOX_NETWORK_DISABLED"));
+        // 承認を受けて外で動かす一回では、サンドボックスの中から書ける場所に届く PATH の項目を除く。
+        // 中のコマンドが置いた偽の git などを、利用者が承認した外の実行に拾わせない
+        // （設計書 03-02「通常モードの方針」）。
+        if shell.policy.is_some()
+            && let Some(value) = env.get_mut(std::ffi::OsStr::new("PATH"))
+        {
+            *value = outside_path(value, &shell.writable_roots);
+        }
         let mut launch = crate::sandbox::session::command(&shell.helper, path);
         launch
             .arg("-c")
@@ -328,8 +348,174 @@ fn prepare(
             .current_dir(cwd)
             .env_clear()
             .envs(env);
-        Ok(launch.into())
+        Ok((launch.into(), None))
     }
+}
+
+/// 一回のコマンドの中継。断った記録を結果に添えるまで保つ。macOS では待ち受けもここで持つ。
+struct ProxyGuard {
+    run: Arc<crate::sandbox::proxy::ProxyRun>,
+    #[cfg(not(target_os = "linux"))]
+    _server: crate::sandbox::proxy::ProxyServer,
+}
+
+/// 中継の方式なら、このコマンドの中継を用意し、子にプロキシの変数を渡す（設計書 03-02「通信の中継」）。
+/// `NO_PROXY` は除く。受け継いだ例外で中継を飛ばすと、つながらずに失敗するだけだからである。
+fn proxy(
+    shell: &ShellContext,
+    cwd: &Path,
+    command: &str,
+    policy: crate::sandbox::SandboxPolicy,
+    env: &mut std::collections::BTreeMap<OsString, OsString>,
+) -> Result<(crate::sandbox::SandboxPolicy, Option<ProxyGuard>), ToolError> {
+    let Some(gate) = shell
+        .network
+        .as_ref()
+        .filter(|_| policy.config().network_proxy)
+    else {
+        return Ok((policy, None));
+    };
+    let run = crate::sandbox::proxy::ProxyRun::new(Arc::clone(gate), command.into(), cwd.into());
+    #[cfg(target_os = "linux")]
+    let (policy, guard, port) = (
+        policy,
+        ProxyGuard { run },
+        crate::sandbox::proxy::LINUX_PORT,
+    );
+    // macOS では、主のプロセスがループバックで待ち受け、方針でそのポートへの接続だけを許す。
+    #[cfg(not(target_os = "linux"))]
+    let (policy, guard, port) = {
+        let listener = std::net::TcpListener::bind(("127.0.0.1", 0))?;
+        let port = listener.local_addr()?.port();
+        let mut config = policy.config().clone();
+        config.network_proxy = false;
+        config.allow_loopback_port = std::num::NonZeroU16::new(port);
+        let policy = crate::sandbox::SandboxPolicy::new(config).map_err(|e| failure(&e))?;
+        let server =
+            crate::sandbox::proxy::serve(listener, Arc::clone(&run)).map_err(|e| failure(&e))?;
+        (
+            policy,
+            ProxyGuard {
+                run,
+                _server: server,
+            },
+            port,
+        )
+    };
+    let url = OsString::from(gate.proxy_url(port));
+    for name in [
+        "HTTP_PROXY",
+        "HTTPS_PROXY",
+        "ALL_PROXY",
+        "http_proxy",
+        "https_proxy",
+        "all_proxy",
+    ] {
+        env.insert(name.into(), url.clone());
+    }
+    for name in ["NO_PROXY", "no_proxy"] {
+        env.remove(std::ffi::OsStr::new(name));
+    }
+    Ok((policy, Some(guard)))
+}
+
+/// `PATH` の項目のうち、書ける場所に届くものを除いて並べ直す。
+fn outside_path(path: &OsStr, roots: &[PathBuf]) -> OsString {
+    let roots: Vec<Root> = roots.iter().map(|root| Root::new(root)).collect();
+    let kept: Vec<&[u8]> = path
+        .as_bytes()
+        .split(|byte| *byte == b':')
+        .filter(|entry| !reaches_writable(Path::new(OsStr::from_bytes(entry)), &roots))
+        .collect();
+    OsString::from_vec(kept.join(&b':'))
+}
+
+/// 書ける場所の根。名前と、ファイルシステムの上の同一性（デバイスと inode）の両方で比べる。
+/// 同一性で比べるのは、大小文字を区別しないファイルシステムの綴りの違う名前や、別の場所の
+/// bind マウントから根に入る道を捕まえるため。
+struct Root {
+    path: PathBuf,
+    identity: Option<(u64, u64)>,
+}
+impl Root {
+    fn new(path: &Path) -> Self {
+        let path = std::fs::canonicalize(path).unwrap_or_else(|_| path.to_owned());
+        let identity = std::fs::metadata(&path)
+            .ok()
+            .map(|metadata| (metadata.dev(), metadata.ino()));
+        Self { path, identity }
+    }
+}
+
+enum Part {
+    Parent,
+    Name(OsString),
+}
+
+fn parts(path: &Path) -> impl DoubleEndedIterator<Item = Part> + '_ {
+    path.components().filter_map(|component| match component {
+        Component::ParentDir => Some(Part::Parent),
+        Component::Normal(name) => Some(Part::Name(name.to_owned())),
+        Component::RootDir | Component::CurDir | Component::Prefix(_) => None,
+    })
+}
+
+/// 項目を根から一段ずつ辿り、通るディレクトリかリンクの先が書ける場所に入るかを調べる。
+/// 相対の項目（空の項目を含む）は作業ディレクトリに依るので、いつも届くとみなす。
+/// 調べられないときも届くとみなす（nono の broker_path と同じく、リンクの各段を調べる）。
+fn reaches_writable(entry: &Path, roots: &[Root]) -> bool {
+    if !entry.is_absolute() {
+        return true;
+    }
+    let inside = |path: &Path, metadata: Option<&std::fs::Metadata>| {
+        roots.iter().any(|root| {
+            path.starts_with(&root.path)
+                || metadata
+                    .is_some_and(|metadata| root.identity == Some((metadata.dev(), metadata.ino())))
+        })
+    };
+    let mut pending: Vec<Part> = parts(entry).rev().collect();
+    let mut current = PathBuf::from("/");
+    let mut links = 0_u8;
+    while let Some(part) = pending.pop() {
+        let name = match part {
+            Part::Parent => {
+                current.pop();
+                continue;
+            }
+            Part::Name(name) => name,
+        };
+        let next = current.join(name);
+        match std::fs::symlink_metadata(&next) {
+            Ok(metadata) if metadata.file_type().is_symlink() => {
+                if inside(&next, None) {
+                    return true;
+                }
+                links = links.saturating_add(1);
+                let Ok(target) = std::fs::read_link(&next) else {
+                    return true;
+                };
+                if links > 40 {
+                    return true;
+                }
+                if target.is_absolute() {
+                    current = PathBuf::from("/");
+                }
+                pending.extend(parts(&target).rev());
+            }
+            Ok(metadata) => {
+                if inside(&next, Some(&metadata)) {
+                    return true;
+                }
+                current = next;
+            }
+            // まだない場所は、書ける場所の中でなければ中から作れない。書ける場所の中かは、
+            // 残りを名前のまま辿った後の最後の判定で見る。
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => current = next,
+            Err(_) => return true,
+        }
+    }
+    inside(&current, None)
 }
 
 fn sandbox_denied(

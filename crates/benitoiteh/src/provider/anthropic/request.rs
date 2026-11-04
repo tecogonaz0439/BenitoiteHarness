@@ -22,6 +22,8 @@ pub struct RequestOptions<'a> {
     pub previous_last_item: Option<usize>,
     /// 圧縮のため tool_choice: none を使うか。未対応の口では誤りにする。
     pub disable_tools: bool,
+    /// 最後の応答の形を決める JSON Schema（設計書 05-01「exec の出力」）。圧縮の要求には付けない。
+    pub output_schema: Option<&'a Value>,
 }
 
 /// 認証ヘッダを含む送信専用の要求。Debug は内容を表示しない。
@@ -29,6 +31,13 @@ pub struct AnthropicRequest {
     pub(super) uri: Uri,
     pub(super) headers: HeaderMap,
     pub(super) body: Vec<u8>,
+}
+
+impl AnthropicRequest {
+    /// 認証の値を除いた形（設計書 05-01「debug prompt-input」）。
+    pub fn preview(&self) -> crate::provider::RequestPreview {
+        crate::provider::RequestPreview::new(&self.uri, &self.headers, &self.body)
+    }
 }
 
 impl fmt::Debug for AnthropicRequest {
@@ -91,6 +100,14 @@ impl AnthropicAdapter {
         if !tools.is_empty() && options.disable_tools {
             insert(&mut body, "tool_choice", json!({"type": "none"}))?;
         }
+        if let Some(schema) = options.output_schema
+            && let Some(config) = body.get_mut("output_config").and_then(Value::as_object_mut)
+        {
+            config.insert(
+                "format".into(),
+                json!({"type": "json_schema", "schema": schema}),
+            );
+        }
         if tools.is_empty() {
             let fields = body.as_object_mut().ok_or(AnthropicError::InvalidRequest)?;
             fields.remove("tools");
@@ -134,13 +151,31 @@ impl AnthropicAdapter {
         let plan = crate::provider::image_plan(conversation, self.capabilities.image_input);
         for (index, item) in conversation.items.iter().enumerate() {
             let (role, mut content) = match item {
-                Item::UserMessage(user) => (
-                    "user",
-                    user.parts
+                Item::UserMessage(user) => {
+                    let mut content = user
+                        .parts
                         .iter()
                         .map(|p| json!({"type": "text", "text": p.text}))
-                        .collect(),
-                ),
+                        .collect::<Vec<_>>();
+                    let (images, notices) = crate::provider::images::prepare_user(
+                        user,
+                        self.capabilities.image_input,
+                        &plan,
+                        index,
+                    );
+                    for image in images {
+                        content.push(json!({"type": "image", "source": {
+                            "type": "base64", "media_type": image.media_type,
+                            "data": crate::provider::images::encode(image.data.as_deref().unwrap_or_default())
+                        }}));
+                    }
+                    content.extend(
+                        notices
+                            .into_iter()
+                            .map(|notice| json!({"type": "text", "text": notice})),
+                    );
+                    ("user", content)
+                }
                 Item::AssistantTurn(turn) => {
                     let same = turn.raw_items.destination == self.destination
                         && turn.raw_items.adapter == AdapterKind::AnthropicMessages;

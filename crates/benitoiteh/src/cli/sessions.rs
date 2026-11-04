@@ -11,7 +11,11 @@ use crate::session;
 use crate::ui::{self, ExecOutput};
 
 pub(super) fn run(args: impl Iterator<Item = OsString>) -> Result<u8, CliError> {
-    let mut args = args;
+    let mut args = args.peekable();
+    if args.peek().is_some_and(|arg| arg == "export") {
+        args.next();
+        return export(args);
+    }
     let mut project = None;
     let mut json = false;
     let mut seen = BTreeSet::new();
@@ -76,5 +80,27 @@ pub(super) fn run(args: impl Iterator<Item = OsString>) -> Result<u8, CliError> 
         }
     }
     stdout.flush().map_err(CliError::Output)?;
+    Ok(0)
+}
+
+/// `sessions export <ID>`。今の枝を Markdown で標準出力に書く（設計書 05-01「sessions」）。
+/// 動いているセッションでも、記録を読むだけなので錠を取らない。
+fn export(mut args: impl Iterator<Item = OsString>) -> Result<u8, CliError> {
+    let (Some(id), None) = (args.next(), args.next()) else {
+        return Err(CliError::Usage);
+    };
+    let id = id
+        .to_str()
+        .and_then(|id| id.parse::<session::SessionId>().ok())
+        .ok_or(CliError::Usage)?;
+    let paths =
+        DataPaths::from_env().map_err(|error| CliError::Startup(StartupError::Config(error)))?;
+    let markdown = session::export_markdown(&paths.sessions_dir.join(id.as_str()))
+        .map_err(|error| CliError::Startup(StartupError::Session(error)))?;
+    let mut stdout = io::stdout().lock();
+    stdout
+        .write_all(markdown.as_bytes())
+        .and_then(|()| stdout.flush())
+        .map_err(CliError::Output)?;
     Ok(0)
 }

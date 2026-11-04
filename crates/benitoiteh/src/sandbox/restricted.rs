@@ -2,7 +2,7 @@
 
 use super::{PolicyConfig, ProgramAccess, ReadAccess, SandboxError, SandboxPolicy};
 use crate::config::writable::WritableLocations;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 /// 呼び出し元が確定した、今回の起動に限る権限。
 #[derive(Clone, Debug)]
@@ -15,6 +15,8 @@ pub struct RestrictedAccess {
     pub programs: Vec<PathBuf>,
     /// 読める範囲。
     pub readable: ReadAccess,
+    /// 利用者がこの一回に承認したとき、`.agents` の守りを外す（設計書 03-02「.agents の守り」）。
+    pub write_agents: bool,
 }
 
 /// 検査済みの場所から、問い合わせと実行に共通の制限モードの方針を作る。
@@ -31,6 +33,11 @@ pub fn restricted_policy(
     config.readable = access.readable.clone();
     config.allow_ip = access.allow_ip;
     config.programs = ProgramAccess::Only(access.programs.clone());
+    if access.write_agents && access.write_project {
+        config
+            .protected_names
+            .retain(|name| name != super::policy::AGENTS);
+    }
     for candidate in denied_candidates {
         match std::fs::canonicalize(candidate) {
             Ok(path) => config.denied_read.push(path),
@@ -38,7 +45,55 @@ pub fn restricted_policy(
             Err(error) => return Err(SandboxError::Io(error)),
         }
     }
+    project_secrets(&locations.project, 1, &mut config.denied_read)?;
     SandboxPolicy::new(config)
+}
+
+/// プロジェクトの中の、道具が読まない名前のファイルとディレクトリを、制限モードの子にも読ませない。
+/// 深さは入れ子の守る場所と同じ根から 3 段とし、リンクの名前は指す先を塞ぐ。`.git` は辿らず、塞がない
+/// （設計書 03-02「制限モードの方針」、BH-100）。
+fn project_secrets(
+    directory: &Path,
+    depth: u8,
+    found: &mut Vec<PathBuf>,
+) -> Result<(), SandboxError> {
+    let entries = match std::fs::read_dir(directory) {
+        Ok(entries) => entries,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(error) => return Err(SandboxError::Io(error)),
+    };
+    for entry in entries {
+        let entry = entry.map_err(SandboxError::Io)?;
+        let name = entry.file_name();
+        let name = name.to_string_lossy();
+        if name.eq_ignore_ascii_case(".git") {
+            continue;
+        }
+        let path = entry.path();
+        let metadata = std::fs::symlink_metadata(&path).map_err(SandboxError::Io)?;
+        // Benitoite のソース（.env.bnt など）は、処理系が検査と実行に読む。取り込みの確認と、
+        // 診断を件数だけ示す規則で扱うので、ここでは塞がない（設計書 04-01「終了状態と診断の受け渡し」）。
+        let source = std::path::Path::new(name.as_ref())
+            .extension()
+            .is_some_and(|extension| extension == "bnt");
+        if !source && crate::tools::exclude::secret_component(&name) {
+            // 塞げるのは通常のファイルとディレクトリだけ。消えた先と、ほかの種類は飛ばす。
+            match std::fs::canonicalize(&path) {
+                Ok(real)
+                    if std::fs::metadata(&real)
+                        .is_ok_and(|target| target.is_file() || target.is_dir()) =>
+                {
+                    found.push(real);
+                }
+                Ok(_) => {}
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                Err(error) => return Err(SandboxError::Io(error)),
+            }
+        } else if depth < 3 && metadata.is_dir() {
+            project_secrets(&path, depth.saturating_add(1), found)?;
+        }
+    }
+    Ok(())
 }
 
 /// 確認なしの一時スクリプトで読む範囲を狭める（設計書 03-03「一時的なスクリプト」）。

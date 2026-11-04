@@ -11,7 +11,7 @@ use rustix::fs::OFlags;
 
 use super::{ForkedFrom, Record, Session, SessionError, SessionId, SessionTree, SpillInfo, text};
 use crate::config::paths::DataPaths;
-use crate::provider::{AssistantPart, Item, ToolResult};
+use crate::provider::{AssistantPart, Item};
 
 /// 画面で選んだ、写す道の終わり。節点番号は元のセッションのもの。
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -91,17 +91,31 @@ impl ForkPlan {
             } = record
             {
                 rewrite_spills(
-                    result,
+                    &mut result.text,
                     [spill.as_ref(), stderr_spill.as_ref()],
                     source.directory(),
                     &destination,
                 );
             }
+            // 刈り込んだ文の尾にも、元の結果の保存先が残りうる（設計書 01-04「道具の結果の刈り込み」）。
+            if let Record::ToolResultsPruned { results, .. } = record {
+                for pruned in results {
+                    rewrite_spills(
+                        &mut pruned.text,
+                        spills
+                            .get(pruned.id.as_str())
+                            .copied()
+                            .unwrap_or([None, None]),
+                        source.directory(),
+                        &destination,
+                    );
+                }
+            }
             if let Record::Compaction { conversation, .. } = record {
                 for item in &mut conversation.items {
                     if let Item::ToolResult(result) = item {
                         rewrite_spills(
-                            result,
+                            &mut result.text,
                             spills
                                 .get(result.id.as_str())
                                 .copied()
@@ -243,8 +257,15 @@ fn assets(
             );
             hashes.extend(result.images.iter().map(|image| image.sha256.clone()));
         }
+        // 利用者の添付の画像も写す（設計書 02-01「画像の受け渡し」）。
+        if let Record::User { message, .. } = record {
+            hashes.extend(message.images.iter().map(|image| image.sha256.clone()));
+        }
         if let Record::Compaction { conversation, .. } = record {
             for item in &conversation.items {
+                if let Item::UserMessage(message) = item {
+                    hashes.extend(message.images.iter().map(|image| image.sha256.clone()));
+                }
                 if let Item::ToolResult(result) = item {
                     hashes.extend(result.images.iter().map(|image| image.sha256.clone()));
                     if let Some(infos) = spills.get(result.id.as_str()) {
@@ -273,7 +294,7 @@ fn assets(
 }
 
 fn rewrite_spills(
-    result: &mut ToolResult,
+    text: &mut String,
     infos: [Option<&SpillInfo>; 2],
     source: &Path,
     destination: &Path,
@@ -284,30 +305,26 @@ fn rewrite_spills(
         let new = destination.join(&info.path).display().to_string();
         let mut rewritten = String::new();
         let mut copied = 0;
-        for (start, _) in result.text.match_indices(&old) {
+        for (start, _) in text.match_indices(&old) {
             let end = start.saturating_add(old.len());
-            let before = result
-                .text
+            let before = text
                 .get(..start)
                 .and_then(|value| value.chars().next_back());
-            let after = result
-                .text
-                .get(end..)
-                .and_then(|value| value.chars().next());
+            let after = text.get(end..).and_then(|value| value.chars().next());
             let boundary = |value: Option<char>| {
                 value.is_none_or(|ch| {
                     ch.is_whitespace() || matches!(ch, '[' | ']' | '(' | ')' | '"' | '\'' | '`')
                 })
             };
             if boundary(before) && boundary(after) {
-                rewritten.push_str(result.text.get(copied..start).unwrap_or_default());
+                rewritten.push_str(text.get(copied..start).unwrap_or_default());
                 rewritten.push_str(&new);
                 copied = end;
             }
         }
         if copied != 0 {
-            rewritten.push_str(result.text.get(copied..).unwrap_or_default());
-            result.text = rewritten;
+            rewritten.push_str(text.get(copied..).unwrap_or_default());
+            *text = rewritten;
         }
     }
 }
@@ -496,6 +513,8 @@ mod tests {
     use super::*;
     use std::fs;
     use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
+
+    use crate::provider::ToolResult;
 
     type TestResult = Result<(), Box<dyn std::error::Error>>;
     struct Fixture {

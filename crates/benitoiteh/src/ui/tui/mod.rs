@@ -6,9 +6,11 @@ mod selection;
 pub use commands::{Command, NewSession};
 mod control;
 pub mod history;
-pub use confirmation::ConfirmationGuard;
+pub use confirmation::{ConfirmationGuard, TrustChoice};
 mod format;
 mod input;
+mod mention;
+mod notify;
 mod runtime;
 mod terminal;
 mod text;
@@ -17,6 +19,7 @@ mod worker;
 
 pub use control::restoration;
 pub use input::Action;
+pub use notify::{Notification, Notifier};
 pub use runtime::{InputSource, TuiError, confirm, run};
 pub use terminal::{TerminalGuard, TerminalOutput, TerminalRestore};
 pub use worker::{RunControl, Worker};
@@ -42,6 +45,8 @@ pub struct Status {
     pub sandbox_disabled: bool,
     pub context_window: Option<u64>,
     pub estimate: u64,
+    /// 利用者の定義するコマンド（設計書 05-02「利用者の定義するコマンド」）。
+    pub templates: std::sync::Arc<crate::context::prompts::PromptTemplates>,
 }
 
 /// 入力のイベント列と AgentEvent を受け、Write に一回の描画を出す芯。
@@ -61,6 +66,7 @@ pub struct Screen {
     rows_below: u16,
     confirmation: Option<confirmation::Confirmation>,
     confirmation_result: Option<bool>,
+    trust_result: Option<confirmation::TrustChoice>,
     secret_resume_after: Option<Instant>,
     discard_secret_input: bool,
     pending_secret_results: Vec<crate::askpass::Prompt>,
@@ -75,6 +81,21 @@ pub struct Screen {
     operation: Option<&'static str>,
     before_rewind: Option<String>,
     interrupted_rewind: Option<String>,
+    /// 端末の前面の報告。報告がなければ None（設計書 05-02「通知」）。
+    focused: Option<bool>,
+    notifier: Notifier,
+    notification: Option<Notification>,
+    /// 外部のエディタのコマンドと引数（設計書 05-02「入力の操作」）。
+    editor: Option<Vec<String>>,
+    /// 下書きを置く、サンドボックスから読めない場所（入力の履歴のディレクトリ）。
+    private_dir: Option<std::path::PathBuf>,
+    /// `@` の補完で探すプロジェクトのディレクトリ。
+    project_dir: Option<std::path::PathBuf>,
+    /// 補完の候補にするファイル。初めて補うときに集める。
+    files: Option<Vec<String>>,
+    mention: Option<mention::Mention>,
+    /// 次の依頼に添える画像のパス（設計書 05-02「入力の操作」）。
+    attachments: Vec<std::path::PathBuf>,
 }
 
 // 送る文と復元する原文を分け、// を外した文が取り消し後にコマンドにならないようにする。
@@ -102,6 +123,7 @@ impl Screen {
             rows_below: 0,
             confirmation: None,
             confirmation_result: None,
+            trust_result: None,
             secret_resume_after: None,
             discard_secret_input: false,
             pending_secret_results: Vec::new(),
@@ -116,6 +138,77 @@ impl Screen {
             operation: None,
             before_rewind: None,
             interrupted_rewind: None,
+            focused: None,
+            notifier: Notifier::default(),
+            notification: None,
+            editor: None,
+            private_dir: None,
+            project_dir: None,
+            files: None,
+            mention: None,
+            attachments: Vec::new(),
+        }
+    }
+
+    /// 次の依頼に添える画像のパスを移す。
+    pub fn take_attachments(&mut self) -> Vec<std::path::PathBuf> {
+        std::mem::take(&mut self.attachments)
+    }
+
+    /// 外部のエディタのコマンドを使う。`VISUAL`、なければ `EDITOR` を空白で分けたもの。
+    pub fn with_editor(mut self, editor: Option<Vec<String>>) -> Self {
+        self.editor = editor.filter(|command| !command.is_empty());
+        self
+    }
+
+    /// 描いた入力欄と状態の行を消し、次の描画を今のカーソルの位置から始める。
+    /// 外部のプログラムに端末を渡す前に呼ぶ。
+    pub(super) fn detach(&mut self, writer: &mut impl Write) -> io::Result<()> {
+        let mut frame = Frame::default();
+        frame.begin()?;
+        frame.clear(self.rows_above)?;
+        frame.finish(writer)?;
+        self.rows_above = 0;
+        self.rows_below = 0;
+        Ok(())
+    }
+
+    /// 利用者の設定で選んだ知らせ方を使う（設計書 05-02「通知」）。
+    pub fn with_notifier(mut self, notifier: Notifier) -> Self {
+        self.notifier = notifier;
+        self
+    }
+
+    /// 端末が前面を離れたと報告したときだけ、次に描いた後で知らせる。報告のない端末では知らせない。
+    /// 理由: 前面にあるかを推し量って、利用者の見ている画面に余計な知らせを出さない。
+    pub(super) fn notify(&mut self, notification: Notification) {
+        if self.focused == Some(false) && self.notification.is_none() {
+            self.notification = Some(notification);
+        }
+    }
+
+    /// 溜めた知らせを送る。描いた後に呼ぶ。
+    pub fn deliver_notification(&mut self, output: &mut impl Write) -> io::Result<()> {
+        match self.notification.take() {
+            Some(notification) => self.notifier.send(output, notification),
+            None => Ok(()),
+        }
+    }
+
+    /// 端末の前面の報告を覚える。ほかの入力としては扱わない。
+    pub(super) fn focus(&mut self, event: &Event) -> bool {
+        match event {
+            Event::FocusGained => {
+                self.focused = Some(true);
+                // 前面に戻ったら、まだ送っていない知らせは要らない。
+                self.notification = None;
+                true
+            }
+            Event::FocusLost => {
+                self.focused = Some(false);
+                true
+            }
+            Event::Key(_) | Event::Mouse(_) | Event::Paste(_) | Event::Resize(..) => false,
         }
     }
 
@@ -145,6 +238,9 @@ impl Screen {
         now: Duration,
         running: bool,
     ) -> Action {
+        if self.focus(&event) {
+            return Action::None;
+        }
         if let Event::Resize(width, height) = event {
             if self.size != (width, height)
                 && let Some(confirmation) = &mut self.confirmation
@@ -165,6 +261,40 @@ impl Screen {
         }
         if self.selection.is_some() {
             return self.selection_input(event);
+        }
+        // 処理の途中でないときに画像のファイルのパスを一つだけ貼ったら、文ではなく添付にする
+        // （設計書 05-02「入力の操作」）。
+        if !running
+            && let Event::Paste(value) = &event
+            && let Some(path) = image_path(value)
+        {
+            if !self.attachments.contains(&path) {
+                self.attachments.push(path);
+            }
+            return Action::None;
+        }
+        // Ctrl+C で入力欄を空にするときは、添付も外す。
+        if let Event::Key(key) = &event
+            && key.kind == crossterm::event::KeyEventKind::Press
+            && key.code == crossterm::event::KeyCode::Char('c')
+            && key
+                .modifiers
+                .contains(crossterm::event::KeyModifiers::CONTROL)
+            && !running
+        {
+            self.attachments.clear();
+        }
+        // `@` の後の Tab はパスを補う。ほかの入力は補う途中の状態を捨てる（設計書 05-02「入力の操作」）。
+        if let Event::Key(key) = &event
+            && key.kind == crossterm::event::KeyEventKind::Press
+            && key.code == crossterm::event::KeyCode::Tab
+            && key.modifiers.is_empty()
+        {
+            if self.complete_mention() {
+                return Action::None;
+            }
+        } else {
+            self.mention = None;
         }
         let action = self.input.event(event, now, running);
         self.command_action(action, running)
@@ -318,6 +448,19 @@ impl Screen {
                     .extend(message.lines().map(|line| plain(line, Decoration::Error)));
             }
             AgentEvent::ImagesRemoved { .. } => self.notice(text::IMAGES_REMOVED),
+            AgentEvent::NestedInstructions { paths, skipped, .. } => {
+                for line in crate::ui::text::nested_instructions(paths, skipped).lines() {
+                    self.notice(line);
+                }
+            }
+            AgentEvent::ToolResultsPruned {
+                results,
+                estimate_after,
+                ..
+            } => {
+                self.status.estimate = *estimate_after;
+                self.notice(&text::tool_results_pruned(results.len()));
+            }
             AgentEvent::Retry { reason, .. } => {
                 self.flush_pending();
                 self.notice(&text::event_detail(text::RETRY, reason));
@@ -409,6 +552,8 @@ impl Screen {
         paths: &crate::config::paths::DataPaths,
         project: &std::path::Path,
     ) {
+        self.private_dir = Some(paths.history_dir.clone());
+        self.project_dir = Some(project.to_path_buf());
         match history::History::open(paths, project) {
             Ok((file, entries)) => {
                 for entry in entries {
@@ -618,9 +763,10 @@ impl Screen {
                 text::QUIT_HINT.to_owned()
             } else {
                 format!(
-                    "{}{}{}",
+                    "{}{}{}{}",
                     text::status(&self.status, elapsed),
                     text::queued(self.followups.len()),
+                    text::attachments(&self.attachments),
                     self.operation
                         .map_or(String::new(), |value| format!(" | {value}"))
                 )
@@ -657,6 +803,34 @@ impl Screen {
         self.rows_below = u16::try_from(below).unwrap_or(u16::MAX);
         Ok(())
     }
+}
+
+/// 貼った文が、画像の拡張子を持つ一つのファイルの絶対パスなら、そのパスを返す。
+/// 端末が付ける引用符、`file://`、空白の `\` を外す。中身は送るときに read と同じ規則で読む。
+fn image_path(value: &str) -> Option<std::path::PathBuf> {
+    let trimmed = value.trim();
+    if trimmed.contains('\n') {
+        return None;
+    }
+    let unquoted = ['\'', '"']
+        .into_iter()
+        .find_map(|quote| {
+            trimmed
+                .strip_prefix(quote)
+                .and_then(|rest| rest.strip_suffix(quote))
+        })
+        .unwrap_or(trimmed);
+    let unprefixed = unquoted.strip_prefix("file://").unwrap_or(unquoted);
+    let path = std::path::PathBuf::from(unprefixed.replace("\\ ", " ").replace("%20", " "));
+    let image = path
+        .extension()
+        .and_then(std::ffi::OsStr::to_str)
+        .is_some_and(|extension| {
+            ["png", "jpg", "jpeg", "gif", "webp"]
+                .iter()
+                .any(|known| extension.eq_ignore_ascii_case(known))
+        });
+    (path.is_absolute() && image && path.is_file()).then_some(path)
 }
 
 #[cfg(test)]

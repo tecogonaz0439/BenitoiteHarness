@@ -1,0 +1,2 @@
+Replace matching text in a file, with one or more replacements in one call.
+Read the file before editing it. Each edits[].old_string is matched against the original file, not against the result of earlier edits in the same call. Each old_string must be nonempty and occur once, unless replace_all is true for that edit. Edits must not overlap; merge changes to the same or nearby lines into one edit. Batch changes to one file in a single call. If any edit fails, the file is left unchanged.

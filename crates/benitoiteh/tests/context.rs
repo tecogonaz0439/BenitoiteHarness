@@ -17,53 +17,76 @@ use benitoiteh::context::{
 use benitoiteh::provider::Usage;
 use benitoiteh::tools::ToolSet;
 
+/// 期待ファイルと比べる道具の形。
+#[derive(Clone, Copy)]
+enum Variant {
+    Default,
+    ReadPlain,
+    EditMultiple,
+    Plan,
+}
+
 #[test]
 fn llm_context_matches_reviewed_files_in_both_modes() -> Result<(), Box<dyn Error>> {
     // 更新は examples/update_context_expected.rs を明示的に実行し、全文を確認する。
     // このテストでは期待ファイルを一切書き換えない（設計書 07-01「LLM に見せる文の固定」）。
     let documents = skill::skills()?;
     let skill = documents.document("SKILL.md", &std::sync::atomic::AtomicBool::new(false))?;
-    let cases = [
+    // 評価用の切り替えの形も、既定の形と同じく確認した全文と比べる。
+    for (mode, enabled, variant, expected_system, expected_tools) in [
         (
             Mode::Restricted,
             true,
-            true,
+            Variant::Default,
             include_str!("expected/system-restricted.txt"),
             include_str!("expected/tools-restricted.json"),
         ),
         (
             Mode::Normal,
             true,
-            true,
+            Variant::Default,
             include_str!("expected/system-normal.txt"),
             include_str!("expected/tools-normal.json"),
         ),
-    ];
-    for (mode, enabled, line_numbers, expected_system, expected_tools) in cases.into_iter().chain([
         (
             Mode::Normal,
             false,
-            true,
+            Variant::Default,
             include_str!("expected/system-normal-without-benitoite.txt"),
             include_str!("expected/tools-normal-without-benitoite.json"),
         ),
         (
             Mode::Restricted,
             true,
-            false,
+            Variant::ReadPlain,
             include_str!("expected/system-restricted-read-plain.txt"),
             include_str!("expected/tools-restricted-read-plain.json"),
         ),
-    ]) {
+        (
+            Mode::Normal,
+            true,
+            Variant::EditMultiple,
+            include_str!("expected/system-normal-edit-multiple.txt"),
+            include_str!("expected/tools-normal-edit-multiple.json"),
+        ),
+        (
+            Mode::Restricted,
+            true,
+            Variant::Plan,
+            include_str!("expected/system-restricted-plan.txt"),
+            include_str!("expected/tools-restricted-plan.json"),
+        ),
+    ] {
         let tools = if enabled {
             ToolSet::new(mode)
         } else {
             ToolSet::without_benitoite(mode)
         };
-        let tools = if line_numbers {
-            tools
-        } else {
-            tools.plain_read()
+        let tools = match variant {
+            Variant::Default => tools,
+            Variant::ReadPlain => tools.plain_read(),
+            Variant::EditMultiple => tools.multiple_edits(),
+            Variant::Plan => tools.with_plan(),
         };
         let context = SystemContext::new(&tools, enabled.then_some(skill.as_ref()))?;
         if mode == Mode::Restricted {
