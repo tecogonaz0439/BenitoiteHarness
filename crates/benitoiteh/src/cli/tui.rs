@@ -135,7 +135,7 @@ fn run_interactive(args: ExecArgs, signals: &mut Signals) -> Result<u8, CliError
             },
             &mut |request| {
                 let mut screen = startup_screen();
-                screen.open_trust(&request.root, &trust_loads(request));
+                screen.open_trust(&request.root, &trust_loads(request), &request.added);
                 let _answered = ask(&mut screen);
                 if terminated.load(std::sync::atomic::Ordering::Acquire)
                     || shared.borrow().2.is_some()

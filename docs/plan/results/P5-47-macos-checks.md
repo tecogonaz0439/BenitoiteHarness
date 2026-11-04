@@ -112,4 +112,4 @@ aarch64 の 2 件は、作業用のブランチが `tests/tools_bash.rs` に加�
 | 秘密に見える環境変数の名前 | `MYSQL_PWD`・`*_PAT` などが判定から漏れる |
 | 外部のエディタと通知のコマンド | 提供者のキーを含む環境をそのまま継ぐ |
 
-2026-11-05 に、秘密に見える環境変数の名前は [P5-49](../tasks/P5-49-environment-rules.md) の環境の規則で置き換え、Linux のまだない入れ子の `.agents` は P5-51 で、ほかは [P5-50](../tasks/P5-50-deferred-review-fixes.md) で扱った。
+2026-11-05 に、秘密に見える環境変数の名前は [P5-49](../tasks/P5-49-environment-rules.md) の環境の規則で置き換え、Linux のまだない入れ子の `.agents` は [P5-51](../tasks/P5-51-agents-locations-trust.md) で、ほかは [P5-50](../tasks/P5-50-deferred-review-fixes.md) で扱った。

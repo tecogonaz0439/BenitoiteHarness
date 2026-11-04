@@ -32,7 +32,18 @@ impl Drop for Fixture {
     }
 }
 
-// 作成時の関門: 決定は根ごとに分かれ、置き換えで上書きでき、次に開いても読める。
+fn decision(trusted: bool, locations: &[&str]) -> Decision {
+    Decision {
+        trusted,
+        locations: locations
+            .iter()
+            .map(|location| (*location).to_owned())
+            .collect(),
+    }
+}
+
+// 作成時の関門: 決定は根ごとに分かれ、置き場所の一覧とともに置き換えで上書きでき、次に開いても読める。
+// 前の版の記録（置き場所の一覧がない）は、空の一覧として読む。
 // 読む側は、ほかの利用者の形（権限、リンク、別の根の記録）を決定として使わない。
 #[test]
 fn decisions_are_kept_per_root_and_rejected_when_tampered() -> TestResult {
@@ -42,13 +53,14 @@ fn decisions_are_kept_per_root_and_rejected_when_tampered() -> TestResult {
     let second = f.0.join("second");
     let store = TrustStore::open(&paths)?;
     assert_eq!(store.get(&first)?, None);
-    store.set(&first, true)?;
-    store.set(&second, false)?;
+    let trusted = decision(true, &[".agents/skills", "pkg/.agents/plugins"]);
+    store.set(&first, &trusted)?;
+    store.set(&second, &decision(false, &[]))?;
     let store = TrustStore::open(&paths)?;
-    assert_eq!(store.get(&first)?, Some(true));
-    assert_eq!(store.get(&second)?, Some(false));
-    store.set(&first, false)?;
-    assert_eq!(store.get(&first)?, Some(false));
+    assert_eq!(store.get(&first)?, Some(trusted));
+    assert_eq!(store.get(&second)?, Some(decision(false, &[])));
+    store.set(&first, &decision(false, &[]))?;
+    assert_eq!(store.get(&first)?, Some(decision(false, &[])));
     let directory = paths.data_dir.join("trust");
     assert_eq!(
         std::fs::metadata(&directory)?.permissions().mode() & 0o7777,
@@ -72,8 +84,15 @@ fn decisions_are_kept_per_root_and_rejected_when_tampered() -> TestResult {
     symlink(directory.join(name(&second)), &file)?;
     assert!(store.get(&first).is_err());
     std::fs::remove_file(&file)?;
-    store.set(&first, true)?;
+    store.set(&first, &decision(true, &[]))?;
     std::fs::set_permissions(&file, std::fs::Permissions::from_mode(0o644))?;
     assert!(store.get(&first).is_err());
+    std::fs::set_permissions(&file, std::fs::Permissions::from_mode(0o600))?;
+    let old = format!(
+        "{{\"path\":{},\"trusted\":true}}\n",
+        serde_json::to_string(first.to_str().ok_or("path")?)?
+    );
+    std::fs::write(&file, old)?;
+    assert_eq!(store.get(&first)?, Some(decision(true, &[])));
     Ok(())
 }

@@ -137,6 +137,19 @@ pub fn project_untrusted(
     )
 }
 
+/// 信頼して覚えた後に、信頼を要する置き場所が増えたので、この起動では信頼しなかった。
+pub fn trust_locations_added(root: &std::path::Path, added: &[std::path::PathBuf]) -> String {
+    let added = added
+        .iter()
+        .map(|location| location.display().to_string())
+        .collect::<Vec<_>>()
+        .join(", ");
+    format!(
+        "{} was trusted before these locations appeared, so it is not trusted now: {added}. Start benitoiteh interactively in it to review them, or pass --trust-project to exec for one run.",
+        root.display()
+    )
+}
+
 /// 保存した信頼の決定を読めなかった。
 pub fn trust_unreadable(root: &std::path::Path, error: &std::io::Error) -> String {
     format!(

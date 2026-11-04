@@ -735,12 +735,27 @@ impl Screen {
     }
 
     /// 起動のときのプロジェクトの信頼の確認にも、同じ入力の守りを掛ける。
-    pub fn open_trust(&mut self, root: &std::path::Path, loads: &[&str]) {
-        let facts = vec![
+    /// `added` は、前に信頼して覚えた後に増えた置き場所（設計書 03-01「プロジェクトの信頼」）。
+    pub fn open_trust(
+        &mut self,
+        root: &std::path::Path,
+        loads: &[&str],
+        added: &[std::path::PathBuf],
+    ) {
+        let mut facts = vec![
             (text::TRUST_ROOT, SafeText::path(root).as_str().to_owned()),
             (text::TRUST_LOADS, loads.join(", ")),
-            (text::WARNING, text::TRUST_WARNING.to_owned()),
         ];
+        if !added.is_empty() {
+            // 置き場所の名前はプロジェクトのものなので、制御の文字を見える形に変える。
+            let added = added
+                .iter()
+                .map(|location| SafeText::path(location).as_str().to_owned())
+                .collect::<Vec<_>>()
+                .join(", ");
+            facts.push((text::TRUST_ADDED, added));
+        }
+        facts.push((text::WARNING, text::TRUST_WARNING.to_owned()));
         self.flush_pending();
         self.confirmation_result = None;
         self.trust_result = None;

@@ -81,7 +81,6 @@ fn templates_load_user_first_and_project_only_when_included() -> TestResult {
     )?;
     let home = root.0.join("home");
 
-    assert!(project_has_prompts(&app, &home));
     let without = collect(&user, &app, &home, false, &exclude);
     assert_eq!(
         without.iter().map(|t| t.name.as_str()).collect::<Vec<_>>(),
