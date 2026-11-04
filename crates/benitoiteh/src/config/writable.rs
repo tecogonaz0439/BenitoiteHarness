@@ -116,9 +116,13 @@ pub fn validate_project_candidate(
     temporary: &Path,
     executable: &Path,
 ) -> Result<WritableLocations, WritableError> {
+    // `.agents` の下にプロジェクトを作ると、書ける場所の根が `.agents` の中になり、以後の書き込みが
+    // `.agents` の確認を受けなくなるので、これも拒む（設計書 03-02「.agents の守り」）。
     if candidate.components().any(|part| {
         let name = part.as_os_str().as_encoded_bytes();
-        name.eq_ignore_ascii_case(b".git") || name.eq_ignore_ascii_case(b".benitoiteh")
+        crate::sandbox::PROTECTED_NAMES
+            .iter()
+            .any(|protected| crate::sandbox::same_protected_name(name, protected))
     }) {
         return Err(reject(WritableRule::ProtectedName, candidate, candidate));
     }

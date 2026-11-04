@@ -16,6 +16,30 @@ pub const PROTECTED_NAMES: [&str; 3] = [".git", ".benitoiteh", AGENTS];
 /// エージェントの設定とスキルを置く名前。承認した実行でだけ守りを外せる。
 pub const AGENTS: &str = ".agents";
 
+/// 名前の一要素が、大小文字を区別しないファイルシステムで守る名前と同じ場所を指しうるか。
+/// ASCII の大小文字に加え、macOS の APFS が `s` に畳む長い s（U+017F）も同じとみなす。
+/// 2026-11-04 に macOS の実機で、U+0080 以降の文字のうち守る名前の文字と重なるのはこれだけと確かめた
+/// （設計書 01-03「書く道具のパスの規則」）。
+pub fn same_protected_name(name: &[u8], protected: &str) -> bool {
+    let Ok(name) = std::str::from_utf8(name) else {
+        return name.eq_ignore_ascii_case(protected.as_bytes());
+    };
+    let mut folded = name.chars().map(|character| match character {
+        '\u{17f}' => 's',
+        other => other.to_ascii_lowercase(),
+    });
+    let mut expected = protected
+        .chars()
+        .map(|character| character.to_ascii_lowercase());
+    loop {
+        match (folded.next(), expected.next()) {
+            (None, None) => return true,
+            (Some(left), Some(right)) if left == right => {}
+            _ => return false,
+        }
+    }
+}
+
 /// 読み取りを許す範囲。どちらも `denied_read` を除く。
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ReadAccess {

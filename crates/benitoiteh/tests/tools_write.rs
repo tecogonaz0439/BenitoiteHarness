@@ -332,6 +332,33 @@ fn restricted_writes_to_agents_scripts_need_one_time_approval() -> TestResult {
     Ok(())
 }
 
+// 関門: 根の直下の `.agents` がシンボリックリンクのとき、その先に書くことも、リンクを通して書くことも、
+// `.agents` への書き込みとして一回ごとの確認を求める。実のパスはリンクを解いた後なので、名前だけでは
+// 捕まらない（設計書 01-03「書く道具のパスの規則」）。
+#[test]
+fn writes_through_or_to_the_target_of_an_agents_link_need_agents_approval() -> TestResult {
+    let f = Fixture::new(Mode::Normal)?;
+    fs::create_dir_all(f.project.join("tools/agents/skills"))?;
+    symlink("tools/agents", f.project.join(".agents"))?;
+    for path in [
+        f.project.join("tools/agents/skills/evil/SKILL.md"),
+        f.project.join(".agents/skills/evil/SKILL.md"),
+    ] {
+        let output = f
+            .tools
+            .execute(&f.context, "write", args("write", json!(path)));
+        let request = output.approval.as_ref().ok_or("approval")?;
+        assert!(request.facts.agents_write, "{path:?}: {}", output.text);
+        assert!(!path.exists());
+    }
+    let ordinary = f.project.join("tools/other.txt");
+    let output = f
+        .tools
+        .execute(&f.context, "write", args("write", json!(ordinary)));
+    assert!(output.approval.is_none(), "{}", output.text);
+    Ok(())
+}
+
 #[test]
 fn normal_mode_requests_approval_before_any_mutation_and_accepts_trusted_approval() -> TestResult {
     let f = Fixture::new(Mode::Normal)?;
@@ -349,6 +376,9 @@ fn normal_mode_requests_approval_before_any_mutation_and_accepts_trusted_approva
         (f.project.join(".GIT/config"), protected),
         (f.project.join("alias/through-link"), protected),
         (f.temporary.join(".benitoiteh/config"), protected),
+        // APFS は長い s（U+017F）を s に畳むので、この綴りで作ったものは `.agents` として開ける。
+        // `.agents` がまだないときの判定を確かめるので、`.agents` の行より先に置く。
+        (f.project.join(".agent\u{17f}/skills/evil/SKILL.md"), agents),
         (f.project.join(".agents/skills/demo/SKILL.md"), agents),
         (f.project.join("sub/.AGENTS/hooks.json"), agents),
     ] {

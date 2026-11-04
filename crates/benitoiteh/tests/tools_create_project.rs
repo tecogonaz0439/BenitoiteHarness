@@ -176,7 +176,14 @@ fn invalid_existing_and_protected_destinations_never_create_anything() -> TestRe
         "missing/child".into(),
         "file/child".into(),
     ];
-    for name in [".git", ".GIT", ".benitoiteh", ".BeNiToItEh"] {
+    for name in [
+        ".git",
+        ".GIT",
+        ".benitoiteh",
+        ".BeNiToItEh",
+        ".agents",
+        ".AGENTS",
+    ] {
         fs::create_dir_all(f.root.join(name))?;
         fs::write(f.root.join(name).join("existing"), "keep")?;
         paths.extend([format!("{name}/child"), format!("{name}/existing")]);

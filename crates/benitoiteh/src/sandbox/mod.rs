@@ -37,7 +37,10 @@ pub use linux::{
     probe_linux, run_helper,
 };
 pub use macos::SeatbeltProfile;
-pub use policy::{AGENTS, PROTECTED_NAMES, PolicyConfig, ProgramAccess, ReadAccess, SandboxPolicy};
+pub use policy::{
+    AGENTS, PROTECTED_NAMES, PolicyConfig, ProgramAccess, ReadAccess, SandboxPolicy,
+    same_protected_name,
+};
 
 /// 補助の準備に失敗したときの共通の終了状態。目的のプログラムも同じ値を返せる。
 pub(crate) const SETUP_FAILURE: u8 = 125;
@@ -126,6 +129,7 @@ impl SandboxCommand {
             if !Path::new("/usr/bin/sandbox-exec").is_file() {
                 return Err(SandboxError::Unavailable);
             }
+            macos::reject_protected_links(self.policy.config())?;
             let profile = self.policy.seatbelt_profile();
             let mut command =
                 session::command_with_limits(helper, Path::new("/usr/bin/sandbox-exec"), limits);
