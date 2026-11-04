@@ -108,6 +108,7 @@
 | [P5-46](tasks/P5-46-catch-up-evaluation-switches.md) | キャッチアップの案の段 2: 評価用の切り替え（複数の置き換え、刈り込み、下のディレクトリの指示、`update_plan`） | P5-45 | 完了 |
 | [P5-47](tasks/P5-47-post-merge-macos-checks.md) | 取り込みの後の macOS での確かめと直し（BH-119、BH-118） | P5-42〜P5-46 | 完了 |
 | [P5-48](tasks/P5-48-macos-secret-name-regex.md) | macOS で、制限モードの秘密の名前をどの深さでも読ませない（Seatbelt の正規表現の規則） | P5-47 | 完了 |
+| [P5-49](tasks/P5-49-environment-rules.md) | 子プロセスの環境の規則（`[environment] rules` の allow・deny・set を上から順に当てる。`pass_env` を置き換える） | P5-48 | 未着手 |
 
 P5-42〜P5-46 は、2026-11-02〜03 にオーケストレータ（Claude Code）が設計者の指示でクラウドのセッションで行い、実装プランの外で進めた作業である。2026-11-04 に `gamou` へ取り込み（P5-47 で macOS の確かめと直しを行った）、作業の記録として本書に加えた。作業文書は事後の記録であり、確かめの経過は `results/` に置く。作業の一覧と残っていることの入口は [2026-11-02〜03 の作業のまとめ](../2026-11-02/README.md)にある。
 
