@@ -561,7 +561,7 @@ pub(super) fn prepare(
                     env: child_environment(
                         std::env::vars_os(),
                         &user.referenced_env_vars(),
-                        &user.secrets.pass_env,
+                        user.environment.rules(),
                         &locations.temporary,
                         launcher.environment_policy(),
                     ),
@@ -619,7 +619,7 @@ pub(super) fn prepare(
             let mut env = child_environment(
                 std::env::vars_os(),
                 &user.referenced_env_vars(),
-                &user.secrets.pass_env,
+                user.environment.rules(),
                 &locations.temporary,
                 // 中継の方式は通信できる方針なので、通信できない印を付けない。
                 policy.as_ref().map(|policy| {
@@ -805,7 +805,7 @@ pub(super) fn prepare(
                 env: child_environment(
                     std::env::vars_os(),
                     &user.referenced_env_vars(),
-                    &user.secrets.pass_env,
+                    user.environment.rules(),
                     &locations.temporary,
                     Some(("restricted", false)),
                 ),

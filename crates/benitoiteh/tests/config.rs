@@ -605,6 +605,8 @@ fn writable_locations_reject_the_real_executable_in_any_root() -> TestResult {
     Ok(())
 }
 
+// 作成時の関門: 利用者の規則を上から順に当て、規則の後に提供者のキーの除去と印の設定を必ず当てる契約を、
+// 設定の読み込みから実際の子（/usr/bin/env）までで確かめる（設計書 03-02「環境の規則」「規則の後に必ず当てる変更」）。
 #[test]
 fn child_process_environment_removes_all_provider_keys_and_replaces_inherited_markers() -> TestResult
 {
@@ -614,11 +616,8 @@ fn child_process_environment_removes_all_provider_keys_and_replaces_inherited_ma
     use std::process::Command;
     let f = Fixture::new()?;
     let temporary = f.dir("tmp")?;
-    let user = UserConfig::parse(
-        "[providers.p]\nkind='openai-chat'\nmodel='m'\napi_key={env='CUSTOM_PROVIDER_KEY'}\n[secrets]\npass_env=['GH_TOKEN']",
-    )?;
     // 固定の一覧は実装の定数から写さず、仕様のキーと、秘密に見える名前の語ごとの例を全て渡す。
-    // 大小文字の違いと、語が名前の途中にある形も含める（設計書 03-02「子プロセスの環境」）。
+    // 大小文字の違いと、語が名前の途中にある形も含める。
     let inherited: BTreeMap<OsString, OsString> = [
         ("AWS_ACCESS_KEY_ID", "secret-aws-key"),
         ("client_secret_file", "secret-client"),
@@ -626,13 +625,12 @@ fn child_process_environment_removes_all_provider_keys_and_replaces_inherited_ma
         ("DB_PASSWORD", "secret-db"),
         ("FTP_PASSWD", "secret-ftp"),
         ("GOOGLE_APPLICATION_CREDENTIALS", "secret-google"),
-        ("GH_TOKEN", "passed-gh"),
         ("SSH_AUTH_SOCK", "/agent/socket"),
-        ("OPENAI_API_KEY", "secret-openai"),
-        ("ANTHROPIC_API_KEY", "secret-anthropic"),
-        ("GEMINI_API_KEY", "secret-gemini"),
-        ("DEEPSEEK_API_KEY", "secret-deepseek"),
-        ("CUSTOM_PROVIDER_KEY", "secret-custom"),
+        ("OPENAI_API_KEY", "provider-openai"),
+        ("ANTHROPIC_API_KEY", "provider-anthropic"),
+        ("GEMINI_API_KEY", "provider-gemini"),
+        ("DEEPSEEK_API_KEY", "provider-deepseek"),
+        ("CUSTOM_PROVIDER_KEY", "provider-custom"),
         ("BENITOITEH_SANDBOX", "outer"),
         ("BENITOITEH_SANDBOX_NETWORK_DISABLED", "outer"),
         ("TMPDIR", "/outer/tmp"),
@@ -646,62 +644,166 @@ fn child_process_environment_removes_all_provider_keys_and_replaces_inherited_ma
     .into_iter()
     .map(|(k, v)| (k.into(), v.into()))
     .collect();
-    for sandbox in [
-        Some(("workspace-write", false)),
-        Some(("workspace-write", true)),
-        Some(("read-only", false)),
-        None,
-    ] {
-        let env = child_environment(
-            inherited.clone(),
-            &user.referenced_env_vars(),
-            &user.secrets.pass_env,
-            &temporary,
-            sandbox,
-        );
-        // 実際の子に渡し、外での起動でも秘密を除外する安全の契約を守る。
-        let output = Command::new("/usr/bin/env")
-            .env_clear()
-            .envs(env)
-            .current_dir(&f.0)
-            .output()?;
-        assert!(output.status.success());
-        let output = String::from_utf8(output.stdout)?;
-        assert!(!output.contains("secret-"), "{output}");
-        assert!(!output.contains("outer"), "{output}");
-        assert!(!output.contains("BENITOITEH_ASKPASS_"), "{output}");
-        for expected in [
-            format!("TMPDIR={}", temporary.display()),
-            "NO_COLOR=1".into(),
-            "TERM=dumb".into(),
-            "PAGER=cat".into(),
-            "GIT_PAGER=cat".into(),
-            "KEEP_ME=inherited".into(),
-            // 利用者が通した名前と、段 1 の秘密の仲介に使うエージェントの場所は残る。
-            "GH_TOKEN=passed-gh".into(),
-            "SSH_AUTH_SOCK=/agent/socket".into(),
+    let example = r#""allow *", "deny *KEY*", "deny *SECRET*", "deny *TOKEN*", "deny *PASSWORD*", "deny *PASSWD*", "deny *CREDENTIAL*""#;
+    let secrets = [
+        "AWS_ACCESS_KEY_ID=secret-aws-key",
+        "client_secret_file=secret-client",
+        "GITHUB_TOKEN=secret-github",
+        "DB_PASSWORD=secret-db",
+        "FTP_PASSWD=secret-ftp",
+        "GOOGLE_APPLICATION_CREDENTIALS=secret-google",
+    ];
+    let mut cases: Vec<(String, Vec<&str>, Vec<&str>)> = vec![
+        // 規則を書かなければ、提供者のキーのほかはすべて残る。
+        (
+            String::new(),
+            [
+                &secrets[..],
+                &["KEEP_ME=inherited", "SSH_AUTH_SOCK=/agent/socket"],
+            ]
+            .concat(),
+            vec![],
+        ),
+        // 設計書の例の規則で、秘密に見える名前（小文字を含む）が除かれ、ほかが残る。
+        (
+            format!("rules = [{example}]"),
+            vec!["KEEP_ME=inherited", "SSH_AUTH_SOCK=/agent/socket"],
+            secrets.to_vec(),
+        ),
+        // 最後の allow * が前の deny を打ち消す。
+        (
+            format!("rules = [{example}, \"allow *\"]"),
+            secrets.to_vec(),
+            vec![],
+        ),
+        // 例の規則の後に一つの名前だけを通す。
+        (
+            format!("rules = [{example}, \"allow GITHUB_TOKEN\"]"),
+            vec!["GITHUB_TOKEN=secret-github", "KEEP_ME=inherited"],
+            vec!["DB_PASSWORD=secret-db"],
+        ),
+        // 先頭に allow * がなければ受け継がない。
+        (
+            "rules = ['allow KEEP_ME']".into(),
+            vec!["KEEP_ME=inherited"],
+            [&secrets[..], &["SSH_AUTH_SOCK=/agent/socket"]].concat(),
+        ),
+        // set の後の deny <名前>（大小文字が違う）と deny * が set を打ち消す。値は展開せず、= と空白を含みうる。
+        (
+            "rules = ['set SET_ONLY=a b=$HOME', 'set SET_DENIED=x', 'deny set_denied']".into(),
+            vec!["SET_ONLY=a b=$HOME"],
+            vec!["SET_DENIED=x", "KEEP_ME=inherited"],
+        ),
+        (
+            "rules = ['set SET_ONLY=x', 'deny *']".into(),
+            vec![],
+            vec!["SET_ONLY=x"],
+        ),
+        // set の後の allow は、親にある名前だけを親の値に置き換える。
+        (
+            "rules = ['set KEEP_ME=set', 'set SET_ONLY=set', 'allow KEEP_ME', 'allow SET_ONLY']"
+                .into(),
+            vec!["KEEP_ME=inherited", "SET_ONLY=set"],
+            vec!["KEEP_ME=set"],
+        ),
+        // * が先頭・途中・末尾にあるパターンと、* のない完全一致（大小文字を区別しない）。
+        (
+            "rules = ['allow *_ME']".into(),
+            vec!["KEEP_ME=inherited"],
+            vec!["SSH_AUTH_SOCK=/agent/socket"],
+        ),
+        (
+            "rules = ['allow K*P_M*']".into(),
+            vec!["KEEP_ME=inherited"],
+            vec!["SSH_AUTH_SOCK=/agent/socket"],
+        ),
+        (
+            "rules = ['allow ssh*']".into(),
+            vec!["SSH_AUTH_SOCK=/agent/socket"],
+            vec!["KEEP_ME=inherited"],
+        ),
+        (
+            "rules = ['allow keep_me']".into(),
+            vec!["KEEP_ME=inherited"],
+            vec![],
+        ),
+        (
+            "rules = ['allow KEEP_M', 'allow EEP_ME']".into(),
+            vec![],
+            vec!["KEEP_ME=inherited"],
+        ),
+    ];
+    // 先頭と末尾の部分が重なる名前を、短すぎるのに合うと誤らない。
+    cases.push((
+        "rules = ['allow KEEP_ME*ME']".into(),
+        vec![],
+        vec!["KEEP_ME=inherited"],
+    ));
+    for (rules, present, absent) in &cases {
+        let user = UserConfig::parse(&format!(
+            "[providers.p]\nkind='openai-chat'\nmodel='m'\napi_key={{env='CUSTOM_PROVIDER_KEY'}}\n[environment]\n{rules}"
+        ))?;
+        for sandbox in [
+            Some(("workspace-write", false)),
+            Some(("workspace-write", true)),
+            None,
         ] {
-            assert!(output.lines().any(|line| line == expected), "{output}");
-        }
-        assert_eq!(
-            output
-                .lines()
-                .any(|line| line.starts_with("BENITOITEH_SANDBOX=")),
-            sandbox.is_some()
-        );
-        if let Some((name, _)) = sandbox {
-            assert!(
+            let env = child_environment(
+                inherited.clone(),
+                &user.referenced_env_vars(),
+                user.environment.rules(),
+                &temporary,
+                sandbox,
+            );
+            // 実際の子に渡し、外での起動でも提供者のキーを除く安全の契約を守る。
+            let output = Command::new("/usr/bin/env")
+                .env_clear()
+                .envs(env)
+                .current_dir(&f.0)
+                .output()?;
+            assert!(output.status.success());
+            let output = String::from_utf8(output.stdout)?;
+            let context = format!("{rules}\n{output}");
+            assert!(!output.contains("provider-"), "{context}");
+            assert!(!output.contains("outer"), "{context}");
+            assert!(!output.contains("BENITOITEH_ASKPASS_"), "{context}");
+            for expected in [
+                format!("TMPDIR={}", temporary.display()),
+                "NO_COLOR=1".into(),
+                "TERM=dumb".into(),
+                "PAGER=cat".into(),
+                "GIT_PAGER=cat".into(),
+            ]
+            .iter()
+            .map(String::as_str)
+            .chain(present.iter().copied())
+            {
+                assert!(
+                    output.lines().any(|line| line == expected),
+                    "{expected}: {context}"
+                );
+            }
+            for unexpected in absent {
+                assert!(
+                    !output.lines().any(|line| line == *unexpected),
+                    "{unexpected}: {context}"
+                );
+            }
+            assert_eq!(
                 output
                     .lines()
-                    .any(|line| line == format!("BENITOITEH_SANDBOX={name}"))
+                    .find_map(|line| line.strip_prefix("BENITOITEH_SANDBOX=")),
+                sandbox.map(|(name, _)| name),
+                "{context}"
+            );
+            assert_eq!(
+                output
+                    .lines()
+                    .any(|line| line == "BENITOITEH_SANDBOX_NETWORK_DISABLED=1"),
+                sandbox.is_some_and(|(_, ip)| !ip),
+                "{context}"
             );
         }
-        assert_eq!(
-            output
-                .lines()
-                .any(|line| line == "BENITOITEH_SANDBOX_NETWORK_DISABLED=1"),
-            sandbox.is_some_and(|(_, ip)| !ip)
-        );
     }
     Ok(())
 }
@@ -835,8 +937,8 @@ fn evaluation_switches_are_user_only_and_preserve_read_exclusions() -> TestResul
     Ok(())
 }
 
-// 関門: 秘密の仲介と通す秘密の名前を変えられるのは利用者だけ。未知の欄、提供者のキー、
-// プロジェクト側の設定を拒む。
+// 関門: 秘密の仲介と環境の規則を変えられるのは利用者だけ。未知の欄、誤った規則の行、
+// 取り除いた pass_env、プロジェクト側の設定を拒む（設計書 05-01「設定ファイル」）。
 #[test]
 fn askpass_is_enabled_by_default_and_only_user_config_can_disable_it() -> TestResult {
     assert!(UserConfig::default().secrets.askpass);
@@ -846,28 +948,76 @@ fn askpass_is_enabled_by_default_and_only_user_config_can_disable_it() -> TestRe
             .askpass
     );
     assert!(UserConfig::parse("[secrets]\nunknown = true").is_err());
-    // 提供者のキーは、通す名前に書いても通さず、設定の誤りとして示す。
-    for name in ["OPENAI_API_KEY", "CUSTOM_PROVIDER_KEY", "", "A=B"] {
+    let unknown = "unknown word";
+    let malformed = "malformed rule";
+    let fixed = "set cannot name";
+    let provider = "allow without * cannot name";
+    for (rule, reason) in [
+        ("permit *", unknown),
+        ("Allow *", unknown),
+        (" allow *", unknown),
+        ("allow", "empty pattern"),
+        ("deny ", "empty pattern"),
+        ("allow  *", malformed),
+        ("allow A B", malformed),
+        ("deny A=B", malformed),
+        ("allow A\\u0000", malformed),
+        ("set", malformed),
+        ("set NAME", malformed),
+        ("set =value", malformed),
+        ("set 1NAME=secret-marker", malformed),
+        ("set NA-ME=value", malformed),
+        ("set  NAME=value", malformed),
+        ("set NAME=a\\u0000b", malformed),
+        ("set OPENAI_API_KEY=secret-marker", fixed),
+        ("set custom_provider_key=x", fixed),
+        ("set TMPDIR=/x", fixed),
+        ("set BENITOITEH_SANDBOX=none", fixed),
+        ("set benitoiteh_anything=x", fixed),
+        ("set NO_COLOR=0", fixed),
+        ("set TERM=xterm", fixed),
+        ("set PAGER=less", fixed),
+        ("set GIT_PAGER=less", fixed),
+        ("set GIT_ASKPASS=/x", fixed),
+        ("set SSH_ASKPASS_REQUIRE=never", fixed),
+        ("allow OPENAI_API_KEY", provider),
+        ("allow anthropic_api_key", provider),
+        ("allow CUSTOM_PROVIDER_KEY", provider),
+    ] {
         let input = format!(
-            "[providers.p]\nkind='openai-chat'\nmodel='m'\napi_key={{env='CUSTOM_PROVIDER_KEY'}}\n[secrets]\npass_env=['{name}']"
+            "[providers.p]\nkind='openai-chat'\nmodel='m'\napi_key={{env='CUSTOM_PROVIDER_KEY'}}\n[environment]\nrules = [\"allow *\", \"{rule}\"]"
         );
-        assert!(UserConfig::parse(&input).is_err(), "{name}");
+        let error = UserConfig::parse(&input)
+            .err()
+            .ok_or_else(|| format!("accepted {rule:?}"))?
+            .to_string();
+        // 値を含めず、行の位置（1 から数える）と理由を示す。
+        assert!(
+            error.starts_with(&format!("environment.rules line 2: {reason}")),
+            "{rule:?}: {error}"
+        );
+        assert!(!error.contains("secret-marker"), "{error}");
     }
+    // `*` を含む allow と、提供者のキーでない名前の set は受け付ける。
+    UserConfig::parse(
+        "[environment]\nrules = ['allow *_API_KEY', 'set PATH=/bin:/usr/bin', 'set EMPTY=']",
+    )?;
+    let error = UserConfig::parse("[secrets]\npass_env=['GH_TOKEN']")
+        .err()
+        .ok_or("accepted pass_env")?;
+    assert!(error.to_string().contains("environment.rules"), "{error}");
     let fixture = Fixture::new()?;
     let project = fixture.dir("project")?;
     fs::create_dir(project.join(".benitoiteh"))?;
-    fs::write(
-        project.join(".benitoiteh/config.toml"),
+    for input in [
         "[secrets]\naskpass = false",
-    )?;
-    let loaded = ProjectConfig::load(&benitoiteh::safe_fs::ScopeRoot::open(&project)?);
-    assert!(loaded.read && loaded.error.is_some());
-    fs::write(
-        project.join(".benitoiteh/config.toml"),
         "[secrets]\npass_env = ['GITHUB_TOKEN']",
-    )?;
-    let loaded = ProjectConfig::load(&benitoiteh::safe_fs::ScopeRoot::open(&project)?);
-    assert!(loaded.read && loaded.error.is_some());
+        "[environment]\nrules = ['allow *']",
+    ] {
+        fs::write(project.join(".benitoiteh/config.toml"), input)?;
+        let loaded = ProjectConfig::load(&benitoiteh::safe_fs::ScopeRoot::open(&project)?);
+        assert!(loaded.read && loaded.error.is_some(), "{input}");
+    }
     Ok(())
 }
 

@@ -255,6 +255,8 @@ if tr '\0' '\n' < /proc/$PPID/environ; then printf 'UNEXPECTED-READ\n'; else pri
 
 // 関門: 通常モードの bash も同じ HOME の秘密を読めず、公開の読み取りと
 // プロジェクトへの書き込みは続けられることを、OS と exec の境界で確かめる。
+// 利用者の環境の規則が exec から本物の bash に届くこと（allow で通した名前が届き、deny した名前が
+// 届かない）も確かめる。規則の評価そのものは tests/config.rs で確かめる（設計書 03-02「環境の規則」）。
 #[test]
 fn redirected_xdg_keeps_default_home_paths_unreadable_from_normal_bash() -> TestResult {
     let protocol = Protocol::Chat;
@@ -290,6 +292,7 @@ if cat "$path" 2>/dev/null; then printf 'UNEXPECTED-READ\n'; else printf 'denied
 done
 cat "$HOME/public-control.txt"
 cat "$HOME/.zshenv"
+printf 'gh=%s github=%s\n' "${{GH_TOKEN:-unset}}" "${{GITHUB_TOKEN:-unset}}"
 printf 'allowed' > output.txt"#
     );
     let mut server = MockProvider::start(vec![
@@ -309,7 +312,19 @@ printf 'allowed' > output.txt"#
     fs::write(f.root.join("home/public-control.txt"), "PUBLIC-CONTROL\n")?;
     // zsh がどの起動でも読む .zshenv は、PATH を保つために読めるままにする。
     fs::write(f.root.join("home/.zshenv"), "ZSHENV-CONTROL\n")?;
-    let output = Running::start(f.command("Read the files").args([
+    let config = f.root.join("config/benitoiteh/config.toml");
+    let previous = fs::read_to_string(&config)?;
+    fs::write(
+        &config,
+        format!(
+            "{previous}\n[environment]\nrules = ['allow *', 'deny *TOKEN*', 'allow GH_TOKEN']\n"
+        ),
+    )?;
+    let mut command = f.command("Read the files");
+    command
+        .env("GH_TOKEN", "PASSED-GH")
+        .env("GITHUB_TOKEN", "DENIED-GITHUB");
+    let output = Running::start(command.args([
         "--mode",
         "normal",
         "--sandbox",
@@ -337,6 +352,7 @@ printf 'allowed' > output.txt"#
     assert_eq!(text.matches("denied").count(), secrets.len(), "{text}");
     assert!(text.contains("PUBLIC-CONTROL"), "{text}");
     assert!(text.contains("ZSHENV-CONTROL"), "{text}");
+    assert!(text.contains("gh=PASSED-GH github=unset"), "{text}");
     assert!(!text.contains("FAKE-SECRET"), "{text}");
     assert!(!text.contains("UNEXPECTED-READ"), "{text}");
     assert_eq!(

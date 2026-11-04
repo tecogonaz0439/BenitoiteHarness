@@ -16,6 +16,31 @@ pub const PROCESSOR_RULE_OK: &str = "benitoite --version=json succeeded and /bin
 pub const PROCESSOR_POSITIVE_FAILED: &str = "The allowed benitoite --version=json check failed.";
 pub const FALLBACK_RULE: &str = "This checks benitoiteh itself, not Benitoite.";
 pub const UNKNOWN: &str = "unknown";
+
+/// 使う規則の並び。`set` の値は規則の表示の側で除いてある。
+pub fn environment_rules(written: bool, lines: &[String]) -> String {
+    let source = if written {
+        "User environment rules"
+    } else {
+        "No environment.rules; using the default"
+    };
+    format!("{source}: {}", lines.join(", "))
+}
+
+pub fn environment_names(names: &[String]) -> String {
+    format!(
+        "Variables passed to child processes after the rules and fixed changes (values omitted): {}",
+        names.join(", ")
+    )
+}
+
+/// 位置は 1 から数える。
+pub fn ineffective_rule(index: usize, line: &str) -> String {
+    format!(
+        "Rule line {} ({line}) has no effect: removing it gives the same child environment.",
+        index.saturating_add(1)
+    )
+}
 pub const DEFAULTS: &str = "No configuration file; using defaults.";
 pub const LOADED: &str = "Configuration loaded.";
 pub const CONFIG_REQUIRED: &str = "Requires readable user configuration and data paths.";

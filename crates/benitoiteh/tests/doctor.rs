@@ -276,6 +276,8 @@ fn provider_diagnostics_resolve_overrides_and_distinguish_the_default_key() -> T
 
 // 作成時の関門: CredentialError の Display、参照の Debug、URL の表示による漏洩は別経路。
 // 本物のコマンドから異なる秘密を返し、text と JSON の両方の出力で確かめる。
+// 環境の規則の項目も、受け継いだ値と set の値を出さず、効いていない行を注意として示す
+// （設計書 05-01「doctor」）。
 #[test]
 fn credentials_and_url_secrets_never_reach_either_output_stream() -> TestResult {
     for json in [false, true] {
@@ -335,12 +337,16 @@ kind = 'openai-chat'
 model = 'output-model'
 context_window = 4096
 api_key = {{ command = ['/bin/sh', '-c', 'printf ""', 'argument-secret-marker'] }}
+[environment]
+rules = ['allow *', 'deny *_TOKEN', 'deny UNMATCHED_NAME', 'set SET_NAME=set-value-secret', 'allow *']
 "#,
                 script.display(),
                 script.display()
             ))?;
             let mut command = fixture.command();
-            command.env("BENITOITEH_DOCTOR_TEST_KEY", "environment-key-secret");
+            command
+                .env("BENITOITEH_DOCTOR_TEST_KEY", "environment-key-secret")
+                .env("DOCTOR_PARENT_TOKEN", "inherited-value-secret");
             if json {
                 command.arg("--json");
             }
@@ -352,6 +358,8 @@ api_key = {{ command = ['/bin/sh', '-c', 'printf ""', 'argument-secret-marker'] 
                     "stderr-secret-marker",
                     "argument-secret-marker",
                     "environment-key-secret",
+                    "inherited-value-secret",
+                    "set-value-secret",
                     "url-user-secret",
                     "url-password-secret",
                     "query-secret",
@@ -383,6 +391,41 @@ api_key = {{ command = ['/bin/sh', '-c', 'printf ""', 'argument-secret-marker'] 
                         .and_then(Value::as_str)
                         .is_some_and(|detail| detail.contains("status 7"))
                 );
+                let names = item(&rows, "environment.names")?
+                    .get("detail")
+                    .and_then(Value::as_str)
+                    .ok_or("environment names")?;
+                // 最後の allow * が deny を打ち消し、設定で参照した提供者のキーは除かれる。
+                for (name, passed) in [
+                    ("DOCTOR_PARENT_TOKEN", true),
+                    ("SET_NAME", true),
+                    ("TMPDIR", true),
+                    ("BENITOITEH_DOCTOR_TEST_KEY", false),
+                ] {
+                    assert_eq!(names.contains(name), passed, "{name}: {names}");
+                }
+                // 除いても結果が変わらない行（1 から 3）だけを注意として示し、終了状態は変えない。
+                let warnings: Vec<&str> = rows
+                    .iter()
+                    .filter(|row| {
+                        row.get("name") == Some(&Value::from("environment.rules"))
+                            && row.get("status") == Some(&Value::from("warning"))
+                    })
+                    .filter_map(|row| row.get("detail").and_then(Value::as_str))
+                    .collect();
+                assert_eq!(warnings.len(), 3, "{warnings:?}");
+                for (line, rule) in [
+                    (1, "allow *"),
+                    (2, "deny *_TOKEN"),
+                    (3, "deny UNMATCHED_NAME"),
+                ] {
+                    assert!(
+                        warnings
+                            .iter()
+                            .any(|detail| detail.starts_with(&format!("Rule line {line} ({rule})"))),
+                        "{warnings:?}"
+                    );
+                }
             }
         }
     }

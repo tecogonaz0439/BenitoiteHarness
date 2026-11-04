@@ -129,7 +129,7 @@ P0-04 で作った型: 方針の入力 `PolicyConfig`（`readable: ReadAccess`�
 
 - `sandbox::normal_policy(sandbox: Sandbox, locations: &WritableLocations, network: bool, denied_candidates: &[PathBuf]) -> Result<Option<SandboxPolicy>, SandboxError>`。`danger-full-access` は `None`。ない読ませない場所の候補は入れない。
 - `sandbox::check_availability(helper: &Path, scratch: &Path) -> Result<(), SandboxError>`。macOS は `/usr/bin/sandbox-exec` の有無、Linux は `probe_linux` の四つの欄。
-- `config::PROVIDER_KEY_ENV_VARS` と `config::child_environment(inherited, referenced_keys, temporary, sandbox: Option<(&str, bool)>) -> BTreeMap<OsString, OsString>`。子プロセスの環境は、どの起動の形でもこの関数で作る。
+- `config::PROVIDER_KEY_ENV_VARS` と `config::child_environment(inherited, referenced_keys, rules: &EnvironmentRules, temporary, sandbox: Option<(&str, bool)>) -> BTreeMap<OsString, OsString>`。子プロセスの環境は、どの起動の形でもこの関数で作る。`rules` は `UserConfig::environment.rules()`（書かなければ `allow *` の一行。P5-49）で、規則を当てた後に提供者のキー（`referenced_keys` を含む）を除き、`benitoiteh` の変数を設定する。`config::ineffective_rules` は、除いても結果が変わらない行の位置を返す（doctor が使う）。
 - `config::writable::validate_writable_with_executable(...)`。書ける場所が `benitoiteh` の実行ファイルを含めば `WritableRule::Executable` で拒む。
 - `tools::ShellContext`（子プロセスの方針と名前、補助のプロセスのパス、Linux の一時の場所と `placeholders`、子プロセスの環境、承認の方針）。`ToolContext` に足して道具へ渡す。
 

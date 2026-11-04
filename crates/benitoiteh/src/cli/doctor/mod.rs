@@ -159,6 +159,7 @@ pub(super) fn run(args: impl Iterator<Item = OsString>) -> Result<u8, CliError> 
         ),
     });
     providers(&mut items, config.as_ref(), paths.as_ref().ok());
+    environment(&mut items, config.as_ref());
     let probe = paths
         .as_ref()
         .map_err(ToString::to_string)
@@ -337,6 +338,48 @@ fn providers(items: &mut Vec<Item>, config: Option<&UserConfig>, paths: Option<&
         let mut item = Item::new(&format!("provider.{name}"), status, detail);
         item.is_default = Some(default);
         items.push(item);
+    }
+}
+
+/// 使う環境の規則と、子に渡る変数の名前を示す。値は示さない（設計書 05-01「doctor」）。
+fn environment(items: &mut Vec<Item>, config: Option<&UserConfig>) {
+    let Some(config) = config else {
+        items.push(Item::new(
+            "environment.rules",
+            Status::Unchecked,
+            text::CONFIG_REQUIRED,
+        ));
+        return;
+    };
+    let rules = config.environment.rules();
+    let lines: Vec<String> = rules.rules().iter().map(ToString::to_string).collect();
+    items.push(Item::new(
+        "environment.rules",
+        Status::Ok,
+        text::environment_rules(rules.written(), &lines),
+    ));
+    let inherited = std::env::vars_os().collect();
+    let referenced = config.referenced_env_vars();
+    // 名前だけを示すので、一時領域の場所は仮のものでよい。
+    let temporary = Path::new("/");
+    let names: Vec<String> =
+        crate::config::child_environment(std::env::vars_os(), &referenced, rules, temporary, None)
+            .into_keys()
+            .map(|name| name.to_string_lossy().into_owned())
+            .collect();
+    items.push(Item::new(
+        "environment.names",
+        Status::Ok,
+        text::environment_names(&names),
+    ));
+    for index in crate::config::ineffective_rules(&inherited, &referenced, rules, temporary) {
+        if let Some(line) = lines.get(index) {
+            items.push(Item::new(
+                "environment.rules",
+                Status::Warning,
+                text::ineffective_rule(index, line),
+            ));
+        }
     }
 }
 
