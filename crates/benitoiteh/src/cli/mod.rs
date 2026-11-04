@@ -171,6 +171,17 @@ const DENIED_HOME: &[&str] = &[
     ".config/op",
     ".env",
     ".envrc",
+    // 道具が資格情報を平文のファイルに置く場所。一次資料で確かめたものだけを加えた
+    // （設計書 03-02「読ませないホームの場所」）。
+    ".cargo/credentials.toml",
+    ".cargo/credentials",
+    ".pypirc",
+    ".gem/credentials",
+    ".config/git/credentials",
+    ".config/gh/hosts.yml",
+    ".codex/auth.json",
+    ".claude/.credentials.json",
+    ".gemini/oauth_creds.json",
     // シェルの起動の設定。zsh がどの起動でも読む .zshenv は、PATH を保つため読めるままにする
     // （設計書 03-02「読ませないホームの場所」）。
     ".bashrc",

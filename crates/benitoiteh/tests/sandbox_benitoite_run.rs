@@ -25,7 +25,9 @@ fn permission_errno(message: &str) -> bool {
 
 // 関門: File.Read を確認した制限モードのスクリプトも、道具が読まない名前のファイル（.env と鍵の形）を、
 // 根から 3 段まで読めない。macOS はどの深さでも読めない。例のファイル、普通のファイル、Benitoite のソースは
-// 読め、秘密のディレクトリの中のソースは読めない。Linux の 4 段目は保証の外（設計書 03-02「制限モードの方針」）。
+// 読め、秘密のディレクトリの中のソースは読めない。Linux の 4 段目は保証の外。探すときは権限で読めない
+// ディレクトリを飛ばし、プロジェクトの親を指す秘密の名前のリンクはそのリンクを示して止める
+// （設計書 03-02「制限モードの方針」）。
 #[test]
 fn restricted_scripts_cannot_read_project_secret_names() -> TestResult {
     let mut f = Fixture::new()?;
@@ -68,6 +70,30 @@ fn restricted_scripts_cannot_read_project_secret_names() -> TestResult {
             output.text
         );
     }
+    // 権限で読めないディレクトリは、探すときに飛ばして実行を続ける。
+    use std::os::unix::fs::PermissionsExt;
+    let read = "import Benitoite.Unofficial.IO.File\nimport Benitoite.Unofficial.IO.Console\nfunction main() -> Unit uses File.Read, Console.Write\n match File.readText(\"notes.txt\") with\n case Result.Ok(text) -> Console.write(text)\n case Result.Error(_) -> Console.write(\"FAILED\")\n end match\nend function\n";
+    let locked = f.project.join("locked");
+    fs::create_dir(&locked)?;
+    fs::set_permissions(&locked, fs::Permissions::from_mode(0o000))?;
+    let output = run(&mut f, read, "locked", json!({}));
+    fs::set_permissions(&locked, fs::Permissions::from_mode(0o755))?;
+    let output = output?;
+    assert!(
+        !output.is_error && output.text.contains("CONTENT-notes.txt"),
+        "{output:?}"
+    );
+    // プロジェクトの親を指す秘密の名前のリンクは、塞ぐと何も動かないので、そのリンクを示して止める。
+    let link = f.project.join(".aws");
+    std::os::unix::fs::symlink("..", &link)?;
+    let output = run(&mut f, read, "secret-link", json!({}))?;
+    assert!(output.is_error, "{output:?}");
+    assert!(
+        output.text.contains("secret-named link")
+            && output.text.contains(&link.display().to_string()),
+        "{}",
+        output.text
+    );
     Ok(())
 }
 

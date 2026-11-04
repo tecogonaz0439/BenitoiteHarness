@@ -640,8 +640,14 @@ fn edit(
             .and_then(|()| output.write_all(&super::restoration(0)?))
             .and_then(|()| output.flush())
             .map_err(|error| super::text::editor_failed(&error.to_string()))?;
+        let keys = screen.provider_keys.clone();
         let finished = input.suspend(&mut || {
-            std::process::Command::new(&program)
+            let mut command = std::process::Command::new(&program);
+            // エディタはサンドボックスの外で動くので、提供者のキーを渡さない（設計書 05-02「入力の操作」）。
+            for name in &keys {
+                command.env_remove(name);
+            }
+            command
                 .args(&arguments)
                 .arg(&path)
                 .status()

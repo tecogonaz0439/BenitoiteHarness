@@ -87,6 +87,8 @@ pub struct Screen {
     notification: Option<Notification>,
     /// 外部のエディタのコマンドと引数（設計書 05-02「入力の操作」）。
     editor: Option<Vec<String>>,
+    /// 外部のエディタと通知のコマンドの環境から除く、提供者のキーの変数。
+    provider_keys: Vec<String>,
     /// 下書きを置く、サンドボックスから読めない場所（入力の履歴のディレクトリ）。
     private_dir: Option<std::path::PathBuf>,
     /// `@` の補完で探すプロジェクトのディレクトリ。
@@ -142,6 +144,7 @@ impl Screen {
             notifier: Notifier::default(),
             notification: None,
             editor: None,
+            provider_keys: Vec::new(),
             private_dir: None,
             project_dir: None,
             files: None,
@@ -158,6 +161,13 @@ impl Screen {
     /// 外部のエディタのコマンドを使う。`VISUAL`、なければ `EDITOR` を空白で分けたもの。
     pub fn with_editor(mut self, editor: Option<Vec<String>>) -> Self {
         self.editor = editor.filter(|command| !command.is_empty());
+        self
+    }
+
+    /// サンドボックスの外で起動する外部のエディタと通知のコマンドに、提供者のキーを渡さない
+    /// （設計書 05-02「入力の操作」「通知」）。
+    pub fn with_provider_keys(mut self, keys: Vec<String>) -> Self {
+        self.provider_keys = keys;
         self
     }
 
@@ -190,7 +200,9 @@ impl Screen {
     /// 溜めた知らせを送る。描いた後に呼ぶ。
     pub fn deliver_notification(&mut self, output: &mut impl Write) -> io::Result<()> {
         match self.notification.take() {
-            Some(notification) => self.notifier.send(output, notification),
+            Some(notification) => self
+                .notifier
+                .send(output, notification, &self.provider_keys),
             None => Ok(()),
         }
     }

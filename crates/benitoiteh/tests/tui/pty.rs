@@ -501,7 +501,8 @@ fn second_signal_prints_checkpoint_after_terminal_restore_only_during_rewind() -
 // 作成時の関門: 本物の端末を通した確認・通知・外部のエディタ（設計書 05-02「通知」「入力の操作」、
 // 03-03「.agents への書き込み」）。画面の部品のテストは時刻と端末を差し替えるので、擬似端末の
 // バイト列からのキーと前面の報告の読み取り、表示の直後のキーの扱い、エディタのための端末の
-// 明け渡しと復元を、実行ファイルと端末の境界で一度通す。
+// 明け渡しと復元を、実行ファイルと端末の境界で一度通す。エディタと通知のコマンドはサンドボックスの外で
+// 動くので、提供者のキー（固定の名前と設定で参照したもの）を受け取らないことも確かめる。
 #[test]
 fn terminal_confirmation_notification_and_external_editor_work_end_to_end() -> TestResult {
     let f = Fixture::new()?;
@@ -514,17 +515,31 @@ fn terminal_confirmation_notification_and_external_editor_work_end_to_end() -> T
         ResponseScript::sse(response(json!({"content":"Wrote it."}), "stop").into_bytes()),
         ResponseScript::sse(response(json!({"content":"Read it."}), "stop").into_bytes()),
     ])?;
+    // 通知のコマンドは、受け取った提供者のキーと知らせの文を記録に足す。
+    let log = f.root.join("notified.log");
+    let notify = f.root.join("notify.sh");
+    fs::write(
+        &notify,
+        format!(
+            "printf '%s/%s %s\\n' \"${{OPENAI_API_KEY:-none}}\" \"${{BENITOITEH_TUI_TEST_KEY:-none}}\" \"$1\" >> '{}'\n",
+            log.display()
+        ),
+    )?;
     fs::create_dir_all(f.paths.config_file.parent().ok_or("config parent")?)?;
     fs::write(
         &f.paths.config_file,
         format!(
-            "default_provider = 'mock'\n[providers.mock]\nkind = 'openai-chat'\nbase_url = '{}'\nmodel = 'mock-model'\n",
-            server.base_url()
+            "default_provider = 'mock'\n[providers.mock]\nkind = 'openai-chat'\nbase_url = '{}'\nmodel = 'mock-model'\napi_key = {{ env = 'BENITOITEH_TUI_TEST_KEY' }}\n[notifications]\ncommand = ['/bin/sh', '{}']\n",
+            server.base_url(),
+            notify.display()
         ),
     )?;
-    // 外部のエディタは、下書きのファイルに決まった文を書いて終える。
+    // 外部のエディタは、下書きのファイルに決まった文と、受け取った提供者のキーを書いて終える。
     let editor = f.root.join("editor.sh");
-    fs::write(&editor, "#!/bin/sh\nprintf 'edited request' > \"$1\"\n")?;
+    fs::write(
+        &editor,
+        "#!/bin/sh\nprintf 'edited request keys=%s/%s' \"${OPENAI_API_KEY:-none}\" \"${BENITOITEH_TUI_TEST_KEY:-none}\" > \"$1\"\n",
+    )?;
     fs::set_permissions(&editor, std::os::unix::fs::PermissionsExt::from_mode(0o700))?;
     let mut pty = tty::Pty::new()?;
     let original = rustix::termios::tcgetattr(pty.slave()?)?;
@@ -540,6 +555,8 @@ fn terminal_confirmation_notification_and_external_editor_work_end_to_end() -> T
         .env("XDG_STATE_HOME", f.root.join("state"))
         .env("TMPDIR", f.root.join("tmp"))
         .env("VISUAL", &editor)
+        .env("OPENAI_API_KEY", "fixed-provider-secret")
+        .env("BENITOITEH_TUI_TEST_KEY", "referenced-provider-secret")
         .process_group(0)
         .stdin(pty.slave()?)
         .stdout(pty.slave()?)
@@ -615,7 +632,21 @@ fn terminal_confirmation_notification_and_external_editor_work_end_to_end() -> T
             .ok_or("edited request")?
             .body
             .to_string()
-            .contains("edited request")
+            .contains("edited request keys=none/none")
+    );
+    // 通知のコマンドは終わりを待たずに起動するので、確認と終わりの記録がそろうまで待つ。
+    let started = std::time::Instant::now();
+    let notified = loop {
+        let notified = fs::read_to_string(&log).unwrap_or_default();
+        if notified.lines().count() >= 2 || started.elapsed() > Duration::from_secs(5) {
+            break notified;
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    };
+    assert!(notified.lines().count() >= 2, "{notified}");
+    assert!(
+        notified.lines().all(|line| line.starts_with("none/none ")),
+        "{notified}"
     );
     let restored = rustix::termios::tcgetattr(pty.slave()?)?;
     assert_eq!(restored.local_modes, original.local_modes);

@@ -284,6 +284,27 @@ pub(super) fn canonical_syntax(path: &Path) -> Result<(), SandboxError> {
     Ok(())
 }
 
+/// 書ける場所の根の `.git` がファイルなら、`gitdir:` の行が指すパス（根からの相対を解いたもの）を返す。
+/// 実のパスへの変換とリンクの扱いは OS ごとに行う（設計書 03-02「Linux のファイルシステムの見え方」
+/// 「.agents の守り」）。
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+pub(super) fn root_gitdir(root: &Path) -> Result<Option<PathBuf>, SandboxError> {
+    let git = root.join(".git");
+    match fs::symlink_metadata(&git) {
+        Ok(metadata) if metadata.is_file() => {}
+        Ok(_) => return Ok(None),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(SandboxError::Io(error)),
+    }
+    let contents = fs::read_to_string(&git).map_err(SandboxError::Io)?;
+    let target = contents
+        .strip_prefix("gitdir:")
+        .map(str::trim)
+        .filter(|target| !target.is_empty() && !target.contains(['\n', '\r']))
+        .ok_or(SandboxError::InvalidPolicy(text::INVALID_GITDIR))?;
+    Ok(Some(root.join(target)))
+}
+
 pub(super) fn directory(path: &Path) -> Result<(), SandboxError> {
     if !fs::metadata(path).map_err(SandboxError::Io)?.is_dir() {
         return Err(SandboxError::InvalidPolicy(text::INVALID_DIRECTORY));

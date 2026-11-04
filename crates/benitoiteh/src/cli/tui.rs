@@ -165,6 +165,7 @@ fn run_interactive(args: ExecArgs, signals: &mut Signals) -> Result<u8, CliError
             session,
             panic_record,
             notifications,
+            provider_keys,
         } = match prepared {
             Ok(prepared) => prepared,
             Err(exec::PreparationError {
@@ -183,7 +184,8 @@ fn run_interactive(args: ExecArgs, signals: &mut Signals) -> Result<u8, CliError
             status,
         )
         .with_notifier(crate::ui::tui::Notifier::new(&notifications))
-        .with_editor(editor_command());
+        .with_editor(editor_command())
+        .with_provider_keys(provider_keys);
         screen.startup(diagnostics);
         // 再開でも記録したプロジェクトを使う。Agent の環境は prepare が実のパスで作る。
         screen.load_history(&paths, agent.project_dir());

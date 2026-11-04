@@ -477,6 +477,40 @@ fn writing_is_confined_and_protected_names_cannot_be_created_or_replaced() -> Te
             );
         }
     }
+    // 根の .git ファイルが書ける場所の中の別の名前を指すときは、その先にも書けない。
+    // 名前で守る規則だけでは、`metadata` に hooks を書けてしまう（設計書 03-02「.agents の守り」）。
+    let f = Fixture::new(false)?;
+    let metadata = f.writable.join("metadata");
+    let config = metadata.join("config");
+    io_at(
+        "fs::create_dir gitdir",
+        &metadata,
+        fs::create_dir(&metadata),
+    )?;
+    io_at(
+        "fs::write gitdir config",
+        &config,
+        fs::write(&config, b"unchanged"),
+    )?;
+    let git = f.writable.join(".git");
+    io_at(
+        "fs::write .git file",
+        &git,
+        fs::write(&git, b"gitdir: metadata\n"),
+    )?;
+    for path in [config.clone(), metadata.join("hooks")] {
+        f.run(f.config(), &[OsStr::new("write"), path.as_os_str()], 10)?;
+    }
+    f.run(
+        f.config(),
+        &[OsStr::new("write"), f.writable.join("other").as_os_str()],
+        0,
+    )?;
+    assert_eq!(
+        io_at("fs::read gitdir config", &config, fs::read(&config))?,
+        b"unchanged"
+    );
+    assert!(!metadata.join("hooks").exists());
     Ok(())
 }
 

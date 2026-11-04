@@ -130,6 +130,8 @@ pub(super) struct Prepared {
     pub panic_record: std::fs::File,
     /// 対話の画面の知らせ方（設計書 05-02「通知」）。
     pub notifications: crate::config::NotificationsConfig,
+    /// 外部のエディタと通知のコマンドの環境から除く、提供者のキーの変数（設定で参照したものを含む）。
+    pub provider_keys: Vec<String>,
 }
 
 /// 起動のときに利用者へ尋ねる、プロジェクトの信頼（設計書 03-01「プロジェクトの信頼」）。
@@ -911,6 +913,11 @@ pub(super) fn prepare(
             diagnostics: std::mem::take(&mut diagnostics),
             panic_record,
             notifications: user.notifications.clone(),
+            provider_keys: crate::config::PROVIDER_KEY_ENV_VARS
+                .iter()
+                .map(|key| (*key).to_owned())
+                .chain(user.referenced_env_vars())
+                .collect(),
         })
     })();
     result.map_err(|error| PreparationError { error, diagnostics })

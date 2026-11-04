@@ -87,6 +87,39 @@ fn scan_protected_links(config: &PolicyConfig, dir: &Path, depth: u8) -> Result<
     Ok(())
 }
 
+/// 書ける場所の根の `.git` ファイルが指す、書ける場所の中のディレクトリの実のパス。Seatbelt の規則は
+/// 名前で `.git` を守るので、別の名前の指す先（`gitdir: metadata`）は別に拒む。リンクを解いた実のパスに
+/// 規則を当てる。Linux と同じく、入れ子の `.git` ファイルと `commondir` は辿らない
+/// （設計書 03-02「.agents の守り」）。
+#[cfg(target_os = "macos")]
+pub(super) fn gitdir_targets(
+    config: &PolicyConfig,
+) -> Result<Vec<std::path::PathBuf>, SandboxError> {
+    let mut targets = Vec::new();
+    for root in &config.writable {
+        let Some(target) = super::policy::root_gitdir(root)? else {
+            continue;
+        };
+        let real = std::fs::canonicalize(&target).map_err(SandboxError::Io)?;
+        if config.writable.iter().any(|root| real.starts_with(root)) {
+            targets.push(real);
+        }
+    }
+    Ok(targets)
+}
+
+impl SeatbeltProfile {
+    /// 指したディレクトリの下への書き込みを拒む規則を足す。書ける場所を許す規則の後に置く。
+    #[cfg(target_os = "macos")]
+    pub(super) fn deny_writes(&mut self, paths: &[std::path::PathBuf]) {
+        for (i, path) in paths.iter().enumerate() {
+            let param = self.parameter(format!("GITDIR_{i}"), path.as_os_str());
+            self.source
+                .push_str(&format!("(deny file-write* (subpath {param}))\n"));
+        }
+    }
+}
+
 impl SandboxPolicy {
     /// 検証した方針から Seatbelt の文とパラメータを作る。
     pub fn seatbelt_profile(&self) -> SeatbeltProfile {

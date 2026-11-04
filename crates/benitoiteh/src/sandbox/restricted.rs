@@ -45,7 +45,19 @@ pub fn restricted_policy(
             Err(error) => return Err(SandboxError::Io(error)),
         }
     }
-    project_secrets(&locations.project, 1, &mut config.denied_read)?;
+    let mut secrets = Vec::new();
+    project_secrets(&locations.project, 1, &mut secrets)?;
+    for (link, real) in secrets {
+        // 先がプロジェクトか一時の場所を含むなら、塞ぐと何も動かない。閉じる側のまま、理由と
+        // そのリンクを示して止める（設計書 03-02「制限モードの方針」）。
+        if [&locations.project, &locations.temporary]
+            .iter()
+            .any(|root| root.starts_with(&real))
+        {
+            return Err(SandboxError::SecretLink(link));
+        }
+        config.denied_read.push(real);
+    }
     // macOS では、探す深さ（3 段）より深いものと、起動の後に作られたものも、正規表現の規則で塞ぐ。
     // 探す仕組みは、秘密の名前のリンクの先を塞ぐために残す（設計書 03-02「制限モードの方針」）。
     config.secret_name_roots = vec![locations.project.clone()];
@@ -55,14 +67,24 @@ pub fn restricted_policy(
 /// プロジェクトの中の、道具が読まない名前のファイルとディレクトリを、制限モードの子にも読ませない。
 /// 深さは入れ子の守る場所と同じ根から 3 段とし、リンクの名前は指す先を塞ぐ。`.git` は辿らず、塞がない
 /// （設計書 03-02「制限モードの方針」、BH-100）。
+/// 見つけた名前のパスと、塞ぐ実のパスの組を集める。
 fn project_secrets(
     directory: &Path,
     depth: u8,
-    found: &mut Vec<PathBuf>,
+    found: &mut Vec<(PathBuf, PathBuf)>,
 ) -> Result<(), SandboxError> {
     let entries = match std::fs::read_dir(directory) {
         Ok(entries) => entries,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        // 権限で読めないディレクトリは、同じ利用者で動く子も読めない。処理系にはファイルの権限を変える
+        // 手段がないので、塞がなくても読ませないのと同じになる（設計書 03-02「制限モードの方針」）。
+        Err(error)
+            if matches!(
+                error.kind(),
+                std::io::ErrorKind::NotFound | std::io::ErrorKind::PermissionDenied
+            ) =>
+        {
+            return Ok(());
+        }
         Err(error) => return Err(SandboxError::Io(error)),
     };
     for entry in entries {
@@ -86,7 +108,7 @@ fn project_secrets(
                     if std::fs::metadata(&real)
                         .is_ok_and(|target| target.is_file() || target.is_dir()) =>
                 {
-                    found.push(real);
+                    found.push((path, real));
                 }
                 Ok(_) => {}
                 Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}

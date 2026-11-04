@@ -31,9 +31,9 @@ impl From<SandboxError> for ProcessError {
         match error {
             SandboxError::Unavailable => Self::Unavailable,
             SandboxError::Io(error) => error.into(),
-            SandboxError::InvalidPolicy(_) | SandboxError::Setup { .. } => {
-                invalid(text::IMAGE_HELPER_UNAVAILABLE).into()
-            }
+            SandboxError::InvalidPolicy(_)
+            | SandboxError::Setup { .. }
+            | SandboxError::SecretLink(_) => invalid(text::IMAGE_HELPER_UNAVAILABLE).into(),
         }
     }
 }
