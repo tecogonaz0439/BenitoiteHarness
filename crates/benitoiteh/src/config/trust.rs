@@ -5,6 +5,7 @@
 //! 一つのファイルを読み書きし合う競合は起きない。状態のディレクトリは、どのサンドボックスの方針でも
 //! 読ませない場所に入るので、サンドボックスの中のコマンドは決定を読めず、偽れない（設計書 03-02「方針の要素」）。
 
+use std::collections::BTreeSet;
 use std::fs::{DirBuilder, File};
 use std::io::{self, Read, Write};
 use std::os::unix::ffi::OsStrExt;
@@ -17,7 +18,7 @@ use sha2::{Digest, Sha256};
 
 use super::paths::DataPaths;
 
-/// 決定のファイルの大きさの上限。根のパスと真偽だけを持つ。
+/// 決定のファイルの大きさの上限。根のパス、真偽、置き場所の一覧を持つ。
 const FILE_LIMIT: u64 = 64 * 1024;
 
 #[derive(Serialize, Deserialize)]
@@ -25,6 +26,17 @@ const FILE_LIMIT: u64 = 64 * 1024;
 struct Record {
     path: String,
     trusted: bool,
+    /// 信頼を決めたときに信頼を要した置き場所（根からの相対のパス）。前の版の記録にはない。
+    #[serde(default)]
+    locations: BTreeSet<String>,
+}
+
+/// 保存した根の決定（設計書 03-01「プロジェクトの信頼」の「置き場所が増えたとき」）。
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct Decision {
+    pub trusted: bool,
+    /// 決めたときの置き場所。ここにない置き場所が増えたら、信頼の決定は尋ね直す。
+    pub locations: BTreeSet<String>,
 }
 
 /// 保存した信頼の決定。ディレクトリの記述子を保ち、後の操作でもパスを辿り直さない。
@@ -61,7 +73,7 @@ impl TrustStore {
     }
 
     /// 根の決定を読む。決めていなければ `None` を返す。
-    pub fn get(&self, root: &Path) -> io::Result<Option<bool>> {
+    pub fn get(&self, root: &Path) -> io::Result<Option<Decision>> {
         let file = match openat(
             &self.directory,
             name(root),
@@ -89,13 +101,21 @@ impl TrustStore {
         if record.path.as_bytes() != root.as_os_str().as_bytes() {
             return Err(invalid());
         }
-        Ok(Some(record.trusted))
+        Ok(Some(Decision {
+            trusted: record.trusted,
+            locations: record.locations,
+        }))
     }
 
     /// 根の決定を、一時のファイルに書いてから名前を付け替えて置く。
-    pub fn set(&self, root: &Path, trusted: bool) -> io::Result<()> {
+    pub fn set(&self, root: &Path, decision: &Decision) -> io::Result<()> {
         let path = root.to_str().ok_or_else(invalid)?.to_owned();
-        let mut bytes = serde_json::to_vec(&Record { path, trusted }).map_err(|_| invalid())?;
+        let mut bytes = serde_json::to_vec(&Record {
+            path,
+            trusted: decision.trusted,
+            locations: decision.locations.clone(),
+        })
+        .map_err(|_| invalid())?;
         bytes.push(b'\n');
         let mut random = [0_u8; 16];
         getrandom::fill(&mut random).map_err(|error| io::Error::other(error.to_string()))?;

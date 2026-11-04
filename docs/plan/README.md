@@ -110,6 +110,7 @@
 | [P5-48](tasks/P5-48-macos-secret-name-regex.md) | macOS で、制限モードの秘密の名前をどの深さでも読ませない（Seatbelt の正規表現の規則） | P5-47 | 完了 |
 | [P5-49](tasks/P5-49-environment-rules.md) | 子プロセスの環境の規則（`[environment] rules` の allow・deny・set を上から順に当てる。`pass_env` を置き換える） | P5-48 | 完了 |
 | [P5-50](tasks/P5-50-deferred-review-fixes.md) | 後回しにしたレビューの指摘を直す（macOS の gitdir の指す先、読ませないホームの場所、秘密の名前の探索、エディタと通知の環境）と、限界として書く（`.agents` のリンク、`escalate` の探す変数） | P5-49 | 完了 |
+| [P5-51](tasks/P5-51-agents-locations-trust.md) | 信頼した置き場所を覚え、置き場所が増えたら尋ね直す（Linux で作られうる入れ子の `.agents` を尋ねずに読まない） | P5-50 | 完了 |
 
 P5-42〜P5-46 は、2026-11-02〜03 にオーケストレータ（Claude Code）が設計者の指示でクラウドのセッションで行い、実装プランの外で進めた作業である。2026-11-04 に `gamou` へ取り込み（P5-47 で macOS の確かめと直しを行った）、作業の記録として本書に加えた。作業文書は事後の記録であり、確かめの経過は `results/` に置く。作業の一覧と残っていることの入口は [2026-11-02〜03 の作業のまとめ](../2026-11-02/README.md)にある。
 

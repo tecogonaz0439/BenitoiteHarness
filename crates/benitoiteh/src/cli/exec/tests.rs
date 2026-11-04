@@ -217,11 +217,112 @@ fn project_skills_and_model_follow_the_trust_decision() -> Result<(), Box<dyn Er
     assert_eq!(loaded(&prepared), (true, true));
     drop(prepared);
     assert_eq!(
-        crate::config::trust::TrustStore::open(&paths)?.get(&project)?,
+        crate::config::trust::TrustStore::open(&paths)?
+            .get(&project)?
+            .map(|decision| decision.trusted),
         Some(false)
     );
     drop(start(&["--mode", "normal"], TrustAnswer::Session(true))?);
     assert_eq!(asked.get(), before);
+
+    // 信頼して覚えた後に信頼を要する置き場所が増えたら、尋ね直す。サンドボックスの中から作られうる
+    // 入れ子の `pkg/.agents` を、根の決定のまま尋ねずに読まない（設計書 03-01「置き場所が増えたとき」）。
+    // 置き場所の一覧を持たない前の版の決定は、置き場所がすべて増えたものとする。
+    fs::create_dir(project.join(".git"))?;
+    let store = crate::config::trust::TrustStore::open(&paths)?;
+    store.set(
+        &project,
+        &crate::config::trust::Decision {
+            trusted: true,
+            locations: Default::default(),
+        },
+    )?;
+    let package = project.join("pkg");
+    let added = std::cell::RefCell::new(Vec::new());
+    let start_in = |directory: &std::path::Path,
+                    answer: Option<TrustAnswer>|
+     -> Result<Prepared, Box<dyn Error>> {
+        let mut args = f.args(&["--mode", "normal"])?;
+        args.project = Some(directory.to_path_buf());
+        added.borrow_mut().clear();
+        prepare_with_trust(
+            &args,
+            None,
+            &paths,
+            |_, _| Ok(()),
+            &mut |_| false,
+            &mut |request| {
+                assert_eq!(request.root, project);
+                *added.borrow_mut() = request.added.clone();
+                asked.set(asked.get().saturating_add(1));
+                // None の答えは、非対話の起動と同じく、この起動だけ信頼しない。
+                Some(answer.unwrap_or(TrustAnswer::Session(false)))
+            },
+        )
+        .map_err(|error| error.to_string().into())
+    };
+    let before = asked.get();
+    let prepared = start_in(&project, Some(TrustAnswer::Remember(true)))?;
+    assert_eq!(asked.get(), before.saturating_add(1));
+    assert_eq!(
+        *added.borrow(),
+        [".agents/skills", ".benitoiteh/config.toml"].map(std::path::PathBuf::from)
+    );
+    assert_eq!(loaded(&prepared), (true, true));
+    drop(prepared);
+    // 覚えた置き場所だけなら、根からも、新しい置き場所のない下のディレクトリからも尋ねない。
+    fs::create_dir_all(&package)?;
+    for directory in [&project, &package] {
+        let prepared = start_in(directory, None)?;
+        assert_eq!(asked.get(), before.saturating_add(1));
+        assert!(
+            prepared
+                .agent
+                .status()
+                .skills
+                .iter()
+                .any(|skill| skill.name == "demo")
+        );
+    }
+    fs::create_dir_all(package.join(".agents/skills/planted"))?;
+    fs::write(
+        package.join(".agents/skills/planted/SKILL.md"),
+        "---\nname: planted\ndescription: Planted skill.\n---\nBody\n",
+    )?;
+    let planted = |prepared: &Prepared| {
+        prepared
+            .agent
+            .status()
+            .skills
+            .iter()
+            .any(|skill| skill.name == "planted")
+    };
+    // 信頼しない答え（非対話の起動と同じ）では読まず、増えた置き場所を示す。決定は変えない。
+    let prepared = start_in(&package, None)?;
+    assert_eq!(asked.get(), before.saturating_add(2));
+    assert_eq!(
+        *added.borrow(),
+        [std::path::PathBuf::from("pkg/.agents/skills")]
+    );
+    assert!(!planted(&prepared));
+    assert!(
+        prepared
+            .diagnostics
+            .iter()
+            .any(|line| line.contains("before these locations appeared")
+                && line.contains("pkg/.agents/skills")),
+        "{:?}",
+        prepared.diagnostics
+    );
+    drop(prepared);
+    // 信頼して覚えれば、一覧に足して、次からは尋ねない。根の置き場所の一覧も残る。
+    drop(start_in(&package, Some(TrustAnswer::Remember(true)))?);
+    assert_eq!(asked.get(), before.saturating_add(3));
+    for directory in [&package, &project] {
+        drop(start_in(directory, None)?);
+    }
+    assert_eq!(asked.get(), before.saturating_add(3));
+    assert!(planted(&start_in(&package, None)?));
     Ok(())
 }
 

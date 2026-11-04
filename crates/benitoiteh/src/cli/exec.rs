@@ -135,9 +135,14 @@ pub(super) struct Prepared {
 }
 
 /// 起動のときに利用者へ尋ねる、プロジェクトの信頼（設計書 03-01「プロジェクトの信頼」）。
+#[derive(Clone)]
 pub(super) struct TrustRequest {
     /// 決定を覚える根（git のリポジトリの根か、リポジトリの外ならプロジェクトのディレクトリ）。
     pub root: PathBuf,
+    /// 信頼を要する置き場所の、根からの相対のパス。
+    pub locations: std::collections::BTreeSet<PathBuf>,
+    /// 前に信頼して覚えたときになかった置き場所。尋ね直すときだけ空でない。
+    pub added: Vec<PathBuf>,
     pub skills: bool,
     pub plugins: bool,
     /// 範囲の中に `.agents/prompts` がある（設計書 05-02「利用者の定義するコマンド」）。
@@ -332,12 +337,19 @@ pub(super) fn prepare(
         // 除外を足すだけの read.exclude は守りを強める向きなので、いつも使う（設計書 03-01「プロジェクトの信頼」）。
         let resources =
             skills::project_resources(root.real_path(), &paths.home, &user.skills, &user.plugins);
+        let model = project.config.model.is_some();
+        let mut locations = resources.locations;
+        if model && let Ok(relative) = root.real_path().strip_prefix(&resources.root) {
+            locations.insert(relative.join(".benitoiteh/config.toml"));
+        }
         let request = TrustRequest {
             root: resources.root.clone(),
+            locations,
+            added: Vec::new(),
             skills: resources.skills,
             plugins: resources.plugins,
-            prompts: crate::context::prompts::project_has_prompts(root.real_path(), &paths.home),
-            model: project.config.model.is_some(),
+            prompts: resources.prompts,
+            model,
         };
         let mut project_prompts = request.prompts;
         let project_trust = if request.skills || request.plugins || request.prompts || request.model
@@ -1148,18 +1160,54 @@ fn decide_trust(
             None
         }
     };
-    if let Some(trusted) = stored {
-        return Ok(trusted);
-    }
-    match confirm_trust(request).ok_or(StartupError::Declined)? {
-        TrustAnswer::Session(trusted) => Ok(trusted),
-        TrustAnswer::Remember(trusted) => {
-            if let Err(error) = store.and_then(|store| store.set(&request.root, trusted)) {
-                diagnostics.push(text::trust_unsaved(&request.root, &error));
+    // 信頼した後に増えた置き場所は、信頼を受けていないので尋ね直す。UTF-8 でない置き場所は
+    // 覚えられないので、いつも増えたものとする（設計書 03-01「プロジェクトの信頼」の「置き場所が増えたとき」）。
+    let mut known = std::collections::BTreeSet::new();
+    let mut request = request.clone();
+    match stored {
+        Some(decision) if !decision.trusted => return Ok(false),
+        Some(decision) => {
+            request.added = request
+                .locations
+                .iter()
+                .filter(|location| {
+                    !location
+                        .to_str()
+                        .is_some_and(|location| decision.locations.contains(location))
+                })
+                .cloned()
+                .collect();
+            if request.added.is_empty() {
+                return Ok(true);
             }
-            Ok(trusted)
+            known = decision.locations;
+        }
+        None => {}
+    }
+    let answer = confirm_trust(&request).ok_or(StartupError::Declined)?;
+    let trusted = match answer {
+        TrustAnswer::Session(trusted) | TrustAnswer::Remember(trusted) => trusted,
+    };
+    if !trusted && !request.added.is_empty() {
+        diagnostics.push(text::trust_locations_added(&request.root, &request.added));
+    }
+    if let TrustAnswer::Remember(trusted) = answer {
+        // 信頼するなら、前の一覧に今の置き場所を足して覚える。
+        known.extend(
+            request
+                .locations
+                .iter()
+                .filter_map(|location| location.to_str().map(str::to_owned)),
+        );
+        let decision = crate::config::trust::Decision {
+            trusted,
+            locations: if trusted { known } else { Default::default() },
+        };
+        if let Err(error) = store.and_then(|store| store.set(&request.root, &decision)) {
+            diagnostics.push(text::trust_unsaved(&request.root, &error));
         }
     }
+    Ok(trusted)
 }
 
 #[cfg(test)]

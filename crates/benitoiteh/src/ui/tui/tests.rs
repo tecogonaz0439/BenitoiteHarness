@@ -592,7 +592,7 @@ fn trust_confirmation_maps_keys_and_rejects_early_or_hidden_trust() -> io::Resul
         ),
     ] {
         let mut screen = Screen::new(size, status());
-        screen.open_trust(root, &loads);
+        screen.open_trust(root, &loads, &[]);
         let shown = Instant::now();
         let mut bytes = Vec::new();
         screen.draw(&mut bytes, None)?;
@@ -626,6 +626,19 @@ fn trust_confirmation_maps_keys_and_rejects_early_or_hidden_trust() -> io::Resul
             assert!(output.contains("[d] do not trust"), "{output}");
         }
     }
+    // 尋ね直すときは増えた置き場所を示す。名前はプロジェクトのものなので、制御の文字を端末に送らない。
+    let mut screen = Screen::new((200, 40), status());
+    screen.open_trust(
+        root,
+        &loads,
+        &[std::path::PathBuf::from("pkg/.agents/skills\x1b[2J")],
+    );
+    let mut bytes = Vec::new();
+    screen.draw(&mut bytes, None)?;
+    let output = String::from_utf8_lossy(&bytes);
+    assert!(output.contains("New since trusted"), "{output}");
+    assert!(output.contains("pkg/.agents/skills"), "{output}");
+    assert!(!output.contains("skills\x1b[2J"), "{output}");
     Ok(())
 }
 

@@ -128,6 +128,7 @@ pub const TRUST_TITLE: &str = "╭─ Trust this project?";
 pub const TRUST_KEYS: &str = "[y] trust and remember  [s] trust this session  [n] not this session  [d] do not trust and do not ask again";
 pub const TRUST_ROOT: &str = "Project";
 pub const TRUST_LOADS: &str = "Loads";
+pub const TRUST_ADDED: &str = "New since trusted";
 pub const TRUST_WARNING: &str = "Trusting lets the project add skills and plugins that the model reads and follows, and choose the model. It does not change approvals or the OS sandbox.";
 pub const MODE_CHANGE_WARNING: &str = "The previous context may contain untrusted content. Normal mode allows shell commands and broader file access.";
 pub const DECLINE_MESSAGE: &str = "Decline with a message: ";

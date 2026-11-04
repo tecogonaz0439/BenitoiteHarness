@@ -246,9 +246,14 @@ pub struct ProjectResources {
     pub skills: bool,
     /// 範囲の中に `.agents/plugins` がある（読む設定のとき）。
     pub plugins: bool,
+    /// 範囲の中に `.agents/prompts` がある。
+    pub prompts: bool,
+    /// 信頼を要する置き場所（Skill・プラグイン・雛形のディレクトリ）の、範囲の根からの相対のパス。
+    /// 信頼を覚えるときに一緒に覚え、増えたら尋ね直す（設計書 03-01「プロジェクトの信頼」）。
+    pub locations: std::collections::BTreeSet<PathBuf>,
 }
 
-/// [`collect`] と同じ範囲で、プロジェクトの Skill とプラグインの置き場所があるかだけを見る。
+/// [`collect`] と同じ範囲で、プロジェクトの Skill・プラグイン・雛形の置き場所があるかだけを見る。
 /// 中身は開かない。ホームの `.agents` は利用者の段なので数えない。
 pub fn project_resources(
     project: &Path,
@@ -258,17 +263,33 @@ pub fn project_resources(
 ) -> ProjectResources {
     let home = std::fs::canonicalize(home).unwrap_or_else(|_| home.to_path_buf());
     let scope = super::instructions::search_root(project, &home);
-    let exists = |name: &str| {
-        project
+    let mut locations = std::collections::BTreeSet::new();
+    let mut found = |name: &str| {
+        let mut any = false;
+        for directory in project
             .ancestors()
             .take_while(|path| path.starts_with(scope))
             .filter(|directory| *directory != home)
-            .any(|directory| std::fs::symlink_metadata(directory.join(name)).is_ok())
+        {
+            let location = directory.join(name);
+            if std::fs::symlink_metadata(&location).is_ok() {
+                any = true;
+                if let Ok(relative) = location.strip_prefix(scope) {
+                    locations.insert(relative.to_path_buf());
+                }
+            }
+        }
+        any
     };
+    let skills = config.project && found(".agents/skills");
+    let plugins = plugins_config.project && found(".agents/plugins");
+    let prompts = found(".agents/prompts");
     ProjectResources {
         root: scope.to_path_buf(),
-        skills: config.project && exists(".agents/skills"),
-        plugins: plugins_config.project && exists(".agents/plugins"),
+        skills,
+        plugins,
+        prompts,
+        locations,
     }
 }
 

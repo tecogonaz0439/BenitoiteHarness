@@ -78,13 +78,6 @@ pub fn valid_name(name: &str) -> bool {
             .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'-')
 }
 
-/// 探す範囲の中に `.agents/prompts` があるか。中身は開かない。
-pub fn project_has_prompts(project: &Path, home: &Path) -> bool {
-    project_directories(project, home)
-        .iter()
-        .any(|directory| std::fs::symlink_metadata(directory.join(".agents/prompts")).is_ok())
-}
-
 /// 利用者の雛形と、`include_project` のときはプロジェクトの雛形を読む。
 ///
 /// 同じ名前は先に読んだもの（利用者、範囲の根に近いディレクトリの順）を使う。
