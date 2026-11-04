@@ -75,6 +75,11 @@ pub struct PolicyConfig {
     pub readable_metadata: Vec<PathBuf>,
     /// 読み取りを拒む実のパス。
     pub denied_read: Vec<PathBuf>,
+    /// この根の下のどの深さでも、秘密の名前（`.env` など）を読ませない場所（設計書 03-02「制限モードの方針」）。
+    /// macOS の Seatbelt の正規表現の規則で掛ける。Linux は名前の形で拒めないので使わず、起動のときに
+    /// 探して `denied_read` に加える仕組みだけで守る。
+    #[serde(default)]
+    pub secret_name_roots: Vec<PathBuf>,
     /// 書き込みを許すディレクトリ。require_writable が偽なら空に限る。
     pub writable: Vec<PathBuf>,
     /// 書ける場所を必須にするか。省略時も必須とする。
@@ -129,6 +134,7 @@ impl PolicyConfig {
             readable_data_roots: Vec::new(),
             readable_metadata: Vec::new(),
             denied_read: Vec::new(),
+            secret_name_roots: Vec::new(),
             writable,
             require_writable: true,
             allow_fork: true,
@@ -196,6 +202,10 @@ impl SandboxPolicy {
                 canonical_path(path)?;
                 directory(path)?;
             }
+        }
+        for path in &config.secret_name_roots {
+            canonical_path(path)?;
+            directory(path)?;
         }
         for path in &config.readable_data_roots {
             canonical_path(path)?;

@@ -91,7 +91,6 @@
 | 本物の提供者での確かめ | 利用者の発言の中の画像、`exec --output-schema` の出力の型、`edit` の `edits` の入れ子の Schema を、三つの口の本物の提供者が受け付けるか。本物の LLM を呼ぶので、提供者・モデル・回数・費用を示して了承を得てから行う | BH-120、BH-121、BH-122 |
 | 段 2 の評価 | 四つの評価用の切り替え（`edit.multiple`、`compaction.prune_tool_results`、`agent.nested_instructions`、`agent.plan_tool`）を、既定の形と同じ課題・同じモデルで比べ、採るかを決める。課題と条件はまだ決めていない | BH-123、BH-008 |
 | 処理系への要望（R1〜R5） | プロキシへの対応（R1）、表示のパスの不具合（R2）、取り込みの根の指定（R3）、秘密の入力（R4）、道具を呼ぶエフェクトの相談（R5）を、[10](10-benitoite-requests.md)にまとめた。設計者は次の次の版での実現を検討している。まだ依頼していない | BH-040、BH-029、BH-028、BH-105、BH-002 |
-| 制限モードの秘密の名前の正規表現 | Seatbelt の正規表現の規則に改めるか（[P5-47-macos-checks](../plan/results/P5-47-macos-checks.md)） | — |
 | 直さなかったレビューの指摘 | [P5-47-macos-checks](../plan/results/P5-47-macos-checks.md) の「直さなかったレビューの指摘」 | — |
 | 段 5: 連携 | MCP、ACP、RPC、OS のキーストア、偽のトークンを差し替えるプロキシ。規模と実行ファイルの大きさへの影響が大きいので、試作の後の判断とあわせて決める | BH-116、BH-033 |
 | 共通のリポジトリへの移行（BH-080） | 処理系とハーネスは別のリポジトリのまま、非公開の共通のリポジトリ（BenitoiteLang）の下へ移す（Benitoite の docs/todo の TODO-176・TODO-270）。第1段（ハーネスの側）は、処理系のサーバモードの実装の前に、別途行う。第2段（処理系の取り込み）は、サーバモードの実装の時期に処理系の側が行う。依頼は [11](11-common-repository-request.md)、返信は [12](12-common-repository-reply.md) | BH-080 |

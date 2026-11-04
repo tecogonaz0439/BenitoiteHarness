@@ -24,6 +24,12 @@ impl SeatbeltProfile {
     }
 }
 
+/// 秘密の名前（[`crate::tools::exclude::secret_component`] と同じ規則。`.git` は除く）。
+/// どの深さでも、最後の要素がこの名前のファイルとディレクトリを読ませる対象から外す。
+const SECRET_NAME_PATTERN: &str = "([.]env|[.]env[.][^/]*|[^/]*[.](pem|key|p12|pfx)|id_(rsa|ecdsa|ed25519)[^/]*|[.]ssh|[.]gnupg|[.]aws|[.]netrc|[.]git-credentials)";
+/// 秘密の名前の例外。例と見本の `.env` と、処理系が読む Benitoite のソース（設計書 03-02「制限モードの方針」）。
+const SECRET_EXCEPTION_PATTERN: &str = "([.]env[.](example|sample)|[^/]*[.]bnt)";
+
 fn protected_name_pattern(name: &str) -> String {
     // 検証済みの ASCII の名前だけを受け取り、正規表現の文字を値から持ち込ませない。
     // 大文字小文字を区別しない FS の別名も保護する（実装プラン P1-07「守る場所の判定」）。
@@ -144,6 +150,16 @@ impl SandboxPolicy {
             profile
                 .source
                 .push_str(&format!("(allow file-read-metadata (literal {param}))\n"));
+        }
+        for (i, root) in config.secret_name_roots.iter().enumerate() {
+            let param = profile.parameter(format!("SECRET_ROOT_{i}"), root.as_os_str());
+            // 例外を許す規則を後に置くと、読める範囲の外まで読めるようにしうるので、拒む規則に
+            // require-not で例外を組み込む。秘密のディレクトリの下は、例外の名前でも読ませない
+            // （`.ssh/x.bnt` など。起動のときに探す仕組みと同じ結果にする）。
+            profile.source.push_str(&format!(
+                "(deny file-read* file-map-executable (require-all (regex (string-append \"^\" (regex-quote {param}) \"/(.*/)?{SECRET_NAME_PATTERN}$\")) (require-not (regex (string-append \"^\" (regex-quote {param}) \"/(.*/)?{SECRET_EXCEPTION_PATTERN}$\")))))\n\
+                 (deny file-read* file-map-executable (regex (string-append \"^\" (regex-quote {param}) \"/(.*/)?{SECRET_NAME_PATTERN}/\")))\n"
+            ));
         }
         for (i, path) in config.denied_read.iter().enumerate() {
             let param = profile.parameter(format!("DENIED_READ_{i}"), path.as_os_str());
