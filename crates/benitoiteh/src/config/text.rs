@@ -22,6 +22,9 @@ pub const CONFIG_OR_DATA: &str = "writable root overlaps the configuration or da
 pub const PROJECT_TEMP: &str = "project and temporary directory overlap";
 
 pub fn unknown_field(field: &str) -> String {
+    if field == "pass_env" {
+        return PASS_ENV_REMOVED.to_owned();
+    }
     format!("unknown configuration field `{}`", field.escape_debug())
 }
 
@@ -53,7 +56,23 @@ pub const INVALID_NETWORK: &str = "normal.network must be true, false, or \"prox
 pub const INVALID_NETWORK_DOMAIN: &str = "Invalid normal.allowed_domains entry. Use an ASCII domain name of at least two labels (punycode xn-- for international names), without a scheme, port, wildcard, or IP address.";
 pub const INVALID_TRUST_RECORD: &str =
     "The saved project trust decision is not valid; benitoiteh treats the project as undecided.";
-pub const INVALID_PASS_ENV: &str = "Invalid secrets.pass_env entry. Use a non-empty environment variable name without = or NUL that is not a provider API key variable.";
+pub const PASS_ENV_REMOVED: &str = "secrets.pass_env was replaced by environment.rules. Write the rules in order, for example rules = [\"allow *\", \"deny *TOKEN*\", \"allow GH_TOKEN\"].";
+pub const RULE_UNKNOWN: &str =
+    "unknown word; use allow <pattern>, deny <pattern> or set <NAME>=<value>";
+pub const RULE_MALFORMED: &str = "malformed rule; put one space after the word, use a pattern without whitespace, = or NUL, and a set name of letters, digits and _ not starting with a digit";
+pub const RULE_EMPTY_PATTERN: &str = "empty pattern";
+pub const RULE_SET_FIXED: &str =
+    "set cannot name a provider API key variable or a variable that benitoiteh sets itself";
+pub const RULE_ALLOW_PROVIDER_KEY: &str =
+    "allow without * cannot name a provider API key variable; benitoiteh never passes it";
+
+/// 値を含めないよう、行の位置と理由だけを示す。位置は 1 から数える。
+pub fn invalid_rule(index: usize, reason: &str) -> String {
+    format!(
+        "environment.rules line {}: {reason}",
+        index.saturating_add(1)
+    )
+}
 pub const CHECK_FIX_POSITIVE: &str = "--max-check-fix and limits.max_check_fix must be at least 1.";
 pub const INVALID_NOTIFY_COMMAND: &str = "notifications.command must name a program first.";
 

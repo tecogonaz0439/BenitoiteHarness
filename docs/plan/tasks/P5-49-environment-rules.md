@@ -1,6 +1,6 @@
 # P5-49 子プロセスの環境の規則（allow・deny・set）
 
-- 状態: 未着手
+- 状態: 完了
 - 依存: P5-48
 
 ## 目的
@@ -76,3 +76,44 @@
 - `scripts/check.sh --inside-codex` が通る。
 - オーケストレータが、外で `scripts/check.sh` の全体（`BENITOITEH_X86_64_HOST` を指定）を通す。
 - 本書の「確かめた結果」に、行ったことと、外に残した検査を書く。
+
+## 作ったもの
+
+作業はオーケストレータ（Claude Code）が行った（2026-11-05 の設計者の指示）。
+
+- `src/config/environment.rs` に `EnvironmentRule`（`Allow`・`Deny`・`Set`）と `EnvironmentRules`（既定は `allow *` の一行）を置き、`SECRET_NAME_PARTS` と `secret_like` を取り除いた。`child_environment` は規則を当てた後に、設定で参照した提供者のキーを除き、`remark_child_environment` を当てる。`ineffective_rules` は、一行ずつ除いて `child_environment` の結果（名前と値）を比べ、変わらない行を返す。
+- 設定に `[environment] rules` を加え、`UserConfig::parse` で規則の型へ変える。誤りの文は、値を含めず、行の位置（1 から数える）と理由だけを示す。`set` で書けない名前の判定と、`*` のない `allow` の提供者のキーの判定は、ASCII の大文字と小文字を区別しない（パターンの照合と揃えた）。秘密の入力の補助の変数の一覧は `askpass::ENVIRONMENT_NAMES` にまとめ、補助の変数を消す処理と共有した。
+- `[secrets] pass_env` を取り除いた。書かれていたら、`environment.rules` への書き換えを促す文で起動を止める。
+- doctor に `environment.rules`（使う規則。`set` の値は示さない）、`environment.names`（子に渡る名前）、効いていない行ごとの `environment.rules` の「注意」を加えた。
+
+## 確かめた結果
+
+テストは次のとおりである。新しいテストの関数は作らず、既存のテストの表に行を足すか、既存のテストを改めた。過去の結果の文書が名前で引くので、テストの名前は変えていない。
+
+| テスト | 守る契約 |
+|---|---|
+| `tests/config.rs` の `child_process_environment_removes_all_provider_keys_and_replaces_inherited_markers` | 「テスト」の節の規則の評価の行を表にし、設定の読み込みから本物の `/usr/bin/env` までで確かめる。どの行でも、提供者のキーが残らず、`TMPDIR` などが上書きされる |
+| `tests/config.rs` の `askpass_is_enabled_by_default_and_only_user_config_can_disable_it` | 誤りの条件ごとの行（知らない語、形の誤り、空のパターン、`set` の禁じた名前、`*` のない `allow` の提供者のキー）、`pass_env` の誤りの文、プロジェクトの設定の `[environment]` と `pass_env` を拒むこと、誤りの文が値を含まないこと |
+| `tests/sandbox_exec_restricted.rs` の `redirected_xdg_keeps_default_home_paths_unreadable_from_normal_bash` | exec が利用者の規則を本物の `bash` に渡すこと（`allow GH_TOKEN` で通した名前が届き、`deny *TOKEN*` した `GITHUB_TOKEN` が届かない） |
+| `tests/doctor.rs` の `credentials_and_url_secrets_never_reach_either_output_stream` | doctor が受け継いだ値と `set` の値を出さず、名前の一覧から設定で参照した提供者のキーを除き、効いていない 3 行だけを「注意」として示すこと |
+
+`git grep -n 'secret' crates/benitoiteh/tests` で探した限り、既定の除外（秘密に見える名前を除く）を前提にしたテストは、上の `tests/config.rs` の一つだけだった。
+
+壊した版で、次のように確かめた。
+
+| 壊した箇所 | 結果 |
+|---|---|
+| 行の順を無視して `deny` を最後に当てる | 最後の `allow *` の行で失敗した |
+| パターンの照合で大小文字を区別する | 例の規則の行（小文字の `client_secret_file`）で失敗した |
+| 規則の後の提供者のキーの除去（固定の一覧と設定で参照したもの）を外す | 規則を書かない行（`allow *` と同じ）で失敗した |
+| exec の通常モードの `bash` に、利用者の規則の代わりに既定の規則を渡す | `redirected_xdg_keeps_default_home_paths_unreadable_from_normal_bash` で失敗した |
+
+macOS で `scripts/check.sh --inside-codex` が終了状態 0 で通った。
+
+全体の検査（`scripts/check.sh`、`BENITOITEH_X86_64_HOST` を指定。コミット `394daad`）は終了状態 0 だった。テストの関数を足していないので、件数は P5-48 と同じである。
+
+| 対象 | 結果 |
+|---|---|
+| macOS | 819 件が通り、失敗 0、無視 14。評価の道具の Python のテスト 118 件も通った |
+| aarch64 の Linux（Apple の `container`） | 721 件が通り、失敗 0、無視 13（Landlock を要する `sandbox_*.rs` は飛ばす） |
+| x86_64 の Linux（試験の機械の podman） | 815 件が通り、失敗 0、無視 16 |

@@ -585,16 +585,20 @@ pub(crate) fn valid_parent(parent: &Path) -> bool {
     })
 }
 
+/// 秘密の入力の補助のために設定する変数。環境の規則の `set` で書けない
+/// （設計書 05-01「設定ファイル」）。
+pub(crate) const ENVIRONMENT_NAMES: &[&str] = &[
+    "SSH_ASKPASS",
+    "GIT_ASKPASS",
+    "SUDO_ASKPASS",
+    "SSH_ASKPASS_REQUIRE",
+    "GIT_TERMINAL_PROMPT",
+    SOCKET_ENV,
+    TOKEN_ENV,
+];
+
 pub(crate) fn clear_environment(env: &mut BTreeMap<OsString, OsString>) {
-    for key in [
-        "SSH_ASKPASS",
-        "GIT_ASKPASS",
-        "SUDO_ASKPASS",
-        "SSH_ASKPASS_REQUIRE",
-        "GIT_TERMINAL_PROMPT",
-        SOCKET_ENV,
-        TOKEN_ENV,
-    ] {
+    for key in ENVIRONMENT_NAMES {
         env.remove(std::ffi::OsStr::new(key));
     }
 }

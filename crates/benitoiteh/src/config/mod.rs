@@ -3,7 +3,10 @@
 pub mod credentials;
 pub(crate) mod domain;
 mod environment;
-pub use environment::{child_environment, remark_child_environment};
+pub use environment::{
+    EnvironmentRule, EnvironmentRules, child_environment, ineffective_rules,
+    remark_child_environment,
+};
 pub mod paths;
 mod text;
 pub mod trust;
@@ -36,7 +39,7 @@ pub enum ConfigError {
     Io { path: PathBuf, source: io::Error },
     /// safe_fs がプロジェクト内の読み取りを拒否した。
     SafeFs(SafeFsError),
-    /// 値を含めない TOML の診断。
+    /// 値を含めない TOML と環境の規則の診断。
     Parse(String),
     /// 設定の値の制約に反した。
     Invalid(&'static str),
@@ -402,21 +405,32 @@ impl Default for SessionsConfig {
     }
 }
 
-/// 利用者だけが選べる秘密の仲介と、子プロセスへ通す秘密の名前の設定
-/// （設計書 03-04「段 2」、03-02「子プロセスの環境」）。
+/// 利用者だけが選べる秘密の仲介の設定（設計書 03-04「段 2」）。
 #[derive(Clone, Debug, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct SecretsConfig {
     pub askpass: bool,
-    /// 秘密に見える名前でも子プロセスへ通す環境変数の名前。完全に一致する名前だけを通す。
-    pub pass_env: BTreeSet<String>,
 }
 impl Default for SecretsConfig {
     fn default() -> Self {
-        Self {
-            askpass: true,
-            pass_env: BTreeSet::new(),
-        }
+        Self { askpass: true }
+    }
+}
+
+/// 利用者だけが書ける子プロセスの環境の規則（設計書 05-01「設定ファイル」、03-02「環境の規則」）。
+#[derive(Clone, Debug, Default, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct EnvironmentConfig {
+    /// 書いたままの行。読み込みのときに検証して `parsed` へ変える。
+    rules: Option<Vec<String>>,
+    #[serde(skip)]
+    parsed: EnvironmentRules,
+}
+
+impl EnvironmentConfig {
+    /// 当てる規則。書かなければ `allow *` の一行。
+    pub fn rules(&self) -> &EnvironmentRules {
+        &self.parsed
     }
 }
 
@@ -475,6 +489,7 @@ pub struct UserConfig {
     pub plugins: UserPluginsConfig,
     pub sessions: SessionsConfig,
     pub secrets: SecretsConfig,
+    pub environment: EnvironmentConfig,
     pub notifications: NotificationsConfig,
 }
 
@@ -562,16 +577,13 @@ impl UserConfig {
                 reference.validate()?;
             }
         }
-        // 提供者のキーは、通す名前に書いても通さない。黙って除くと、利用者は通したつもりになる。
-        // （設計書 03-02「子プロセスの環境」）
-        let referenced = config.referenced_env_vars();
-        if config.secrets.pass_env.iter().any(|name| {
-            name.is_empty()
-                || name.contains(['=', '\0'])
-                || PROVIDER_KEY_ENV_VARS.contains(&name.as_str())
-                || referenced.contains(name)
-        }) {
-            return Err(ConfigError::Invalid(text::INVALID_PASS_ENV));
+        // 提供者のキーと benitoiteh の変数は、規則に書いても規則の後に打ち消す。黙って打ち消すと、
+        // 利用者は通したつもりになるので、誤りとして止める（設計書 05-01「設定ファイル」）。
+        if let Some(lines) = &config.environment.rules {
+            config.environment.parsed =
+                EnvironmentRules::parse(lines, &config.referenced_env_vars()).map_err(|error| {
+                    ConfigError::Parse(text::invalid_rule(error.index, error.reason))
+                })?;
         }
         Ok(config)
     }
