@@ -1,7 +1,7 @@
 //! キーの参照を起動時に解決し、診断から値を除く（設計書 02-01「認証の情報」）。
 
 use std::fmt;
-use std::process::{Command, Stdio};
+use std::process::Command;
 
 use serde::Deserialize;
 
@@ -90,12 +90,7 @@ impl ApiKeyRef {
             Self::Command(arguments) => {
                 let mut arguments = arguments.iter();
                 let program = arguments.next().ok_or(CredentialError::InvalidReference)?;
-                let output = Command::new(program)
-                    .args(arguments)
-                    .stdin(Stdio::null())
-                    .stdout(Stdio::piped())
-                    .stderr(Stdio::piped())
-                    .output()
+                let output = crate::sandbox::spawn::output(Command::new(program).args(arguments))
                     .map_err(CredentialError::Spawn)?;
                 let first = output
                     .stdout

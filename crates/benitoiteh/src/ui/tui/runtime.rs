@@ -647,11 +647,8 @@ fn edit(
             for name in &keys {
                 command.env_remove(name);
             }
-            command
-                .args(&arguments)
-                .arg(&path)
-                .status()
-                .map(|status| status.success())
+            command.args(&arguments).arg(&path);
+            crate::sandbox::spawn::status(&mut command).map(|status| status.success())
         });
         // 端末を取り戻したら、入力の拡張を有効にし直す。
         super::control::setup(output)

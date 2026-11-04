@@ -56,13 +56,13 @@ impl Notifier {
             for name in removed_env {
                 command.env_remove(name);
             }
-            let spawned = command
+            command
                 .args(arguments)
                 .arg(notification.message())
                 .stdin(Stdio::null())
                 .stdout(Stdio::null())
-                .stderr(Stdio::null())
-                .spawn();
+                .stderr(Stdio::null());
+            let spawned = crate::sandbox::spawn::spawn(&mut command);
             if let Ok(mut child) = spawned {
                 // 終わりを待つ糸を分け、ゾンビを残さない。
                 let _waiter = std::thread::Builder::new()
