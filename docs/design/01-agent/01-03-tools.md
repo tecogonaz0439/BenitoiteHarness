@@ -248,7 +248,7 @@ Benitoite の事前検討は、LLM に見せる道具の形を、サーバモー
 - 時間の上限は既定 120 秒、`timeout` で 600 秒まで延ばせる。過ぎたら、プロセスグループに `SIGTERM` を送り、10 秒で終わらなければ `SIGKILL` を送る。コマンドが終わった後にプロセスグループに残ったプロセスには、すぐに `SIGKILL` を送る。理由: 背景に残したプロセスが、後の道具の判定と実行の間にファイルを差し替えることを防ぐ。新しいセッション（`setsid`）でグループを抜けたプロセスの扱いは、[OS のサンドボックス](../03-safety/03-02-sandbox.md)の「子プロセスの後始末」で定める。
 - 標準出力と標準エラー出力をまとめて受け取り、末尾の 2,000 行か 50 KiB を返す。切り詰めたときは、出力をセッションのディレクトリの `spill/` に書き、`[Showing last lines A-B of N. Full output: <path>]` を付ける。`spill/` のファイルは `read` で読める（後述の「出力の切り詰め」）。
 - 終了状態が 0 でなければ、末尾に `[exit code: N]` を付け、誤りの印を付ける。0 のときも `[exit code: 0]` を付ける。理由: DeepSeek Harness の評価の構成は、すべてのコマンドの結果に終了状態を付けており、モデルはこの印を見て失敗を調べる（[先行事例](../08-appendix/08-01-prior-art.md)）。
-- コマンドは OS のサンドボックスの中で動く（[OS のサンドボックス](../03-safety/03-02-sandbox.md)の「通常モードの方針」）。サンドボックスに拒否されたと見られるとき（`Operation not permitted` などの文と、0 でない終了状態）は、`[sandbox: the command may have been blocked by the sandbox. If it must run outside the sandbox, call bash again with escalate=true and a justification; the user will be asked.]` を付ける。
+- コマンドは OS のサンドボックスの中で動く（[OS のサンドボックス](../03-safety/03-02-sandbox.md)の「通常モードの方針」）。サンドボックスに拒否されたと見られるとき（`Operation not permitted` などの文と、0 でない終了状態）は、`[sandbox: the command may have been blocked by the sandbox. If it must run outside the sandbox, call bash again with escalate=true and a justification; the user will be asked.]` を付ける。macOS では、続けて、Seatbelt が記録した拒否の一件ごとに `[sandbox denied: <操作> <対象> (<プログラム>)]` を付ける（[OS のサンドボックス](../03-safety/03-02-sandbox.md)の「拒否の検出」）。
 - `escalate` が真のときは、サンドボックスの外で動かす要求として、利用者の承認を受けてから実行する（[利用者の確認](../03-safety/03-03-approval.md)の「通常モードの承認の方針」）。`justification` は承認の画面に示す。
 
 ### benitoite_check

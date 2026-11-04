@@ -255,6 +255,13 @@ pub const BASH_TIMEOUT: &str =
 pub const BASH_CANCELLED: &str =
     "[The command was stopped because the user cancelled the tool call.]";
 pub const BASH_LEFTOVERS: &str = "[Processes started by the command may still be running.]";
+/// Seatbelt が記録した拒否の一件（設計書 03-02「拒否の検出」）。
+pub fn bash_denial(denial: &str) -> String {
+    format!("[sandbox denied: {denial}]")
+}
+pub fn bash_denials_omitted(count: usize) -> String {
+    format!("[sandbox denied: {count} more records omitted]")
+}
 pub const BASH_SANDBOX: &str = "[sandbox: the command may have been blocked by the sandbox. If it must run outside the sandbox, call bash again with escalate=true and a justification; the user will be asked.]";
 pub fn bash_failure(error: &dyn std::fmt::Display) -> String {
     format!(

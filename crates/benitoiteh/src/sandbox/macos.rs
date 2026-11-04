@@ -15,6 +15,27 @@ pub struct SeatbeltProfile {
     pub source: String,
     /// 名前と値の対。方針の文とは別の引数で渡す。
     pub parameters: Vec<(String, OsString)>,
+    /// 拒否の記録に付く、この方針だけの印（設計書 03-02「拒否の検出」）。
+    pub denial_tag: String,
+}
+
+/// 拒む規則に付ける印。Seatbelt は、この値を拒否の記録の末尾に足す。
+/// 2026-11-05 に、オーケストレータが macOS 27.2 の `sandbox-exec` で、`deny default` と個別の
+/// `deny` の規則の両方で、`log show` が読む記録の末尾に印が付くことを確かめた。
+const DENIAL_MESSAGE: &str = "(with message (param \"DENIAL_TAG\"))";
+
+/// 起動ごとの印。秘密ではなく、ほかの起動の記録と分けるためだけに使うので、乱数を得られなければ
+/// 時刻とプロセスの番号で代える。
+fn denial_tag() -> String {
+    let mut random = [0_u8; 16];
+    if getrandom::fill(&mut random).is_err() {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos();
+        random = (now ^ u128::from(std::process::id())).to_ne_bytes();
+    }
+    format!("benitoiteh-denial-{:032x}", u128::from_ne_bytes(random))
 }
 
 impl SeatbeltProfile {
@@ -114,8 +135,9 @@ impl SeatbeltProfile {
     pub(super) fn deny_writes(&mut self, paths: &[std::path::PathBuf]) {
         for (i, path) in paths.iter().enumerate() {
             let param = self.parameter(format!("GITDIR_{i}"), path.as_os_str());
-            self.source
-                .push_str(&format!("(deny file-write* (subpath {param}))\n"));
+            self.source.push_str(&format!(
+                "(deny file-write* (subpath {param}) {DENIAL_MESSAGE})\n"
+            ));
         }
     }
 }
@@ -123,11 +145,12 @@ impl SeatbeltProfile {
 impl SandboxPolicy {
     /// 検証した方針から Seatbelt の文とパラメータを作る。
     pub fn seatbelt_profile(&self) -> SeatbeltProfile {
+        let tag = denial_tag();
         let mut profile = SeatbeltProfile {
             source: String::from(
-                "(version 1)\n(deny default)\n\
+                "(version 1)\n(deny default (with message (param \"DENIAL_TAG\")))\n\
                  ; 他のプロセスの引数と環境にある提供者のキーを読ませない（設計書 03-02）。\n\
-                 (deny process-info*)\n\
+                 (deny process-info* (with message (param \"DENIAL_TAG\")))\n\
                  (allow process-info* (target self))\n\
                  ; Rust の標準のライブラリが起動時にページの大きさを読むために必要。\n\
                  ; 拒否すると guard page の確保に失敗して SIGABRT になる。\n\
@@ -141,7 +164,8 @@ impl SandboxPolicy {
                  (allow signal (target pgrp))\n\
                  ; mach-lookup と、上記三名以外の sysctl-read は必要性を実測できるまで許さない。\n",
             ),
-            parameters: Vec::new(),
+            parameters: vec![("DENIAL_TAG".to_owned(), tag.clone().into())],
+            denial_tag: tag,
         };
         // 出力の破棄はどの方針でも許すが、通常のファイルへの書き込みは広げない
         // （設計書 03-02「方針の要素」）。
@@ -190,14 +214,14 @@ impl SandboxPolicy {
             // require-not で例外を組み込む。秘密のディレクトリの下は、例外の名前でも読ませない
             // （`.ssh/x.bnt` など。起動のときに探す仕組みと同じ結果にする）。
             profile.source.push_str(&format!(
-                "(deny file-read* file-map-executable (require-all (regex (string-append \"^\" (regex-quote {param}) \"/(.*/)?{SECRET_NAME_PATTERN}$\")) (require-not (regex (string-append \"^\" (regex-quote {param}) \"/(.*/)?{SECRET_EXCEPTION_PATTERN}$\")))))\n\
-                 (deny file-read* file-map-executable (regex (string-append \"^\" (regex-quote {param}) \"/(.*/)?{SECRET_NAME_PATTERN}/\")))\n"
+                "(deny file-read* file-map-executable (require-all (regex (string-append \"^\" (regex-quote {param}) \"/(.*/)?{SECRET_NAME_PATTERN}$\")) (require-not (regex (string-append \"^\" (regex-quote {param}) \"/(.*/)?{SECRET_EXCEPTION_PATTERN}$\")))) {DENIAL_MESSAGE})\n\
+                 (deny file-read* file-map-executable (regex (string-append \"^\" (regex-quote {param}) \"/(.*/)?{SECRET_NAME_PATTERN}/\")) {DENIAL_MESSAGE})\n"
             ));
         }
         for (i, path) in config.denied_read.iter().enumerate() {
             let param = profile.parameter(format!("DENIED_READ_{i}"), path.as_os_str());
             profile.source.push_str(&format!(
-                "(deny file-read* file-map-executable (subpath {param}))\n"
+                "(deny file-read* file-map-executable (subpath {param}) {DENIAL_MESSAGE})\n"
             ));
         }
         match &config.programs {
@@ -218,7 +242,7 @@ impl SandboxPolicy {
                 .push_str(&format!("(allow file-write* (subpath {param}))\n"));
             if config.deny_exec_in_writable {
                 profile.source.push_str(&format!(
-                    "(deny process-exec file-map-executable (subpath {param}))\n"
+                    "(deny process-exec file-map-executable (subpath {param}) {DENIAL_MESSAGE})\n"
                 ));
             }
             for (j, name) in config.protected_names.iter().enumerate() {
@@ -227,7 +251,7 @@ impl SandboxPolicy {
                 // パスは regex-quote で引用し、守る名前は検証済みのパターンを別の値として渡す。
                 // パスの引用は OS 付属の com.apple.CommCenter.sb の home-regex を参照した。
                 profile.source.push_str(&format!(
-                    "(deny file-write* (regex (string-append \"^\" (regex-quote {param}) \"/(.*/)?\" {protected} \"(/|$)\")))\n"
+                    "(deny file-write* (regex (string-append \"^\" (regex-quote {param}) \"/(.*/)?\" {protected} \"(/|$)\")) {DENIAL_MESSAGE})\n"
                 ));
             }
         }

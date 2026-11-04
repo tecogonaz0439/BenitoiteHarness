@@ -118,7 +118,7 @@ pub(super) fn execute(
     } else {
         None
     };
-    let (launch, proxy) = prepare(
+    let (launch, proxy, denial_log) = prepare(
         shell,
         context.project.real_path(),
         command,
@@ -240,6 +240,17 @@ pub(super) fn execute(
     }
     if blocked {
         append(&mut contents, text::BASH_SANDBOX);
+        // macOS では、推定でなく、Seatbelt が記録した拒否の操作と対象を添える。読むのに 1 秒ほどかかるので、
+        // 拒否と見なしたときだけ読む（設計書 03-02「拒否の検出」）。
+        if let Some(log) = &denial_log {
+            let denials = log.read();
+            for denial in &denials.shown {
+                append(&mut contents, &text::bash_denial(denial));
+            }
+            if denials.omitted > 0 {
+                append(&mut contents, &text::bash_denials_omitted(denials.omitted));
+            }
+        }
     }
     // 中継が断った宛先と理由を、推定でなく事実として返す（設計書 03-02「通信の中継」）。
     if let Some(proxy) = &proxy {
@@ -281,7 +292,14 @@ fn prepare(
     sandboxed: bool,
     secret_call: Option<&crate::askpass::CallGuard>,
     changed_directory: &mut bool,
-) -> Result<(RunCommand, Option<ProxyGuard>), ToolError> {
+) -> Result<
+    (
+        RunCommand,
+        Option<ProxyGuard>,
+        Option<crate::sandbox::DenialLog>,
+    ),
+    ToolError,
+> {
     let path = if Path::new("/bin/bash").is_file() {
         Path::new("/bin/bash")
     } else {
@@ -323,12 +341,19 @@ fn prepare(
                 Some(guard) => prepared.with_proxy(Arc::clone(&guard.run)),
                 None => prepared,
             };
-            Ok((prepared.into(), guard))
+            Ok((prepared.into(), guard, None))
         }
-        #[cfg(not(target_os = "linux"))]
+        #[cfg(target_os = "macos")]
+        {
+            let (launch, denial_log) = sandbox
+                .to_command_reporting(&shell.helper)
+                .map_err(|e| failure(&e))?;
+            Ok((launch.into(), guard, Some(denial_log)))
+        }
+        #[cfg(not(any(target_os = "linux", target_os = "macos")))]
         {
             let launch = sandbox.to_command(&shell.helper).map_err(|e| failure(&e))?;
-            Ok((launch.into(), guard))
+            Ok((launch.into(), guard, None))
         }
     } else {
         env.remove(std::ffi::OsStr::new("BENITOITEH_SANDBOX"));
@@ -348,7 +373,7 @@ fn prepare(
             .current_dir(cwd)
             .env_clear()
             .envs(env);
-        Ok((launch.into(), None))
+        Ok((launch.into(), None, None))
     }
 }
 

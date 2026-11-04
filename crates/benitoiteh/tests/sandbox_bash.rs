@@ -247,3 +247,73 @@ if curl -s --noproxy '*' -m 5 http://127.0.0.1:{port}/ >/dev/null; then echo dir
     );
     Ok(())
 }
+
+// 作成時の関門: macOS で拒否と見なしたときは、Seatbelt が記録した拒否の操作と対象を道具の結果に添える。
+// 既定の拒否と個別の拒む規則の両方に印が付き、前の起動の拒否は混ぜず、拒否と見なさない失敗には添えない
+// （設計書 03-02「拒否の検出」）。
+// 推定の文（BASH_SANDBOX）だけを確かめる既存のテストは、記録を読まない退行を捕まえない。
+#[cfg(target_os = "macos")]
+#[test]
+fn macos_denied_bash_reports_the_recorded_operation_and_path() -> TestResult {
+    let f = Fixture::new(Sandbox::WorkspaceWrite)?;
+    let stop = AtomicBool::new(false);
+    let denied = |name: &str| {
+        let target = f.root.join(name);
+        f.execute(
+            name,
+            json!({"command": format!("printf x > '{}'", target.display())}),
+            &stop,
+        )
+        .map(|output| (target, output))
+    };
+    let reported = |text: &str| -> Vec<String> {
+        text.lines()
+            .filter(|line| line.starts_with("[sandbox denied: "))
+            .map(str::to_owned)
+            .collect()
+    };
+    let (first, output) = denied("first-outside.txt")?;
+    assert!(output.is_error && !first.exists(), "{}", output.text);
+    let lines = reported(&output.text);
+    assert!(
+        lines.iter().any(|line| line.contains("file-write")
+            && line.contains(&first.display().to_string())
+            && line.ends_with("(bash)]")),
+        "{}",
+        output.text
+    );
+    assert!(!output.text.contains("dtracehelper"), "{}", output.text);
+    let (second, output) = denied("second-outside.txt")?;
+    let lines = reported(&output.text);
+    assert!(
+        lines
+            .iter()
+            .any(|line| line.contains(&second.display().to_string())),
+        "{}",
+        output.text
+    );
+    assert!(
+        !lines
+            .iter()
+            .any(|line| line.contains(&first.display().to_string())),
+        "{}",
+        output.text
+    );
+    // 個別の拒む規則（守る名前）の拒否にも印が付く。
+    let protected = f.project.join(".git");
+    let output = f.execute("protected", json!({"command": "mkdir .git"}), &stop)?;
+    assert!(
+        reported(&output.text)
+            .iter()
+            .any(|line| line.contains(&protected.display().to_string())),
+        "{}",
+        output.text
+    );
+    let plain = f.execute("plain", json!({"command": "exit 1"}), &stop)?;
+    assert!(
+        plain.is_error && reported(&plain.text).is_empty(),
+        "{}",
+        plain.text
+    );
+    Ok(())
+}
