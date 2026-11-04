@@ -214,10 +214,31 @@ fn version_ms() -> MeasureResult {
         let mut command = command(&workspace.0, &binary());
         command.arg("--version");
         logs(&mut command, &workspace.0)?;
+        // 終わらない子で測定を止めないよう、待つ時間に上限を掛ける。待ちは別の糸で行い、
+        // 終わった時刻をそこで取るので、確かめの間隔の誤差を測る値に入れない。
         let start = Instant::now();
-        let status = command.status()?;
-        let elapsed = ms(start.elapsed());
-        success(status, &workspace.0)?;
+        let child = command.spawn()?;
+        let pid = child.id();
+        let (sender, receiver) = mpsc::channel();
+        let waiter = thread::spawn(move || {
+            let mut child = child;
+            let status = child.wait();
+            let _sent = sender.send((status, start.elapsed()));
+        });
+        let Ok((status, elapsed)) = receiver.recv_timeout(LIMIT) else {
+            // まだ回収していない子なので、番号は使い回されていない。
+            if let Some(pid) = i32::try_from(pid)
+                .ok()
+                .and_then(rustix::process::Pid::from_raw)
+            {
+                let _killed = rustix::process::kill_process(pid, rustix::process::Signal::KILL);
+            }
+            let _joined = waiter.join();
+            return Err("benitoiteh --version did not exit within the limit".into());
+        };
+        let _joined = waiter.join();
+        let elapsed = ms(elapsed);
+        success(status?, &workspace.0)?;
         if index != 0 {
             samples.push(elapsed);
         }

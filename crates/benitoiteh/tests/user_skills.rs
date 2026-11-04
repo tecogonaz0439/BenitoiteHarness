@@ -573,6 +573,20 @@ fn caps_entries_skills_and_escaped_index_bytes_in_name_order() -> TestResult {
 fn user_skills_take_count_and_byte_budgets_before_project_skills() -> TestResult {
     for (count, description) in [(100, "x".to_owned()), (3, "&".repeat(1024))] {
         let f = Fixture::new()?;
+        // 索引の項目は絶対パスを含むので、根が長いと、100 件の上限より先に 16 KiB の上限に達する。
+        // その環境では、件数の上限を確かめる前提が成り立たないことを、別の失敗として示す。
+        let entry = format!(
+            "<skill name=\"z000\" path=\"{}\">{description}</skill>\n",
+            f.root.join("home/.agents/skills/z000/SKILL.md").display()
+        )
+        .len();
+        if count == 100 && "<skills>\n</skills>".len() + 100 * entry > 16 * 1024 {
+            return Err(format!(
+                "temporary root too long for the count row ({} bytes); use a shorter TMPDIR",
+                f.root.as_os_str().len()
+            )
+            .into());
+        }
         for n in 0..count {
             f.skill("home/.agents/skills", &format!("z{n:03}"), &description)?;
         }

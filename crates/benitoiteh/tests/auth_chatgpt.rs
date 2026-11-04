@@ -880,9 +880,11 @@ fn discovery_and_response_bounds_are_checked_before_saving_tokens() -> TestResul
 }
 
 // 作成時の関門: 接続・保存・錠の実際の境界で、レビューの問題を決まった順に再現する。
+// 戻りの前半を受けた後に開いた接続の数で、未完の接続の上限（64 件）そのものも確かめる。63 件なら
+// 戻りの接続は残り、64 件なら最も古い戻りの接続が外され、新しい戻りの接続で完了する。
 #[test]
 fn security_idle_connections_do_not_block_a_callback() -> TestResult {
-    for count in [0, 16, 100] {
+    for (count, after) in [(0, 0), (16, 0), (100, 0), (0, 63), (0, 64)] {
         let fixture = Fixture::new()?;
         let store = fixture.store()?;
         let (mut server, scripts) = MockProvider::start_channel()?;
@@ -908,10 +910,34 @@ fn security_idle_connections_do_not_block_a_callback() -> TestResult {
                 )?;
                 // 頭を分割して送り、未完の接続として保った後にも読み続けることを確かめる。
                 std::thread::sleep(Duration::from_millis(100));
-                write!(socket, "Host: {address}\r\nConnection: close\r\n\r\n")?;
+                for _ in 0..after {
+                    idle.push(TcpStream::connect(address)?);
+                }
+                if after > 0 {
+                    // 後から開いた接続を、戻りの後半より先に受け付けさせる。
+                    std::thread::sleep(Duration::from_millis(300));
+                }
+                let rest = format!("Host: {address}\r\nConnection: close\r\n\r\n");
                 let mut response = String::new();
-                socket.read_to_string(&mut response)?;
-                assert!(response.starts_with("HTTP/1.1 200 "), "{count}: {response}");
+                let _sent = socket.write_all(rest.as_bytes());
+                let _read = socket.read_to_string(&mut response);
+                if after >= 64 {
+                    // 外された戻りの接続は応答を受けない。同じ state の新しい接続で完了する。
+                    assert!(response.is_empty(), "{after}: {response}");
+                    let mut retry = TcpStream::connect(address)?;
+                    retry.set_read_timeout(Some(Duration::from_secs(5)))?;
+                    write!(
+                        retry,
+                        "GET /auth/callback?state={}&error=access_denied HTTP/1.1\r\n{rest}",
+                        get(&fields, "state")?
+                    )?;
+                    response.clear();
+                    retry.read_to_string(&mut response)?;
+                }
+                assert!(
+                    response.starts_with("HTTP/1.1 200 "),
+                    "{count} {after}: {response}"
+                );
                 for mut socket in idle {
                     socket.set_read_timeout(Some(Duration::from_secs(2)))?;
                     // 64 を超えた接続と、完了時に残った接続の両方が閉じる。
@@ -1482,6 +1508,8 @@ fn followups_failed_login_revokes_only_unshared_received_tokens() -> TestResult 
     for (case, previous, revoke_status, expected, should_revoke) in [
         ("jwks", false, 200, AuthError::Communication, true),
         ("signature", false, 200, AuthError::Validation, true),
+        // 本文の形が違う 2xx（期限がない）でも、受け取ったリフレッシュトークンは取り消す。
+        ("malformed", false, 200, AuthError::Validation, true),
         ("jwks", true, 200, AuthError::Communication, false),
         ("scope", true, 200, AuthError::Scope, false),
         ("account", true, 200, AuthError::Account, true),
@@ -1519,7 +1547,13 @@ fn followups_failed_login_revokes_only_unshared_received_tokens() -> TestResult 
                         .map_err(|_| "other signature")?;
                     token = format!("{message}.{}", auth_key::encode(signature));
                 }
-                scripts.send(ResponseScript::json(200, &json!({"access_token":"received-access","refresh_token":"received-refresh","expires_in":3600,"scope":if case == "scope" {"openid"} else {"chatgpt.tokens.use.direct"},"id_token":token}))?)?;
+                let mut response = json!({"access_token":"received-access","refresh_token":"received-refresh","expires_in":3600,"scope":if case == "scope" {"openid"} else {"chatgpt.tokens.use.direct"},"id_token":token});
+                if case == "malformed"
+                    && let Some(fields) = response.as_object_mut()
+                {
+                    fields.remove("expires_in");
+                }
+                scripts.send(ResponseScript::json(200, &response)?)?;
                 // 常に台本を置き、余計な取り消しが届いた場合も数で検出する。
                 scripts.send(ResponseScript::json(200, &config)?)?;
                 scripts.send(ResponseScript {

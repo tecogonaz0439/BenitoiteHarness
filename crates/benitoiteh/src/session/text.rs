@@ -104,7 +104,7 @@ pub fn session_kept(reason: &str, contents: Option<&str>) -> String {
 pub const PROTECTED_SHOWN: usize = 20;
 
 /// 一件のパスを示す字数の上限。長いパスは末尾（守る名前の側）を残す。
-const PROTECTED_PATH_CHARS: usize = 240;
+pub(super) const PROTECTED_PATH_CHARS: usize = 240;
 
 /// 一時ディレクトリの削除で守る名前の項目を残した理由（パスは一時の根からの相対）。
 /// `shown` は最初の高々 20 件、`total` は残した総数。総数を先頭に置き、知らせが

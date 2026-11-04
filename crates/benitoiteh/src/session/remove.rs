@@ -177,14 +177,34 @@ impl<'a> Removal<'a> {
         }
     }
 
-    /// 親からの相対のパス（残した項目の表示に使う）。
+    /// 親からの相対のパス（残した項目の表示に使う）。示すのは末尾の 240 文字までなので、
+    /// 深い木でも、それを超えた先の祖先の名前は集めない。保持量を深さに比例させない。
     fn path_of(&self, child: &CString) -> PathBuf {
-        let mut path = PathBuf::from(self.name);
-        for level in self.stack.iter().skip(1) {
-            path.push(OsStr::from_bytes(level.name.to_bytes()));
+        let names = std::iter::once(child.to_bytes())
+            .chain(
+                self.stack
+                    .iter()
+                    .skip(1)
+                    .rev()
+                    .map(|level| level.name.to_bytes()),
+            )
+            .chain(std::iter::once(self.name.as_bytes()));
+        let mut kept = Vec::new();
+        let mut chars = 0_usize;
+        for name in names {
+            kept.push(name);
+            // 区切りの `/` を含めて数える。超えた段まで集めれば、表示の側が `…` を付けて切る。
+            chars = chars
+                .saturating_add(String::from_utf8_lossy(name).chars().count())
+                .saturating_add(1);
+            if chars > super::text::PROTECTED_PATH_CHARS {
+                break;
+            }
         }
-        path.push(OsStr::from_bytes(child.to_bytes()));
-        path
+        kept.iter()
+            .rev()
+            .map(|name| OsStr::from_bytes(name))
+            .collect()
     }
 
     fn advance(&mut self) -> io::Result<bool> {
@@ -650,15 +670,32 @@ mod tests {
 
     // 関門: 一件のパスが長くても、守る名前の側（末尾）を残して示す。
     #[test]
-    fn long_kept_paths_keep_their_protected_tail() {
-        let long = PathBuf::from(format!("{}/x/.git", "L".repeat(3000)));
-        let reason = super::super::text::protected_kept(&[long], 1);
-        assert!(
-            reason.starts_with("kept protected entries: 1 total; …"),
-            "{reason}"
-        );
-        assert!(reason.ends_with("/x/.git"), "{reason}");
-        assert!(reason.chars().count() < 400, "{reason}");
+    fn long_kept_paths_keep_their_protected_tail() -> TestResult {
+        // 本物の削除の歩行で、深い段の名前（多バイトの文字を含む）の末尾 240 文字だけを示す。
+        // バイトで切る退行と、祖先の名前を集めるのを早く止めすぎる退行を、全体のパスとの比較で捕まえる。
+        let fixture = Fixture::new()?;
+        let base = File::open(&fixture.0)?;
+        for (root_name, segment) in [
+            ("long-ascii", "L".repeat(100)),
+            ("long-wide", "あ".repeat(80)),
+        ] {
+            rustix::fs::mkdirat(&base, root_name, Mode::RWXU)?;
+            let root = openat(&base, root_name, DIRECTORY, Mode::empty())?;
+            git_at(chain(&root, &segment, 5)?)?;
+            let error = remove_within_limit(&fixture.0, root_name)?
+                .err()
+                .ok_or("protected entry was not reported")?;
+            let reason = error.to_string();
+            let full = format!("{root_name}/{}.git", format!("{segment}/").repeat(5));
+            let count = full.chars().count();
+            let tail: String = full.chars().skip(count.saturating_sub(240)).collect();
+            assert_eq!(
+                reason,
+                format!("kept protected entries: 1 total; …{tail}"),
+                "{root_name}"
+            );
+        }
+        Ok(())
     }
 
     // 関門: 残した項目が多くても知らせを短く保つ。総数を先頭に、最初の 20 件を後ろに示す。

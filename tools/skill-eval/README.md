@@ -37,6 +37,8 @@ workspace には `input/` と `task.md` だけを写す。`task.json` の `artif
 通常モードは macOS と、ビルド済みの `benitoiteh`・判定の example、v0.0.12 の処理系を必要とする。
 Python は `/usr/bin/python3` から実際の処理系のパスを求める。`python3`・`/bin/sh`、sh の
 課題の `find`・`sort` が必要である。準備時に実のパスと SHA-256、Python と sh の版を記録し、macOS の sh の起動先の `/bin/bash` も記録する。
+記録する道具は、判定の `PATH`（`/usr/bin:/bin`）で探したものである。エージェントは利用者の `PATH` を受け継ぐので、
+エージェントが使う同じ名前の道具は、記録したものと違いうる。
 Python が判定のサンドボックス内で起動できることも確かめる。道具がなければ停止し、導入や更新は行わない。
 
 ```sh

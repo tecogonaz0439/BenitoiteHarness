@@ -293,7 +293,21 @@ impl ErrorCode {
 }
 fn exchange(endpoints: &Endpoints, fields: &[(&str, &str)]) -> Result<TokenResponse, LoginFailure> {
     let bytes = exchange_bytes(endpoints, fields, None)?;
-    serde_json::from_slice(&bytes).map_err(|_| LoginFailure::from(AuthError::Validation))
+    serde_json::from_slice(&bytes).map_err(|_| {
+        // 2xx の本文の形が違っても、受け取ったリフレッシュトークンを読めれば取り消しに回す。
+        // 更新の側と同じく、読めた値を捨てたままにしない（設計書 02-01「ログイン」「更新」）。
+        #[derive(Deserialize)]
+        struct Received {
+            refresh_token: Secret,
+        }
+        LoginFailure {
+            refresh_token: serde_json::from_slice::<Received>(&bytes)
+                .ok()
+                .map(|received| received.refresh_token)
+                .filter(|token| !token.expose_secret().is_empty()),
+            ..LoginFailure::from(AuthError::Validation)
+        }
+    })
 }
 fn exchange_bytes(
     endpoints: &Endpoints,

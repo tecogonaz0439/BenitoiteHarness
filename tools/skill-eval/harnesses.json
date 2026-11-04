@@ -494,7 +494,7 @@
     "default": false,
     "start": [
       "node",
-      "/Users/tecogonaz/src/deepseek-harness/apps/cli/lib/bin.js",
+      "{dsh_cli}",
       "--profile",
       "headless",
       "--patch",
@@ -505,7 +505,7 @@
     "cwd": "{workspace}",
     "version": [
       "node",
-      "/Users/tecogonaz/src/deepseek-harness/apps/cli/lib/bin.js",
+      "{dsh_cli}",
       "--version"
     ],
     "files": {},

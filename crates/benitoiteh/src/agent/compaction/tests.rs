@@ -35,7 +35,8 @@ impl Drop for Fixture {
 }
 
 // 作成時の関門: 外部の入口にはまだ再開がないため、会話だけを初期状態として与える。
-// 本番の差し込み口は増やさず、圧縮・HTTP・記録の境界は本物を通す。
+// 本番の差し込み口は増やさず、圧縮・HTTP・記録の境界は本物を通す。要約で消える範囲の途中の
+// 環境の変化を、最初の環境とともに順に残すことも確かめる（設計書 01-04「圧縮」）。
 #[test]
 fn unbuildable_continuation_falls_back_and_summarizes_first_request_and_steering()
 -> Result<(), Box<dyn Error>> {
@@ -83,6 +84,7 @@ fn unbuildable_continuation_falls_back_and_summarizes_first_request_and_steering
         SystemTime::now(),
     )?;
     let environment_text = environment.render();
+    let changed = "<environment>\nchanged project\n</environment>".to_owned();
     let mut server = MockProvider::start(vec![ResponseScript::sse(format!(
         "data: {}\n\ndata: {}\n\ndata: [DONE]\n\n",
         json!({"choices":[{"delta":{"content":"repaired summary"},"finish_reason":null}]}),
@@ -129,6 +131,8 @@ fn unbuildable_continuation_falls_back_and_summarizes_first_request_and_steering
                 is_error: false,
                 images: Vec::new(),
             }),
+            // 途中の環境の変化（create_project の後など）も、要約で消える範囲から残す。
+            user_with_parts(vec![(UserPartKind::Environment, changed.clone())]),
         ],
     };
     let (sender, receiver) = mpsc::sync_channel(4);
@@ -141,7 +145,7 @@ fn unbuildable_continuation_falls_back_and_summarizes_first_request_and_steering
         sender,
     )?;
     assert_eq!(report.outcome, CompactOutcome::Compacted);
-    assert_eq!((report.summarized_items, report.kept_items), (4, 0));
+    assert_eq!((report.summarized_items, report.kept_items), (5, 0));
     assert_eq!(receiver.into_iter().count(), 1);
     let requests = server.requests()?;
     assert_eq!(requests.len(), 1);
@@ -162,16 +166,13 @@ fn unbuildable_continuation_falls_back_and_summarizes_first_request_and_steering
         return Err("missing user".into());
     };
     assert_eq!(
-        first.parts.first().map(|part| &part.text),
-        Some(&environment_text)
-    );
-    assert_eq!(
         first
             .parts
             .iter()
             .filter(|part| part.kind == UserPartKind::Environment)
-            .count(),
-        1
+            .map(|part| &part.text)
+            .collect::<Vec<_>>(),
+        [&environment_text, &changed]
     );
     assert_eq!(replay(session.directory())?, *agent.conversation());
     server.shutdown()?;
