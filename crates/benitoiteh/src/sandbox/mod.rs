@@ -1,5 +1,6 @@
 //! 子プロセスに OS のサンドボックスを掛ける起動の形を作る（設計書 03-02）。
 
+mod denials;
 #[cfg(target_os = "linux")]
 mod linux;
 mod macos;
@@ -29,6 +30,7 @@ use std::path::PathBuf;
 use std::process::Command;
 use std::process::Stdio;
 
+pub use denials::{DenialLog, Denials};
 #[cfg(target_os = "linux")]
 pub(crate) use linux::compile_no_process;
 #[cfg(target_os = "linux")]
@@ -127,6 +129,26 @@ impl SandboxCommand {
         helper: &Path,
         limits: session::ResourceLimits,
     ) -> Result<Command, SandboxError> {
+        self.seatbelt_command(helper, limits)
+            .map(|(command, _)| command)
+    }
+
+    /// 起動の形と、この起動の拒否の記録を後で読む手がかりを返す（設計書 03-02「拒否の検出」）。
+    #[cfg(target_os = "macos")]
+    pub fn to_command_reporting(
+        &self,
+        helper: &Path,
+    ) -> Result<(Command, DenialLog), SandboxError> {
+        self.seatbelt_command(helper, session::ResourceLimits::default())
+            .map(|(command, tag)| (command, DenialLog::new(tag)))
+    }
+
+    #[cfg(not(target_os = "linux"))]
+    fn seatbelt_command(
+        &self,
+        helper: &Path,
+        limits: session::ResourceLimits,
+    ) -> Result<(Command, String), SandboxError> {
         self.policy.validate()?;
         policy::canonical_path(&self.program)?;
         policy::canonical_path(&self.cwd)?;
@@ -150,6 +172,7 @@ impl SandboxCommand {
             }
             command.arg("--").arg(&self.program).args(&self.args);
             self.configure(command)
+                .map(|command| (command, profile.denial_tag))
         }
         #[cfg(not(any(target_os = "macos", target_os = "linux")))]
         {

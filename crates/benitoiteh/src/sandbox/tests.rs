@@ -223,7 +223,7 @@ fn seatbelt_source_does_not_depend_on_path_contents() -> TestResult {
         assert!(!profile.source.contains(name));
         for (parameter, value) in &profile.parameters {
             assert!(profile.source.contains(&format!("(param \"{parameter}\")")));
-            if parameter.starts_with("PROTECTED_") {
+            if parameter.starts_with("PROTECTED_") || parameter == "DENIAL_TAG" {
                 continue;
             }
             if parameter.starts_with("DENIED_") {

@@ -270,6 +270,10 @@ macOS で `~/Library/Keychains` を読ませないことの影響を、2026-11-0
 
 【方針】`bash` の結果をサンドボックスに拒否されたものと見なす条件は、Codex CLI の判定に倣う。終了状態が 0 でなく、2・126・127 でなく、出力に `operation not permitted`・`permission denied`・`read-only file system`・`sandbox` のいずれかを含むか、Linux で `SIGSYS` で終わったときとする（[先行事例](../08-appendix/08-01-prior-art.md)）。見なしたときに結果に加える文は、[道具](../01-agent/01-03-tools.md)の「bash（通常モード）」で定める。誤って見なしても、加えるのは案内の文だけであり、操作を許す方向には働かない。
 
+【方針】macOS では、拒否と見なしたときに、Seatbelt が記録した拒否の操作と対象（`file-write-create /path (bash)` の形）を結果に添える（2026-11-05 に設計者の指示で加えた）。方針の拒む規則（`deny default` と個別の `deny`）に、起動ごとの乱数の印を `with message` で付け、子が終わった後に `log show` で、送り手がカーネルの Sandbox の拡張であり、末尾にその印を持つ記録だけを読む。示すのは 10 件までとし、ファイル・通信・プログラムの起動の拒否を先に並べ、残りは数だけを示す。dyld が起動のたびに試みる `/dev/dtracehelper` への書き込みの拒否は除く。対象の名前の制御の文字は `?` に替える。理由: 推定の文だけでは、LLM はどの操作が拒まれたかを知らず、`escalate` を求めるべきかを誤りやすい。印で絞るので、同じ時刻のほかの起動の拒否は混ざらない。シェルは起動のたびに `sysctl` などを引いて拒まれるので、並べ方を変えないと、失敗の理由のファイルの拒否が上限の外に出る。記録を読むのに 1〜2 秒かかるので、拒否と見なしたときだけ読む。このため、拒否と見なさない失敗では、拒否の記録を示さない。
+
+2026-11-05 に、オーケストレータが macOS 27.2 の `sandbox-exec` で、`deny default` と個別の `deny` の規則のどちらでも、印が記録の末尾に付き、子の終了の直後の `log show --last` で読めることを確かめた。Claude Code の sandbox-runtime も、方針の規則に `with message` で印を付ける（<https://github.com/anthropic-experimental/sandbox-runtime> のコミット `98a4016d27609ed34dd1fb43d23ed6efb6eeeb77` の `src/sandbox/macos-sandbox-utils.ts` の `renderRule`）。Linux では拒否の記録を読む仕組みを作らず、推定の文だけを加える。
+
 ### 子プロセスの環境
 
 【方針】サンドボックスの中の子プロセスには、次の環境変数を設定する。
