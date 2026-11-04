@@ -10,7 +10,7 @@ pub const WRITABLE_HELPER: &str = "The sandbox helper must be outside every writ
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 pub const WRITABLE_SYMLINK: &str =
     "A protected or denied path must not pass through a symlink in a writable root.";
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 pub const INVALID_GITDIR: &str = "A root .git file must contain a valid gitdir: path.";
 #[cfg(target_os = "linux")]
 pub const INVALID_DENIED_TYPE: &str = "A denied path must be a directory or a regular file.";
@@ -25,6 +25,7 @@ pub const PROBE_FAILED: &str = "Unexpected sandbox probe exit status";
 pub const UNAVAILABLE: &str = "The OS sandbox is unavailable.";
 pub const IO: &str = "Could not prepare the OS sandbox:";
 pub const SETUP: &str = "Sandbox setup failed at";
+pub const SECRET_LINK: &str = "Restricted mode denies reading secret names, and this secret-named link points to the project, the temporary directory or a parent of them, so nothing could run. Remove or rename the link:";
 pub const SESSION_USAGE: &str = "Expected __session [--rlimit-cpu SECONDS] [--rlimit-fsize BYTES] -- <absolute program> [arguments].";
 pub const SESSION_ABSOLUTE_PROGRAM: &str = "The session helper requires an absolute program path.";
 pub const SESSION_SETSID: &str = "Could not create a new session:";

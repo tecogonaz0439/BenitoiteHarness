@@ -38,10 +38,12 @@ impl Notifier {
     }
 
     /// 端末に知らせの列を書き、コマンドを待たずに起動する。コマンドの失敗は画面を止めない。
+    /// コマンドの環境からは `removed_env`（提供者のキー）を除く。
     pub(super) fn send(
         &self,
         output: &mut impl Write,
         notification: Notification,
+        removed_env: &[String],
     ) -> io::Result<()> {
         if self.terminal {
             // OSC 9 は知らせを出す端末の拡張である。知らない端末は列ごと読み捨てる。
@@ -50,7 +52,11 @@ impl Notifier {
             output.flush()?;
         }
         if let Some((program, arguments)) = self.command.split_first() {
-            let spawned = Command::new(program)
+            let mut command = Command::new(program);
+            for name in removed_env {
+                command.env_remove(name);
+            }
+            let spawned = command
                 .args(arguments)
                 .arg(notification.message())
                 .stdin(Stdio::null())

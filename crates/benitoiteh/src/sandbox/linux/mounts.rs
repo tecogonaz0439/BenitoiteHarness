@@ -122,15 +122,7 @@ pub(super) fn build(
     }
     for root in &roots {
         scan(policy, root, 1, &mut protected)?;
-        let git = root.join(".git");
-        if metadata(&git)?.is_some_and(|metadata| metadata.is_file()) {
-            let contents = fs::read_to_string(&git).map_err(SandboxError::Io)?;
-            let target = contents
-                .strip_prefix("gitdir:")
-                .map(str::trim)
-                .filter(|target| !target.is_empty() && !target.contains(['\n', '\r']))
-                .ok_or(SandboxError::InvalidPolicy(text::INVALID_GITDIR))?;
-            let target = root.join(target);
+        if let Some(target) = super::super::policy::root_gitdir(root)? {
             check_links(&target, &roots)?;
             let real = fs::canonicalize(&target).map_err(SandboxError::Io)?;
             // commondir と入れ子の .git ファイルの指す先は辿らない（実装プラン P0-07）。

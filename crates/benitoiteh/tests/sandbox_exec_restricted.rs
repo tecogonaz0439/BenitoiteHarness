@@ -273,6 +273,15 @@ fn redirected_xdg_keeps_default_home_paths_unreadable_from_normal_bash() -> Test
         ".git-credentials",
         ".npmrc",
         ".env",
+        // 道具が資格情報を平文で置くファイル。親のディレクトリのほかの設定は読めるままにする。
+        ".cargo/credentials.toml",
+        ".pypirc",
+        ".gem/credentials",
+        ".config/git/credentials",
+        ".config/gh/hosts.yml",
+        ".codex/auth.json",
+        ".claude/.credentials.json",
+        ".gemini/oauth_creds.json",
         ".local/share/keyrings/login.keyring",
         ".bash_history",
         ".config/google-chrome/Default/Cookies",
@@ -291,6 +300,7 @@ fn redirected_xdg_keeps_default_home_paths_unreadable_from_normal_bash() -> Test
 if cat "$path" 2>/dev/null; then printf 'UNEXPECTED-READ\n'; else printf 'denied\n'; fi
 done
 cat "$HOME/public-control.txt"
+cat "$HOME/.config/gh/config.yml"
 cat "$HOME/.zshenv"
 printf 'gh=%s github=%s\n' "${{GH_TOKEN:-unset}}" "${{GITHUB_TOKEN:-unset}}"
 printf 'allowed' > output.txt"#
@@ -310,6 +320,10 @@ printf 'allowed' > output.txt"#
         fs::write(path, "FAKE-SECRET")?;
     }
     fs::write(f.root.join("home/public-control.txt"), "PUBLIC-CONTROL\n")?;
+    fs::write(
+        f.root.join("home/.config/gh/config.yml"),
+        "GH-CONFIG-CONTROL\n",
+    )?;
     // zsh がどの起動でも読む .zshenv は、PATH を保つために読めるままにする。
     fs::write(f.root.join("home/.zshenv"), "ZSHENV-CONTROL\n")?;
     let config = f.root.join("config/benitoiteh/config.toml");
@@ -351,6 +365,7 @@ printf 'allowed' > output.txt"#
         .ok_or("bash result")?;
     assert_eq!(text.matches("denied").count(), secrets.len(), "{text}");
     assert!(text.contains("PUBLIC-CONTROL"), "{text}");
+    assert!(text.contains("GH-CONFIG-CONTROL"), "{text}");
     assert!(text.contains("ZSHENV-CONTROL"), "{text}");
     assert!(text.contains("gh=PASSED-GH github=unset"), "{text}");
     assert!(!text.contains("FAKE-SECRET"), "{text}");

@@ -56,6 +56,9 @@ pub enum SandboxError {
     Io(io::Error),
     /// Linux の補助のプロセスの段階ごとの失敗。
     Setup { stage: &'static str, detail: String },
+    /// 制限モードで読ませない秘密の名前のリンクが、プロジェクトか一時の場所を含む先を指す
+    /// （設計書 03-02「制限モードの方針」）。
+    SecretLink(std::path::PathBuf),
 }
 
 impl fmt::Display for SandboxError {
@@ -65,6 +68,7 @@ impl fmt::Display for SandboxError {
             Self::Unavailable => f.write_str(text::UNAVAILABLE),
             Self::Io(error) => write!(f, "{} {error}", text::IO),
             Self::Setup { stage, detail } => write!(f, "{} {stage}: {detail}", text::SETUP),
+            Self::SecretLink(path) => write!(f, "{} {}", text::SECRET_LINK, path.display()),
         }
     }
 }
@@ -73,7 +77,10 @@ impl Error for SandboxError {
     fn source(&self) -> Option<&(dyn Error + 'static)> {
         match self {
             Self::Io(error) => Some(error),
-            Self::InvalidPolicy(_) | Self::Unavailable | Self::Setup { .. } => None,
+            Self::InvalidPolicy(_)
+            | Self::Unavailable
+            | Self::Setup { .. }
+            | Self::SecretLink(_) => None,
         }
     }
 }
@@ -130,7 +137,9 @@ impl SandboxCommand {
                 return Err(SandboxError::Unavailable);
             }
             macos::reject_protected_links(self.policy.config())?;
-            let profile = self.policy.seatbelt_profile();
+            let gitdirs = macos::gitdir_targets(self.policy.config())?;
+            let mut profile = self.policy.seatbelt_profile();
+            profile.deny_writes(&gitdirs);
             let mut command =
                 session::command_with_limits(helper, Path::new("/usr/bin/sandbox-exec"), limits);
             command.arg("-p").arg(profile.source);
