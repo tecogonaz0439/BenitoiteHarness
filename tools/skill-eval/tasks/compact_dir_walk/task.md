@@ -1,1 +1,1 @@
-This task continues in three requests in the same session. Each request arrives separately with its own materials. Implement the current request in main.bnt; later requests extend that script.
+This task continues in seven requests in the same session. Each request arrives separately. A request that describes requirements or a change comes with materials to study; the next request asks you to implement it in main.bnt. Later requests extend that script, and the last request asks you to check it.

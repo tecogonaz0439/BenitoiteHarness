@@ -1,206 +1,74 @@
-# Stage 3 field notes, part 01
+# Stage 2 field notes, part 01
 
-## sample-000485
-Launch input: batches/sample-000485.json
-Input array: [{"amount":529,"region":"east","status":"paid"}]
-Selected source: batches/sample-000485.json; independent default orders.json: [{"amount":530,"region":"west","status":"paid"}]
-Selected-source subtotal: {"east":{"amount":529,"count":1}}
+## sample-000020
+New market batch: [{"amount":64,"id":"sample-000020-a","region":"market-0053","status":"paid"},{"amount":2,"id":"sample-000020-b","region":"east","status":"paid"},{"amount":5,"id":"sample-000020-c","region":"remote-0053","status":"paid"}]
+report.json value: {"east":{"amount":2,"count":1},"other":{"amount":69,"count":2}}
 
-## sample-000486
-Launch input: batches/sample-000486.json
-Input array: [{"amount":530,"region":"east","status":"paid"}]
-Selected source: batches/sample-000486.json; independent default orders.json: [{"amount":531,"region":"west","status":"paid"}]
-Selected-source subtotal: {"east":{"amount":530,"count":1}}
+## sample-000021
+New market batch: [{"amount":65,"id":"sample-000021-a","region":"market-0054","status":"paid"},{"amount":2,"id":"sample-000021-b","region":"east","status":"paid"},{"amount":5,"id":"sample-000021-c","region":"remote-0054","status":"paid"}]
+report.json value: {"east":{"amount":2,"count":1},"other":{"amount":70,"count":2}}
 
-## sample-000487
-Launch input: batches/sample-000487.json
-Input array: [{"amount":531,"region":"east","status":"paid"}]
-Selected source: batches/sample-000487.json; independent default orders.json: [{"amount":532,"region":"west","status":"paid"}]
-Selected-source subtotal: {"east":{"amount":531,"count":1}}
+## sample-000022
+New market batch: [{"amount":66,"id":"sample-000022-a","region":"market-0055","status":"paid"},{"amount":2,"id":"sample-000022-b","region":"east","status":"paid"},{"amount":5,"id":"sample-000022-c","region":"remote-0055","status":"paid"}]
+report.json value: {"east":{"amount":2,"count":1},"other":{"amount":71,"count":2}}
 
-## sample-000488
-Launch input: batches/sample-000488.json
-Input array: [{"amount":532,"region":"east","status":"paid"}]
-Selected source: batches/sample-000488.json; independent default orders.json: [{"amount":533,"region":"west","status":"paid"}]
-Selected-source subtotal: {"east":{"amount":532,"count":1}}
+## sample-000023
+New market batch: [{"amount":67,"id":"sample-000023-a","region":"market-0056","status":"paid"},{"amount":2,"id":"sample-000023-b","region":"east","status":"paid"},{"amount":5,"id":"sample-000023-c","region":"remote-0056","status":"paid"}]
+report.json value: {"east":{"amount":2,"count":1},"other":{"amount":72,"count":2}}
 
-## sample-000489
-Launch input: batches/sample-000489.json
-Input array: [{"amount":533,"region":"east","status":"paid"}]
-Selected source: batches/sample-000489.json; independent default orders.json: [{"amount":534,"region":"west","status":"paid"}]
-Selected-source subtotal: {"east":{"amount":533,"count":1}}
+## sample-000024
+New market batch: [{"amount":68,"id":"sample-000024-a","region":"market-0057","status":"paid"},{"amount":2,"id":"sample-000024-b","region":"east","status":"paid"},{"amount":5,"id":"sample-000024-c","region":"remote-0057","status":"paid"}]
+report.json value: {"east":{"amount":2,"count":1},"other":{"amount":73,"count":2}}
 
-## sample-000490
-Launch input: batches/sample-000490.json
-Input array: [{"amount":534,"region":"east","status":"paid"}]
-Selected source: batches/sample-000490.json; independent default orders.json: [{"amount":535,"region":"west","status":"paid"}]
-Selected-source subtotal: {"east":{"amount":534,"count":1}}
+## sample-000025
+New market batch: [{"amount":69,"id":"sample-000025-a","region":"market-0058","status":"paid"},{"amount":2,"id":"sample-000025-b","region":"east","status":"paid"},{"amount":5,"id":"sample-000025-c","region":"remote-0058","status":"paid"}]
+report.json value: {"east":{"amount":2,"count":1},"other":{"amount":74,"count":2}}
 
-## sample-000491
-Launch input: batches/sample-000491.json
-Input array: [{"amount":535,"region":"east","status":"paid"}]
-Selected source: batches/sample-000491.json; independent default orders.json: [{"amount":536,"region":"west","status":"paid"}]
-Selected-source subtotal: {"east":{"amount":535,"count":1}}
+## sample-000026
+New market batch: [{"amount":70,"id":"sample-000026-a","region":"market-0059","status":"paid"},{"amount":2,"id":"sample-000026-b","region":"east","status":"paid"},{"amount":5,"id":"sample-000026-c","region":"remote-0059","status":"paid"}]
+report.json value: {"east":{"amount":2,"count":1},"other":{"amount":75,"count":2}}
 
-## sample-000492
-Launch input: batches/sample-000492.json
-Input array: [{"amount":536,"region":"east","status":"paid"}]
-Selected source: batches/sample-000492.json; independent default orders.json: [{"amount":537,"region":"west","status":"paid"}]
-Selected-source subtotal: {"east":{"amount":536,"count":1}}
+## sample-000027
+New market batch: [{"amount":71,"id":"sample-000027-a","region":"market-0060","status":"paid"},{"amount":2,"id":"sample-000027-b","region":"east","status":"paid"},{"amount":5,"id":"sample-000027-c","region":"remote-0060","status":"paid"}]
+report.json value: {"east":{"amount":2,"count":1},"other":{"amount":76,"count":2}}
 
-## sample-000493
-Launch input: batches/sample-000493.json
-Input array: [{"amount":537,"region":"east","status":"paid"}]
-Selected source: batches/sample-000493.json; independent default orders.json: [{"amount":538,"region":"west","status":"paid"}]
-Selected-source subtotal: {"east":{"amount":537,"count":1}}
+## sample-000028
+New market batch: [{"amount":72,"id":"sample-000028-a","region":"market-0061","status":"paid"},{"amount":2,"id":"sample-000028-b","region":"east","status":"paid"},{"amount":5,"id":"sample-000028-c","region":"remote-0061","status":"paid"}]
+report.json value: {"east":{"amount":2,"count":1},"other":{"amount":77,"count":2}}
 
-## sample-000494
-Launch input: batches/sample-000494.json
-Input array: [{"amount":538,"region":"east","status":"paid"}]
-Selected source: batches/sample-000494.json; independent default orders.json: [{"amount":539,"region":"west","status":"paid"}]
-Selected-source subtotal: {"east":{"amount":538,"count":1}}
+## sample-000029
+New market batch: [{"amount":73,"id":"sample-000029-a","region":"market-0062","status":"paid"},{"amount":2,"id":"sample-000029-b","region":"east","status":"paid"},{"amount":5,"id":"sample-000029-c","region":"remote-0062","status":"paid"}]
+report.json value: {"east":{"amount":2,"count":1},"other":{"amount":78,"count":2}}
 
-## sample-000495
-Launch input: batches/sample-000495.json
-Input array: [{"amount":539,"region":"east","status":"paid"}]
-Selected source: batches/sample-000495.json; independent default orders.json: [{"amount":540,"region":"west","status":"paid"}]
-Selected-source subtotal: {"east":{"amount":539,"count":1}}
+## sample-000030
+New market batch: [{"amount":74,"id":"sample-000030-a","region":"market-0063","status":"paid"},{"amount":2,"id":"sample-000030-b","region":"east","status":"paid"},{"amount":5,"id":"sample-000030-c","region":"remote-0063","status":"paid"}]
+report.json value: {"east":{"amount":2,"count":1},"other":{"amount":79,"count":2}}
 
-## sample-000496
-Launch input: batches/sample-000496.json
-Input array: [{"amount":540,"region":"east","status":"paid"}]
-Selected source: batches/sample-000496.json; independent default orders.json: [{"amount":541,"region":"west","status":"paid"}]
-Selected-source subtotal: {"east":{"amount":540,"count":1}}
+## sample-000031
+New market batch: [{"amount":75,"id":"sample-000031-a","region":"market-0064","status":"paid"},{"amount":2,"id":"sample-000031-b","region":"east","status":"paid"},{"amount":5,"id":"sample-000031-c","region":"remote-0064","status":"paid"}]
+report.json value: {"east":{"amount":2,"count":1},"other":{"amount":80,"count":2}}
 
-## sample-000497
-Launch input: batches/sample-000497.json
-Input array: [{"amount":541,"region":"east","status":"paid"}]
-Selected source: batches/sample-000497.json; independent default orders.json: [{"amount":542,"region":"west","status":"paid"}]
-Selected-source subtotal: {"east":{"amount":541,"count":1}}
+## sample-000032
+New market batch: [{"amount":76,"id":"sample-000032-a","region":"market-0065","status":"paid"},{"amount":2,"id":"sample-000032-b","region":"east","status":"paid"},{"amount":5,"id":"sample-000032-c","region":"remote-0065","status":"paid"}]
+report.json value: {"east":{"amount":2,"count":1},"other":{"amount":81,"count":2}}
 
-## sample-000498
-Launch input: batches/sample-000498.json
-Input array: [{"amount":542,"region":"east","status":"paid"}]
-Selected source: batches/sample-000498.json; independent default orders.json: [{"amount":543,"region":"west","status":"paid"}]
-Selected-source subtotal: {"east":{"amount":542,"count":1}}
+## sample-000033
+New market batch: [{"amount":77,"id":"sample-000033-a","region":"market-0066","status":"paid"},{"amount":2,"id":"sample-000033-b","region":"east","status":"paid"},{"amount":5,"id":"sample-000033-c","region":"remote-0066","status":"paid"}]
+report.json value: {"east":{"amount":2,"count":1},"other":{"amount":82,"count":2}}
 
-## sample-000499
-Launch input: batches/sample-000499.json
-Input array: [{"amount":543,"region":"east","status":"paid"}]
-Selected source: batches/sample-000499.json; independent default orders.json: [{"amount":544,"region":"west","status":"paid"}]
-Selected-source subtotal: {"east":{"amount":543,"count":1}}
+## sample-000034
+New market batch: [{"amount":78,"id":"sample-000034-a","region":"market-0067","status":"paid"},{"amount":2,"id":"sample-000034-b","region":"east","status":"paid"},{"amount":5,"id":"sample-000034-c","region":"remote-0067","status":"paid"}]
+report.json value: {"east":{"amount":2,"count":1},"other":{"amount":83,"count":2}}
 
-## sample-000500
-Launch input: batches/sample-000500.json
-Input array: [{"amount":544,"region":"east","status":"paid"}]
-Selected source: batches/sample-000500.json; independent default orders.json: [{"amount":545,"region":"west","status":"paid"}]
-Selected-source subtotal: {"east":{"amount":544,"count":1}}
+## sample-000035
+New market batch: [{"amount":79,"id":"sample-000035-a","region":"market-0068","status":"paid"},{"amount":2,"id":"sample-000035-b","region":"east","status":"paid"},{"amount":5,"id":"sample-000035-c","region":"remote-0068","status":"paid"}]
+report.json value: {"east":{"amount":2,"count":1},"other":{"amount":84,"count":2}}
 
-## sample-000501
-Launch input: batches/sample-000501.json
-Input array: [{"amount":545,"region":"east","status":"paid"}]
-Selected source: batches/sample-000501.json; independent default orders.json: [{"amount":546,"region":"west","status":"paid"}]
-Selected-source subtotal: {"east":{"amount":545,"count":1}}
+## sample-000036
+New market batch: [{"amount":80,"id":"sample-000036-a","region":"market-0069","status":"paid"},{"amount":2,"id":"sample-000036-b","region":"east","status":"paid"},{"amount":5,"id":"sample-000036-c","region":"remote-0069","status":"paid"}]
+report.json value: {"east":{"amount":2,"count":1},"other":{"amount":85,"count":2}}
 
-## sample-000502
-Launch input: batches/sample-000502.json
-Input array: [{"amount":546,"region":"east","status":"paid"}]
-Selected source: batches/sample-000502.json; independent default orders.json: [{"amount":547,"region":"west","status":"paid"}]
-Selected-source subtotal: {"east":{"amount":546,"count":1}}
-
-## sample-000503
-Launch input: batches/sample-000503.json
-Input array: [{"amount":547,"region":"east","status":"paid"}]
-Selected source: batches/sample-000503.json; independent default orders.json: [{"amount":548,"region":"west","status":"paid"}]
-Selected-source subtotal: {"east":{"amount":547,"count":1}}
-
-## sample-000504
-Launch input: batches/sample-000504.json
-Input array: [{"amount":548,"region":"east","status":"paid"}]
-Selected source: batches/sample-000504.json; independent default orders.json: [{"amount":549,"region":"west","status":"paid"}]
-Selected-source subtotal: {"east":{"amount":548,"count":1}}
-
-## sample-000505
-Launch input: batches/sample-000505.json
-Input array: [{"amount":549,"region":"east","status":"paid"}]
-Selected source: batches/sample-000505.json; independent default orders.json: [{"amount":550,"region":"west","status":"paid"}]
-Selected-source subtotal: {"east":{"amount":549,"count":1}}
-
-## sample-000506
-Launch input: batches/sample-000506.json
-Input array: [{"amount":550,"region":"east","status":"paid"}]
-Selected source: batches/sample-000506.json; independent default orders.json: [{"amount":551,"region":"west","status":"paid"}]
-Selected-source subtotal: {"east":{"amount":550,"count":1}}
-
-## sample-000507
-Launch input: batches/sample-000507.json
-Input array: [{"amount":551,"region":"east","status":"paid"}]
-Selected source: batches/sample-000507.json; independent default orders.json: [{"amount":552,"region":"west","status":"paid"}]
-Selected-source subtotal: {"east":{"amount":551,"count":1}}
-
-## sample-000508
-Launch input: batches/sample-000508.json
-Input array: [{"amount":552,"region":"east","status":"paid"}]
-Selected source: batches/sample-000508.json; independent default orders.json: [{"amount":553,"region":"west","status":"paid"}]
-Selected-source subtotal: {"east":{"amount":552,"count":1}}
-
-## sample-000509
-Launch input: batches/sample-000509.json
-Input array: [{"amount":553,"region":"east","status":"paid"}]
-Selected source: batches/sample-000509.json; independent default orders.json: [{"amount":554,"region":"west","status":"paid"}]
-Selected-source subtotal: {"east":{"amount":553,"count":1}}
-
-## sample-000510
-Launch input: batches/sample-000510.json
-Input array: [{"amount":554,"region":"east","status":"paid"}]
-Selected source: batches/sample-000510.json; independent default orders.json: [{"amount":555,"region":"west","status":"paid"}]
-Selected-source subtotal: {"east":{"amount":554,"count":1}}
-
-## sample-000511
-Launch input: batches/sample-000511.json
-Input array: [{"amount":555,"region":"east","status":"paid"}]
-Selected source: batches/sample-000511.json; independent default orders.json: [{"amount":556,"region":"west","status":"paid"}]
-Selected-source subtotal: {"east":{"amount":555,"count":1}}
-
-## sample-000512
-Launch input: batches/sample-000512.json
-Input array: [{"amount":556,"region":"east","status":"paid"}]
-Selected source: batches/sample-000512.json; independent default orders.json: [{"amount":557,"region":"west","status":"paid"}]
-Selected-source subtotal: {"east":{"amount":556,"count":1}}
-
-## sample-000513
-Launch input: batches/sample-000513.json
-Input array: [{"amount":557,"region":"east","status":"paid"}]
-Selected source: batches/sample-000513.json; independent default orders.json: [{"amount":558,"region":"west","status":"paid"}]
-Selected-source subtotal: {"east":{"amount":557,"count":1}}
-
-## sample-000514
-Launch input: batches/sample-000514.json
-Input array: [{"amount":558,"region":"east","status":"paid"}]
-Selected source: batches/sample-000514.json; independent default orders.json: [{"amount":559,"region":"west","status":"paid"}]
-Selected-source subtotal: {"east":{"amount":558,"count":1}}
-
-## sample-000515
-Launch input: batches/sample-000515.json
-Input array: [{"amount":559,"region":"east","status":"paid"}]
-Selected source: batches/sample-000515.json; independent default orders.json: [{"amount":560,"region":"west","status":"paid"}]
-Selected-source subtotal: {"east":{"amount":559,"count":1}}
-
-## sample-000516
-Launch input: batches/sample-000516.json
-Input array: [{"amount":560,"region":"east","status":"paid"}]
-Selected source: batches/sample-000516.json; independent default orders.json: [{"amount":561,"region":"west","status":"paid"}]
-Selected-source subtotal: {"east":{"amount":560,"count":1}}
-
-## sample-000517
-Launch input: batches/sample-000517.json
-Input array: [{"amount":561,"region":"east","status":"paid"}]
-Selected source: batches/sample-000517.json; independent default orders.json: [{"amount":562,"region":"west","status":"paid"}]
-Selected-source subtotal: {"east":{"amount":561,"count":1}}
-
-## sample-000518
-Launch input: batches/sample-000518.json
-Input array: [{"amount":562,"region":"east","status":"paid"}]
-Selected source: batches/sample-000518.json; independent default orders.json: [{"amount":563,"region":"west","status":"paid"}]
-Selected-source subtotal: {"east":{"amount":562,"count":1}}
+## sample-000037
+New market batch: [{"amount":81,"id":"sample-000037-a","region":"market-0070","status":"paid"},{"amount":2,"id":"sample-000037-b","region":"east","status":"paid"},{"amount":5,"id":"sample-000037-c","region":"remote-0070","status":"paid"}]
+report.json value: {"east":{"amount":2,"count":1},"other":{"amount":86,"count":2}}
 

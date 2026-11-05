@@ -148,8 +148,9 @@ class Task(object):
                     raise ValueError('staged expectations belong in judge_cases, not ' + path)
             if (self.result_kind != 'run' or config.get('http') is not False
                     or type(config.get('attempt_limit')) is not int or self.attempt_limit <= 0
-                    or not isinstance(self.stages, list) or len(self.stages) != 3):
-                raise ValueError('staged tasks require result_kind run, http false, a positive attempt_limit and 3 stages')
+                    or not isinstance(self.stages, list) or len(self.stages) < 2):
+                raise ValueError('staged tasks require result_kind run, http false, a positive attempt_limit and '
+                                 'at least 2 stages')
             if (not isinstance(self.script, str) or not self.script.endswith('.bnt')
                     or '/' in self.script or self.script in ('.', '..')):
                 raise ValueError('staged script must be a .bnt filename')
@@ -157,8 +158,13 @@ class Task(object):
                 task_path(self.dir, path)
                 if not path.endswith('.md'):
                     raise ValueError('stages must be Markdown files')
-            for number in range(1, 4):
-                task_path(self.dir, 'materials/%d' % number, directory=True)
+            # 実装と確かめを求める段には資料を置かない（P5-36）。資料は段の番号の場所だけに置く。
+            if os.path.lexists(self.path('materials')):
+                task_path(self.dir, 'materials', directory=True)
+                numbers = [str(number) for number in range(1, len(self.stages) + 1)]
+                for name in os.listdir(self.path('materials')):
+                    if name not in numbers or not stat.S_ISDIR(os.lstat(self.path('materials', name)).st_mode):
+                        raise ValueError('staged materials must be in materials/<request number>/')
             if os.path.lexists(self.path('input')):
                 task_path(self.dir, 'input', directory=True)
                 if os.path.lexists(self.path('input', 'materials')):
@@ -2313,22 +2319,26 @@ def prepare_stage_prompt(task: Task, number: int) -> str:
 
 def stage_materials(task: Task, number: int) -> List[str]:
     relative = 'materials/%d' % number
+    if not os.path.lexists(task.path('materials', str(number))):
+        return []
     directory = task_path(task.dir, relative, True)
     return sorted(os.path.relpath(os.path.join(root, name), task.dir)
                   for root, _dirs, files in os.walk(directory) for name in files)
 
 
 def prepare_stage(task: Task, workspace: str, number: int) -> str:
-    """後の段の資料は、前の段を終えてから写す。"""
+    """後の段の資料は、前の段を終えてから写す。資料のない段では、資料の場所を作らない。"""
     relative = 'materials/%d' % number
-    task_path(task.dir, relative, True)
+    materials = stage_materials(task, number)
+    if materials:
+        task_path(task.dir, relative, True)
     target = workspace
-    for part in relative.split('/'):
+    for part in relative.split('/') if materials else []:
         target = os.path.join(target, part)
         os.makedirs(target, exist_ok=True)
         if not stat.S_ISDIR(os.lstat(target).st_mode):
             raise ValueError('workspace materials path is not a regular directory')
-    for path in stage_materials(task, number):
+    for path in materials:
         destination = os.path.join(workspace, path)
         parent = os.path.dirname(path)
         target = workspace
@@ -2373,7 +2383,8 @@ def compaction_events(events: List[Dict[str, object]], stage: int) -> List[Dict[
     return records
 
 
-def compaction_comparison(fields: Dict[str, object], harness: Dict[str, object], dry_run: bool) -> None:
+def compaction_comparison(fields: Dict[str, object], harness: Dict[str, object], dry_run: bool,
+                          stage_count: int) -> None:
     provider = harness.get('provider', {})
     window = provider.get('context_window', 200000)
     output = provider.get('max_output_tokens', 32000)
@@ -2399,8 +2410,8 @@ def compaction_comparison(fields: Dict[str, object], harness: Dict[str, object],
         reasons.append('no nonzero retained range across requests')
     if min(output + 16384, window // 2) == min(output + 8192, window // 2):
         reasons.append('reserve settings produce the same effective reserve')
-    if len(fields['stages']) != 3 or fields.get('end') != 'completed':
-        reasons.append('three stages did not complete normally')
+    if len(fields['stages']) != stage_count or fields.get('end') != 'completed':
+        reasons.append('not all stages completed normally')
     if fields.get('repository_path_seen'):
         reasons.append('repository path seen in session')
     fields.update(comparison_valid=not reasons, comparison_reasons=reasons)
@@ -2409,7 +2420,7 @@ def compaction_comparison(fields: Dict[str, object], harness: Dict[str, object],
 def run_stages(task: Task, trial_dir: str, workspace: str, executable: str,
                env: Dict[str, str], allow: str, harness: Dict[str, object],
                model: str, budget: Optional[CostBudget]) -> Tuple[Dict[str, object], str, str, int, bool, float]:
-    """一つの試行を途中で切らず、同じ設定とセッションで三段を実行する。"""
+    """一つの試行を途中で切らず、同じ設定とセッションで全段を実行する。"""
     fields = dict.fromkeys(BH_FIELDS)
     counters = ('turns', 'attempts', 'after_write_checks', 'checks', 'fixes', 'policy_denied', 'compactions')
     fields.update({key: 0 for key in counters + TOKEN_FIELDS})
@@ -2427,7 +2438,7 @@ def run_stages(task: Task, trial_dir: str, workspace: str, executable: str,
     expected_compaction = dict(reserve_tokens=16384, keep_tokens=20000)
     expected_compaction.update(config.get('compaction', {}))
     budget = budget or CostBudget(None)
-    for number in range(1, 4):
+    for number in range(1, len(task.stages) + 1):
         cost = estimate_cost(fields, harness)
         billing = harness.get('billing', 'none')
         stop = budget.check(dict(fields, cost_usd=cost, billing=billing))
@@ -2716,7 +2727,8 @@ def run_trial(task: Task, trial_dir: str, benitoite: str, harness_name: str, har
                         task.kind, task.script, f.read(),
                         completion_check=harness.get('config', {}).get('agent', {}).get('completion_check', False),
                         stages=[{'prompt': prepare_stage_prompt(task, number),
-                                 'materials': stage_materials(task, number)} for number in range(1, 4)]
+                                 'materials': stage_materials(task, number)}
+                                for number in range(1, len(task.stages) + 1)]
                         if staged else None,
                         input_tokens=harness.get('mock_input_tokens', 1000))
                 port = mock.server_address[1]
@@ -2728,7 +2740,7 @@ def run_trial(task: Task, trial_dir: str, benitoite: str, harness_name: str, har
                 f.write(config)
         if dry_run:
             if staged:
-                for number in range(1, 4):
+                for number in range(1, len(task.stages) + 1):
                     prepare_stage(task, workspace, number)
             # ハーネスの代わりに解のスクリプトを置き、エージェントと同じく包みのコマンドで一度検査する
             shutil.copyfile(task.path('reference.bnt'), os.path.join(workspace, task.script))
@@ -2830,7 +2842,7 @@ def run_trial(task: Task, trial_dir: str, benitoite: str, harness_name: str, har
         if staged:
             if dry_run:
                 fields.update(stages=[], exec_launches=0, compactions=0, compaction_events=[], compaction_records=[])
-            compaction_comparison(fields, harness, dry_run)
+            compaction_comparison(fields, harness, dry_run, len(task.stages))
             if mock is not None:
                 fields['mock_summary_requests'] = mock.summary_requests
         script_path = os.path.join(workspace, task.script)
@@ -2853,7 +2865,7 @@ def run_trial(task: Task, trial_dir: str, benitoite: str, harness_name: str, har
             verdict = judge_trial_script(task, script_path, original_benitoite, http_base, attempts)
         if staged:
             fields['artifact_success'] = verdict.success
-            if not dry_run and (len(fields['stages']) != 3 or fields['end'] != 'completed'
+            if not dry_run and (len(fields['stages']) != len(task.stages) or fields['end'] != 'completed'
                                 or unreadable or not fields['compaction_records_match']):
                 verdict.success = False
                 verdict.reason += '; staged trial incomplete or records inconsistent'

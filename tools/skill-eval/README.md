@@ -118,7 +118,10 @@ dry-run は `dry_run: true` で区別し、本物の成績に混ぜない。
 ```sh
 /usr/bin/python3 -I tools/skill-eval/generate_compaction_materials.py --check
 # 再生成するときは --check を外す。同じ引数で同じ資料と generation を作る。
-/usr/bin/python3 -I tools/skill-eval/generate_compaction_materials.py --total-kib 268 --chunk-kib 10 --seed 33
+/usr/bin/python3 -I tools/skill-eval/generate_compaction_materials.py --stage-kib 8,0,6,0,6,0,0 \
+  --spec-stages 1,1,2,2,3,3,3 --chunk-kib 6 --seed 33
+# 段の入口と途中の見積もりを、LLM を呼ばずに計算する（P5-36）。
+/usr/bin/python3 tools/skill-eval/compaction_plan.py
 /usr/bin/python3 -I tools/skill-eval/skill_eval.py --self-test --suite compaction --benitoite <v0.0.12の処理系>
 /usr/bin/python3 -I tools/skill-eval/skill_eval.py --dry-run --suite compaction --benitoite <v0.0.12の処理系> \
   --work-root <リポジトリと共有のtmpの外の作業場所>
@@ -143,11 +146,11 @@ dry-run は `dry_run: true` で区別し、本物の成績に混ぜない。
   --work-root <リポジトリと共有のtmpの外の作業場所>
 ```
 
-1 試行は、同じセッションの `exec` と 2 回の `exec --resume` を含む。50 番・200 万トークン・1,800 秒を全段の合計に掛け、各段には残りを渡す。費用も段の後に判定し、残額がないか有料の費用が不明なら後続を止める。`--interleave` は 3 段を終えてから次の条件へ進む。段ごとの出力は `stage-N.stdout`・`stage-N.stderr`、総計と段の内訳は試行ごとに 1 行の `.jsonl`、比較の成立と段の表は Markdown に残る。dry-run は解を置いて判定し、`comparison_valid: false` として本物の成績と区別する。
+1 試行は、同じセッションの `exec` と 6 回の `exec --resume` を含む。50 番・200 万トークン・1,800 秒を全段の合計に掛け、各段には残りを渡す。費用も段の後に判定し、残額がないか有料の費用が不明なら後続を止める。`--interleave` は全段を終えてから次の条件へ進む。段ごとの出力は `stage-N.stdout`・`stage-N.stderr`、総計と段の内訳は試行ごとに 1 行の `.jsonl`、比較の成立と段の表は Markdown に残る。dry-run は解を置いて判定し、`comparison_valid: false` として本物の成績と区別する。
 
 模擬の通しには `--harness benitoiteh-mock-compact --suite compaction` を使い、同じ `--benitoite`・`--benitoiteh` と、`--record <一時の記録.md>` を指定する。本物の提供者を呼ばずに再開と圧縮の記録まで確かめるものであり、圧縮の効果の評価には使わない。Codex の中では、待ち受けと入れ子のサンドボックスを要するこの通しを走らせない。
 
-資料は各課題の `materials/1/`・`2/`・`3/` にあり、段の直前に対応するディレクトリだけを workspace に写す。依頼の本文は `stages/1.md`〜`3.md` で、一つ 4 KiB 以下、資料は一つ 12 KiB 以下である。原本に置く量は暫定の目標 268 KiB（各段約 90 KiB、各段 9 ファイル）とした。生成引数、実際のバイト数、各ファイルと全体の SHA-256 は `task.json` の `generation`、候補を選んだ理由は [SOURCE.md](SOURCE.md#p5-33-圧縮の二課題と資料) に残す。`--total-kib` は三段の合計の目標量で、完全な例まで書くため実量は少し増える。`--tasks-dir` で別の課題の置き場も指定できる。
+依頼は 7 段で、本文は `stages/1.md`〜`7.md`、一つ 4 KiB 以下である。資料は調べさせる段 1・3・5 の `materials/1/`・`3/`・`5/` にだけあり、段の直前に対応するディレクトリだけを workspace に写す。資料は一つ 12 KiB 以下で、量は段 1 が 8 KiB、段 3 と段 5 が 6 KiB である。生成引数、実際のバイト数、各ファイルと全体の SHA-256 は `task.json` の `generation`、段と量を選んだ理由は [SOURCE.md](SOURCE.md#p5-36-七つの段と資料の量) に残す。`--stage-kib` は段ごとの目標量（KiB、資料のない段は 0）、`--spec-stages` は各段の資料に書く仕様の段で、完全な例まで書くため実量は少し増える。`--tasks-dir` で別の課題の置き場も指定できる。
 
 再開後の有料の試しでは、全条件の圧縮、現行値と残す量を減らす条件での依頼をまたぐ `kept_items > 0` と `kept_estimate` の差、予備を減らす条件での圧縮の時点を確認する。満たさなければ資料と段の区切りを全条件共通で調整し、追加の試しの回数と費用を設計者に示す。本体の前に長さと段を固定する。見込みは試し $0.18〜0.60、本体 $1.08〜3.60、合計 $1.26〜4.20、順次実行で 42〜126 分である。再開直後は模擬の固定使用量が判定に使われないため、模擬で成立した長さを本物でも成立すると扱わない。
 
@@ -257,21 +260,21 @@ python3 tools/skill-eval/skill_eval.py --harness default --trials 3 --allow-unve
 | `dir_walk` | ディレクトリの走査 | 実行 |
 | `error_handling` | エラー処理（読めないファイルを報告して続ける） | 実行 |
 | `write_tests` | テストを書くこと（組み込みの操作のハンドラでの差し替えを含む） | テスト |
-| `compact_json_summary` | 地域別の注文の集計、JSON の生成、CLI による入力の選択 | 三段の実行 |
-| `compact_dir_walk` | Markdown の列挙、拡張子と件数の集計、CLI による根の選択 | 三段の実行 |
+| `compact_json_summary` | 地域別の注文の集計、JSON の生成、CLI による入力の選択 | 七段の実行 |
+| `compact_dir_walk` | Markdown の列挙、拡張子と件数の集計、CLI による根の選択 | 七段の実行 |
 
 課題のディレクトリの中身は次のとおりである。
 
 | ファイル | 内容 |
 |---|---|
 | `task.md` | エージェントに渡す指示の文（英語）。書くスクリプトの名前と、出力の形を書く |
-| `task.json` | `kind`（`run`・`test`・`staged`・`normal`。通常モードの欄は冒頭、三段の課題の欄は後述）、`script`（書くファイルの名前）、`attempt_limit`（検査と修正の回数の上限、既定 10）、`http`、`exit_code`、`min_tests`、`require_text`、`acceptance`（受け入れテストと一致させるファイル） |
+| `task.json` | `kind`（`run`・`test`・`staged`・`normal`。通常モードの欄は冒頭、段の課題の欄は後述）、`script`（書くファイルの名前）、`attempt_limit`（検査と修正の回数の上限、既定 10）、`http`、`exit_code`、`min_tests`、`require_text`、`acceptance`（受け入れテストと一致させるファイル） |
 | `input/` | 作業ディレクトリに写す入力 |
 | `expected.stdout` | 期待する標準出力（実行の課題） |
 | `expected.files/` | 期待する、スクリプトが書くファイル |
 | `reference.bnt` | 正しい解のスクリプト。`--self-test` が使い、エージェントには見せない |
 
-三段の課題の `task.json` は、`kind: staged`・`result_kind: run`・`http: false` と、三つの Markdown の相対パスの配列 `stages` を持つ。`judge_cases` は `name`・`input`・`args`・`expected_stdout`・`expected_files` を持ち、各ケースの入力・期待値を `cases/<name>/` の中に置く。引数なしも `args: []` のケースとして宣言する。最上位の `expected.stdout` と `expected.files/` は使わない。判定はケースごとに新しい場所へ原本とケースの入力を重ね、最終のスクリプトだけを写して実行する。JSON の生成ファイルは値で比べる。
+段の課題の `task.json` は、`kind: staged`・`result_kind: run`・`http: false` と、二つ以上の Markdown の相対パスの配列 `stages` を持つ。`judge_cases` は `name`・`input`・`args`・`expected_stdout`・`expected_files` を持ち、各ケースの入力・期待値を `cases/<name>/` の中に置く。引数なしも `args: []` のケースとして宣言する。最上位の `expected.stdout` と `expected.files/` は使わない。判定はケースごとに新しい場所へ原本とケースの入力を重ね、最終のスクリプトだけを写して実行する。JSON の生成ファイルは値で比べる。
 
 `self_test_failures` は `script` と `case` を対応させる。self-test は正しい解が全ケースを通ることに加え、初期条件を一つ外した解が指定のケースで標準出力または生成ファイルの不一致になることを確かめる。構文・エフェクト・実行時の誤りでは合格としない。失敗した条件は `s1_cancelled`・`s1_hidden_directories` などのケース名を理由に残す。段とケースのパスは通常のファイルとディレクトリに限り、リンク、絶対パス、`..` を拒む。
 

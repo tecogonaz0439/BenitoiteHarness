@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""段ごとの調査例を決定的に生成する（実装プラン P5-33）。"""
+"""依頼ごとの調査例を決定的に生成する（実装プラン P5-33、P5-36）。"""
 import argparse
 import hashlib
 import json
@@ -8,6 +8,10 @@ from pathlib import Path
 
 TASKS = ('compact_json_summary', 'compact_dir_walk')
 HERE = Path(__file__).resolve().parent
+# 依頼ごとの資料の量（KiB）と、例の仕様の段。調査の依頼の後に実装の依頼を置き、最後に確かめの依頼を置く。
+# 量は compaction_plan.py の検査で選んだ（P5-36）。
+STAGE_KIB = [8, 0, 6, 0, 6, 0, 0]
+SPEC_STAGES = [1, 1, 2, 2, 3, 3, 3]
 
 
 def encoded(value):
@@ -60,60 +64,75 @@ def example(task, stage, number, seed):
                 encoded([section + '/readme.md', 'root.md']), n)
 
 
-def generate(task, total_kib, chunk_kib, seed):
-    """目標量以上となる最小の完全な例まで書き、一つの資料を上限内に収める。"""
+def parse_list(text):
+    return [int(part) for part in text.split(',')]
+
+
+def generate(task, stage_kib, spec_stages, chunk_kib, seed):
+    """依頼ごとに、目標量以上となる最小の完全な例まで書き、一つの資料を上限内に収める。
+
+    資料のない依頼（実装を求める依頼）には、資料の場所を作らない（P5-36）。
+    """
     files = {}
     serial = 0
-    for stage in range(1, 4):
-        budget = total_kib * 1024 // 3 + (1 if stage <= total_kib * 1024 % 3 else 0)
+    for request, (kib, spec) in enumerate(zip(stage_kib, spec_stages), 1):
+        budget = kib * 1024
+        # 一つの依頼の資料を、上限以下のほぼ同じ大きさのファイルに分ける。
+        parts = -(-budget // (chunk_kib * 1024))
+        size = -(-budget // parts) if parts else 0
         written = 0
         part = 0
         while written < budget:
             part += 1
-            body = '# Stage %d field notes, part %02d\n\n' % (stage, part)
-            target = min(chunk_kib * 1024, budget - written)
+            body = '# Stage %d field notes, part %02d\n\n' % (spec, part)
+            target = min(size, budget - written)
             while len(body.encode('utf-8')) < target:
-                record = example(task, stage, serial, seed)
+                record = example(task, spec, serial, seed)
                 if len((body + record).encode('utf-8')) > 12 * 1024:
                     break
                 body += record
                 serial += 1
             data = body.encode('utf-8')
-            files['materials/%d/notes-%02d.md' % (stage, part)] = data
+            files['materials/%d/notes-%02d.md' % (request, part)] = data
             written += len(data)
     return files
 
 
-def manifest(task, total_kib, chunk_kib, seed, files):
+def manifest(task, stage_kib, spec_stages, chunk_kib, seed, files):
     hashes = {path: hashlib.sha256(data).hexdigest() for path, data in sorted(files.items())}
     # パスも集約に含め、内容が同じファイルの入れ替えを識別する。
     aggregate = ''.join('%s  %s\n' % (digest, path) for path, digest in sorted(hashes.items()))
-    return dict(generator='generate_compaction_materials.py', version=1,
-                arguments=dict(total_kib=total_kib, chunk_kib=chunk_kib, seed=seed),
-                initial_candidates_kib=[24, 48, 64], initial_candidate_kib=64,
-                added_units_kib=[12] * ((total_kib - 64) // 12) if total_kib >= 64 else [],
-                length_status='provisional; fix common length and stages after paid pilot',
+    return dict(generator='generate_compaction_materials.py', version=2,
+                arguments=dict(stage_kib=stage_kib, spec_stages=spec_stages, chunk_kib=chunk_kib, seed=seed),
+                length_status='provisional; check with compaction_plan.py, then fix after a paid pilot',
                 bytes=sum(map(len, files.values())),
-                stage_bytes={str(stage): sum(len(data) for path, data in files.items()
-                                            if path.startswith('materials/%d/' % stage)) for stage in range(1, 4)},
+                stage_bytes={str(request): sum(len(data) for path, data in files.items()
+                                               if path.startswith('materials/%d/' % request))
+                             for request, kib in enumerate(stage_kib, 1) if kib},
                 sha256=hashlib.sha256(aggregate.encode('ascii')).hexdigest(), files_sha256=hashes)
 
 
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--task', choices=TASKS, action='append')
-    parser.add_argument('--total-kib', type=int, default=268)
-    parser.add_argument('--chunk-kib', type=int, default=10)
+    parser.add_argument('--stage-kib', type=parse_list, default=STAGE_KIB,
+                        help='comma-separated KiB of materials for each request; 0 for none')
+    parser.add_argument('--spec-stages', type=parse_list, default=SPEC_STAGES,
+                        help='comma-separated specification stage (1-3) of the examples for each request')
+    parser.add_argument('--chunk-kib', type=int, default=6)
     parser.add_argument('--seed', type=int, default=33)
     parser.add_argument('--tasks-dir', type=Path, default=HERE / 'tasks')
     parser.add_argument('--check', action='store_true', help='compare bytes and manifest without writing')
     args = parser.parse_args(argv)
-    if args.total_kib <= 0 or not 1 <= args.chunk_kib <= 12:
-        parser.error('total-kib must be positive; chunk-kib must be between 1 and 12')
+    if (len(args.stage_kib) != len(args.spec_stages) or any(kib < 0 for kib in args.stage_kib)
+            or not any(args.stage_kib) or any(spec not in (1, 2, 3) for spec in args.spec_stages)
+            or not 1 <= args.chunk_kib <= 12):
+        parser.error('stage-kib and spec-stages need the same length, nonnegative sizes with at least one '
+                     'positive, and stages 1 to 3; chunk-kib must be between 1 and 12')
     for task in args.task or TASKS:
         root = args.tasks_dir / task
-        files = generate(task, args.total_kib, args.chunk_kib, args.seed)
-        generation = manifest(task, args.total_kib, args.chunk_kib, args.seed, files)
+        files = generate(task, args.stage_kib, args.spec_stages, args.chunk_kib, args.seed)
+        generation = manifest(task, args.stage_kib, args.spec_stages, args.chunk_kib, args.seed, files)
         config = json.loads((root / 'task.json').read_text(encoding='utf-8'))
         if args.check:
             actual = {p.relative_to(root).as_posix(): p.read_bytes() for p in (root / 'materials').rglob('*') if p.is_file()}
