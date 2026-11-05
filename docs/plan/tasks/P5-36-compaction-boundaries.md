@@ -156,3 +156,5 @@ P5-33 の後に、BH-014 の 2026-10-21 の試しの走行を調べ、二つの�
 `tests/sandbox_*.rs`、Linux のテストの実行、評価の道具の `requires_sandbox` と `test_judge_sandbox.RuntimeTests`、self-test・dry-run、`benitoiteh-mock`・`benitoiteh-mock-completion-check`・`benitoiteh-mock-compact` の通しは Codex 内では走らせていない。保護を外した代替の実行はしていない。新しいテストの追加・削除と製品のコードの変更はともに 0 行である。作業文書の相対リンクと、上の不等式の境の整数計算も確かめた。
 
 2026-10-21、設計者の判断で BH-014 を後回しにし、本作業は保留とした（[試しの走行の記録](../../../tools/skill-eval/results/2026-10-21-p5-compaction-trial.md)）。
+
+2026-11-05 に、道具の呼び出しが続く途中の圧縮で、ほかのハーネスが何を残すか、道具の結果をどう縮めるか、圧縮の値をどう評価するかを調べ、[先行事例](../../design/08-appendix/08-01-prior-art.md)の「圧縮の作りの比較」に記録した。選択肢を見直すときの材料とする。
