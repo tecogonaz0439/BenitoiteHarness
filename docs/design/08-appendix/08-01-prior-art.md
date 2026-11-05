@@ -10,6 +10,8 @@
 
 `https://github.com/badlogic/pi-mono` は `earendil-works/pi` へ転送され、同じ最新のコミットを返すので、同じリポジトリが移ったものである。
 
+後述の「圧縮の作りの比較」は、2026-11-05 に、別のコミットと別のハーネスを加えて調べたものである。
+
 ## Codex CLI
 
 ### 規模と作り
@@ -99,6 +101,48 @@
 - DeepSeek のモデルには Anthropic 互換の口（`https://api.deepseek.com/anthropic/v1/messages`）を使い、`cache_control` は使わない（キャッシュは自動）。
 - サンドボックスは、Linux で bubblewrap か Landlock、macOS で Seatbelt を使い、掛けられないときは実行を拒む。限るのはファイルの書き込みで、ネットワークは限らない。
 - DeepSeek の口への要求に、既定で有効な欄（`dsh_session_log`）で、セッションの記録（依頼、道具の引数と結果、推論、作業ディレクトリを含みうる）を送る（`docs/deepseek-llm-api-wire-extensions.md`）。
+
+## 圧縮の作りの比較
+
+2026-11-05 に、BH-014 の評価の準備（[P5-36](../../plan/tasks/P5-36-compaction-boundaries.md)）のために、道具の呼び出しが続く途中の圧縮で、ほかのハーネスが何を残すかを調べた。オーケストレータが、補助のエージェントに次のソースと公式の文書を読ませ、本節に書く値と関数の名前を、手元の複製のソース（Gemini CLI は版を固定した URL のソース）で確かめた。ビルドも実行もしていない。
+
+| ハーネス | 読んだもの |
+|---|---|
+| Codex CLI | <https://github.com/openai/codex> のコミット `c7234c1174b27d9c55199fba0d546dc27d1b0415`（2026-10-21）の `codex-rs/` |
+| Pi Coding Agent | <https://github.com/earendil-works/pi> のコミット `16f5f0af4d85ca583d045ceb5ed6d646fcaf7761`（2026-10-21）の `packages/coding-agent` |
+| DeepSeek Harness | <https://github.com/deepseek-ai/deepseek-harness> のコミット `22ddee3792402c3e70ec5f86a63c3e3e895a2f60` の `packages/compaction` |
+| OpenCode | <https://github.com/anomalyco/opencode> のコミット `4d5965762ec5e0d1a0b14630553fc62b51a11fba`（2026-10-21）の `packages/core` |
+| Hermes Agent | <https://github.com/nousresearch/hermes-agent> のコミット `278aeffe16945e7b1405e3c471ad08553c059237`（2026-10-21） |
+| Gemini CLI | <https://github.com/google-gemini/gemini-cli> のコミット `1fe22af5f800d8c3024e9968d35bb75bd09e6b79`（2026-11-04）の `packages/core/src` |
+| Claude Code | 公式の文書（<https://code.claude.com/docs/en/context-window>、<https://code.claude.com/docs/en/settings-reference>）。ソースは公開されていない |
+
+### 途中の圧縮と残す範囲
+
+Claude Code を除くどのハーネスも、道具の結果を加えた後、次のモデルの応答を求める前に、圧縮するかを確かめる。見積もりは、直前の提供者の使用量に、その後に加えた分の文字数かバイト数を 4 で割った値を足す形が多い。残す範囲の決め方は、ハーネスによって次のように違う。
+
+- **Codex CLI**: 番の途中の圧縮（`core/src/session/turn.rs` の `CompactionPhase::MidTurn`）でも、手元で要約する形は、直近の利用者の発言だけを 20,000 トークンまで残し、道具の呼び出しと結果を残さない（`core/src/compact.rs` の `COMPACT_USER_MESSAGE_MAX_TOKENS`・`build_compacted_history`）。進行中の番は丸ごと要約に回る。圧縮を始める量は、文脈の上限の 90% と設定の小さい方である（`protocol/src/openai_models.rs` の `auto_compact_token_limit`）。
+- **Pi**: 新しい側の `keepRecentTokens`（既定 20,000）を残し、予備の `reserveTokens` は既定 16,384 である（`src/core/compaction/compaction.ts`）。区切りは利用者か応答の発言に置き、道具の結果には置かない。番の途中で区切るときは、区切られた番の前半を別に要約する（`isSplitTurn`、`TURN_PREFIX_SUMMARIZATION_PROMPT`）。最後の道具の結果だけで残す量を超えるときは、その道具を呼んだ応答で区切り、呼び出しと結果を、残す量を超えても残す（`test/compaction.test.ts` の「should fall back to the latest valid cut point before oversized trailing tool results」）。
+- **DeepSeek Harness**: 新しい側の一定の割合（既定は `retainRatio` の 0.16）を残す（`compaction-basic/src/config.ts`）。区切りは、道具の呼び出しと結果の組を割らない位置まで古い側へずらす（`compaction-basic/tests/compaction-basic.spec.ts` の「rounds a retention cut head-ward to preserve tool-call/result pairing」）。要約できる範囲がなければ、圧縮しない（`compaction-basic/src/index.ts` の `selectCompactableRange` が範囲を返さないとき）。
+- **OpenCode**: 残す量は既定 15,000 トークンである（`packages/core/src/session/compaction.ts`）。残す範囲の始まりを、その前の最後の利用者の発言まで戻し、道具の呼び出しと結果を一続きに残す（同じファイルの `recentStart`）。前の圧縮の後のやり取りが一つだけのときは、何も残さずに要約する。残した会話は文に直して送り、道具の結果は 1,250 文字に切る（`packages/core/src/session/recent-text.ts` の `TOOL_OUTPUT_MAX_CHARS`）。
+- **Hermes Agent**: 残す量は 10,000〜25,000 トークンで、文脈の上限の 20% を超えない（`agent/context_compressor.py` の `LEAN_TAIL_FLOOR_TOKENS`・`LEAN_TAIL_CAP_TOKENS`・`TAIL_MAX_CONTEXT_FRACTION`）。進行中の番だけで残す範囲を超えるときは、番の中の道具の区切りで分けて新しい側の道具の組を残し、元の依頼を要約の後に置き直す（同じファイルの `split_oversized_turn`、`_reappend_inflight_user_task`）。モデルがまだ読んでいない最後の道具の結果は、文脈の上限の 20% 以下なら残す（`_spared_pending_tool_round`）。
+- **Gemini CLI**: 文脈の上限の 50% で圧縮し、履歴の後ろの 30% を文字数で数えて残す（`packages/core/src/context/chatCompressionService.ts` の `DEFAULT_COMPRESSION_TOKEN_THRESHOLD`・`COMPRESSION_PRESERVE_THRESHOLD`）。残す範囲は利用者の依頼から始め、関数の呼び出しと応答の組を割らない（同じファイルの `findCompressSplitPoint`）。圧縮した後の量が前より多ければ、圧縮の結果を捨てる。
+- **Claude Code**: 文書は、文脈の上限に近づくと自動で圧縮し、圧縮の後に、指示のファイルと、直近に読むか書いたファイル 5 つまでを読み直すと書く（context-window）。会話のどれだけを残すかは書いていない。
+
+### 道具の結果を縮める作り
+
+- **DeepSeek Harness**: 圧縮すると判定したら、要約の前に、8,192 文字を超える道具の結果を頭の 4,096 文字と尾の 1,024 文字に縮めて量を測り直し、境を下回れば要約しない（`compaction-tool-result-pruner/src/config.ts`、`compaction-basic/src/index.ts`）。
+- **Hermes Agent**: 要約の前に、残す範囲より古く 200 文字を超える道具の結果を、一行の要約に替える（`agent/context_compressor.py` の `_prune_old_tool_results`・`_summarize_tool_result`・`_PRUNE_MIN_CHARS`）。一度に返す道具の結果の合計を 200,000 文字に限り、超えた分をファイルに置く（`tools/budget_config.py` の `DEFAULT_TURN_BUDGET_CHARS`）。並べて動かす道具は 8 本までである（`agent/tool_executor.py` の `_MAX_TOOL_WORKERS`）。
+- **Gemini CLI**: 新しい側の道具の出力（50,000 トークン分）を守り、それより古い出力を頭と尾だけにして、全体をファイルに置く（`packages/core/src/context/toolOutputMaskingService.ts` の `DEFAULT_TOOL_PROTECTION_THRESHOLD`）。
+- **結果ごとの上限**: Codex CLI は、今のモデルでは結果ごとに 10,000 トークンまでとし、頭と尾を残す（`codex-rs/models-manager/models.json` の `truncation_policy`）。Pi と OpenCode は 2,000 行・50 KiB までとする（Pi の `src/core/tools/truncate.ts`、OpenCode の `packages/core/src/tool-output.ts`）。
+- **Claude の API**: 古い道具の結果から順に消す機能（`clear_tool_uses_20250919`）を持つ（<https://platform.claude.com/docs/en/build-with-claude/context-editing>）。Claude Code がこれを使うかは、文書に書かれていない。
+
+### 圧縮の値の評価
+
+圧縮の方針を比べる評価を持つのは、調べた中では Hermes Agent だけだった（`evals/compaction/`）。実際の長い会話の記録 4 本（約 50 万トークン）を方針ごとに圧縮し、記録ごとに 15 問の想起の試験を LLM に解かせる。2026-08-15 の結果（`evals/compaction/results/SCORECARD-2026-08-15.md`）では、残す範囲を 25,000 トークンに抑え、圧縮した範囲を検索で引き直せるようにした方針（lean+recovery）が、平均 68.3% を約 49,000 トークンで、それまでの方針が平均 45.8% を約 162,000 トークンで答えた。この方針は残す量のほかにも複数の変更を含むので、残す量だけの効果ではない。ほかのハーネスで見つかったのは、圧縮の振る舞いの単体と結合の試験であり、値を比べる評価は見つからなかった。DeepSeek Harness の `compaction-basic/README.md` は、既定の比率（0.8 と 0.16）について、資料に基づく指針を記録していないと書く。
+
+### 試作との関係
+
+試作は、Anthropic の形の口で道具の呼び出しが続く途中に圧縮するとき、残す範囲を設けない（[文脈の管理](../01-agent/01-04-context.md)の「圧縮」、BH-036）。Codex CLI の手元の要約と、OpenCode の一つだけのやり取りも、この時点で道具の結果を残さない。Pi と Hermes Agent は番の途中で区切って新しい側を残し、DeepSeek Harness と Hermes Agent は要約の前に道具の結果を縮める。これらを、P5-36 と BH-014 の選択肢の材料とする。
 
 ## 試作に採ったもの
 
