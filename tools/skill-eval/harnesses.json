@@ -752,7 +752,7 @@
         "env": "SKILL_EVAL_MOCK_KEY"
       },
       "capabilities": {},
-      "context_window": 65536,
+      "context_window": 49152,
       "max_output_tokens": 8192
     },
     "options": {

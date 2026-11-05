@@ -211,12 +211,15 @@ import sys
 
 with open(sys.argv[1], encoding='utf-8') as f:
     rows = [json.loads(line) for line in f if line.strip()]
+def stage_count(row):
+    with open('tools/skill-eval/tasks/%s/task.json' % row.get('task'), encoding='utf-8') as f:
+        return len(json.load(f)['stages'])
 if (len(rows) != int(sys.argv[2]) or any(row.get('success') is not True or row.get('end') != 'completed'
-        or row.get('exec_launches') != 3 or len(row.get('stages', [])) != 3
+        or row.get('exec_launches') != stage_count(row) or len(row.get('stages', [])) != stage_count(row)
         or row.get('compaction_records_match') is not True or row.get('compactions', 0) <= 0
         or row.get('mock_summary_requests', 0) < row.get('compactions', 0)
         or row.get('cost_usd') != 0 for row in rows)):
-    raise SystemExit('Expected successful three-stage mock trials with matching compaction records and zero cost.')
+    raise SystemExit('Expected successful staged mock trials with matching compaction records and zero cost.')
 EOF
 fi
 if ! "$inside_codex"; then

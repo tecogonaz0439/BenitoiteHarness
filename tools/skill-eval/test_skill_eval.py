@@ -21,6 +21,7 @@ from unittest import mock
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import mock_provider
 import generate_compaction_materials as materials
+import compaction_plan
 from test_judge_sandbox import requires_sandbox
 import skill_eval as evaluation
 
@@ -2456,6 +2457,8 @@ end function
         self.processor = os.environ['BENITOITEH_TEST_BENITOITE']
         self.harness = copy.deepcopy(evaluation.load_harnesses()['benitoiteh-mock-compact'])
         self.harness.pop('mock')
+        # 一時の課題は、本物の 3 条件と同じ窓で境と予備を確かめる。模擬の窓は実課題の通しのために狭い。
+        self.harness['provider']['context_window'] = 65536
 
     def write(self, relative, text):
         path = os.path.join(self.task_dir, relative)
@@ -2810,6 +2813,22 @@ if mode=='exit': sys.exit(1)
         with self.assertRaises((ValueError, OSError)):
             evaluation.Task('staged')
 
+    def test_staged_materials_are_optional_and_only_under_request_numbers(self):
+        # 実装と確かめの依頼には資料がない（P5-36）。番号を誤った資料は、どの段にも写らないので拒む。
+        shutil.rmtree(os.path.join(self.task_dir, 'materials', '2'))
+        task = evaluation.Task('staged')
+        self.assertEqual(evaluation.stage_materials(task, 2), [])
+        workspace = os.path.join(self.root, 'workspace')
+        os.mkdir(workspace)
+        self.assertEqual(evaluation.prepare_stage(task, workspace, 2), 'Request 2.\n')
+        self.assertFalse(os.path.lexists(os.path.join(workspace, 'materials')))
+        for relative in ('materials/4/example.md', 'materials/notes.md'):
+            with self.subTest(relative=relative):
+                self.write(relative, 'Misplaced\n')
+                with self.assertRaisesRegex(ValueError, 'request number'):
+                    evaluation.Task('staged')
+                os.unlink(os.path.join(self.task_dir, relative))
+
     def test_default_suite_ignores_invalid_unselected_staged_tasks(self):
         self.config['stages'][0] = '../forbidden.md'
         self.save_config()
@@ -2924,9 +2943,11 @@ class CompactionTaskTests(unittest.TestCase):
                     outside = os.path.join(temporary, 'outside')
                     with open(outside, 'wb') as f:
                         f.write(b'outside')
-                    planted = os.path.join(workspace, evaluation.stage_materials(task, 2)[0])
-                    for stage in range(1, 4):
-                        if stage == 2:
+                    count = len(task.stages)
+                    later_with_materials = next(n for n in range(2, count + 1) if evaluation.stage_materials(task, n))
+                    planted = os.path.join(workspace, evaluation.stage_materials(task, later_with_materials)[0])
+                    for stage in range(1, count + 1):
+                        if stage == later_with_materials:
                             os.makedirs(os.path.dirname(planted), exist_ok=True)
                             os.link(outside, planted)
                         prompt = evaluation.prepare_stage(task, workspace, stage)
@@ -2935,7 +2956,7 @@ class CompactionTaskTests(unittest.TestCase):
                             self.assertFalse(os.path.lexists(os.path.join(workspace, hidden)), hidden)
                         self.assertLessEqual(len(evaluation.prepare_stage_prompt(task, stage).encode()), 4096)
                         self.assertTrue(prompt)
-                        for later in range(stage + 1, 4):
+                        for later in range(stage + 1, count + 1):
                             self.assertFalse(os.path.exists(os.path.join(workspace, 'materials', str(later))))
                         for path in evaluation.stage_materials(task, stage):
                             with open(os.path.join(workspace, path), 'rb') as f:
@@ -2952,6 +2973,34 @@ class CompactionTaskTests(unittest.TestCase):
                         f.write(b'changed')
                     result = subprocess.run(command + ['--check'], capture_output=True, text=True)
                     self.assertNotEqual(result.returncode, 0)
+
+    def test_plan_counts_one_batch_of_reads_at_full_bytes_before_the_next_turn(self):
+        # 提供者の使用量は読み取りの前の要求のものなので、一度に読んだ結果は全バイト数で加わる（01-04
+        # 「文脈の大きさの見積もり」）。入口の 30,000 は境の 35,000 より低いが、12,000 の読み取りで超える。
+        event = dict(request=1, where='mid', before=36000)
+        self.assertEqual(compaction_plan.simulate(90000, [0], [36000], [0], 0.8, 35000, 8000, 0, 1.0), [event])
+        self.assertEqual(compaction_plan.simulate(90000, [0], [36000], [0], 0.8, 35000, 8000, 0, 1.0, read=False), [])
+        # 実装の依頼は資料を読まないので、入口を超えたときだけ入口で圧縮する。
+        self.assertEqual(compaction_plan.simulate(108003, [0], [0], [0], 0.8, 36000, 8000, 0, 1.0),
+                         [dict(request=1, where='entry', before=36001)])
+
+    def test_request_layout_compacts_at_request_entries_within_observed_ranges(self):
+        # 2026-10-21 の試しでは、一度に読んだ資料で道具の呼び出しの途中に境を超え、残す範囲が 0 になった
+        # （P5-36）。模擬は応答の量を再現しないので、観察した出力の範囲のどの組でも、各条件の最初の圧縮が
+        # 依頼の入口で起き、予備を減らす条件が後の依頼で圧縮することを、実際の依頼と資料のバイト数で確かめる。
+        for name in compaction_plan.TASKS:
+            with self.subTest(task=name):
+                result = compaction_plan.check(name)
+                self.assertGreater(result['scenarios'], 1000)
+                self.assertEqual(result['failures'][:3], [])
+                requests, read = compaction_plan.task_shape(name)
+                self.assertEqual(len(requests), len(evaluation.Task(name).stages))
+                # 調査の資料を一度に読む量を戻すと、道具の呼び出しの途中の圧縮として捕まえる。
+                inflated = [size * 3 if index == 2 else size for index, size in enumerate(read)]
+                with mock.patch.object(compaction_plan, 'task_shape', return_value=(requests, inflated)):
+                    problems = {problem for failure in compaction_plan.check(name)['failures']
+                                for problem in failure['problems']}
+                self.assertIn('base: first compaction inside request 3', problems)
 
     @requires_sandbox
     def test_real_task_references_negative_controls_and_dry_run(self):
@@ -2979,15 +3028,15 @@ class CompactionTaskTests(unittest.TestCase):
                 return start(*args, **kwargs)
             except OSError as error:
                 self.skipTest('loopback listening is unavailable: %s' % error)
-        # v0.0.12 の固定の文脈の増加を、この通しの模擬だけで窓に反映する（P5-40）。
-        # 窓を広げても、残す量は従来の実効上限 65536 / 4 = 16384 を保つ。
+        # 模擬の応答は小さく、P5-36 の資料も少ないので、模擬の窓は 49,152 に狭く、再開の入口のバイト数で
+        # 圧縮する。予備の差は 8,192 のまま保ち、実効の残す量は 49152 / 4 = 12288 になる。
         settings = [('base', 16384, 16384), ('reserve', 8192, 16384), ('keep', 16384, 8000)]
         for task in evaluation.load_tasks([], 'compaction'):
             rows = {}
             with tempfile.TemporaryDirectory(prefix='ce-', dir='/tmp') as root:
                 for label, reserve, keep in settings:
                     harness = evaluation.load_harnesses()['benitoiteh-mock-compact']
-                    harness['provider']['context_window'] = 73728
+                    self.assertEqual(harness['provider']['context_window'], 49152)
                     harness['config']['compaction'].update(reserve_tokens=reserve, keep_tokens=keep)
                     with self.subTest(task=task.name, setting=label), mock.patch.object(
                             mock_provider, 'start', side_effect=available):
@@ -2996,15 +3045,16 @@ class CompactionTaskTests(unittest.TestCase):
                             'mock', None, False, os.environ['BENITOITEH_SKILL_EVAL_BINARY'])
                         self.assertTrue(row['success'], row['reason'])
                         self.assertTrue(row['comparison_valid'], row['comparison_reasons'])
-                        self.assertEqual(row['exec_launches'], 3)
+                        count = len(task.stages)
+                        self.assertEqual(row['exec_launches'], count)
                         self.assertTrue(row['compaction_records_match'])
                         self.assertEqual(row['total_tokens'], sum(stage['total_tokens'] for stage in row['stages']))
                         self.assertEqual(row['cost_usd'], 0)
                         self.assertLessEqual(row['turns'], 50)
                         self.assertEqual([stage['limits']['turns'] for stage in row['stages']],
-                                         [50 - sum(s['turns'] for s in row['stages'][:n]) for n in range(3)])
+                                         [50 - sum(s['turns'] for s in row['stages'][:n]) for n in range(count)])
                         self.assertEqual([stage['limits']['tokens'] for stage in row['stages']],
-                            [2000000 - sum(s['total_tokens'] for s in row['stages'][:n]) for n in range(3)])
+                            [2000000 - sum(s['total_tokens'] for s in row['stages'][:n]) for n in range(count)])
                         session = os.path.join(root, label, 'bh', 'state', 'benitoiteh', 'sessions',
                                                row['session_id'], 'session.jsonl')
                         with open(session) as f:
@@ -3012,11 +3062,12 @@ class CompactionTaskTests(unittest.TestCase):
                         reads = [r['result']['text'] for r in records
                                  if r.get('type') == 'tool_result' and r.get('name') == 'read'
                                  and 'field notes, part' in r['result']['text']]
-                        self.assertEqual(len(reads), sum(len(evaluation.stage_materials(task, n)) for n in range(1, 4)))
+                        self.assertEqual(len(reads), sum(len(evaluation.stage_materials(task, n))
+                                                         for n in range(1, count + 1)))
                         self.assertTrue(all('sample-' in text and len(text.encode()) > 4000 for text in reads))
                         retained = [e for e in row['compaction_events'] if e['stage'] > 1 and e['kept_items'] > 0]
                         self.assertTrue(retained)
-                        self.assertTrue(all(e['kept_estimate'] <= min(keep, 16384) for e in retained))
+                        self.assertTrue(all(e['kept_estimate'] <= min(keep, 12288) for e in retained))
                         # 呼び出しと結果の組を複数残す。Anthropic の道具の途中では残さない。
                         self.assertGreater(max(e['kept_items'] for e in retained), 4)
                         rows[label] = row

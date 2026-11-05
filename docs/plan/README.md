@@ -95,7 +95,7 @@
 | [P5-33](tasks/P5-33-compaction-tasks.md) | 圧縮の 2 課題、資料の生成、全段の判定と否定の対照 | P5-32 | 完了 |
 | [P5-34](tasks/P5-34-normal-mode-evaluation.md) | 通常モードの評価の道具と試しの 2 課題（準備、判定、環境、記録、模擬） | P5-31、P5-32 | 完了 |
 | [P5-35](tasks/P5-35-normal-mode-tasks.md) | 通常モードの残りの 8 課題を加え、計 10 課題を揃える | P5-34 | 完了 |
-| [P5-36](tasks/P5-36-compaction-boundaries.md) | 圧縮の課題の長さと段の区切りの調整 | P5-33 | 保留（2026-10-21、設計者の判断で BH-014 を後回しにした） |
+| [P5-36](tasks/P5-36-compaction-boundaries.md) | 圧縮の課題の長さと段の区切りの調整 | P5-33 | 保留（2026-10-21、設計者の判断で BH-014 を後回しにした）。2026-11-05 に LLM を呼ばない部分（7 段への変更と量の計算）を行い、有料の試しを待つ |
 | [P5-37](tasks/P5-37-post-release-followups.md) | 公開後の所見と不安定なテストの整理 | P5-35 | 完了 |
 | [P5-38](tasks/P5-38-advisories.md) | 依存のクレートの勧告の検査を加える | P0-01 | 完了 |
 | [P5-39](tasks/P5-39-tls-advisories.md) | TLS の依存の更新による勧告の解消 | P5-38 | 完了 |
