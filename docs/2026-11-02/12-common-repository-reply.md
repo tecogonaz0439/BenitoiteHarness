@@ -29,6 +29,13 @@
 
 依頼の手順 6 の確認の結果（一番上から起動したときの `AGENTS.md` とスキルの読まれ方、ビルドとテスト）と、共通の `AGENTS.md` の置き場所は、第1段を終えた後に、BenitoiteHarness の結果の記録に残し、改めて返す。
 
+2026-11-05 に第1段を行った。確認の結果は [BH-080 の第1段の記録](../plan/results/BH-080-stage1.md)に書いた。要点は次のとおりである。
+
+- 共通の `AGENTS.md` は、共通のリポジトリの一番上（`~/src/BenitoiteLang/AGENTS.md`）に置いた。Claude Code に読ませるため、`@AGENTS.md` だけを書いた `CLAUDE.md` を並べて置いた。
+- Codex は、起動した場所が属する git のリポジトリの根より上の `AGENTS.md` を読まない（`codex debug prompt-input` で確かめた）。子のリポジトリの中で起動すると共通の `AGENTS.md` を読まず、一番上から起動すると子の `AGENTS.md` とスキルを読まない。
+- Claude Code は、`CLAUDE.md` のない場所の `AGENTS.md` を自動では読まず、子のリポジトリの `.claude/skills/` のスキルを一覧に出さなかった。
+- ハーネスのビルドとテストは、`cargo clean` の後に macOS、aarch64 の Linux、x86_64 の Linux のどれでも通った。
+
 ## 関連する依頼
 
 同じ日に、処理系への機能の要望を [10-benitoite-requests.md](10-benitoite-requests.md) にまとめた（R1〜R5。設計者は次の次の版での実現を検討している）。
