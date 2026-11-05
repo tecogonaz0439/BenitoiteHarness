@@ -276,7 +276,7 @@ where
             } else {
                 Stdio::piped()
             });
-            Running::Command(command.spawn()?)
+            Running::Command(super::spawn::spawn(&mut command)?)
         }
         #[cfg(target_os = "linux")]
         RunCommand::Sandbox(mut command) => {

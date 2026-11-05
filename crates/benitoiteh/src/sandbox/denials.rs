@@ -55,7 +55,8 @@ impl DenialLog {
             "processImagePath == \"/kernel\" AND senderImagePath ENDSWITH \"/Sandbox\" AND eventMessage ENDSWITH \"{}\"",
             self.tag
         );
-        let Ok(mut child) = Command::new("/usr/bin/log")
+        let mut command = Command::new("/usr/bin/log");
+        command
             .args(["show", "--style", "ndjson", "--last"])
             .arg(format!("{seconds}s"))
             .arg("--predicate")
@@ -63,9 +64,8 @@ impl DenialLog {
             .env_clear()
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
-            .stderr(Stdio::null())
-            .spawn()
-        else {
+            .stderr(Stdio::null());
+        let Ok(mut child) = super::spawn::spawn(&mut command) else {
             return Denials::default();
         };
         let Some(stdout) = child.stdout.take() else {

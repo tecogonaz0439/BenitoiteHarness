@@ -73,13 +73,12 @@ fn open_url(url: &str) {
     for variable in crate::config::PROVIDER_KEY_ENV_VARS {
         command.env_remove(variable);
     }
-    if let Ok(mut child) = command
+    command
         .arg(url)
         .stdin(Stdio::null())
         .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .spawn()
-    {
+        .stderr(Stdio::null());
+    if let Ok(mut child) = crate::sandbox::spawn::spawn(&mut command) {
         // xdg-open が戻らなくても戻り先の受け付けを止めない。
         let _reaper = std::thread::Builder::new().spawn(move || {
             let _status = child.wait();

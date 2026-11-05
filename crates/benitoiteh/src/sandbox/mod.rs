@@ -12,6 +12,7 @@ pub use restricted::{RestrictedAccess, image_policy, restricted_policy, scratch_
 pub mod proxy;
 pub mod run;
 pub mod session;
+pub mod spawn;
 mod text;
 
 #[cfg(test)]
