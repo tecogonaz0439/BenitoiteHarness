@@ -1,5 +1,7 @@
 # Benitoite の処理系への要望（benitoiteh から）
 
+2026-11-03 に設計者が処理系の側へ依頼し、Benitoite の docs/todo の TODO-071（R1）・TODO-325（R2）・TODO-326（R3）・TODO-155（R4）・TODO-327（R5）に加えられた（2026-11-05 に確かめた）。
+
 本書は、Benitoite の試作のエージェントハーネス `benitoiteh`（リポジトリ `tecogonaz0439/BenitoiteHarness`）から、Benitoite の処理系 `benitoite` への要望をまとめる。Benitoite の作業をするエージェント（Claude Code）が、本書だけを読んで要望の背景、欲しい振る舞い、受け入れの条件を判断できるように書く。設計者は、次の次の版での実現を検討している（2026-11-03）。どの要望を採るか、形をどうするかは、Benitoite の設計者と処理系の側で決める。
 
 ## 本書の読み方
