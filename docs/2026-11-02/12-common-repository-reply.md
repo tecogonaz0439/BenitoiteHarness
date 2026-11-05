@@ -33,7 +33,7 @@
 
 - 共通の `AGENTS.md` は、共通のリポジトリの一番上（`~/src/BenitoiteLang/AGENTS.md`）に置いた。Claude Code に読ませるため、`@AGENTS.md` だけを書いた `CLAUDE.md` を並べて置いた。
 - Codex は、起動した場所が属する git のリポジトリの根より上の `AGENTS.md` を読まない（`codex debug prompt-input` で確かめた）。子のリポジトリの中で起動すると共通の `AGENTS.md` を読まず、一番上から起動すると子の `AGENTS.md` とスキルを読まない。
-- Claude Code は、`CLAUDE.md` のない場所の `AGENTS.md` を自動では読まず、子のリポジトリの `.claude/skills/` のスキルを一覧に出さなかった。
+- Claude Code は、`CLAUDE.md` のない場所の `AGENTS.md` を自動では読まず、子のリポジトリの `.claude/skills/` のスキルを一覧に出さなかった。共通の `CLAUDE.md` から取り込んだ共通の `AGENTS.md` は、起動のときに読んだ。
 - ハーネスのビルドとテストは、`cargo clean` の後に macOS、aarch64 の Linux、x86_64 の Linux のどれでも通った。
 
 ## 関連する依頼
