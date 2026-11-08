@@ -6,7 +6,7 @@
 
 この文書は、Debian 13 の推論サーバに Strata Terminal 0.2.12 を導入し、Qwen3.8-Flash-Next の 3 つの量子化版をホストして、DeepSeek Harness（以下 DSH）と `benitoiteh` から切り替えて使うまでの手順と、その環境で確かめたことを記録する。3 つは Unsloth の UD-IQ4_XS-v31、ISTA-DASLab の IQ3_S、SC117 の abliterated IQ3_S である。
 
-前提の環境が前の記録と異なるため、[Strata と IQ3_S の構築](strata-iq3-s.md)とは別の文書にする。前の記録は Ubuntu 26.04.1 と IQ3_S（ISTA-DASLab の配布）で、今回は Debian 13 と UD-IQ4_XS-v31（Unsloth の配布）である。OS の更新でサーバのホームが作り直され、前のモデルと設定は残っていない。
+この環境は Debian 13 で、OS の更新によりサーバのホームが作り直され、前のモデルと設定は残っていない。
 
 確認の状況は次のとおりである。確認の方法と結果の詳細は「取得後の確認と再開」にまとめる。
 
@@ -21,7 +21,18 @@
 
 この環境で課題の成功率や、長い入力を繰り返したときの安定性を評価した結果は、まだない。
 
-設定変更の範囲は、前の記録の[「クライアントの設定変更の範囲」](strata-iq3-s.md#クライアントの設定変更の範囲)に従う。
+## クライアントの設定変更の範囲
+
+本構築と今後の接続確認では、利用者が指定した次の範囲に限って設定を変更する。
+
+| 対象 | 変更してよい範囲 |
+|---|---|
+| BenitoiteHarness（`benitoiteh`） | 動作確認に必要な設定。権限・承認・サンドボックス・道具の設定も、確認の目的に必要な範囲で扱う |
+| OpenCode・Codex CLI・Claude Code | モデル選択・API キー・SSH 転送に関する設定のみ。権限・承認・サンドボックス・道具の有効／無効は変更しない |
+
+OpenCode・Codex CLI・Claude Code では、設定ファイルの編集に加え、補助コマンド、環境変数、起動引数による権限などの間接的な上書きも行わない。これらの設定が動作上の問題に関係する場合も、設定を変更せず、原因と影響を利用者へ報告する。
+
+BenitoiteHarness の動作確認に必要な設定変更の許可は、設計で定めた確認と OS のサンドボックスを弱める許可にはしない。確認する条件と目的を記録し、既存の安全の性質を維持する。
 
 ## 環境と版
 
@@ -170,7 +181,7 @@ exec "$HOME/.local/bin/strata" launch \
   --yes --no-tui "$@"
 ```
 
-`--family unsloth` と `--model UD-IQ4_XS-v31` の組み合わせは、0.2.11 以降の Terminal が受け付ける。導入先の `--data-dir` は、既定の場所ではなくホーム直下の `~/strata-models` にした。前の記録と同じ扱いである。
+`--family unsloth` と `--model UD-IQ4_XS-v31` の組み合わせは、0.2.11 以降の Terminal が受け付ける。導入先の `--data-dir` は、既定の場所ではなくホーム直下の `~/strata-models` にした。
 
 最初に `--plan` を付け、指定の配布者の UD-IQ4_XS-v31、保存先、取得量、対応エンジンを確認する。
 
@@ -214,7 +225,7 @@ strata install --family qwen --model IQ3_S --data-dir "$HOME/strata-models" \
   --feed "$STRATA_UPDATE_FEED" --yes --no-start
 ```
 
-ファイルは `~/strata-models/models/IQ3_S/` に、配布元の名前のまま二つ置かれる。54.8 GB の本体と、28.8 GB の PLE 表（per-layer embedding。旧記録の「n-gram 表」と同じもの）である。
+ファイルは `~/strata-models/models/IQ3_S/` に、配布元の名前のまま二つ置かれる。54.8 GB の本体と、28.8 GB の PLE 表（per-layer embedding）である。
 
 SC117 の abliterated はカタログにないため、配布元から二つの分割ファイルを取得し、`--model-path` でフォルダを渡す。リビジョンは `90a3350c…` に固定する。
 
