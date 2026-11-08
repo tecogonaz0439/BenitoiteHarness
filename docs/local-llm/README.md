@@ -4,9 +4,12 @@
 
 | 文書 | 内容 |
 |---|---|
-| [Strata と IQ3_S の構築](strata-iq3-s.md) | 推論サーバの導入、`benitoiteh` の接続、状態の確認と再開、文脈長を増やした確認、prefill・decode の計測値と取得方法 |
+| [Strata と IQ3_S の構築](strata-iq3-s.md) | Ubuntu の推論サーバの導入、`benitoiteh` の接続、状態の確認と再開、文脈長を増やした確認、prefill・decode の計測値と取得方法 |
+| [Strata の推論サーバと 3 つの Qwen3.8-Flash-Next モデル](strata-models.md) | Debian 13 への入れ直し、NVIDIA ドライバ 620 への更新、Unsloth・ISTA-DASLab・abliterated の 3 つの量子化版の取得と読み込み、ポートを分けた切り替え、DeepSeek Harness と `benitoiteh` の接続 |
 
-主目的は BenitoiteHarness 向けの環境の構築である。OpenCode の接続設定、Codex CLI と Claude Code の API 対応の調査は付随作業として記録する。各クライアントで実際に応答を得たかどうかは、構築文書の確認状況で区別する。
+現在の環境は 2 つ目の文書のとおりで、1 つ目の文書は OS を入れ直す前の記録として残す。1 つ目の文書のポート番号と提供者設定は、当時の 1 つのモデルに対するものである。
+
+主目的は BenitoiteHarness 向けの環境の構築である。DeepSeek Harness からは 3 つのモデルを切り替えて使える。OpenCode の接続設定、Codex CLI と Claude Code の API 対応の調査は付随作業として記録する。各クライアントで実際に応答を得たかどうかは、構築文書の確認状況で区別する。
 
 設定変更の範囲は、[構築文書の「クライアントの設定変更の範囲」](strata-iq3-s.md#クライアントの設定変更の範囲)に従う。権限などの設定変更を行えるのは、動作確認に必要な BenitoiteHarness の設定に限る。OpenCode・Codex CLI・Claude Code では、モデル選択・API キー・SSH 転送に関する設定だけを扱い、権限・承認・サンドボックス・道具の有効／無効を変更しない。補助コマンド、環境変数、起動引数による権限などの上書きも行わない。
 
