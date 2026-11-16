@@ -45,6 +45,7 @@ pub(super) enum StartupError {
     Sandbox(SandboxError),
     Invalid(&'static str),
     Declined,
+    ProcessorDeclined,
 }
 
 impl fmt::Display for StartupError {
@@ -68,6 +69,7 @@ impl fmt::Display for StartupError {
             Self::Sandbox(e) => e.fmt(f),
             Self::Invalid(message) => f.write_str(message),
             Self::Declined => f.write_str(text::MODE_CHANGE_DECLINED),
+            Self::ProcessorDeclined => f.write_str(text::PROCESSOR_CHANGE_DECLINED),
         }
     }
 }
@@ -162,6 +164,33 @@ pub(super) struct ModeChange {
     pub session_id: SessionId,
 }
 
+/// 制限モードで前回記録から変わった処理系の実行ファイル（設計書 04-01、BH-099）。
+pub(super) struct ProcessorChange {
+    pub path: PathBuf,
+    pub previous_version: String,
+    pub previous_sha256: String,
+    pub current_version: String,
+    pub current_sha256: String,
+}
+
+/// 起動時に利用者の確認を求める各場面の応答窓口。
+pub(super) struct StartupPrompts<'a> {
+    pub mode_change: &'a mut dyn FnMut(&ModeChange) -> bool,
+    pub processor_change: &'a mut dyn FnMut(&ProcessorChange) -> bool,
+    pub trust: &'a mut dyn FnMut(&TrustRequest) -> Option<TrustAnswer>,
+}
+
+fn with_noninteractive_prompts<T>(run: impl FnOnce(StartupPrompts<'_>) -> T) -> T {
+    let mut mode_change = |_: &ModeChange| false;
+    let mut processor_change = |_: &ProcessorChange| false;
+    let mut trust = |_: &TrustRequest| Some(TrustAnswer::Session(false));
+    run(StartupPrompts {
+        mode_change: &mut mode_change,
+        processor_change: &mut processor_change,
+        trust: &mut trust,
+    })
+}
+
 /// /new で固定する安全の値。設定の既定値より優先する。
 #[derive(Clone, Debug)]
 pub(super) struct SessionOverrides {
@@ -241,8 +270,7 @@ pub(super) fn prepare(
     paths: &DataPaths,
     check_sandbox: impl FnOnce(&Path, &Path) -> Result<(), SandboxError>,
     query_launcher: QueryLauncher,
-    confirm_mode_change: &mut dyn FnMut(&ModeChange) -> bool,
-    confirm_trust: &mut dyn FnMut(&TrustRequest) -> Option<TrustAnswer>,
+    prompts: StartupPrompts<'_>,
 ) -> Result<Prepared, PreparationError> {
     let mut diagnostics = Vec::new();
     let result = (|| {
@@ -359,7 +387,7 @@ pub(super) fn prepare(
                 overrides,
                 paths,
                 &request,
-                confirm_trust,
+                prompts.trust,
                 &mut diagnostics,
             )?;
             if !trusted {
@@ -407,7 +435,7 @@ pub(super) fn prepare(
             && state.mode == crate::session::RecordedMode::Restricted
             && resolved.mode == Mode::Normal
             && !overrides.is_some_and(|fixed| fixed.forked_from.is_some())
-            && !confirm_mode_change(&ModeChange {
+            && !(prompts.mode_change)(&ModeChange {
                 session_id: opened
                     .as_ref()
                     .ok_or(StartupError::Invalid(text::RESUME_PROJECT))?
@@ -491,7 +519,13 @@ pub(super) fn prepare(
                 .allowed_programs
                 .iter()
                 .map(|path| {
-                    benitoite::validate_executable(path, &locations, true).map(|(path, _)| path)
+                    benitoite::validate_executable_with_roots(
+                        path,
+                        &locations,
+                        &user.normal.writable_roots,
+                        true,
+                    )
+                    .map(|(path, _)| path)
                 })
                 .collect::<Result<Vec<_>, _>>()
                 .map_err(StartupError::Benitoite)?
@@ -580,6 +614,7 @@ pub(super) fn prepare(
                         launcher.environment_policy(),
                     ),
                     locations: locations.clone(),
+                    writable_roots: user.normal.writable_roots.clone(),
                     denied_candidates: candidates.clone(),
                     launcher: match query_launcher {
                         // 起動の形の選択を終えた後にだけ、テスト実行ファイル用の形へ替える。
@@ -615,10 +650,24 @@ pub(super) fn prepare(
                 && !previous.sha256.is_empty()
                 && previous.sha256 != processor.sha256
             {
-                processor_notices.push(benitoite::text::changed(
-                    &previous.version,
-                    &processor.version,
-                ));
+                let notice = benitoite::text::changed(&previous.version, &processor.version);
+                if resolved.mode == Mode::Restricted {
+                    let change = ProcessorChange {
+                        path: processor.path.clone(),
+                        previous_version: previous.version,
+                        previous_sha256: previous.sha256,
+                        current_version: processor.version.clone(),
+                        current_sha256: processor.sha256.clone(),
+                    };
+                    if !args.interactive || overrides.is_some() {
+                        diagnostics.push(notice);
+                        return Err(StartupError::Invalid(text::PROCESSOR_CHANGED));
+                    }
+                    if !(prompts.processor_change)(&change) {
+                        return Err(StartupError::ProcessorDeclined);
+                    }
+                }
+                processor_notices.push(notice);
             }
         }
         diagnostics.extend(processor_notices.iter().cloned());
@@ -974,17 +1023,18 @@ pub(super) fn run(args: ExecArgs) -> Result<u8, CliError> {
         diagnostics,
         panic_record,
         ..
-    } = prepare(
-        &args,
-        None,
-        &DataPaths::from_env().map_err(|error| CliError::Startup(StartupError::Config(error)))?,
-        sandbox::check_availability,
-        QueryLauncher::Sandboxed,
-        &mut |_| false,
-        // 非対話では尋ねられないので、決めていなければこの一回は信頼しない。
-        &mut |_| Some(TrustAnswer::Session(false)),
-    )
-    .map_err(CliError::Preparation)?;
+    } = with_noninteractive_prompts(|prompts| {
+        prepare(
+            &args,
+            None,
+            &DataPaths::from_env()
+                .map_err(|error| CliError::Startup(StartupError::Config(error)))?,
+            sandbox::check_availability,
+            QueryLauncher::Sandboxed,
+            prompts,
+        )
+        .map_err(CliError::Preparation)
+    })?;
     panic::install(Some(panic_record), None);
     for diagnostic in diagnostics {
         ExecOutput::diagnostic(&diagnostic).map_err(CliError::Output)?;
@@ -1225,16 +1275,17 @@ pub(super) fn prepare_new(
     args.resume = None;
     args.continue_session = false;
     args.request = super::args::Request::Text(String::new());
-    prepare(
-        &args,
-        Some(&SessionOverrides::from(current)),
-        paths,
-        check_sandbox,
-        query_launcher,
-        &mut |_| false,
-        // 画面の途中では尋ねない。前の決定と保存した決定がなければ、信頼しない。
-        &mut |_| Some(TrustAnswer::Session(false)),
-    )
+    // 画面の途中では尋ねない。前の決定と保存した決定がなければ、信頼しない。
+    with_noninteractive_prompts(|prompts| {
+        prepare(
+            &args,
+            Some(&SessionOverrides::from(current)),
+            paths,
+            check_sandbox,
+            query_launcher,
+            prompts,
+        )
+    })
 }
 
 /// UI の停止した働き手の記録を写し、安全の値を固定して再開の道へ渡す。
@@ -1266,15 +1317,16 @@ pub(super) fn prepare_fork(
     args.resume = Some(id.to_string());
     args.continue_session = false;
     args.request = super::args::Request::Text(String::new());
-    prepare(
-        &args,
-        Some(&fixed),
-        paths,
-        check_sandbox,
-        query_launcher,
-        &mut |_| false,
-        &mut |_| Some(TrustAnswer::Session(false)),
-    )
+    with_noninteractive_prompts(|prompts| {
+        prepare(
+            &args,
+            Some(&fixed),
+            paths,
+            check_sandbox,
+            query_launcher,
+            prompts,
+        )
+    })
     .map(|prepared| (prepared, request))
     .map_err(|mut error| {
         error.diagnostics.push(text::fork_retained(&id));

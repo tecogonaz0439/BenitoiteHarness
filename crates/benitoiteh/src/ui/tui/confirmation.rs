@@ -58,10 +58,17 @@ pub(super) struct Confirmation {
     rewind: Option<RewindConfirmation>,
     /// 起動のときのプロジェクトの信頼の確認の事実（設計書 03-01「プロジェクトの信頼」）。
     trust: Option<Vec<(&'static str, String)>>,
+    startup: Option<StartupConfirmation>,
     secret: Option<SecretConfirmation>,
     pub guard: ConfirmationGuard,
     pub message: Option<String>,
     message_overflow: bool,
+}
+
+struct StartupConfirmation {
+    title: &'static str,
+    keys: &'static str,
+    facts: Vec<(&'static str, String)>,
 }
 
 struct SecretConfirmation {
@@ -95,6 +102,9 @@ impl Confirmation {
         }
         if self.trust.is_some() {
             return text::TRUST_TITLE;
+        }
+        if let Some(startup) = &self.startup {
+            return startup.title;
         }
         if let Some(rewind) = &self.rewind {
             if rewind.branch && rewind.incomplete {
@@ -250,12 +260,21 @@ impl Confirmation {
                 rows.extend(fact(text::AGENTS, text::AGENTS_WRITE, width, compact));
             }
             rows
+        } else if let Some(startup) = &self.startup {
+            startup
+                .facts
+                .iter()
+                .flat_map(|(label, value)| fact(label, value, width, compact))
+                .collect()
         } else {
             fact(text::WARNING, text::MODE_CHANGE_WARNING, width, compact)
         }
     }
 
     fn answer_keys(&self) -> &'static str {
+        if let Some(startup) = &self.startup {
+            return startup.keys;
+        }
         if self.trust.is_some() {
             return text::TRUST_KEYS;
         }
@@ -648,6 +667,7 @@ impl Screen {
         self.confirmation = Some(Confirmation {
             prompt: None,
             trust: None,
+            startup: None,
             rewind: None,
             secret: Some(SecretConfirmation {
                 prompt,
@@ -726,6 +746,7 @@ impl Screen {
         self.confirmation = Some(Confirmation {
             prompt: Some(prompt),
             trust: None,
+            startup: None,
             rewind: None,
             secret: None,
             guard: ConfirmationGuard::default(),
@@ -763,6 +784,7 @@ impl Screen {
             prompt: None,
             rewind: None,
             trust: Some(facts),
+            startup: None,
             secret: None,
             guard: ConfirmationGuard::default(),
             message: None,
@@ -782,6 +804,49 @@ impl Screen {
         self.confirmation = Some(Confirmation {
             prompt: None,
             trust: None,
+            startup: Some(StartupConfirmation {
+                title: text::MODE_CHANGE,
+                keys: text::MODE_CHANGE_KEYS,
+                facts: vec![(text::WARNING, text::MODE_CHANGE_WARNING.into())],
+            }),
+            rewind: None,
+            secret: None,
+            guard: ConfirmationGuard::default(),
+            message: None,
+            message_overflow: false,
+        });
+    }
+
+    /// 制限モードで前回セッションから処理系の SHA-256 が変わったときの確認（設計書 04-01、BH-099）。
+    pub fn open_processor_change(
+        &mut self,
+        path: &std::path::Path,
+        previous_version: &str,
+        previous_sha256: &str,
+        current_version: &str,
+        current_sha256: &str,
+    ) {
+        self.flush_pending();
+        self.confirmation_result = None;
+        self.confirmation = Some(Confirmation {
+            prompt: None,
+            trust: None,
+            startup: Some(StartupConfirmation {
+                title: text::PROCESSOR_CHANGE,
+                keys: text::PROCESSOR_CHANGE_KEYS,
+                facts: vec![
+                    (text::PATH, SafeText::path(path).as_str().to_owned()),
+                    (
+                        text::PREVIOUS,
+                        format!("{previous_version}\nsha256: {previous_sha256}"),
+                    ),
+                    (
+                        text::CURRENT,
+                        format!("{current_version}\nsha256: {current_sha256}"),
+                    ),
+                    (text::WARNING, text::PROCESSOR_CHANGE_WARNING.into()),
+                ],
+            }),
             rewind: None,
             secret: None,
             guard: ConfirmationGuard::default(),
@@ -868,6 +933,7 @@ impl Screen {
             prompt: None,
             secret: None,
             trust: None,
+            startup: None,
             rewind: Some(RewindConfirmation {
                 facts,
                 extra,
@@ -1278,6 +1344,61 @@ mod tests {
             crate::askpass::MAX_SECRET
         );
         screen.cancel_confirmation();
+        Ok(())
+    }
+
+    #[test]
+    fn processor_change_confirmation_fits_at_80x24_and_obeys_guard()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let mut screen = Screen::new(
+            (80, 24),
+            super::super::Status {
+                mode: crate::config::Mode::Restricted,
+                provider: String::new(),
+                model: String::new(),
+                host: String::new(),
+                sandbox: String::new(),
+                sandbox_disabled: false,
+                context_window: None,
+                estimate: 0,
+                templates: Default::default(),
+            },
+        );
+        let old_hash = "a".repeat(64);
+        let new_hash = "b".repeat(64);
+        screen.open_processor_change(
+            std::path::Path::new("/usr/local/bin/benitoite"),
+            "0.0.12",
+            &old_hash,
+            "0.0.12",
+            &new_hash,
+        );
+        let confirmation = screen.confirmation.as_ref().ok_or("missing confirmation")?;
+        assert!(confirmation.fits((80, 24)));
+        assert_eq!(confirmation.title(), text::PROCESSOR_CHANGE);
+        assert_eq!(confirmation.answer_keys(), text::PROCESSOR_CHANGE_KEYS);
+        let shown = Instant::now();
+        screen.presented(shown);
+        screen.input_at(
+            Event::Key(crossterm::event::KeyEvent::new(
+                KeyCode::Char('y'),
+                KeyModifiers::NONE,
+            )),
+            shown + Duration::from_millis(50),
+            Duration::ZERO,
+            true,
+        );
+        assert!(screen.take_confirmation_result().is_none());
+        screen.input_at(
+            Event::Key(crossterm::event::KeyEvent::new(
+                KeyCode::Char('y'),
+                KeyModifiers::NONE,
+            )),
+            shown + Duration::from_millis(350),
+            Duration::ZERO,
+            true,
+        );
+        assert_eq!(screen.take_confirmation_result(), Some(true));
         Ok(())
     }
 }

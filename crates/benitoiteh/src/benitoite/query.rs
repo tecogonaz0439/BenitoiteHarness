@@ -38,6 +38,7 @@ pub(crate) struct QueryContext {
     pub placeholders: PathBuf,
     pub env: BTreeMap<OsString, OsString>,
     pub locations: WritableLocations,
+    pub writable_roots: Vec<PathBuf>,
     pub denied_candidates: Vec<PathBuf>,
     pub launcher: QueryLauncher,
 }

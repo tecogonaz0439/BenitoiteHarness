@@ -44,14 +44,18 @@ fn prepare_with_trust(
     // 短時間待ち、本当に錠を放さない退行とほかの誤りは失敗にする（設計書 07-01）。
     let started = Instant::now();
     loop {
+        let mut processor_change = |_: &ProcessorChange| false;
         match super::prepare(
             args,
             overrides,
             paths,
             &mut check,
             QueryLauncher::TestDirect,
-            confirm,
-            confirm_trust,
+            StartupPrompts {
+                mode_change: confirm,
+                processor_change: &mut processor_change,
+                trust: confirm_trust,
+            },
         ) {
             Err(PreparationError {
                 error: StartupError::Session(SessionError::Locked),
@@ -1949,6 +1953,9 @@ fn fork_preparation_reuses_the_locked_session_and_cached_resume_state() -> Resul
     fixed.forked_from = Some(forked.from);
     fixed.fork_session = Some(forked.session);
     args.resume = Some(id.to_string());
+    let mut mode_change = |_: &ModeChange| false;
+    let mut processor_change = |_: &ProcessorChange| false;
+    let mut trust = |_: &TrustRequest| Some(TrustAnswer::Session(false));
     let prepared = super::prepare(
         &args,
         Some(&fixed),
@@ -1961,8 +1968,11 @@ fn fork_preparation_reuses_the_locked_session_and_cached_resume_state() -> Resul
             Ok(())
         },
         QueryLauncher::TestDirect,
-        &mut |_| false,
-        &mut |_| Some(TrustAnswer::Session(false)),
+        StartupPrompts {
+            mode_change: &mut mode_change,
+            processor_change: &mut processor_change,
+            trust: &mut trust,
+        },
     )
     .map_err(|error| error.to_string())?;
     assert_eq!(prepared.session.id(), &id);
@@ -2082,6 +2092,169 @@ fn chatgpt_startup_rechecks_resolved_destination_before_opening_credentials()
         chatgpt_tokens(&resolved, &paths)
             .map_err(|e| e.to_string())?
             .is_none()
+    );
+    Ok(())
+}
+
+#[test]
+fn restricted_rejects_processor_and_allowed_programs_inside_normal_writable_roots()
+-> Result<(), Box<dyn Error>> {
+    let f = Fixture::new()?;
+    let writable_dir = f.0.join("shared_writable");
+    let processor_copy = writable_dir.join("benitoite");
+    let tool_copy = writable_dir.join("allowed-tool");
+    fs::create_dir(&writable_dir)?;
+    fs::copy(test_processor()?, &processor_copy)?;
+    fs::copy(test_processor()?, &tool_copy)?;
+
+    // (1a) 制限モードでも normal.writable_roots 配下の allowed_programs を拒否する。
+    let paths_tool = f.paths(&format!(
+        "writable_roots = ['{}']\n[restricted]\nallowed_programs = ['{}']\n",
+        writable_dir.display(),
+        tool_copy.display(),
+    ))?;
+    let args = f.args(&["--mode", "restricted"])?;
+    let denied_tool = prepare(&args, None, &paths_tool, |_, _| Ok(()), &mut |_| false);
+    assert!(matches!(
+        denied_tool,
+        Err(PreparationError {
+            error: StartupError::Benitoite(crate::benitoite::BenitoiteError::Invalid(
+                crate::benitoite::text::INVALID_PROGRAM,
+            )),
+            ..
+        })
+    ));
+
+    // (1b) 制限モードでも normal.writable_roots 配下の処理系を拒否する。
+    let paths_proc = f.paths(&format!(
+        "writable_roots = ['{}']\n",
+        writable_dir.display()
+    ))?;
+    let config = fs::read_to_string(&paths_proc.config_file)?.replace(
+        &serde_json::to_string(&test_processor()?)?,
+        &serde_json::to_string(&processor_copy)?,
+    );
+    fs::write(&paths_proc.config_file, config)?;
+    let denied_proc = prepare(&args, None, &paths_proc, |_, _| Ok(()), &mut |_| false);
+    assert!(matches!(
+        denied_proc,
+        Err(PreparationError {
+            error: StartupError::Benitoite(crate::benitoite::BenitoiteError::Invalid(
+                crate::benitoite::text::INVALID_PROGRAM,
+            )),
+            ..
+        })
+    ));
+    Ok(())
+}
+
+#[test]
+fn restricted_changed_processor_denies_noninteractive_and_requires_confirmation()
+-> Result<(), Box<dyn Error>> {
+    use std::io::Write;
+    let f = Fixture::new()?;
+    let copy = f.0.join("custom-benitoite");
+    fs::copy(test_processor()?, &copy)?;
+    let paths = f.paths("")?;
+    let config = fs::read_to_string(&paths.config_file)?.replace(
+        &serde_json::to_string(&test_processor()?)?,
+        &serde_json::to_string(&copy)?,
+    );
+    fs::write(&paths.config_file, config)?;
+    let mut args = f.args(&["--mode", "restricted"])?;
+    let first =
+        prepare(&args, None, &paths, |_, _| Ok(()), &mut |_| false).map_err(|e| e.to_string())?;
+    drop(first);
+
+    OpenOptions::new()
+        .append(true)
+        .open(&copy)?
+        .write_all(b"changed executable\n")?;
+
+    // 非対話 exec では確認できないため起動を拒む。
+    args.interactive = false;
+    let mut mode_change = |_: &ModeChange| false;
+    let mut proc_accept = |_: &ProcessorChange| true;
+    let mut trust_none = |_: &TrustRequest| Some(TrustAnswer::Session(false));
+    let denied_exec = super::prepare(
+        &args,
+        None,
+        &paths,
+        |_, _| Ok(()),
+        QueryLauncher::TestDirect,
+        StartupPrompts {
+            mode_change: &mut mode_change,
+            processor_change: &mut proc_accept,
+            trust: &mut trust_none,
+        },
+    );
+    let Err(failure) = denied_exec else {
+        return Err("expected noninteractive restricted exec to fail".into());
+    };
+    assert!(matches!(
+        failure.error,
+        StartupError::Invalid(text::PROCESSOR_CHANGED)
+    ));
+    assert!(
+        failure
+            .diagnostics
+            .iter()
+            .any(|line| line.contains("executable changed"))
+    );
+
+    // 対話起動では確認を求め、拒否すると ProcessorDeclined で止める。
+    args.interactive = true;
+    let mut seen_change = None;
+    let mut proc_decline = |change: &ProcessorChange| {
+        seen_change = Some((
+            change.path.clone(),
+            change.previous_sha256.clone(),
+            change.current_sha256.clone(),
+        ));
+        false
+    };
+    let declined = super::prepare(
+        &args,
+        None,
+        &paths,
+        |_, _| Ok(()),
+        QueryLauncher::TestDirect,
+        StartupPrompts {
+            mode_change: &mut mode_change,
+            processor_change: &mut proc_decline,
+            trust: &mut trust_none,
+        },
+    );
+    assert!(matches!(
+        declined,
+        Err(PreparationError {
+            error: StartupError::ProcessorDeclined,
+            ..
+        })
+    ));
+    let (changed_path, old_hash, new_hash) = seen_change.ok_or("missing callback invocation")?;
+    assert_eq!(changed_path, copy);
+    assert_ne!(old_hash, new_hash);
+
+    // 対話で確認に同意した場合は診断付きで継続する。
+    let confirmed = super::prepare(
+        &args,
+        None,
+        &paths,
+        |_, _| Ok(()),
+        QueryLauncher::TestDirect,
+        StartupPrompts {
+            mode_change: &mut mode_change,
+            processor_change: &mut proc_accept,
+            trust: &mut trust_none,
+        },
+    )
+    .map_err(|e| e.to_string())?;
+    assert!(
+        confirmed
+            .diagnostics
+            .iter()
+            .any(|line| line.contains("executable changed"))
     );
     Ok(())
 }
