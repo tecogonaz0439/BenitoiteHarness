@@ -52,6 +52,7 @@ pub const RESUME_MODE: &str =
 pub const INVALID_DOMAIN: &str = "Invalid web_fetch.allowed_domains entry. Use an ASCII domain name of at least two labels (punycode xn-- for international names), without a scheme, port, wildcard, or IP address.";
 
 pub const INVALID_BENITOITE_PATH: &str = "benitoite.path must be an absolute path";
+pub const INVALID_BUBBLEWRAP_PATH: &str = "sandbox.bubblewrap must be an absolute path";
 pub const INVALID_NETWORK: &str = "normal.network must be true, false, or \"proxy\".";
 pub const INVALID_NETWORK_DOMAIN: &str = "Invalid normal.allowed_domains entry. Use an ASCII domain name of at least two labels (punycode xn-- for international names), without a scheme, port, wildcard, or IP address.";
 pub const INVALID_TRUST_RECORD: &str =

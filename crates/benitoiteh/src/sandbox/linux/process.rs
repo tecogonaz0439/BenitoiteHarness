@@ -9,7 +9,7 @@ use std::os::unix::net::UnixStream;
 use std::path::Path;
 use std::process::{Child, Command, ExitStatus, Output, Stdio};
 
-use super::availability::{CapabilityStatus, check_bubblewrap};
+use super::availability::validated_bubblewrap;
 use super::mounts::{self, Cleanup};
 use crate::sandbox::run::StopSignal;
 use crate::sandbox::{SandboxCommand, SandboxError, SandboxStdin, policy, text};
@@ -43,7 +43,7 @@ pub struct SandboxChild {
 }
 
 impl SandboxCommand {
-    /// 固定の `/usr/bin/bwrap` での起動を準備する。
+    /// 既定の `/usr/bin/bwrap` での起動を準備する。
     /// `scratch` は、秘密のファイルを覆う空のファイルを置く、書ける場所の外のディレクトリ。
     /// `placeholders` は、書ける場所の外の、利用者だけが使える錠と記録のディレクトリ。
     pub fn prepare(
@@ -52,9 +52,23 @@ impl SandboxCommand {
         scratch: &Path,
         placeholders: &Path,
     ) -> Result<PreparedSandbox, SandboxError> {
-        if check_bubblewrap() != CapabilityStatus::Available {
-            return Err(SandboxError::Unavailable);
-        }
+        self.prepare_with_bubblewrap(
+            Path::new(crate::sandbox::DEFAULT_BUBBLEWRAP),
+            helper,
+            scratch,
+            placeholders,
+        )
+    }
+
+    /// 指定された `bwrap` のパスで起動を準備する。
+    pub fn prepare_with_bubblewrap(
+        &self,
+        bwrap: &Path,
+        helper: &Path,
+        scratch: &Path,
+        placeholders: &Path,
+    ) -> Result<PreparedSandbox, SandboxError> {
+        let bwrap = validated_bubblewrap(bwrap, &self.policy.config().writable)?;
         policy::canonical_path(&self.program)?;
         policy::canonical_path(&self.cwd)?;
         policy::directory(&self.cwd)?;
@@ -74,7 +88,7 @@ impl SandboxCommand {
         })?;
         let (control, inherited) = UnixStream::pair().map_err(SandboxError::Io)?;
         let plan = mounts::build(&self.policy, &self.cwd, scratch, placeholders)?;
-        let mut command = Command::new("/usr/bin/bwrap");
+        let mut command = Command::new(&bwrap);
         command
             .args(plan.args)
             .arg("--")

@@ -38,6 +38,7 @@ impl Fixture {
     fn context(&self) -> QueryContext {
         QueryContext {
             helper: PathBuf::new(),
+            bubblewrap: PathBuf::from(crate::sandbox::DEFAULT_BUBBLEWRAP),
             scratch: self.0.join("scratch"),
             placeholders: self.0.join("placeholders"),
             env: crate::config::child_environment(

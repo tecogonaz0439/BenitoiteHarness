@@ -49,7 +49,7 @@ fn prepare_with_trust(
             args,
             overrides,
             paths,
-            &mut check,
+            |helper, scratch, _| check(helper, scratch),
             QueryLauncher::TestDirect,
             StartupPrompts {
                 mode_change: confirm,
@@ -88,7 +88,13 @@ fn prepare_new(
     paths: &DataPaths,
     check: impl FnOnce(&Path, &Path) -> Result<(), SandboxError>,
 ) -> Result<Prepared, PreparationError> {
-    super::prepare_new(args, current, paths, check, QueryLauncher::TestDirect)
+    super::prepare_new(
+        args,
+        current,
+        paths,
+        |helper, scratch, _| check(helper, scratch),
+        QueryLauncher::TestDirect,
+    )
 }
 
 struct Fixture(PathBuf);
@@ -1645,7 +1651,7 @@ fn fork_resumes_with_current_safety_and_retains_copy_if_preparation_fails()
             &source.session,
             &paths,
             session::ForkTarget::Current,
-            |_, _| Ok(()),
+            |_, _, _| Ok(()),
             QueryLauncher::TestDirect,
         )
         .map_err(|e| e.to_string())?;
@@ -1686,7 +1692,7 @@ fn fork_resumes_with_current_safety_and_retains_copy_if_preparation_fails()
             &source.session,
             &paths,
             session::ForkTarget::BeforeRequest(last_request),
-            |_, _| Ok(()),
+            |_, _, _| Ok(()),
             QueryLauncher::TestDirect,
         )
         .map_err(|e| e.to_string())?;
@@ -1706,7 +1712,7 @@ fn fork_resumes_with_current_safety_and_retains_copy_if_preparation_fails()
             &source.session,
             &paths,
             session::ForkTarget::Current,
-            |_, _| Ok(()),
+            |_, _, _| Ok(()),
             QueryLauncher::TestDirect,
         )
         .err()
@@ -1808,7 +1814,7 @@ fn fork_after_returning_to_an_old_branch_keeps_the_current_destination()
         &current.session,
         &paths,
         session::ForkTarget::Current,
-        |_, _| Ok(()),
+        |_, _, _| Ok(()),
         QueryLauncher::TestDirect,
     )
     .map_err(|e| e.to_string())?;
@@ -1873,7 +1879,7 @@ fn fork_retains_copy_when_current_provider_was_removed() -> Result<(), Box<dyn E
         &source.session,
         &paths,
         session::ForkTarget::Current,
-        |_, _| Ok(()),
+        |_, _, _| Ok(()),
         QueryLauncher::TestDirect,
     )
     .err()
@@ -1960,7 +1966,7 @@ fn fork_preparation_reuses_the_locked_session_and_cached_resume_state() -> Resul
         &args,
         Some(&fixed),
         &paths,
-        |_, _| {
+        |_, _, _| {
             assert!(matches!(
                 Session::open(&paths, &id),
                 Err(SessionError::Locked)
@@ -2180,7 +2186,7 @@ fn restricted_changed_processor_denies_noninteractive_and_requires_confirmation(
         &args,
         None,
         &paths,
-        |_, _| Ok(()),
+        |_, _, _| Ok(()),
         QueryLauncher::TestDirect,
         StartupPrompts {
             mode_change: &mut mode_change,
@@ -2217,7 +2223,7 @@ fn restricted_changed_processor_denies_noninteractive_and_requires_confirmation(
         &args,
         None,
         &paths,
-        |_, _| Ok(()),
+        |_, _, _| Ok(()),
         QueryLauncher::TestDirect,
         StartupPrompts {
             mode_change: &mut mode_change,
@@ -2241,7 +2247,7 @@ fn restricted_changed_processor_denies_noninteractive_and_requires_confirmation(
         &args,
         None,
         &paths,
-        |_, _| Ok(()),
+        |_, _, _| Ok(()),
         QueryLauncher::TestDirect,
         StartupPrompts {
             mode_change: &mut mode_change,

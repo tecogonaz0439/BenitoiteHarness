@@ -28,7 +28,8 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use benitoiteh::sandbox::{
     CapabilityStatus, PolicyConfig, PreparedSandbox, ProgramAccess, ReadAccess, SandboxChild,
-    SandboxCommand, SandboxError, SandboxPolicy, SandboxStdin, probe_linux,
+    SandboxCommand, SandboxError, SandboxPolicy, SandboxStdin, bubblewrap_version, probe_linux,
+    probe_linux_with_bubblewrap,
 };
 
 type TestResult = Result<(), Box<dyn Error>>;
@@ -2058,5 +2059,130 @@ fn normal_sandbox_has_no_controlling_terminal() -> TestResult {
             "sandbox child wrote to the controlling terminal"
         );
     }
+    Ok(())
+}
+
+// 作成時の関門: 非 FHS 配布物向けに利用者設定の bubblewrap 明示パス（シンボリックリンク解決を含む）を許し、
+// 書ける場所の中・非通常ファイル・古い版・存在しないパスの拒否を確かめる（BH-094）。
+#[test]
+fn explicit_bubblewrap_path_runs_via_symlink_and_rejects_writable_or_invalid() -> TestResult {
+    let f = Fixture::new()?;
+    let bwrap_link = f.root.join("custom-bwrap");
+    symlink("/usr/bin/bwrap", &bwrap_link)?;
+    assert!(
+        bubblewrap_version(&bwrap_link).is_ok_and(|version| version.starts_with("bubblewrap "))
+    );
+    let availability = probe_linux_with_bubblewrap(&bwrap_link, &f.helper, &f.root)?;
+    assert_eq!(availability.bubblewrap, CapabilityStatus::Available);
+    assert_eq!(availability.user_namespaces, CapabilityStatus::Available);
+    assert_eq!(availability.landlock_v3, CapabilityStatus::Available);
+    assert_eq!(availability.seccomp, CapabilityStatus::Available);
+    assert_eq!(availability.capabilities, CapabilityStatus::Available);
+
+    let placeholders = f.root.join("placeholders");
+    fs::create_dir(&placeholders)?;
+    fs::set_permissions(&placeholders, fs::Permissions::from_mode(0o700))?;
+    let output = SandboxCommand {
+        policy: SandboxPolicy::new(f.config())?,
+        program: f.probe.clone(),
+        args: vec![OsString::from("socketpair")],
+        cwd: f.writable.clone(),
+        env: BTreeMap::new(),
+        stdin: SandboxStdin::Null,
+    }
+    .prepare_with_bubblewrap(&bwrap_link, &f.helper, &f.root, &placeholders)?
+    .spawn()?
+    .wait_with_output()?;
+    check(&output, 0, "custom symlink bwrap");
+
+    let writable_link = f.writable.join("bwrap");
+    symlink("/usr/bin/bwrap", &writable_link)?;
+    let writable_error = SandboxCommand {
+        policy: SandboxPolicy::new(f.config())?,
+        program: f.probe.clone(),
+        args: vec![OsString::from("socketpair")],
+        cwd: f.writable.clone(),
+        env: BTreeMap::new(),
+        stdin: SandboxStdin::Null,
+    }
+    .prepare_with_bubblewrap(&writable_link, &f.helper, &f.root, &placeholders);
+    assert!(matches!(
+        writable_error,
+        Err(SandboxError::InvalidPolicy(reason)) if reason.contains("writable root")
+    ));
+
+    let dir_bwrap = f.root.join("dir-bwrap");
+    fs::create_dir(&dir_bwrap)?;
+    assert!(matches!(
+        bubblewrap_version(&dir_bwrap),
+        Err(CapabilityStatus::Unavailable(reason)) if reason.contains("regular file")
+    ));
+
+    let missing_bwrap = f.root.join("missing-bwrap");
+    assert!(matches!(
+        bubblewrap_version(&missing_bwrap),
+        Err(CapabilityStatus::Unavailable(_))
+    ));
+
+    let old_bwrap = f.root.join("old-bwrap");
+    fs::write(&old_bwrap, "#!/bin/sh\necho 'bubblewrap 0.7.9'\n")?;
+    fs::set_permissions(&old_bwrap, fs::Permissions::from_mode(0o755))?;
+    assert!(matches!(
+        bubblewrap_version(&old_bwrap),
+        Err(CapabilityStatus::Unavailable(reason)) if reason.contains("0.8.0 or newer")
+    ));
+    assert!(matches!(
+        SandboxCommand {
+            policy: SandboxPolicy::new(f.config())?,
+            program: f.probe.clone(),
+            args: vec![OsString::from("socketpair")],
+            cwd: f.writable.clone(),
+            env: BTreeMap::new(),
+            stdin: SandboxStdin::Null,
+        }
+        .prepare_with_bubblewrap(&old_bwrap, &f.helper, &f.root, &placeholders),
+        Err(SandboxError::Unavailable)
+    ));
+    Ok(())
+}
+
+// 作成時の関門: 利用者設定 [sandbox].bubblewrap を doctor と実起動に繋ぎ、設定経路を保つ。
+#[cfg(target_arch = "x86_64")]
+#[test]
+fn doctor_uses_configured_bubblewrap_path() -> TestResult {
+    let fixture = doctor_support::Fixture::new()?;
+    let custom_dir = fixture.root.join("nix-bin");
+    fs::create_dir(&custom_dir)?;
+    let custom_bwrap = custom_dir.join("bwrap");
+    symlink("/usr/bin/bwrap", &custom_bwrap)?;
+    fixture.write_config(&format!(
+        "default_provider = 'local'\n[providers.local]\nkind = 'openai-chat'\nbase_url = 'http://127.0.0.1:1/v1'\nmodel = 'local'\ncontext_window = 4096\n[benitoite]\npath = '{}'\n[sandbox]\nbubblewrap = '{}'\n",
+        processor::benitoite()?.display(),
+        custom_bwrap.display()
+    ))?;
+    let output = fixture.command().arg("--json").output()?;
+    assert_eq!(output.status.code(), Some(0), "{output:?}");
+    let rows = String::from_utf8(output.stdout)?
+        .lines()
+        .map(serde_json::from_str::<serde_json::Value>)
+        .collect::<Result<Vec<_>, _>>()?;
+    let bwrap_item = rows
+        .iter()
+        .find(|row| {
+            row.get("name").and_then(serde_json::Value::as_str) == Some("sandbox.bubblewrap")
+        })
+        .ok_or("Missing sandbox.bubblewrap item")?;
+    let detail = bwrap_item
+        .get("detail")
+        .and_then(serde_json::Value::as_str)
+        .ok_or("Missing detail")?;
+    assert!(
+        detail.starts_with(&format!("{}: bubblewrap ", custom_bwrap.display())),
+        "{detail}"
+    );
+    assert_eq!(
+        bwrap_item.get("status"),
+        Some(&serde_json::Value::from("ok"))
+    );
     Ok(())
 }

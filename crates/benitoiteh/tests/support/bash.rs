@@ -100,6 +100,7 @@ impl Fixture {
             policy,
             policy_name: (sandbox != Sandbox::DangerFullAccess).then_some(sandbox.name()),
             helper: fs::canonicalize(env!("CARGO_BIN_EXE_benitoiteh"))?,
+            bubblewrap: PathBuf::from(benitoiteh::sandbox::DEFAULT_BUBBLEWRAP),
             scratch: session.directory().join("sandbox"),
             placeholders: paths.data_dir.join("placeholders"),
             env,

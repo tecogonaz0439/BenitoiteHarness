@@ -268,7 +268,7 @@ pub(super) fn prepare(
     args: &ExecArgs,
     overrides: Option<&SessionOverrides>,
     paths: &DataPaths,
-    check_sandbox: impl FnOnce(&Path, &Path) -> Result<(), SandboxError>,
+    check_sandbox: impl FnOnce(&Path, &Path, &Path) -> Result<(), SandboxError>,
     query_launcher: QueryLauncher,
     prompts: StartupPrompts<'_>,
 ) -> Result<Prepared, PreparationError> {
@@ -567,11 +567,12 @@ pub(super) fn prepare(
         let scratch = private_directory(&session.directory().join("sandbox"))?;
         let placeholders = private_directory(&paths.data_dir.join("placeholders"))?;
         let candidates = super::denied_candidates(paths);
+        let bubblewrap = user.sandbox.bubblewrap_path().to_path_buf();
         let fixed_disabled = overrides.is_some_and(|fixed| fixed.sandbox_disabled);
         let availability = if fixed_disabled {
             Ok(())
         } else {
-            check_sandbox(&helper, &scratch)
+            check_sandbox(&helper, &scratch, &bubblewrap)
         };
         let selected = args.sandbox.unwrap_or(user.normal.sandbox);
         if (resolved.mode == Mode::Restricted
@@ -604,6 +605,7 @@ pub(super) fn prepare(
                 std::env::var_os("PATH").as_deref(),
                 QueryContext {
                     helper: helper.clone(),
+                    bubblewrap: bubblewrap.clone(),
                     scratch: scratch.clone(),
                     placeholders: placeholders.clone(),
                     env: child_environment(
@@ -750,6 +752,7 @@ pub(super) fn prepare(
                 policy,
                 policy_name,
                 helper: helper.clone(),
+                bubblewrap: bubblewrap.clone(),
                 scratch: scratch.clone(),
                 placeholders: placeholders.clone(),
                 env,
@@ -838,6 +841,7 @@ pub(super) fn prepare(
         if image_helper_available {
             context = context.with_image_helper(crate::tools::ImageHelperContext {
                 helper: helper.clone(),
+                bubblewrap: bubblewrap.clone(),
                 scratch: scratch.clone(),
                 placeholders: placeholders.clone(),
                 #[cfg(test)]
@@ -863,6 +867,7 @@ pub(super) fn prepare(
                 test_timeout: std::time::Duration::from_secs(120),
                 processor: processor.path.clone(),
                 helper: helper.clone(),
+                bubblewrap,
                 scratch: scratch.clone(),
                 placeholders: placeholders.clone(),
                 env: child_environment(
@@ -1029,7 +1034,7 @@ pub(super) fn run(args: ExecArgs) -> Result<u8, CliError> {
             None,
             &DataPaths::from_env()
                 .map_err(|error| CliError::Startup(StartupError::Config(error)))?,
-            sandbox::check_availability,
+            sandbox::check_availability_with_bubblewrap,
             QueryLauncher::Sandboxed,
             prompts,
         )
@@ -1268,7 +1273,7 @@ pub(super) fn prepare_new(
     original: &ExecArgs,
     current: &crate::agent::AgentStatus,
     paths: &DataPaths,
-    check_sandbox: impl FnOnce(&Path, &Path) -> Result<(), SandboxError>,
+    check_sandbox: impl FnOnce(&Path, &Path, &Path) -> Result<(), SandboxError>,
     query_launcher: QueryLauncher,
 ) -> Result<Prepared, PreparationError> {
     let mut args = original.clone();
@@ -1295,7 +1300,7 @@ pub(super) fn prepare_fork(
     source: &Session,
     paths: &DataPaths,
     target: session::ForkTarget,
-    check_sandbox: impl FnOnce(&Path, &Path) -> Result<(), SandboxError>,
+    check_sandbox: impl FnOnce(&Path, &Path, &Path) -> Result<(), SandboxError>,
     query_launcher: QueryLauncher,
 ) -> Result<(Prepared, Option<String>), PreparationError> {
     let session::ForkedSession {

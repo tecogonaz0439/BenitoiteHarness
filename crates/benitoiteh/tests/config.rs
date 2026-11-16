@@ -1018,10 +1018,29 @@ fn askpass_is_enabled_by_default_and_only_user_config_can_disable_it() -> TestRe
         "[secrets]\naskpass = false",
         "[secrets]\npass_env = ['GITHUB_TOKEN']",
         "[environment]\nrules = ['allow *']",
+        "[sandbox]\nbubblewrap = '/usr/bin/bwrap'",
     ] {
         fs::write(project.join(".benitoiteh/config.toml"), input)?;
         let loaded = ProjectConfig::load(&benitoiteh::safe_fs::ScopeRoot::open(&project)?);
         assert!(loaded.read && loaded.error.is_some(), "{input}");
+    }
+    assert_eq!(
+        UserConfig::parse("")?.sandbox.bubblewrap_path(),
+        Path::new("/usr/bin/bwrap")
+    );
+    assert_eq!(
+        UserConfig::parse("[sandbox]\nbubblewrap = '/nix/store/demo/bin/bwrap'\n")?
+            .sandbox
+            .bubblewrap_path(),
+        Path::new("/nix/store/demo/bin/bwrap")
+    );
+    for invalid in [
+        "[sandbox]\nbubblewrap = ''\n",
+        "[sandbox]\nbubblewrap = 'bwrap'\n",
+        "[sandbox]\nbubblewrap = './bwrap'\n",
+        "[sandbox]\nunknown = true\n",
+    ] {
+        assert!(UserConfig::parse(invalid).is_err(), "{invalid}");
     }
     Ok(())
 }

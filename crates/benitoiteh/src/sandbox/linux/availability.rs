@@ -3,10 +3,10 @@
 use std::collections::BTreeMap;
 use std::fs::{self, DirBuilder};
 use std::io;
-use std::os::unix::fs::{DirBuilderExt, PermissionsExt};
-use std::path::Path;
+use std::os::unix::fs::{DirBuilderExt, MetadataExt, PermissionsExt};
+use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
-use std::sync::OnceLock;
+use std::sync::{Mutex, OnceLock, PoisonError};
 
 use crate::sandbox::{
     PolicyConfig, SandboxCommand, SandboxError, SandboxPolicy, SandboxStdin, policy, text,
@@ -38,48 +38,122 @@ pub struct LinuxAvailability {
     pub capabilities: CapabilityStatus,
 }
 
-/// 固定の bubblewrap の権限と版を確認し、プロセス内で結果を共有する。
-pub(super) fn check_bubblewrap() -> CapabilityStatus {
-    match bubblewrap_version() {
+#[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
+struct BwrapCacheKey {
+    path: PathBuf,
+    dev: u64,
+    ino: u64,
+    size: u64,
+    mtime: i64,
+    mtime_nsec: i64,
+    mode: u32,
+}
+
+const MAX_BWRAP_CACHE: usize = 64;
+
+/// 指定された bubblewrap の権限と版を確認し、変更がなければプロセス内で結果を共有する。
+pub(super) fn check_bubblewrap(bwrap: &Path) -> CapabilityStatus {
+    match bubblewrap_version(bwrap) {
         Ok(_) => CapabilityStatus::Available,
         Err(status) => status,
     }
 }
 
-/// 固定の bubblewrap の権限と最低の版を検査し、版の表示と起動で結果を共用する。
-pub fn bubblewrap_version() -> Result<String, CapabilityStatus> {
-    static VERSION: OnceLock<Result<String, CapabilityStatus>> = OnceLock::new();
-    VERSION
-        .get_or_init(|| {
-            let unavailable = |error: io::Error| CapabilityStatus::Unavailable(error.to_string());
-            let metadata = fs::metadata("/usr/bin/bwrap").map_err(unavailable)?;
-            let mode = check_bubblewrap_mode(metadata.permissions().mode());
-            if mode != CapabilityStatus::Available {
-                return Err(mode);
+/// 指定された bubblewrap の権限と最低の版を検査し、版の表示と起動で結果を共用する。
+pub fn bubblewrap_version(bwrap: &Path) -> Result<String, CapabilityStatus> {
+    if !bwrap.is_absolute() {
+        return Err(CapabilityStatus::Unavailable(
+            text::INVALID_BUBBLEWRAP_PATH.to_owned(),
+        ));
+    }
+    let unavailable = |error: io::Error| CapabilityStatus::Unavailable(error.to_string());
+    let metadata = fs::metadata(bwrap).map_err(unavailable)?;
+    if !metadata.is_file() {
+        return Err(CapabilityStatus::Unavailable(
+            text::NOT_REGULAR_BUBBLEWRAP.to_owned(),
+        ));
+    }
+    let mode = check_bubblewrap_mode(metadata.permissions().mode());
+    if mode != CapabilityStatus::Available {
+        return Err(mode);
+    }
+    let canonical = fs::canonicalize(bwrap).map_err(unavailable)?;
+    let key = BwrapCacheKey {
+        path: canonical.clone(),
+        dev: metadata.dev(),
+        ino: metadata.ino(),
+        size: metadata.size(),
+        mtime: metadata.mtime(),
+        mtime_nsec: metadata.mtime_nsec(),
+        mode: metadata.permissions().mode(),
+    };
+    static VERSIONS: OnceLock<Mutex<BTreeMap<BwrapCacheKey, Result<String, CapabilityStatus>>>> =
+        OnceLock::new();
+    let cache = VERSIONS.get_or_init(|| Mutex::new(BTreeMap::new()));
+    if let Some(cached) = cache
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+        .get(&key)
+        .cloned()
+    {
+        return cached;
+    }
+    let result = (|| {
+        let output = Command::new(&canonical)
+            .arg("--version")
+            .env_clear()
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .output()
+            .map_err(unavailable)?;
+        if !output.status.success() {
+            return Err(CapabilityStatus::Unavailable(
+                text::bubblewrap_version_failed(bwrap, output.status, &output.stderr),
+            ));
+        }
+        match check_bubblewrap_version(&output.stdout) {
+            CapabilityStatus::Available => Ok(String::from_utf8_lossy(&output.stdout)
+                .trim_end()
+                .to_owned()),
+            status @ (CapabilityStatus::Unavailable(_) | CapabilityStatus::NotChecked) => {
+                Err(status)
             }
-            let output = Command::new("/usr/bin/bwrap")
-                .arg("--version")
-                .env_clear()
-                .stdin(Stdio::null())
-                .stdout(Stdio::piped())
-                .stderr(Stdio::piped())
-                .output()
-                .map_err(unavailable)?;
-            if !output.status.success() {
-                return Err(CapabilityStatus::Unavailable(
-                    text::bubblewrap_version_failed(output.status, &output.stderr),
-                ));
-            }
-            match check_bubblewrap_version(&output.stdout) {
-                CapabilityStatus::Available => Ok(String::from_utf8_lossy(&output.stdout)
-                    .trim_end()
-                    .to_owned()),
-                status @ (CapabilityStatus::Unavailable(_) | CapabilityStatus::NotChecked) => {
-                    Err(status)
-                }
-            }
-        })
-        .clone()
+        }
+    })();
+    let mut guard = cache.lock().unwrap_or_else(PoisonError::into_inner);
+    if guard.len() >= MAX_BWRAP_CACHE {
+        guard.clear();
+    }
+    guard.insert(key, result.clone());
+    result
+}
+
+/// 起動直前に bubblewrap の正規パス・権限・書ける場所との非重複を確かめる。
+pub(super) fn validated_bubblewrap(
+    bwrap: &Path,
+    writable: &[PathBuf],
+) -> Result<PathBuf, SandboxError> {
+    if !bwrap.is_absolute() {
+        return Err(SandboxError::InvalidPolicy(text::INVALID_BUBBLEWRAP_PATH));
+    }
+    if check_bubblewrap(bwrap) != CapabilityStatus::Available {
+        return Err(SandboxError::Unavailable);
+    }
+    let canonical = fs::canonicalize(bwrap).map_err(SandboxError::Io)?;
+    let metadata = fs::metadata(&canonical).map_err(SandboxError::Io)?;
+    if !metadata.is_file()
+        || check_bubblewrap_mode(metadata.permissions().mode()) != CapabilityStatus::Available
+    {
+        return Err(SandboxError::Unavailable);
+    }
+    if writable
+        .iter()
+        .any(|root| canonical.starts_with(root) || bwrap.starts_with(root))
+    {
+        return Err(SandboxError::InvalidPolicy(text::WRITABLE_BUBBLEWRAP));
+    }
+    Ok(canonical)
 }
 
 fn check_bubblewrap_mode(mode: u32) -> CapabilityStatus {
@@ -117,10 +191,23 @@ fn check_bubblewrap_version(stdout: &[u8]) -> CapabilityStatus {
     }
 }
 
+/// 既定の `/usr/bin/bwrap` を使い、補助の実行ファイル自身を `--version` で起動して確かめる。
+pub fn probe_linux(helper: &Path, scratch: &Path) -> Result<LinuxAvailability, SandboxError> {
+    probe_linux_with_bubblewrap(
+        Path::new(crate::sandbox::DEFAULT_BUBBLEWRAP),
+        helper,
+        scratch,
+    )
+}
+
 /// 一時ディレクトリだけを書ける場所として、補助の実行ファイル自身を `--version` で起動する。
 /// `scratch` は一時ディレクトリを排他に作れる、実の絶対パスのディレクトリ。
-pub fn probe_linux(helper: &Path, scratch: &Path) -> Result<LinuxAvailability, SandboxError> {
-    let bubblewrap = check_bubblewrap();
+pub fn probe_linux_with_bubblewrap(
+    bwrap: &Path,
+    helper: &Path,
+    scratch: &Path,
+) -> Result<LinuxAvailability, SandboxError> {
+    let bubblewrap = check_bubblewrap(bwrap);
     if bubblewrap != CapabilityStatus::Available {
         return Ok(bubblewrap_failure(bubblewrap));
     }
@@ -147,7 +234,7 @@ pub fn probe_linux(helper: &Path, scratch: &Path) -> Result<LinuxAvailability, S
             env: BTreeMap::new(),
             stdin: SandboxStdin::Null,
         }
-        .prepare(helper, scratch, &placeholders)?;
+        .prepare_with_bubblewrap(bwrap, helper, scratch, &placeholders)?;
         match sandbox.output() {
             Ok(output) => classify(
                 output.status.code(),

@@ -226,6 +226,22 @@ pub struct BenitoiteConfig {
     pub path: Option<PathBuf>,
 }
 
+/// サンドボックスの実行ファイルなど、利用者だけが定める場所の設定（設計書 03-02、BH-094）。
+#[derive(Clone, Debug, Default, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct SandboxConfig {
+    pub bubblewrap: Option<PathBuf>,
+}
+
+impl SandboxConfig {
+    /// 設定された bubblewrap のパス、または既定の `/usr/bin/bwrap` を返す。
+    pub fn bubblewrap_path(&self) -> &Path {
+        self.bubblewrap
+            .as_deref()
+            .unwrap_or_else(|| Path::new(crate::sandbox::DEFAULT_BUBBLEWRAP))
+    }
+}
+
 /// 制限モードで利用者だけが広げられる範囲。
 #[derive(Clone, Debug, Deserialize)]
 #[serde(default, deny_unknown_fields)]
@@ -481,6 +497,7 @@ pub struct UserConfig {
     pub default_provider: Option<String>,
     pub providers: BTreeMap<String, ProviderConfig>,
     pub benitoite: BenitoiteConfig,
+    pub sandbox: SandboxConfig,
     pub restricted: RestrictedConfig,
     pub normal: NormalConfig,
     pub limits: Limits,
@@ -547,6 +564,14 @@ impl UserConfig {
             .is_some_and(|path| !path.is_absolute())
         {
             return Err(ConfigError::Invalid(text::INVALID_BENITOITE_PATH));
+        }
+        if config
+            .sandbox
+            .bubblewrap
+            .as_ref()
+            .is_some_and(|path| !path.is_absolute())
+        {
+            return Err(ConfigError::Invalid(text::INVALID_BUBBLEWRAP_PATH));
         }
         for effect in &config.restricted.scratch_auto_effects {
             if !matches!(

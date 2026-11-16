@@ -106,7 +106,12 @@ pub(super) fn prepare(
     #[cfg(target_os = "linux")]
     {
         command
-            .prepare(&run.helper, &run.scratch, &run.placeholders)
+            .prepare_with_bubblewrap(
+                &run.bubblewrap,
+                &run.helper,
+                &run.scratch,
+                &run.placeholders,
+            )
             .map(Into::into)
     }
     #[cfg(not(target_os = "linux"))]
