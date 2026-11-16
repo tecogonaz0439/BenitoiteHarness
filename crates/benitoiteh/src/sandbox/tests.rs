@@ -10,10 +10,10 @@ use super::{PolicyConfig, ProgramAccess, ReadAccess, SandboxPolicy};
 
 type TestResult = Result<(), Box<dyn Error>>;
 
-// 関門: 実測した三名の欠落と、sysctl 全体・接頭辞・未確認の名前への許可の拡大を捕まえる。
-// OS での sort の動作は sandbox_macos の通常モードの正負の対照が確かめる。
+// 関門: 実測した四名の欠落と、sysctl 全体・接頭辞・未確認の名前や非通信時の IPC/Mach への拡大を捕まえる。
+// OS での動作は sandbox_macos の正負の対照が確かめる。
 #[test]
-fn seatbelt_allows_only_the_three_measured_sysctl_names() -> TestResult {
+fn seatbelt_allows_only_the_measured_sysctls_and_scoped_network_exceptions() -> TestResult {
     let profile = SandboxPolicy::new(PolicyConfig::without_writable())?.seatbelt_profile();
     let mut rules: Vec<_> = profile
         .source
@@ -25,12 +25,56 @@ fn seatbelt_allows_only_the_three_measured_sysctl_names() -> TestResult {
         rules,
         [
             "(allow sysctl-read (sysctl-name \"hw.memsize\"))",
+            "(allow sysctl-read (sysctl-name \"hw.ncpu\"))",
             "(allow sysctl-read (sysctl-name \"hw.pagesize\"))",
             "(allow sysctl-read (sysctl-name \"hw.pagesize_compat\"))",
         ],
         "{}",
         profile.source
     );
+    assert!(
+        !profile
+            .source
+            .lines()
+            .any(|line| !line.trim_start().starts_with(';') && line.contains("mach-lookup")),
+        "{}",
+        profile.source
+    );
+    assert!(
+        !profile
+            .source
+            .lines()
+            .any(|line| !line.trim_start().starts_with(';') && line.contains("mDNSResponder")),
+        "{}",
+        profile.source
+    );
+    let mut online = PolicyConfig::without_writable();
+    online.allow_ip = true;
+    let online_profile = SandboxPolicy::new(online)?.seatbelt_profile();
+    assert!(
+        online_profile
+            .source
+            .contains("(allow network-outbound (literal \"/private/var/run/mDNSResponder\"))")
+    );
+    assert!(online_profile.source.contains(
+        "(allow mach-lookup (global-name \"com.apple.trustd\") (global-name \"com.apple.trustd.agent\") (global-name \"com.apple.TrustEvaluationAgent\"))"
+    ));
+    let mut proxy_only = PolicyConfig::without_writable();
+    proxy_only.allow_loopback_port = std::num::NonZeroU16::new(12345);
+    #[cfg(not(target_os = "macos"))]
+    assert!(SandboxPolicy::new(proxy_only).is_err());
+    #[cfg(target_os = "macos")]
+    {
+        let proxy_profile = SandboxPolicy::new(proxy_only)?.seatbelt_profile();
+        assert!(
+            !proxy_profile.source.contains("mDNSResponder"),
+            "{}",
+            proxy_profile.source
+        );
+        assert!(proxy_profile.source.contains(
+            "(allow mach-lookup (global-name \"com.apple.trustd\") (global-name \"com.apple.trustd.agent\") (global-name \"com.apple.TrustEvaluationAgent\"))"
+        ));
+    }
     Ok(())
 }
 

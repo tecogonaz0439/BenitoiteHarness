@@ -262,6 +262,33 @@ fn normal_sort_is_warning_free_with_the_measured_sysctls() -> TestResult {
         assert!(stderr.contains("sysconf pages"), "{control:?}");
         assert!(stderr.contains("Operation not permitted"), "{control:?}");
     }
+    let f = Fixture::new(false)?;
+    f.run(f.config(), &[OsStr::new("available-parallelism")], 0)?;
+    let mut removed_ncpu = SandboxPolicy::new(f.config())?.seatbelt_profile();
+    let ncpu_rule = "(allow sysctl-read (sysctl-name \"hw.ncpu\"))\n";
+    assert!(
+        removed_ncpu.source.contains(ncpu_rule),
+        "{}",
+        removed_ncpu.source
+    );
+    removed_ncpu.source = removed_ncpu.source.replace(ncpu_rule, "");
+    let mut control =
+        benitoiteh::sandbox::session::command(helper, Path::new("/usr/bin/sandbox-exec"));
+    control.arg("-p").arg(removed_ncpu.source);
+    for (name, value) in removed_ncpu.parameters {
+        let mut argument = OsString::from(format!("-D{name}="));
+        argument.push(value);
+        control.arg(argument);
+    }
+    let control = control
+        .arg("--")
+        .arg(&f.probe)
+        .arg("available-parallelism")
+        .current_dir(&f.root)
+        .env_clear()
+        .stdin(Stdio::null())
+        .output()?;
+    assert_eq!(control.status.code(), Some(10), "{control:?}");
     Ok(())
 }
 
@@ -725,6 +752,27 @@ fn external_unix_ipc_is_denied_with_and_without_ip_permission() -> TestResult {
         )?;
         f.run(config, &[OsStr::new("socketpair")], 0)?;
     }
+    let resolver = Path::new("/private/var/run/mDNSResponder");
+    assert!(resolver.exists(), "missing /private/var/run/mDNSResponder");
+    f.run(
+        f.config(),
+        &[OsStr::new("unix-connect"), resolver.as_os_str()],
+        10,
+    )?;
+    let mut proxied = f.config();
+    proxied.allow_loopback_port = std::num::NonZeroU16::new(12345);
+    f.run(
+        proxied,
+        &[OsStr::new("unix-connect"), resolver.as_os_str()],
+        10,
+    )?;
+    let mut online = f.config();
+    online.allow_ip = true;
+    f.run(
+        online,
+        &[OsStr::new("unix-connect"), resolver.as_os_str()],
+        0,
+    )?;
     let mut buffer = [0_u8; 16];
     assert!(matches!(
         listener.accept(),

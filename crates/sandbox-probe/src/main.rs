@@ -190,6 +190,7 @@ fn run(operation: &OsStr, args: &[OsString]) -> io::Result<Option<u8>> {
             std::io::stdout().write_all(&response)
         }
         ("socketpair", []) => UnixStream::pair().map(|_| ()),
+        ("available-parallelism", []) => std::thread::available_parallelism().map(|_| ()),
         ("socketpair-send", [path]) => {
             let address = rustix::net::SocketAddrUnix::new(path)
                 .map_err(|error| io::Error::new(io::ErrorKind::InvalidInput, error))?;
