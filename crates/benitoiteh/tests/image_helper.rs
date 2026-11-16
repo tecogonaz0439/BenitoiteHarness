@@ -287,6 +287,158 @@ fn icc_and_decoded_pixels_have_independent_allocation_limits() -> TestResult {
 }
 
 #[test]
+fn malformed_and_adversarial_png_and_jpeg_inputs_never_panic_or_leak_stdout() -> TestResult {
+    let helper = Helper::new()?;
+    let assert_rejected = |label: &str, bytes: &[u8], args: &[&str; 3]| -> TestResult {
+        let output = helper.run(bytes, args)?;
+        if output.status.success() {
+            return Err(format!("{label}: unexpectedly succeeded").into());
+        }
+        rejected(&output, "decode");
+        Ok(())
+    };
+
+    // 1. Truncated and malformed PNG inputs (IHDR, IDAT, interlaced 16-bit RGBA, huge chunk len).
+    let valid_png = png(&DynamicImage::ImageRgb8(RgbImage::from_pixel(
+        32,
+        24,
+        Rgb([64, 128, 192]),
+    )))?;
+    for cutoff in [12usize, 33, 45, valid_png.len().saturating_sub(15)] {
+        let truncated = valid_png.get(..cutoff).ok_or("png cutoff")?;
+        assert_rejected(
+            &format!("png truncate {cutoff}"),
+            truncated,
+            &["png", "32", "24"],
+        )?;
+    }
+
+    // Truncated IEND CRC (after IDAT has completed) decodes cleanly with valid output.
+    let truncated_iend = valid_png
+        .get(..valid_png.len().saturating_sub(4))
+        .ok_or("png iend cutoff")?;
+    converted(
+        &helper.run(truncated_iend, &["png", "32", "24"])?,
+        "image/jpeg",
+        (32, 24),
+        (32, 24),
+    )?;
+
+    // Corrupt iCCP chunk payload (invalid zlib stream) must fail decode cleanly.
+    let mut corrupt_iccp = valid_png.get(..33).ok_or("png prefix")?.to_vec();
+    corrupt_iccp.extend(png_chunk(b"iCCP", b"icc\0\0\xff\xff\x00\x01")?);
+    corrupt_iccp.extend(valid_png.get(33..).ok_or("png tail")?);
+    assert_rejected("png corrupt iCCP", &corrupt_iccp, &["png", "32", "24"])?;
+
+    // Malformed eXIf chunk is ignored gracefully without panicking and still converts validly.
+    let mut corrupt_exif_png = valid_png.get(..33).ok_or("png prefix")?.to_vec();
+    corrupt_exif_png.extend(png_chunk(b"eXIf", b"MM\0\x2a\0\0\0\x08\xff\xff")?);
+    corrupt_exif_png.extend(valid_png.get(33..).ok_or("png tail")?);
+    converted(
+        &helper.run(&corrupt_exif_png, &["png", "32", "24"])?,
+        "image/jpeg",
+        (32, 24),
+        (32, 24),
+    )?;
+
+    // Interlaced 16-bit RGBA PNG with truncated IDAT payload.
+    let mut ihdr_interlaced = 8_u32.to_be_bytes().to_vec();
+    ihdr_interlaced.extend(8_u32.to_be_bytes());
+    ihdr_interlaced.extend([16, 6, 0, 0, 1]);
+    let mut interlaced = b"\x89PNG\r\n\x1a\n".to_vec();
+    interlaced.extend(png_chunk(b"IHDR", &ihdr_interlaced)?);
+    interlaced.extend(png_chunk(b"IDAT", &[0x78, 0x9c, 0x63])?);
+    interlaced.extend(png_chunk(b"IEND", &[])?);
+    assert_rejected(
+        "png interlaced truncated idat",
+        &interlaced,
+        &["png", "8", "8"],
+    )?;
+
+    // Bogus huge chunk length (u32::MAX) after IHDR.
+    let mut huge_chunk = valid_png.get(..33).ok_or("png prefix")?.to_vec();
+    huge_chunk.extend(u32::MAX.to_be_bytes());
+    huge_chunk.extend_from_slice(b"IDAT\x78\x9c\x00\x00");
+    assert_rejected("png u32 max chunk", &huge_chunk, &["png", "32", "24"])?;
+
+    // Extreme u32::MAX width IHDR.
+    assert_rejected(
+        "png u32 max width",
+        &png_header(u32::MAX, 1),
+        &["png", "4294967295", "1"],
+    )?;
+
+    // 2. Truncated and adversarial JPEG inputs (SOF0, progressive SOF2, DHT/DQT, corrupt EXIF).
+    let mut valid_jpeg = Vec::new();
+    DynamicImage::ImageRgb8(RgbImage::from_pixel(40, 28, Rgb([200, 100, 50])))
+        .write_with_encoder(JpegEncoder::new_with_quality(&mut valid_jpeg, 80))?;
+    let half_jpeg = valid_jpeg.len().div_ceil(2);
+    for (label, jpeg_case) in [
+        ("jpeg soi only", vec![0xff, 0xd8]),
+        (
+            "jpeg truncated sof0",
+            vec![0xff, 0xd8, 0xff, 0xc0, 0x00, 0x0b],
+        ),
+        (
+            "jpeg half scan",
+            valid_jpeg.get(..half_jpeg).ok_or("half jpeg")?.to_vec(),
+        ),
+        (
+            "jpeg sof2 4comp",
+            vec![
+                0xff, 0xd8, 0xff, 0xc2, 0x00, 0x14, 0x08, 0x00, 0x10, 0x00, 0x10, 0x04, 0x01, 0x11,
+                0x00, 0x02, 0x11, 0x00, 0x03, 0x11, 0x00, 0x04, 0x11, 0x00, 0xff, 0xda, 0x00, 0x08,
+                0x01, 0x01, 0x00, 0x00, 0x3f, 0x00, 0xaa, 0xbb, 0xff, 0xd9,
+            ],
+        ),
+        (
+            "jpeg bad dht",
+            vec![0xff, 0xd8, 0xff, 0xc4, 0x00, 0x04, 0xff, 0xff, 0xff, 0xd9],
+        ),
+        (
+            "jpeg bad dqt",
+            vec![0xff, 0xd8, 0xff, 0xdb, 0x00, 0x04, 0xff, 0xff, 0xff, 0xd9],
+        ),
+        (
+            "jpeg 65535x65535 mismatch",
+            vec![
+                0xff, 0xd8, 0xff, 0xc0, 0x00, 0x11, 0x08, 0xff, 0xff, 0xff, 0xff, 0x03, 0x01, 0x11,
+                0x00, 0x02, 0x11, 0x01, 0x03, 0x11, 0x01, 0xff, 0xd9,
+            ],
+        ),
+    ] {
+        assert_rejected(label, &jpeg_case, &["jpeg", "40", "28"])?;
+    }
+
+    // Extreme SOF0 dimensions even when args match the claimed dimensions.
+    let extreme_jpeg = vec![
+        0xff, 0xd8, 0xff, 0xc0, 0x00, 0x11, 0x08, 0xff, 0xff, 0xff, 0xff, 0x03, 0x01, 0x11, 0x00,
+        0x02, 0x11, 0x01, 0x03, 0x11, 0x01, 0xff, 0xd9,
+    ];
+    assert_rejected(
+        "jpeg 65535x65535",
+        &extreme_jpeg,
+        &["jpeg", "65535", "65535"],
+    )?;
+
+    // Corrupt EXIF APP1 injected after SOI is ignored safely and still converts validly.
+    let mut corrupt_exif_jpeg = valid_jpeg.get(..2).ok_or("jpeg soi")?.to_vec();
+    let bad_exif = b"Exif\0\0MM\0\x2a\0\0\0\x08\xff\xff\x01\x12";
+    let app1_len = u16::try_from(bad_exif.len().saturating_add(2))?;
+    corrupt_exif_jpeg.extend([0xff, 0xe1]);
+    corrupt_exif_jpeg.extend(app1_len.to_be_bytes());
+    corrupt_exif_jpeg.extend(bad_exif);
+    corrupt_exif_jpeg.extend(valid_jpeg.get(2..).ok_or("jpeg body")?);
+    converted(
+        &helper.run(&corrupt_exif_jpeg, &["jpeg", "40", "28"])?,
+        "image/jpeg",
+        (40, 28),
+        (40, 28),
+    )?;
+    Ok(())
+}
+
+#[test]
 #[ignore = "manual release timing; does not include the OS sandbox"]
 fn measure_helper_startup_and_resize() -> TestResult {
     let helper = Helper::new()?;
