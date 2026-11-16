@@ -141,7 +141,8 @@ pub struct ToolCall {
     pub provider_item_id: Option<String>,
     /// 道具の名前。
     pub name: String,
-    /// 解析した引数。解析に失敗した場合は Null とし、元の文字列を検証に使う。
+    /// 解析した引数。解析に失敗した場合や記録の深さ上限超過で省略する場合は Null とし、元の文字列を検証に使う。
+    #[serde(default, skip_serializing_if = "Value::is_null")]
     pub arguments: Value,
     /// 受け取った引数の文字列。検証の誤りを示すために保持する。
     pub raw_arguments: String,

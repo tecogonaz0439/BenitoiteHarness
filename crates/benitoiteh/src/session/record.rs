@@ -604,11 +604,11 @@ pub(crate) fn normalize_usage(usage: &mut Usage) {
 }
 
 fn sanitize_call(call: &mut ToolCall) {
-    if !call.raw_arguments.is_empty() {
-        // 元の引数文字列から再開時に復元できるため、深い木になり得る構造化値は書かない。
-        call.arguments = Value::Null;
-    } else if value_depth(&call.arguments) > MAX_RECORD_VALUE_DEPTH {
-        call.raw_arguments = call.arguments.to_string();
+    if value_depth(&call.arguments) > MAX_RECORD_VALUE_DEPTH {
+        if call.raw_arguments.is_empty() {
+            call.raw_arguments = call.arguments.to_string();
+        }
+        // 元の引数文字列から再開時に復元できるため、記録の深さ上限を超える構造化値は書かない。
         call.arguments = Value::Null;
     }
 }
