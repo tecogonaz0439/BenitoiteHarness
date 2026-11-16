@@ -47,6 +47,7 @@ pub(super) fn prepare(
             config,
             QueryContext {
                 helper: probe.helper.clone(),
+                bubblewrap: probe.bubblewrap.clone(),
                 scratch: probe.scratch(),
                 placeholders: probe.placeholders(),
                 env: child_environment(
@@ -339,6 +340,7 @@ mod tests {
             sha256: String::new(),
             context: QueryContext {
                 helper: PathBuf::new(),
+                bubblewrap: PathBuf::from(crate::sandbox::DEFAULT_BUBBLEWRAP),
                 scratch: PathBuf::new(),
                 placeholders: PathBuf::new(),
                 env: Default::default(),

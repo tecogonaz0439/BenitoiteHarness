@@ -160,10 +160,16 @@ pub(super) fn run(args: impl Iterator<Item = OsString>) -> Result<u8, CliError> 
     });
     providers(&mut items, config.as_ref(), paths.as_ref().ok());
     environment(&mut items, config.as_ref());
+    let bubblewrap = config.as_ref().map_or_else(
+        || PathBuf::from(sandbox::DEFAULT_BUBBLEWRAP),
+        |config| config.sandbox.bubblewrap_path().to_path_buf(),
+    );
     let probe = paths
         .as_ref()
         .map_err(ToString::to_string)
-        .and_then(|paths| Probe::new(paths, root.real_path()).map_err(|error| error.to_string()));
+        .and_then(|paths| {
+            Probe::new(paths, root.real_path(), bubblewrap).map_err(|error| error.to_string())
+        });
     let processor = processor::prepare(
         &mut items,
         paths.as_ref().ok(),

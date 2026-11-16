@@ -198,6 +198,7 @@ pub struct RunContext {
     pub test_timeout: std::time::Duration,
     pub processor: PathBuf,
     pub helper: PathBuf,
+    pub bubblewrap: PathBuf,
     pub scratch: PathBuf,
     pub placeholders: PathBuf,
     pub env: std::collections::BTreeMap<std::ffi::OsString, std::ffi::OsString>,

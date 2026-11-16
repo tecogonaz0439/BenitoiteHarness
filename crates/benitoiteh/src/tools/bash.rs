@@ -335,7 +335,12 @@ fn prepare(
         #[cfg(target_os = "linux")]
         {
             let prepared = sandbox
-                .prepare(&shell.helper, &shell.scratch, &shell.placeholders)
+                .prepare_with_bubblewrap(
+                    &shell.bubblewrap,
+                    &shell.helper,
+                    &shell.scratch,
+                    &shell.placeholders,
+                )
                 .map_err(|e| failure(&e))?;
             let prepared = match &guard {
                 Some(guard) => prepared.with_proxy(Arc::clone(&guard.run)),

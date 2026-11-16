@@ -210,6 +210,7 @@ impl Fixture {
                 policy,
                 policy_name: None,
                 helper,
+                bubblewrap: PathBuf::from(benitoiteh::sandbox::DEFAULT_BUBBLEWRAP),
                 scratch: directory.join("sandbox"),
                 placeholders: self.paths.data_dir.join("placeholders"),
                 env,

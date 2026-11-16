@@ -383,6 +383,8 @@ pub struct ShellContext {
     pub policy_name: Option<&'static str>,
     /// Linux の補助として起動する benitoiteh の実のパス。
     pub helper: PathBuf,
+    /// Linux の bubblewrap 実行ファイルのパス（設計書 03-02、BH-094）。
+    pub bubblewrap: PathBuf,
     /// Linux の覆いのファイルと探査に使う、セッションの sandbox/。
     pub scratch: PathBuf,
     /// Linux の塞ぐ場所の錠を置く、データの placeholders/。
@@ -446,6 +448,8 @@ pub struct ToolContext {
 pub struct ImageHelperContext {
     /// benitoiteh 自身の正規の実行ファイルのパス。
     pub helper: PathBuf,
+    /// Linux の bubblewrap 実行ファイルのパス（設計書 03-02、BH-094）。
+    pub bubblewrap: PathBuf,
     /// Linux の補助を準備する非公開の場所。
     pub scratch: PathBuf,
     /// Linux の守る名前の錠を置く場所。

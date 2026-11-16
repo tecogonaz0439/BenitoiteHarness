@@ -164,7 +164,12 @@ fn prepare(
     #[cfg(target_os = "linux")]
     {
         Ok(command
-            .prepare(&context.helper, &context.scratch, &context.placeholders)?
+            .prepare_with_bubblewrap(
+                &context.bubblewrap,
+                &context.helper,
+                &context.scratch,
+                &context.placeholders,
+            )?
             .into())
     }
     #[cfg(not(target_os = "linux"))]
@@ -309,6 +314,7 @@ mod tests {
             .with_session(session.clone())
             .with_image_helper(ImageHelperContext {
                 helper: fs::canonicalize(std::env::current_exe()?)?,
+                bubblewrap: PathBuf::from(crate::sandbox::DEFAULT_BUBBLEWRAP),
                 scratch: private.clone(),
                 placeholders: private.clone(),
                 test_command: Some((script, timeout)),

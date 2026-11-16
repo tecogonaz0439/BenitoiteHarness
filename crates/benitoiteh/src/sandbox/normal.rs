@@ -41,11 +41,20 @@ pub fn normal_policy(
     SandboxPolicy::new(config).map(Some)
 }
 
-/// macOS では固定の実行ファイルの存在、Linux では四つの必須機能を確かめる。
+/// macOS では固定の実行ファイルの存在、Linux では既定の bubblewrap と必須機能を確かめる。
 pub fn check_availability(helper: &Path, scratch: &Path) -> Result<(), SandboxError> {
+    check_availability_with_bubblewrap(helper, scratch, Path::new(super::DEFAULT_BUBBLEWRAP))
+}
+
+/// macOS では固定の実行ファイルの存在、Linux では指定した bubblewrap と必須機能を確かめる。
+pub fn check_availability_with_bubblewrap(
+    helper: &Path,
+    scratch: &Path,
+    bwrap: &Path,
+) -> Result<(), SandboxError> {
     #[cfg(target_os = "macos")]
     {
-        let _ = (helper, scratch);
+        let _ = (helper, scratch, bwrap);
         if Path::new("/usr/bin/sandbox-exec").is_file() {
             Ok(())
         } else {
@@ -55,7 +64,7 @@ pub fn check_availability(helper: &Path, scratch: &Path) -> Result<(), SandboxEr
     #[cfg(target_os = "linux")]
     {
         use super::CapabilityStatus;
-        let availability = super::probe_linux(helper, scratch)?;
+        let availability = super::probe_linux_with_bubblewrap(bwrap, helper, scratch)?;
         let failed = [
             (super::text::BUBBLEWRAP, availability.bubblewrap),
             (super::text::USER_NAMESPACES, availability.user_namespaces),

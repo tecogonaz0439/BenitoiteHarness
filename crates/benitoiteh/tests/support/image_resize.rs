@@ -67,6 +67,7 @@ impl Fixture {
             fs::DirBuilder::new().mode(0o700).create(&placeholders)?;
             context = context.with_image_helper(benitoiteh::tools::ImageHelperContext {
                 helper: fs::canonicalize(env!("CARGO_BIN_EXE_benitoiteh"))?,
+                bubblewrap: PathBuf::from(benitoiteh::sandbox::DEFAULT_BUBBLEWRAP),
                 scratch: private.clone(),
                 placeholders,
             });

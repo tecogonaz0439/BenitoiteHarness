@@ -7,7 +7,10 @@ mod filter;
 mod mounts;
 mod process;
 
-pub use availability::{CapabilityStatus, LinuxAvailability, bubblewrap_version, probe_linux};
+pub use availability::{
+    CapabilityStatus, LinuxAvailability, bubblewrap_version, probe_linux,
+    probe_linux_with_bubblewrap,
+};
 pub(crate) use filter::compile_no_process;
 pub use process::{PreparedSandbox, SandboxChild};
 

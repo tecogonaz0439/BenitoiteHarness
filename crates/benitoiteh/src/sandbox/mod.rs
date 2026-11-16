@@ -7,13 +7,16 @@ mod macos;
 mod normal;
 mod policy;
 mod restricted;
-pub use normal::{check_availability, normal_policy};
+pub use normal::{check_availability, check_availability_with_bubblewrap, normal_policy};
 pub use restricted::{RestrictedAccess, image_policy, restricted_policy, scratch_policy};
 pub mod proxy;
 pub mod run;
 pub mod session;
 pub mod spawn;
 mod text;
+
+/// Linux の bubblewrap の既定のパス（設計書 03-02、BH-094）。
+pub const DEFAULT_BUBBLEWRAP: &str = "/usr/bin/bwrap";
 
 #[cfg(test)]
 mod tests;
@@ -37,7 +40,7 @@ pub(crate) use linux::compile_no_process;
 #[cfg(target_os = "linux")]
 pub use linux::{
     CapabilityStatus, LinuxAvailability, PreparedSandbox, SandboxChild, bubblewrap_version,
-    probe_linux, run_helper,
+    probe_linux, probe_linux_with_bubblewrap, run_helper,
 };
 pub use macos::SeatbeltProfile;
 pub use policy::{

@@ -34,6 +34,8 @@ impl QueryLauncher {
 #[derive(Debug)]
 pub(crate) struct QueryContext {
     pub helper: PathBuf,
+    #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+    pub bubblewrap: PathBuf,
     pub scratch: PathBuf,
     pub placeholders: PathBuf,
     pub env: BTreeMap<OsString, OsString>,
@@ -120,7 +122,12 @@ impl Processor {
                 #[cfg(target_os = "linux")]
                 {
                     command
-                        .prepare(&context.helper, &context.scratch, &context.placeholders)?
+                        .prepare_with_bubblewrap(
+                            &context.bubblewrap,
+                            &context.helper,
+                            &context.scratch,
+                            &context.placeholders,
+                        )?
                         .into()
                 }
                 #[cfg(not(target_os = "linux"))]

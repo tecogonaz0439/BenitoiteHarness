@@ -197,8 +197,8 @@ pub fn probe_failed(reason: &str, stderr: &str) -> String {
 
 #[cfg(target_os = "linux")]
 /// 起動と共用した検査の結果から版を示す。
-pub fn bubblewrap(version: &str) -> String {
-    format!("/usr/bin/bwrap: {version}; >= 0.8.0; no setuid bit.")
+pub fn bubblewrap(bwrap: &std::path::Path, version: &str) -> String {
+    format!("{}: {version}; >= 0.8.0; no setuid bit.", bwrap.display())
 }
 
 /// 端末用に一項目を一行にする。

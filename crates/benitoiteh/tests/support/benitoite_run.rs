@@ -107,6 +107,7 @@ impl Fixture {
             test_timeout: std::time::Duration::from_secs(120),
             processor,
             helper: std::fs::canonicalize(env!("CARGO_BIN_EXE_benitoiteh"))?,
+            bubblewrap: std::path::PathBuf::from(benitoiteh::sandbox::DEFAULT_BUBBLEWRAP),
             scratch,
             placeholders,
             env: std::env::vars_os().collect(),

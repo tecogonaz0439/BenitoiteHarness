@@ -408,7 +408,7 @@ fn run_interactive(args: ExecArgs, signals: &mut Signals) -> Result<u8, CliError
             &args,
             None,
             &paths,
-            crate::sandbox::check_availability,
+            crate::sandbox::check_availability_with_bubblewrap,
             crate::benitoite::QueryLauncher::Sandboxed,
             exec::StartupPrompts {
                 mode_change: &mut mode_change,
@@ -506,14 +506,14 @@ fn run_interactive(args: ExecArgs, signals: &mut Signals) -> Result<u8, CliError
                         source,
                         &paths,
                         target,
-                        crate::sandbox::check_availability,
+                        crate::sandbox::check_availability_with_bubblewrap,
                         crate::benitoite::QueryLauncher::Sandboxed,
                     ),
                     None => exec::prepare_new(
                         &args,
                         current,
                         &paths,
-                        crate::sandbox::check_availability,
+                        crate::sandbox::check_availability_with_bubblewrap,
                         crate::benitoite::QueryLauncher::Sandboxed,
                     )
                     .map(|prepared| (prepared, None)),

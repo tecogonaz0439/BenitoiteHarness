@@ -20,6 +20,7 @@ pub(super) struct Probe {
     root: PathBuf,
     pub(super) write: PathBuf,
     pub(super) helper: PathBuf,
+    pub(super) bubblewrap: PathBuf,
 }
 
 impl Probe {
@@ -34,7 +35,7 @@ impl Probe {
     }
 
     /// プロジェクトとデータを変えない場所にだけ、一時領域を作る。
-    pub(super) fn new(paths: &DataPaths, project: &Path) -> io::Result<Self> {
+    pub(super) fn new(paths: &DataPaths, project: &Path, bubblewrap: PathBuf) -> io::Result<Self> {
         let temporary_root = fs::canonicalize(&paths.temporary_root)?;
         let data = match fs::canonicalize(&paths.data_dir) {
             Ok(data) => Some(data),
@@ -53,10 +54,11 @@ impl Probe {
             return Err(io::Error::other(text::TEMPORARY_LOCATION));
         }
         DirBuilder::new().mode(0o700).create(&root)?;
-        // 作成直後から所有し、正規化や子ディレクトリの作成の失敗でも片付ける。
+        // 作成直後から所有し、正規化や子ディレクトリの失敗でも片付ける。
         let mut probe = Self {
             write: root.join("write"),
             helper: PathBuf::new(),
+            bubblewrap,
             root,
         };
         probe.root = fs::canonicalize(&probe.root)?;
@@ -111,41 +113,40 @@ impl Probe {
 
     #[cfg(target_os = "linux")]
     fn features(&self, items: &mut Vec<Item>) -> Result<bool, String> {
-        use crate::sandbox::{CapabilityStatus, bubblewrap_version, probe_linux};
-        let version = bubblewrap_version();
+        use crate::sandbox::{CapabilityStatus, bubblewrap_version, probe_linux_with_bubblewrap};
+        let version = bubblewrap_version(&self.bubblewrap);
         let bubblewrap_detail = match &version {
-            Ok(version) => text::bubblewrap(version),
-            Err(CapabilityStatus::Unavailable(reason)) => {
-                text::at(Path::new("/usr/bin/bwrap"), reason)
-            }
+            Ok(version) => text::bubblewrap(&self.bubblewrap, version),
+            Err(CapabilityStatus::Unavailable(reason)) => text::at(&self.bubblewrap, reason),
             Err(CapabilityStatus::NotChecked | CapabilityStatus::Available) => {
                 text::REQUIRES_BWRAP.to_owned()
             }
         };
         // 探査自身の不明な失敗は、後続の機能を使えたと推測せずに示す。
-        let availability = match probe_linux(&self.helper, &self.root) {
-            Ok(availability) => availability,
-            Err(error) => {
-                items.push(Item::new(
-                    "sandbox.bubblewrap",
-                    if version.is_ok() {
-                        Status::Ok
-                    } else {
-                        Status::Unavailable
-                    },
-                    bubblewrap_detail,
-                ));
-                for name in [
-                    "sandbox.user_namespaces",
-                    "sandbox.landlock",
-                    "sandbox.seccomp",
-                    "sandbox.capabilities",
-                ] {
-                    items.push(Item::new(name, Status::Unchecked, text::RULE_REQUIRED));
+        let availability =
+            match probe_linux_with_bubblewrap(&self.bubblewrap, &self.helper, &self.root) {
+                Ok(availability) => availability,
+                Err(error) => {
+                    items.push(Item::new(
+                        "sandbox.bubblewrap",
+                        if version.is_ok() {
+                            Status::Ok
+                        } else {
+                            Status::Unavailable
+                        },
+                        bubblewrap_detail,
+                    ));
+                    for name in [
+                        "sandbox.user_namespaces",
+                        "sandbox.landlock",
+                        "sandbox.seccomp",
+                        "sandbox.capabilities",
+                    ] {
+                        items.push(Item::new(name, Status::Unchecked, text::RULE_REQUIRED));
+                    }
+                    return Err(error.to_string());
                 }
-                return Err(error.to_string());
-            }
-        };
+            };
         let required_namespaces = availability.user_namespaces != CapabilityStatus::Available;
         let required_capabilities = availability.capabilities != CapabilityStatus::Available;
         let namespace_reason = if version.is_err() {
@@ -207,7 +208,7 @@ impl Probe {
                 CapabilityStatus::Unavailable(reason) => (
                     Status::Unavailable,
                     if name == "sandbox.bubblewrap" {
-                        text::at(Path::new("/usr/bin/bwrap"), &reason)
+                        text::at(&self.bubblewrap, &reason)
                     } else {
                         reason
                     },
@@ -327,7 +328,8 @@ impl Probe {
             stdin: SandboxStdin::Null,
         };
         #[cfg(target_os = "linux")]
-        let command = command.prepare(
+        let command = command.prepare_with_bubblewrap(
+            &self.bubblewrap,
             &self.helper,
             &self.root.join("scratch"),
             &self.root.join("placeholders"),

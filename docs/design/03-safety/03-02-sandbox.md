@@ -1,7 +1,7 @@
 # OS のサンドボックス
 
 - 状態: 草稿
-- 未決事項: BH-033, BH-040, BH-045, BH-094
+- 未決事項: BH-033, BH-040, BH-045
 
 ## 目的と範囲
 
@@ -33,7 +33,7 @@ benitoiteh __sandbox <方針の JSON> -- <プログラム> <引数...>
 - Linux では、`benitoiteh` が bubblewrap（`bwrap`）を起動し、bubblewrap が名前空間とファイルシステムの見え方を作った中で、`benitoiteh` 自身を補助のプロセスとして起動する。補助のプロセスは、自分に制限を掛けてから目的のプログラムを `exec` する。理由: 子プロセスを作った直後（`fork` の後、`exec` の前）に Rust の処理を走らせると、多くのスレッドを持つプロセスでは確保の待ちで止まるおそれがある。いったん自分を起動し直せば、普通の単一のスレッドのプロセスとして規則を掛けられ、`unsafe` の `pre_exec` も要らない。Codex CLI も、bubblewrap の中で自分を補助として起動し直し、seccomp を掛ける。
 
 ```text
-/usr/bin/bwrap <見え方の引数...> -- <benitoiteh> __sandbox <方針の JSON> -- <プログラム> <引数...>
+<設定の bubblewrap（既定 /usr/bin/bwrap）> <見え方の引数...> -- <benitoiteh> __sandbox <方針の JSON> -- <プログラム> <引数...>
 ```
 
 【決定】Linux では、bubblewrap、Landlock、seccomp の三つを重ねて使い、役割を次のとおり分ける。2026-10-17 に設計者が決めた（BH-049 を閉じた）。
@@ -46,12 +46,13 @@ benitoiteh __sandbox <方針の JSON> -- <プログラム> <引数...>
 
 理由: 書ける場所の下の一部を除く規則は、Landlock では表せず（後述の Landlock の限界）、マウントの名前空間が要る。Codex CLI、Claude Code の sandbox-runtime、Gemini CLI も、Linux で書ける場所の中の守る場所を bubblewrap のマウントで表している。マウントの名前空間を `benitoiteh` が自分で作ると、`unsafe` の関数（`rustix` の `unshare_unsafe`）が要り、bubblewrap の一部を作り直すことになる。bubblewrap が名前空間を作れば、`benitoiteh` は `unsafe` なしに書ける。検討した形と、ほかのハーネスの作りは[Linux のサンドボックスの検討の記録](../08-appendix/08-04-linux-sandbox.md)に書く。
 
-【決定】bubblewrap は、利用者が配布物から導入したものを使い、試作には同梱しない。`/usr/bin/bwrap` を固定のパスで起動し、`PATH` から探さない。理由（同梱しないこと）: 試作の間は配布物を作らない（[クレートの構成](../06-impl/06-01-crate-structure.md)の「対象の環境」）。Codex CLI は bubblewrap を同梱するが、同梱すると配るものと版の管理が増える。理由（固定のパス）: `sandbox-exec` と同じく、`PATH` に置かれた偽の `bwrap` を起動しないためである。`/usr/bin` の外に bubblewrap を置く配布物での指定の仕方と、特権を持たない利用者の名前空間の作成を AppArmor などで限る配布物での扱いは確かめる（【要検証】BH-094）。2026-10-17 の時点で、試験に使う x86_64 の機械（Omarchy）には、配布物の bubblewrap 0.12.0 が `/usr/bin/bwrap` にある。
+【決定】bubblewrap は、利用者が配布物から導入したものを使い、試作には同梱しない。`PATH` からは探さず、既定は `/usr/bin/bwrap` とし、NixOS（`/nix/store/...`、`/run/current-system/sw/bin/bwrap`）・GNU Guix（`/gnu/store/...`、`/run/current-system/profile/bin/bwrap`）・Homebrew on Linux（`/home/linuxbrew/.linuxbrew/bin/bwrap`）など `/usr/bin` の外に置く環境向けに利用者の設定 `[sandbox]` の `bubblewrap`（絶対パスのみ、プロジェクトの設定ファイルでは不可）で明示的に指定できる（2026-11-16 に設計者が決定、`BH-094`）。理由（同梱しないこと）: 試作の間は配布物を作らない（[クレートの構成](../06-impl/06-01-crate-structure.md)の「対象の環境」）。Codex CLI は bubblewrap を同梱するが、同梱すると配るものと版の管理が増える。理由（`PATH` から探さないこと）: `sandbox-exec` と同じく、`PATH` に置かれた偽の `bwrap` を起動しないためである。起動の直前には正規化したパス（シンボリックリンク解決先を含む）が書ける場所の外にある通常ファイルであることも確かめる。なお、`bubblewrap 0.12.0`（Fedora 45 および Alpine 3.22 コンテナで実測）にはカーネルの `ARG_MAX` や `--args FD` の利用に関わらず「最大 9,000 引数」の上限（`bwrap: Exceeded maximum number of arguments 9000`）があり、特権を持たない利用者の名前空間の作成を制限する環境については、実機の Debian GNU/Linux 13 環境（AppArmor 有効、`kernel.unprivileged_userns_clone = 1`、標準の `bwrap` プロファイル制限なし）では `bwrap 0.12.0` がそのまま動く一方、Ubuntu 24.04 等の `apparmor_restrict_unprivileged_userns` が有効な環境は実機がないため、`doctor` および起動時検査が `bwrap` の標準エラーを出して安全側に止める（[設定ファイル](../05-interface/05-01-cli.md)）。
 
 【決定】bubblewrap について、次のことを起動のときに確かめ、満たさなければ掛けられないものとして扱う（後述の「サンドボックスを掛けられないとき」）。
 
+- 絶対パスの指定であり、正規化した先が書ける場所の外の通常ファイルであること。
 - 版が 0.8.0 以上であること（`bwrap --version` の出力）。理由: 使う指定のうち最も新しい `--disable-userns` が 0.8.0 で加わった。`--as-pid-1` と `--cap-drop` は 0.2.0、`--tmpfs` に掛かる `--perms` は 0.5.0 で加わった（[bubblewrap のリリースの説明](https://github.com/containers/bubblewrap/releases)）。
-- `/usr/bin/bwrap` に setuid の印がないこと。理由: setuid で導入された bubblewrap は、特権を持つ形の別の処理で動く（`--overlay` などを使えない。0.11.0 のリリースの説明）。試作はその形で確かめていない。
+- setuid の印がないこと。理由: setuid で導入された bubblewrap は、特権を持つ形の別の処理で動く（`--overlay` などを使えない。0.11.0 のリリースの説明）。試作はその形で確かめていない。
 
 【決定】bubblewrap には、全体の指定に `--cap-drop ALL` を加える（2026-10-17 に設計者が承認した）。理由: 2026-10-17 に、rootless の podman の中の root（bubblewrap 0.12.0）で、`--unshare-user` の中のプロセスが呼び出した側の特権（`CAP_DAC_OVERRIDE`、`--cap-add SYS_ADMIN` で起動した podman では `CAP_SYS_ADMIN` も）を持ったままであることを確かめた。読ませない場所の覆いは空なので、権限 000 を越えて読まれても秘密は出ないが、特権を残す理由がない。`--cap-drop ALL` を加えると、root でも root でない利用者でも、中のプロセスの有効な特権が空になった。ただし、bubblewrap 0.11.0 は、root で動かしたときに特権を外す `capset` が `EPERM` で失敗しても、誤りにせずに続ける（`bubblewrap.c` の `drop_all_caps`）。【決定】補助のプロセスは、目的のプログラムを起動する前に、自分の特権の集合（有効、許可、継承、アンビエント）が空であることを確かめ、空でなければ動かさない。2026-10-17 に、試作の P2-04 で、版と setuid の印の確かめを、起動のときの確かめと、子プロセスの準備（制限モードの起動も通る）の両方で行う形にした。x86_64 の Linux 7.2.9 の rootless の podman（bubblewrap 0.12.0）で、root でない利用者と root のどちらでも、サンドボックスの中のプロセスの特権が空であることを確かめた。
 

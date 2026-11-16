@@ -74,7 +74,14 @@ pub const WRITABLE_PLACEHOLDERS: &str =
     "The placeholders directory must be outside every writable root.";
 
 #[cfg(target_os = "linux")]
-pub const SETUID_BUBBLEWRAP: &str = "/usr/bin/bwrap must not have the setuid bit set.";
+pub const SETUID_BUBBLEWRAP: &str = "must not have the setuid bit set.";
+#[cfg(target_os = "linux")]
+pub const NOT_REGULAR_BUBBLEWRAP: &str = "must be a regular file.";
+#[cfg(target_os = "linux")]
+pub const INVALID_BUBBLEWRAP_PATH: &str = "bubblewrap path must be an absolute path.";
+#[cfg(target_os = "linux")]
+pub const WRITABLE_BUBBLEWRAP: &str =
+    "The bubblewrap executable must be outside every writable root.";
 #[cfg(target_os = "linux")]
 pub const CAPABILITIES: &str = "capabilities";
 #[cfg(target_os = "linux")]
@@ -91,9 +98,14 @@ pub fn bubblewrap_version(stdout: &[u8]) -> String {
 
 #[cfg(target_os = "linux")]
 /// 版の確認の異常終了と、受け取った標準エラー出力を示す。
-pub fn bubblewrap_version_failed(status: std::process::ExitStatus, stderr: &[u8]) -> String {
+pub fn bubblewrap_version_failed(
+    bwrap: &std::path::Path,
+    status: std::process::ExitStatus,
+    stderr: &[u8],
+) -> String {
     format!(
-        "/usr/bin/bwrap --version failed with {status}; stderr: {:?}.",
+        "{} --version failed with {status}; stderr: {:?}.",
+        bwrap.display(),
         String::from_utf8_lossy(stderr)
     )
 }

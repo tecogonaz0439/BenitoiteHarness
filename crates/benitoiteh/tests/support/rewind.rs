@@ -69,6 +69,7 @@ impl Fixture {
             policy: None,
             policy_name: None,
             helper: fs::canonicalize(env!("CARGO_BIN_EXE_benitoiteh"))?,
+            bubblewrap: PathBuf::from(benitoiteh::sandbox::DEFAULT_BUBBLEWRAP),
             scratch: self.session.directory().join("sandbox"),
             placeholders: self.paths.data_dir.join("placeholders"),
             env: benitoiteh::config::child_environment(
