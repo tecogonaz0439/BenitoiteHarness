@@ -770,3 +770,162 @@ fn dropping_worker_removes_helpers_even_while_secret_input_is_pending() -> TestR
     }
     Ok(())
 }
+
+// 作成時の関門: 入力待ち中の Worker 事象で poll 間隔を待たず即座に起床する契約（BH-106）を守る。
+#[test]
+fn streaming_delta_wakes_input_wait_immediately() -> TestResult {
+    use benitoiteh::ui::tui::{WakeNotifier, WakeReceiver, wake_channel};
+    use rustix::event::{PollFd, PollFlags, Timespec, poll};
+    use std::sync::{Arc, mpsc};
+
+    let (entered_tx, entered_rx) = mpsc::channel();
+    let (release_tx, release_rx) = mpsc::channel();
+    let mut script = ResponseScript::sse(response(json!({"content": "WAKE_OK"}), "stop"));
+    script.delivery = Delivery::Controlled {
+        entered: entered_tx,
+        release: release_rx,
+    };
+    let mut server = MockProvider::start(vec![script])?;
+    let f = Fixture::new()?;
+    let (wake_tx, wake_rx) = wake_channel()?;
+    let (waiting_tx, waiting_rx) = mpsc::channel();
+    let (rendered_tx, rendered_rx) = mpsc::channel();
+
+    struct WakeInput {
+        wake_rx: WakeReceiver,
+        wake_tx: WakeNotifier,
+        waiting_tx: Option<mpsc::Sender<()>>,
+        quit_rx: mpsc::Receiver<()>,
+        timed_out: Arc<AtomicBool>,
+    }
+    impl InputSource for WakeInput {
+        fn worker_waker(&self) -> Option<WakeNotifier> {
+            Some(self.wake_tx.clone())
+        }
+        fn clear_worker_wake(&mut self) {
+            self.wake_rx.drain();
+        }
+        fn poll(&mut self, wait: Duration) -> io::Result<Vec<Event>> {
+            if self.quit_rx.try_recv().is_ok() {
+                return Ok(vec![Event::Key(KeyEvent::new(
+                    KeyCode::Char('d'),
+                    KeyModifiers::CONTROL,
+                ))]);
+            }
+            if let Some(tx) = self.waiting_tx.take() {
+                let _sent = tx.send(());
+            }
+            let timeout = Timespec::try_from(wait).map_err(|_| io::Error::other("timeout"))?;
+            let mut fds = [PollFd::new(&self.wake_rx, PollFlags::IN)];
+            if let Ok(ready) = poll(&mut fds, Some(&timeout))
+                && ready == 0
+                && wait >= Duration::from_millis(100)
+            {
+                self.timed_out.store(true, Ordering::Release);
+            }
+            if self.quit_rx.try_recv().is_ok() {
+                return Ok(vec![Event::Key(KeyEvent::new(
+                    KeyCode::Char('d'),
+                    KeyModifiers::CONTROL,
+                ))]);
+            }
+            Ok(Vec::new())
+        }
+    }
+
+    struct WatchOutput {
+        bytes: Vec<u8>,
+        rendered_tx: Option<mpsc::Sender<Instant>>,
+        completed_tx: Option<mpsc::Sender<()>>,
+        quit_tx: mpsc::Sender<()>,
+        quit_wake: WakeNotifier,
+    }
+    impl io::Write for WatchOutput {
+        fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+            self.bytes.extend_from_slice(bytes);
+            if let Ok(visible) = safe_output(&self.bytes) {
+                if visible.contains("WAKE_OK")
+                    && let Some(tx) = self.rendered_tx.take()
+                {
+                    let _sent = tx.send(Instant::now());
+                }
+                if visible.contains("The run completed.")
+                    && let Some(tx) = self.completed_tx.take()
+                {
+                    let _sent = tx.send(());
+                    let _quit = self.quit_tx.send(());
+                    self.quit_wake.notify();
+                }
+            }
+            Ok(bytes.len())
+        }
+        fn flush(&mut self) -> io::Result<()> {
+            Ok(())
+        }
+    }
+
+    let (quit_tx, quit_rx) = mpsc::channel();
+    let (completed_tx, completed_rx) = mpsc::channel();
+    let prepared = f.new_session(&server)?;
+    let mut worker =
+        Worker::start_with_wake(prepared.agent, prepared.session, Some(wake_tx.clone()))?;
+    worker.submit("Wake".into(), RunControl::default())?;
+
+    let timed_out = Arc::new(AtomicBool::new(false));
+    let mut input = WakeInput {
+        wake_rx,
+        wake_tx: wake_tx.clone(),
+        waiting_tx: Some(waiting_tx),
+        quit_rx,
+        timed_out: Arc::clone(&timed_out),
+    };
+    let mut screen = Screen::new((100, 24), status());
+    let signal = AtomicBool::new(false);
+    let mut output = WatchOutput {
+        bytes: Vec::new(),
+        rendered_tx: Some(rendered_tx),
+        completed_tx: Some(completed_tx),
+        quit_tx,
+        quit_wake: wake_tx,
+    };
+
+    std::thread::scope(|scope| -> TestResult {
+        let controller = scope.spawn(move || -> Result<(), String> {
+            entered_rx
+                .recv_timeout(Duration::from_secs(5))
+                .map_err(|error| error.to_string())?;
+            waiting_rx
+                .recv_timeout(Duration::from_secs(5))
+                .map_err(|error| error.to_string())?;
+            // 入力側が poll に入った直後に応答を解放する。起床が働けば待ち切らず描画される。
+            release_tx.send(()).map_err(|_| "release".to_owned())?;
+            let _rendered_at = rendered_rx
+                .recv_timeout(Duration::from_secs(5))
+                .map_err(|error| error.to_string())?;
+            completed_rx
+                .recv_timeout(Duration::from_secs(5))
+                .map_err(|error| error.to_string())?;
+            Ok(())
+        });
+        assert_eq!(
+            run(
+                &mut screen,
+                worker,
+                &mut input,
+                &mut output,
+                &signal,
+                |_| {},
+                &mut |_, _, _| Err("unexpected new session".into()),
+            )?,
+            0
+        );
+        controller.join().map_err(|_| "controller panicked")??;
+        Ok(())
+    })?;
+    assert!(
+        !timed_out.load(Ordering::Acquire),
+        "input wait timed out instead of waking on worker event"
+    );
+    server.shutdown()?;
+    Ok(())
+}

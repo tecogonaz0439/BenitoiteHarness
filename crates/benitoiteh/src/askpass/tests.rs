@@ -513,6 +513,7 @@ fn accept_recovers_from_descriptor_exhaustion_without_losing_the_listener() -> i
     thread::scope(|scope| -> io::Result<()> {
         let current = &f.broker.current;
         let stop = &f.broker.stop;
+        let wake = &f.broker.wake;
         let worker = scope.spawn(move || {
             accept_loop(
                 || {
@@ -527,6 +528,7 @@ fn accept_recovers_from_descriptor_exhaustion_without_losing_the_listener() -> i
                 current,
                 &sender,
                 stop,
+                wake,
             )
         });
         observed.recv().map_err(io::Error::other)?;

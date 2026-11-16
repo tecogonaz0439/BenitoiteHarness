@@ -20,7 +20,7 @@ mod worker;
 pub use control::restoration;
 pub use input::Action;
 pub use notify::{Notification, Notifier};
-pub use runtime::{InputSource, TuiError, confirm, run};
+pub use runtime::{InputSource, TuiError, WakeNotifier, WakeReceiver, confirm, run, wake_channel};
 pub use terminal::{TerminalGuard, TerminalOutput, TerminalRestore};
 pub use worker::{RunControl, Worker};
 
