@@ -45,11 +45,13 @@ pub(super) fn read_records_from(
         if line.last() != Some(&b'\n') {
             break;
         }
-        let value: serde_json::Value = serde_json::from_slice(&line)?;
-        if records.is_empty() {
+        let mut record: Record = if records.is_empty() {
+            let value: serde_json::Value = super::record::deserialize_json(&line)?;
             check_format(&value)?;
-        }
-        let mut record: Record = serde_json::from_value(value)?;
+            serde_json::from_value(value)?
+        } else {
+            super::record::deserialize_json(&line)?
+        };
         if let Record::Spilled { parts } = record {
             if parts.is_empty() {
                 return Err(SessionError::Invalid(text::INVALID_SPILL));
@@ -62,11 +64,12 @@ pub(super) fn read_records_from(
                 }
                 file.read_to_end(&mut bytes)?;
             }
-            record = serde_json::from_value(serde_json::from_slice::<serde_json::Value>(&bytes)?)?;
+            record = super::record::deserialize_json(&bytes)?;
             if matches!(record, Record::Spilled { .. }) {
                 return Err(SessionError::Invalid(text::INVALID_SPILL));
             }
         }
+        super::record::restore_record(&mut record);
         if records.is_empty()
             && !matches!(&record, Record::Header(header) if header.format == FORMAT_VERSION)
         {

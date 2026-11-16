@@ -22,6 +22,7 @@ pub use fork::{ForkTarget, ForkedSession};
 pub use id::SessionId;
 pub use quota::{StorageUsage, TOTAL_LIMIT, storage_usage};
 pub use record::*;
+pub(crate) use record::{MAX_RECORD_VALUE_DEPTH, normalize_usage, value_depth};
 pub use replay::{SessionTree, apply_pruned, read_records, replay, request_text};
 pub use resume::{ReasoningContext, ResumeState};
 pub use scan::{

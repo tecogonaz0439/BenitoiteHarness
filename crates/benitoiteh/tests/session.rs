@@ -2825,3 +2825,275 @@ fn export_writes_the_current_branch_with_compaction_and_safe_fences() -> TestRes
     assert!(!exported.contains("opaque"), "{exported}");
     Ok(())
 }
+
+fn nested_json_object(depth: usize) -> serde_json::Value {
+    let mut current = serde_json::Value::Number(1.into());
+    for _ in 0..depth {
+        let mut map = serde_json::Map::new();
+        map.insert("k".to_owned(), current);
+        current = serde_json::Value::Object(map);
+    }
+    current
+}
+
+fn user_request(node: u64, text: &str) -> Record {
+    Record::User {
+        node,
+        kind: UserKind::Request,
+        message: UserMessage {
+            images: Vec::new(),
+            parts: vec![UserPart {
+                kind: UserPartKind::Request,
+                text: text.into(),
+            }],
+        },
+    }
+}
+
+#[test]
+fn deep_nested_arguments_and_usage_round_trip_and_stay_readable_by_replay_scan_and_fork()
+-> TestResult {
+    use benitoiteh::session::{ForkTarget, ResumeState, continue_session, list_sessions};
+    let fixture = Fixture::new()?;
+    let project = fixture.root.join("project");
+    fs::create_dir(&project)?;
+    let project = fs::canonicalize(project)?;
+    let deep_args_value = nested_json_object(125);
+    let deep_args_raw = serde_json::to_string(&deep_args_value)?;
+    let deep_usage_value = nested_json_object(124);
+
+    for (index, adapter) in [AdapterKind::OpenAiResponses, AdapterKind::AnthropicMessages]
+        .into_iter()
+        .enumerate()
+    {
+        let session = fixture.session()?;
+        let mut head = header(&session);
+        if let Record::Header(inner) = &mut head {
+            inner.project_dir = project.clone();
+            inner.provider.adapter = adapter;
+        }
+        let call_deep = ToolCall {
+            id: format!("call-deep-{index}"),
+            provider_id: Some(format!("toolu_{index}")),
+            provider_item_id: None,
+            name: "write".to_owned(),
+            arguments: deep_args_value.clone(),
+            raw_arguments: deep_args_raw.clone(),
+        };
+        let raw_items = if adapter == AdapterKind::AnthropicMessages {
+            vec![json!({
+                "type": "tool_use",
+                "id": format!("toolu_{index}"),
+                "name": "write",
+                "input": deep_args_value,
+            })]
+        } else {
+            Vec::new()
+        };
+        let turn = AssistantTurn {
+            parts: vec![AssistantPart::ToolCall(call_deep.clone())],
+            raw_items: RawItems {
+                destination: Destination {
+                    provider: "test".to_owned(),
+                    base_url: "https://example.test".to_owned(),
+                    model: "model".to_owned(),
+                },
+                adapter,
+                items: raw_items,
+            },
+            finish_reason: FinishReason::ToolCalls,
+            usage: Usage {
+                input_tokens: Some(42),
+                cache_read_tokens: Some(5),
+                output_tokens: Some(7),
+                raw: deep_usage_value.clone(),
+                ..Usage::default()
+            },
+        };
+        let mut writer = session.writer()?;
+        writer.append(&head)?;
+        writer.append(&user_request(1, "Deep nested test"))?;
+        writer.append(&Record::Assistant {
+            node: 2,
+            turn: 1,
+            response: turn,
+        })?;
+        writer.append(&Record::ToolCall {
+            turn: 1,
+            call: call_deep.clone(),
+            validation_error: None,
+        })?;
+        writer.append(&Record::ToolStart {
+            call: call_deep.clone(),
+        })?;
+        writer.append(&Record::ToolResult {
+            node: 3,
+            turn: 1,
+            name: "write".into(),
+            result: ToolResult {
+                id: call_deep.id.clone(),
+                provider_id: call_deep.provider_id.clone(),
+                text: "ok".to_owned(),
+                is_error: false,
+                images: Vec::new(),
+            },
+            spill: None,
+            stderr_spill: None,
+        })?;
+        writer.append(&Record::TurnEnd {
+            turn: 1,
+            finish_reason: FinishReason::Completed,
+            usage: Usage {
+                input_tokens: Some(42),
+                cache_read_tokens: Some(5),
+                output_tokens: Some(7),
+                raw: deep_usage_value.clone(),
+                ..Usage::default()
+            },
+        })?;
+        drop(writer);
+
+        // 書かれた session.jsonl の各行は既定の再帰上限（128）でもそのまま読める。
+        let log_bytes = fs::read(session.directory().join("session.jsonl"))?;
+        for line in log_bytes.split(|byte| *byte == b'\n') {
+            if line.is_empty() {
+                continue;
+            }
+            let _parsed: serde_json::Value = serde_json::from_slice(line)?;
+        }
+
+        let conversation = replay(session.directory())?;
+        let Item::AssistantTurn(replayed_turn) =
+            conversation.items.get(1).ok_or("missing replayed turn")?
+        else {
+            return Err("expected assistant turn".into());
+        };
+        assert_eq!(replayed_turn.usage.input_tokens, Some(42));
+        assert_eq!(replayed_turn.usage.cache_read_tokens, Some(5));
+        assert_eq!(replayed_turn.usage.output_tokens, Some(7));
+        assert_eq!(replayed_turn.usage.raw, serde_json::Value::Null);
+        let Some(AssistantPart::ToolCall(replayed_call)) = replayed_turn.parts.first() else {
+            return Err("missing replayed tool call".into());
+        };
+        assert_eq!(replayed_call.arguments, deep_args_value);
+        if adapter == AdapterKind::AnthropicMessages {
+            assert_eq!(
+                replayed_turn
+                    .raw_items
+                    .items
+                    .first()
+                    .and_then(|item| item.get("input")),
+                Some(&deep_args_value)
+            );
+        }
+
+        let _state = ResumeState::read(session.directory())?;
+        let entries = list_sessions(&fixture.paths)?;
+        assert!(
+            entries
+                .iter()
+                .any(|entry| entry.id == session.id().as_str() && entry.error.is_none()),
+            "{entries:?}"
+        );
+        let forked = session.fork(&fixture.paths, &project, ForkTarget::Current)?;
+        assert_eq!(replay(forked.session.directory())?, conversation);
+        drop(forked);
+        drop(session);
+
+        let reopened = continue_session(&fixture.paths, &project)?;
+        drop(reopened);
+    }
+    Ok(())
+}
+
+#[test]
+fn legacy_deep_session_lines_up_to_limit_remain_readable_while_excessive_depth_fails() -> TestResult
+{
+    use benitoiteh::session::{ResumeState, SessionError, list_sessions};
+    let fixture = Fixture::new()?;
+    let project = fixture.root.join("project");
+    fs::create_dir(&project)?;
+    let project = fs::canonicalize(project)?;
+
+    let session = fixture.session()?;
+    let mut head = header(&session);
+    if let Record::Header(inner) = &mut head {
+        inner.project_dir = project.clone();
+    }
+    let deep_args_value = nested_json_object(125);
+    let deep_args_raw = serde_json::to_string(&deep_args_value)?;
+    let deep_usage_value = nested_json_object(124);
+    let legacy_assistant = Record::Assistant {
+        node: 2,
+        turn: 1,
+        response: AssistantTurn {
+            parts: vec![AssistantPart::ToolCall(ToolCall {
+                id: "call-legacy".to_owned(),
+                provider_id: Some("prov-legacy".to_owned()),
+                provider_item_id: None,
+                name: "write".to_owned(),
+                arguments: deep_args_value.clone(),
+                raw_arguments: deep_args_raw,
+            })],
+            raw_items: RawItems {
+                destination: Destination {
+                    provider: "test".to_owned(),
+                    base_url: "https://example.test".to_owned(),
+                    model: "model".to_owned(),
+                },
+                adapter: AdapterKind::OpenAiChat,
+                items: Vec::new(),
+            },
+            finish_reason: FinishReason::Completed,
+            usage: Usage {
+                input_tokens: Some(15),
+                output_tokens: Some(4),
+                raw: deep_usage_value,
+                ..Usage::default()
+            },
+        },
+    };
+    let mut content = String::new();
+    content.push_str(&serde_json::to_string(&head)?);
+    content.push('\n');
+    content.push_str(&serde_json::to_string(&user_request(
+        1,
+        "Legacy deep request",
+    ))?);
+    content.push('\n');
+    content.push_str(&serde_json::to_string(&legacy_assistant)?);
+    content.push('\n');
+    fs::write(session.directory().join("session.jsonl"), content)?;
+    drop(session);
+
+    let sessions = list_sessions(&fixture.paths)?;
+    assert_eq!(sessions.len(), 1);
+    assert!(
+        sessions.first().is_some_and(|entry| entry.error.is_none()),
+        "{sessions:?}"
+    );
+    let dir = fixture
+        .paths
+        .sessions_dir
+        .join(&sessions.first().ok_or("missing session")?.id);
+    let _records = read_records(&dir)?;
+    let _state = ResumeState::read(&dir)?;
+
+    let bad = fixture.session()?;
+    let mut bad_head = header(&bad);
+    if let Record::Header(inner) = &mut bad_head {
+        inner.project_dir = project;
+    }
+    let bad_line = format!(
+        "{{\"type\":\"error\",\"kind\":\"bad\",\"message\":\"x\",\"extra\":{}null{}}}\n",
+        "[".repeat(210),
+        "]".repeat(210)
+    );
+    let bad_content = format!("{}\n{}", serde_json::to_string(&bad_head)?, bad_line);
+    fs::write(bad.directory().join("session.jsonl"), bad_content)?;
+    assert!(matches!(
+        read_records(bad.directory()),
+        Err(SessionError::Json(_))
+    ));
+    Ok(())
+}

@@ -1895,3 +1895,117 @@ fn askpass_secret_and_prompt_do_not_enter_records_or_provider_requests() -> Test
     assert_eq!(fs::read_dir(directory.join("spill"))?.count(), 0);
     Ok(())
 }
+
+fn nested_json_value(depth: usize) -> Value {
+    let mut current = Value::Number(1.into());
+    for _ in 0..depth {
+        let mut map = serde_json::Map::new();
+        map.insert("k".to_owned(), current);
+        current = Value::Object(map);
+    }
+    current
+}
+
+#[test]
+fn deep_provider_arguments_and_usage_survive_replay_resume_and_rewind() -> TestResult {
+    use benitoiteh::agent::BranchTarget;
+    use benitoiteh::rewind::RewindScope;
+    use benitoiteh::session::{ResumeState, continue_session, list_sessions};
+
+    let f = Fixture::new()?;
+    let deep_args = nested_json_value(125);
+    let deep_raw_args = serde_json::to_string(&deep_args)?;
+    let deep_usage = nested_json_value(124);
+
+    // Case 1: OpenAiChat with depth-125 arguments and depth-124 usage
+    let openai_calls_sse = format!(
+        "data: {}\n\ndata: {}\n\ndata: {}\n\ndata: [DONE]\n\n",
+        json!({"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_0","type":"function","function":{"name":"read","arguments":deep_raw_args}}]},"finish_reason":null}]}),
+        json!({"choices":[{"delta":{},"finish_reason":"tool_calls"}]}),
+        json!({"choices":[],"usage":{"prompt_tokens":11,"completion_tokens":3,"extra":deep_usage}}),
+    )
+    .into_bytes();
+    let openai_final_sse = format!(
+        "data: {}\n\ndata: {}\n\ndata: {}\n\ndata: [DONE]\n\n",
+        json!({"choices":[{"delta":{"content":"Done."},"finish_reason":null}]}),
+        json!({"choices":[{"delta":{},"finish_reason":"stop"}]}),
+        json!({"choices":[],"usage":{"prompt_tokens":11,"completion_tokens":3,"extra":deep_usage}}),
+    )
+    .into_bytes();
+    let mut server = MockProvider::start(vec![
+        ResponseScript::sse(openai_calls_sse),
+        ResponseScript::sse(openai_final_sse),
+    ])?;
+    let (mut agent, directory) = f.agent(f.config(&server, AdapterKind::OpenAiChat))?;
+    let (report, _) = complete(&mut agent)?;
+    assert_eq!(report.outcome, Outcome::Completed);
+    assert_eq!(report.summary.tokens.input, 22);
+    assert_eq!(report.summary.tokens.output, 6);
+    assert_eq!(replay(&directory)?, *agent.conversation());
+    let _state = ResumeState::read(&directory)?;
+    let entries = list_sessions(&f.paths)?;
+    assert!(
+        entries.iter().all(|entry| entry.error.is_none()),
+        "{entries:?}"
+    );
+    let preview =
+        agent.branch_preview(BranchTarget::BeforeRequest(1), RewindScope::Conversation)?;
+    let (tx, _rx) = mpsc::sync_channel(64);
+    let _rewind = agent.switch_branch(
+        BranchTarget::BeforeRequest(1),
+        preview.selected.checkpoint.as_deref(),
+        RewindScope::Conversation,
+        false,
+        tx,
+    )?;
+    server.shutdown()?;
+
+    // Case 2: AnthropicMessages streaming tool_use input at depth 125 and usage at depth 124
+    let anthropic_events = [
+        json!({"type":"message_start","message":{"id":"msg_1","usage":{"input_tokens":17,"output_tokens":0,"extra":deep_usage}}}),
+        json!({"type":"content_block_start","index":0,"content_block":{"type":"tool_use","id":"toolu_1","name":"read","input":{}}}),
+        json!({"type":"content_block_delta","index":0,"delta":{"type":"input_json_delta","partial_json":deep_raw_args}}),
+        json!({"type":"content_block_stop","index":0}),
+        json!({"type":"message_delta","delta":{"stop_reason":"tool_use"},"usage":{"output_tokens":5,"extra":deep_usage}}),
+        json!({"type":"message_stop"}),
+    ]
+    .into_iter()
+    .map(|data| {
+        format!(
+            "event: {}\ndata: {data}\n\n",
+            data.get("type").and_then(Value::as_str).unwrap_or_default()
+        )
+    })
+    .collect::<String>()
+    .into_bytes();
+    let anthropic_final = [
+        json!({"type":"message_start","message":{"id":"msg_2","usage":{"input_tokens":19,"output_tokens":0}}}),
+        json!({"type":"content_block_start","index":0,"content_block":{"type":"text","text":"Done."}}),
+        json!({"type":"content_block_stop","index":0}),
+        json!({"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":4}}),
+        json!({"type":"message_stop"}),
+    ]
+    .into_iter()
+    .map(|data| {
+        format!(
+            "event: {}\ndata: {data}\n\n",
+            data.get("type").and_then(Value::as_str).unwrap_or_default()
+        )
+    })
+    .collect::<String>()
+    .into_bytes();
+    let mut anthropic_server = MockProvider::start(vec![
+        ResponseScript::sse(anthropic_events),
+        ResponseScript::sse(anthropic_final),
+    ])?;
+    let (mut anthropic_agent, anthropic_dir) =
+        f.agent(f.config(&anthropic_server, AdapterKind::AnthropicMessages))?;
+    let (anthropic_report, _) = complete(&mut anthropic_agent)?;
+    assert_eq!(anthropic_report.outcome, Outcome::Completed);
+    assert_eq!(replay(&anthropic_dir)?, *anthropic_agent.conversation());
+    let _state = ResumeState::read(&anthropic_dir)?;
+    drop(anthropic_agent);
+    let _continued = continue_session(&f.paths, &f.project)?;
+    anthropic_server.shutdown()?;
+    Ok(())
+}

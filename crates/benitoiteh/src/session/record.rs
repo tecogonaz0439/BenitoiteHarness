@@ -3,14 +3,21 @@
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Serialize, de::DeserializeOwned};
+use serde_json::Value;
 
 use crate::approval::{ApprovalFacts, ApprovalKind};
 use crate::config::Mode;
 use crate::provider::{
-    AdapterKind, AssistantTurn, Conversation, FinishReason, ProviderError, ToolCall, ToolResult,
-    Usage, UserMessage,
+    AdapterKind, AssistantPart, AssistantTurn, Conversation, FinishReason, Item, ProviderError,
+    ToolCall, ToolResult, Usage, UserMessage,
 };
+
+/// 記録ファイルへ書く `Value` 木の最大深さ。Record の外枠を加えても
+/// `serde_json` の既定の再帰上限（128）に十分収まる値を保つ（設計書 01-05、BH-101）。
+pub(crate) const MAX_RECORD_VALUE_DEPTH: usize = 64;
+// 本変更より前に書かれた、SSE 上限 128 由来の深い既成行を読み直す安全上限。
+const MAX_LEGACY_JSON_DEPTH: usize = 192;
 
 /// 再開用の記録の形式。利用者向けイベントの形式とは別に管理する。
 pub const FORMAT_VERSION: u32 = 2;
@@ -536,5 +543,500 @@ impl Record {
             | Self::Checkpoint(_)
             | Self::Spilled { .. } => {}
         }
+    }
+}
+
+/// 値の入れ子の深さ（Object / Array の最大階層）を反復で数える。
+pub(crate) fn value_depth(value: &Value) -> usize {
+    let mut max = 0_usize;
+    let mut stack = vec![(value, 0_usize)];
+    while let Some((current, depth)) = stack.pop() {
+        match current {
+            Value::Object(fields) => {
+                let next = depth.saturating_add(1);
+                max = max.max(next);
+                for child in fields.values() {
+                    stack.push((child, next));
+                }
+            }
+            Value::Array(items) => {
+                let next = depth.saturating_add(1);
+                max = max.max(next);
+                for child in items {
+                    stack.push((child, next));
+                }
+            }
+            Value::Null | Value::Bool(_) | Value::Number(_) | Value::String(_) => {}
+        }
+    }
+    max
+}
+
+fn prune_deep_value(value: &mut Value, max_depth: usize) {
+    fn prune_at(value: &mut Value, depth: usize, max_depth: usize) {
+        match value {
+            Value::Object(_) | Value::Array(_) if depth >= max_depth => {
+                *value = Value::Null;
+            }
+            Value::Object(fields) => {
+                let next = depth.saturating_add(1);
+                for child in fields.values_mut() {
+                    prune_at(child, next, max_depth);
+                }
+            }
+            Value::Array(items) => {
+                let next = depth.saturating_add(1);
+                for child in items.iter_mut() {
+                    prune_at(child, next, max_depth);
+                }
+            }
+            Value::Null | Value::Bool(_) | Value::Number(_) | Value::String(_) => {}
+        }
+    }
+    prune_at(value, 0, max_depth);
+}
+
+/// 深い `usage.raw` を落として既知の使用量欄だけを保つ（設計書 01-05、BH-101）。
+pub(crate) fn normalize_usage(usage: &mut Usage) {
+    if value_depth(&usage.raw) > MAX_RECORD_VALUE_DEPTH {
+        usage.raw = Value::Null;
+    }
+}
+
+fn sanitize_call(call: &mut ToolCall) {
+    if !call.raw_arguments.is_empty() {
+        // 元の引数文字列から再開時に復元できるため、深い木になり得る構造化値は書かない。
+        call.arguments = Value::Null;
+    } else if value_depth(&call.arguments) > MAX_RECORD_VALUE_DEPTH {
+        call.raw_arguments = call.arguments.to_string();
+        call.arguments = Value::Null;
+    }
+}
+
+fn sanitize_turn(turn: &mut AssistantTurn) {
+    if turn.raw_items.adapter == AdapterKind::AnthropicMessages {
+        for item in &mut turn.raw_items.items {
+            if let Value::Object(fields) = item
+                && fields.get("type").and_then(Value::as_str) == Some("tool_use")
+                && fields
+                    .get("input")
+                    .is_some_and(|input| value_depth(input) > MAX_RECORD_VALUE_DEPTH)
+                && let Some(id) = fields.get("id").and_then(Value::as_str)
+                && turn.parts.iter().any(|part| {
+                    matches!(
+                        part,
+                        AssistantPart::ToolCall(call)
+                            if call.provider_id.as_deref() == Some(id) && !call.raw_arguments.is_empty()
+                    )
+                })
+            {
+                fields.remove("input");
+            }
+        }
+    }
+    for part in &mut turn.parts {
+        match part {
+            AssistantPart::Text(_) => {}
+            AssistantPart::Reasoning(reasoning) => {
+                prune_deep_value(&mut reasoning.opaque, MAX_RECORD_VALUE_DEPTH);
+            }
+            AssistantPart::ToolCall(call) => sanitize_call(call),
+        }
+    }
+    for item in &mut turn.raw_items.items {
+        prune_deep_value(item, MAX_RECORD_VALUE_DEPTH);
+    }
+    normalize_usage(&mut turn.usage);
+}
+
+pub(super) fn sanitize_record(record: &Record) -> Record {
+    let mut sanitized = record.clone();
+    match &mut sanitized {
+        Record::Header(header) => {
+            if let Some(benitoite) = &mut header.benitoite {
+                prune_deep_value(&mut benitoite.build, MAX_RECORD_VALUE_DEPTH);
+            }
+        }
+        Record::Assistant { response, .. } => sanitize_turn(response),
+        Record::ToolCall { call, .. } | Record::ToolStart { call } => sanitize_call(call),
+        Record::TurnEnd { usage, .. } => normalize_usage(usage),
+        Record::Compaction {
+            conversation,
+            usage,
+            ..
+        } => {
+            for item in &mut conversation.items {
+                match item {
+                    Item::AssistantTurn(turn) => sanitize_turn(turn),
+                    Item::UserMessage(_) | Item::ToolResult(_) => {}
+                }
+            }
+            if let Some(usage) = usage {
+                normalize_usage(usage);
+            }
+        }
+        Record::SessionStart { .. }
+        | Record::TurnStart { .. }
+        | Record::User { .. }
+        | Record::WriteTarget { .. }
+        | Record::Approval { .. }
+        | Record::ToolResult { .. }
+        | Record::ImagesRemoved { .. }
+        | Record::ToolResultsPruned { .. }
+        | Record::Retry { .. }
+        | Record::Error { .. }
+        | Record::SessionEnd { .. }
+        | Record::Summary { .. }
+        | Record::ProjectDirChanged { .. }
+        | Record::Branch { .. }
+        | Record::Checkpoint(_)
+        | Record::Spilled { .. } => {}
+    }
+    sanitized
+}
+
+fn restore_call(call: &mut ToolCall) {
+    if call.arguments.is_null() && !call.raw_arguments.is_empty() {
+        call.arguments = serde_json::from_str(&call.raw_arguments).unwrap_or(Value::Null);
+    }
+}
+
+fn restore_turn(turn: &mut AssistantTurn) {
+    for part in &mut turn.parts {
+        match part {
+            AssistantPart::ToolCall(call) => restore_call(call),
+            AssistantPart::Text(_) | AssistantPart::Reasoning(_) => {}
+        }
+    }
+    if turn.raw_items.adapter == AdapterKind::AnthropicMessages {
+        for item in &mut turn.raw_items.items {
+            if let Value::Object(fields) = item
+                && fields.get("type").and_then(Value::as_str) == Some("tool_use")
+                && !fields.contains_key("input")
+                && let Some(id) = fields.get("id").and_then(Value::as_str)
+                && let Some(raw_arguments) = turn.parts.iter().find_map(|part| match part {
+                    AssistantPart::ToolCall(call)
+                        if call.provider_id.as_deref() == Some(id)
+                            && !call.raw_arguments.is_empty() =>
+                    {
+                        Some(call.raw_arguments.as_str())
+                    }
+                    AssistantPart::Text(_)
+                    | AssistantPart::Reasoning(_)
+                    | AssistantPart::ToolCall(_) => None,
+                })
+            {
+                let input = serde_json::from_str::<Value>(raw_arguments)
+                    .unwrap_or_else(|_| serde_json::json!({}));
+                fields.insert("input".to_owned(), input);
+            }
+        }
+    }
+}
+
+pub(super) fn restore_record(record: &mut Record) {
+    match record {
+        Record::Assistant { response, .. } => restore_turn(response),
+        Record::ToolCall { call, .. } | Record::ToolStart { call } => restore_call(call),
+        Record::Compaction { conversation, .. } => {
+            for item in &mut conversation.items {
+                match item {
+                    Item::AssistantTurn(turn) => restore_turn(turn),
+                    Item::UserMessage(_) | Item::ToolResult(_) => {}
+                }
+            }
+        }
+        Record::Header(_)
+        | Record::SessionStart { .. }
+        | Record::TurnStart { .. }
+        | Record::User { .. }
+        | Record::WriteTarget { .. }
+        | Record::Approval { .. }
+        | Record::ToolResult { .. }
+        | Record::ImagesRemoved { .. }
+        | Record::ToolResultsPruned { .. }
+        | Record::Retry { .. }
+        | Record::Error { .. }
+        | Record::TurnEnd { .. }
+        | Record::SessionEnd { .. }
+        | Record::Summary { .. }
+        | Record::ProjectDirChanged { .. }
+        | Record::Branch { .. }
+        | Record::Checkpoint(_)
+        | Record::Spilled { .. } => {}
+    }
+}
+
+fn json_nesting_depth(bytes: &[u8]) -> usize {
+    let mut depth = 0_usize;
+    let mut max = 0_usize;
+    let mut in_string = false;
+    let mut escaped = false;
+    for &byte in bytes {
+        if in_string {
+            if escaped {
+                escaped = false;
+            } else if byte == b'\\' {
+                escaped = true;
+            } else if byte == b'"' {
+                in_string = false;
+            }
+            continue;
+        }
+        match byte {
+            b'"' => in_string = true,
+            b'{' | b'[' => {
+                depth = depth.saturating_add(1);
+                max = max.max(depth);
+            }
+            b'}' | b']' => {
+                depth = depth.saturating_sub(1);
+            }
+            _ => {}
+        }
+    }
+    max
+}
+
+fn skip_ws(bytes: &[u8], pos: &mut usize) {
+    while matches!(bytes.get(*pos), Some(b' ' | b'\t' | b'\n' | b'\r')) {
+        *pos = pos.saturating_add(1);
+    }
+}
+
+fn scan_string(bytes: &[u8], pos: &mut usize) -> serde_json::Result<String> {
+    let start = *pos;
+    if bytes.get(start) != Some(&b'"') {
+        return Err(serde::de::Error::custom("expected JSON string"));
+    }
+    *pos = start.saturating_add(1);
+    let mut escaped = false;
+    while let Some(&byte) = bytes.get(*pos) {
+        *pos = pos.saturating_add(1);
+        if escaped {
+            escaped = false;
+        } else if byte == b'\\' {
+            escaped = true;
+        } else if byte == b'"' {
+            let slice = bytes
+                .get(start..*pos)
+                .ok_or_else(|| serde::de::Error::custom("invalid JSON string slice"))?;
+            return serde_json::from_slice(slice);
+        }
+    }
+    Err(serde::de::Error::custom("unterminated JSON string"))
+}
+
+fn scan_scalar(bytes: &[u8], pos: &mut usize) -> serde_json::Result<Value> {
+    let start = *pos;
+    while let Some(&byte) = bytes.get(*pos) {
+        if matches!(byte, b' ' | b'\t' | b'\n' | b'\r' | b',' | b'}' | b']') {
+            break;
+        }
+        *pos = pos.saturating_add(1);
+    }
+    if *pos == start {
+        return Err(serde::de::Error::custom("expected JSON value"));
+    }
+    let slice = bytes
+        .get(start..*pos)
+        .ok_or_else(|| serde::de::Error::custom("invalid JSON scalar slice"))?;
+    serde_json::from_slice(slice)
+}
+
+enum ObjectState {
+    KeyOrEnd { first: bool },
+    Value(String),
+    CommaOrEnd,
+}
+
+enum DeepFrame {
+    Array {
+        items: Vec<Value>,
+        comma_or_end: bool,
+    },
+    Object {
+        map: serde_json::Map<String, Value>,
+        state: ObjectState,
+    },
+}
+
+fn deliver_value(
+    stack: &mut [DeepFrame],
+    root: &mut Option<Value>,
+    value: Value,
+) -> serde_json::Result<()> {
+    match stack.last_mut() {
+        Some(DeepFrame::Array {
+            items,
+            comma_or_end,
+        }) => {
+            items.push(value);
+            *comma_or_end = true;
+            Ok(())
+        }
+        Some(DeepFrame::Object { map, state }) => {
+            let ObjectState::Value(key) = std::mem::replace(state, ObjectState::CommaOrEnd) else {
+                return Err(serde::de::Error::custom("unexpected JSON value in object"));
+            };
+            map.insert(key, value);
+            Ok(())
+        }
+        None => {
+            *root = Some(value);
+            Ok(())
+        }
+    }
+}
+
+fn parse_deep_value(bytes: &[u8]) -> serde_json::Result<Value> {
+    let mut stack = Vec::new();
+    let mut root: Option<Value> = None;
+    let mut pos = 0_usize;
+
+    loop {
+        if stack.is_empty()
+            && let Some(value) = root.take()
+        {
+            skip_ws(bytes, &mut pos);
+            if pos == bytes.len() {
+                return Ok(value);
+            }
+            return Err(serde::de::Error::custom("trailing JSON characters"));
+        }
+
+        match stack.last_mut() {
+            Some(DeepFrame::Array {
+                comma_or_end: true, ..
+            }) => {
+                skip_ws(bytes, &mut pos);
+                match bytes.get(pos) {
+                    Some(b',') => {
+                        pos = pos.saturating_add(1);
+                        if let Some(DeepFrame::Array { comma_or_end, .. }) = stack.last_mut() {
+                            *comma_or_end = false;
+                        }
+                    }
+                    Some(b']') => {
+                        pos = pos.saturating_add(1);
+                        if let Some(DeepFrame::Array { items, .. }) = stack.pop() {
+                            deliver_value(&mut stack, &mut root, Value::Array(items))?;
+                        }
+                        continue;
+                    }
+                    _ => return Err(serde::de::Error::custom("expected ',' or ']' in array")),
+                }
+            }
+            Some(DeepFrame::Array {
+                items,
+                comma_or_end: false,
+            }) => {
+                skip_ws(bytes, &mut pos);
+                if items.is_empty() && bytes.get(pos) == Some(&b']') {
+                    pos = pos.saturating_add(1);
+                    if let Some(DeepFrame::Array { items, .. }) = stack.pop() {
+                        deliver_value(&mut stack, &mut root, Value::Array(items))?;
+                    }
+                    continue;
+                }
+            }
+            Some(DeepFrame::Object {
+                state: ObjectState::KeyOrEnd { first },
+                ..
+            }) => {
+                let first = *first;
+                skip_ws(bytes, &mut pos);
+                match bytes.get(pos) {
+                    Some(b'}') if first => {
+                        pos = pos.saturating_add(1);
+                        if let Some(DeepFrame::Object { map, .. }) = stack.pop() {
+                            deliver_value(&mut stack, &mut root, Value::Object(map))?;
+                        }
+                        continue;
+                    }
+                    Some(b'"') => {
+                        let key = scan_string(bytes, &mut pos)?;
+                        skip_ws(bytes, &mut pos);
+                        if bytes.get(pos) != Some(&b':') {
+                            return Err(serde::de::Error::custom("expected ':' after object key"));
+                        }
+                        pos = pos.saturating_add(1);
+                        if let Some(DeepFrame::Object { state, .. }) = stack.last_mut() {
+                            *state = ObjectState::Value(key);
+                        }
+                    }
+                    _ => return Err(serde::de::Error::custom("expected object key or '}'")),
+                }
+            }
+            Some(DeepFrame::Object {
+                state: ObjectState::CommaOrEnd,
+                ..
+            }) => {
+                skip_ws(bytes, &mut pos);
+                match bytes.get(pos) {
+                    Some(b',') => {
+                        pos = pos.saturating_add(1);
+                        if let Some(DeepFrame::Object { state, .. }) = stack.last_mut() {
+                            *state = ObjectState::KeyOrEnd { first: false };
+                        }
+                        continue;
+                    }
+                    Some(b'}') => {
+                        pos = pos.saturating_add(1);
+                        if let Some(DeepFrame::Object { map, .. }) = stack.pop() {
+                            deliver_value(&mut stack, &mut root, Value::Object(map))?;
+                        }
+                        continue;
+                    }
+                    _ => return Err(serde::de::Error::custom("expected ',' or '}' in object")),
+                }
+            }
+            Some(DeepFrame::Object {
+                state: ObjectState::Value(_),
+                ..
+            })
+            | None => {}
+        }
+
+        skip_ws(bytes, &mut pos);
+        match bytes.get(pos) {
+            Some(b'{') => {
+                if stack.len() >= MAX_LEGACY_JSON_DEPTH {
+                    return Err(serde::de::Error::custom("JSON recursion limit exceeded"));
+                }
+                pos = pos.saturating_add(1);
+                stack.push(DeepFrame::Object {
+                    map: serde_json::Map::new(),
+                    state: ObjectState::KeyOrEnd { first: true },
+                });
+            }
+            Some(b'[') => {
+                if stack.len() >= MAX_LEGACY_JSON_DEPTH {
+                    return Err(serde::de::Error::custom("JSON recursion limit exceeded"));
+                }
+                pos = pos.saturating_add(1);
+                stack.push(DeepFrame::Array {
+                    items: Vec::new(),
+                    comma_or_end: false,
+                });
+            }
+            Some(b'"') => {
+                let text = scan_string(bytes, &mut pos)?;
+                deliver_value(&mut stack, &mut root, Value::String(text))?;
+            }
+            _ => {
+                let value = scan_scalar(bytes, &mut pos)?;
+                deliver_value(&mut stack, &mut root, value)?;
+            }
+        }
+    }
+}
+
+pub(super) fn deserialize_json<T: DeserializeOwned>(bytes: &[u8]) -> serde_json::Result<T> {
+    let depth = json_nesting_depth(bytes);
+    if depth <= 120 || depth > MAX_LEGACY_JSON_DEPTH {
+        serde_json::from_slice(bytes)
+    } else {
+        serde_json::from_value(parse_deep_value(bytes)?)
     }
 }

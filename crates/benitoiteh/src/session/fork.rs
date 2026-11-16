@@ -403,7 +403,7 @@ fn select(
 
 // 分割記録の名前は固定長の乱数なので、作成前にも実際の保存量を数えられる。
 fn stored_size(record: &Record) -> Result<u64, SessionError> {
-    let bytes = serde_json::to_vec(record)?.len();
+    let bytes = super::storage::encode_record(record)?.len();
     let size = if bytes >= super::MAX_BYTES {
         let parts = (0..bytes.div_ceil(super::MAX_BYTES))
             .map(|index| PathBuf::from(format!("spill/record-0000000000000000-{index}.json")))
