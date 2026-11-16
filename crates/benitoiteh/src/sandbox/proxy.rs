@@ -52,6 +52,7 @@ pub struct NetworkGate {
     allowed: BTreeSet<String>,
     session: Mutex<BTreeSet<String>>,
     prompts: Mutex<Option<Sender<ApprovalPrompt>>>,
+    prompts_wake: Mutex<Option<Arc<dyn Fn() + Send + Sync>>>,
     ask: bool,
     asking: Mutex<()>,
     resolve: Resolve,
@@ -75,6 +76,7 @@ impl NetworkGate {
             allowed,
             session: Mutex::new(BTreeSet::new()),
             prompts: Mutex::new(None),
+            prompts_wake: Mutex::new(None),
             ask,
             asking: Mutex::new(()),
             resolve: Arc::new(|host, port| (host, port).to_socket_addrs().map(Iterator::collect)),
@@ -92,7 +94,19 @@ impl NetworkGate {
 
     /// 対話の画面へ確認を送る口をつなぐ。つながっていなければ、一覧にないドメインを断る。
     pub fn connect_prompts(&self, prompts: Sender<ApprovalPrompt>) {
+        self.connect_prompts_with_wake(prompts, None);
+    }
+
+    pub(crate) fn connect_prompts_with_wake(
+        &self,
+        prompts: Sender<ApprovalPrompt>,
+        wake: Option<Arc<dyn Fn() + Send + Sync>>,
+    ) {
         *self.prompts.lock().unwrap_or_else(PoisonError::into_inner) = Some(prompts);
+        *self
+            .prompts_wake
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner) = wake;
     }
 
     fn connect(&self, host: &str, port: u16) -> Result<TcpStream, Denied> {
@@ -273,6 +287,16 @@ impl ProxyRun {
         };
         if prompts.send(ApprovalPrompt { request, reply }).is_err() {
             return Err(Denied::NotAllowed);
+        }
+        let wake = self
+            .gate
+            .prompts_wake
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .as_ref()
+            .map(Arc::clone);
+        if let Some(wake) = wake {
+            wake();
         }
         // コマンドが終われば答えを待たない。後から届いた答えは、どの許可にも加えない。
         let answer = loop {

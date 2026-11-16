@@ -668,7 +668,7 @@ impl Agent {
             .as_ref()
             .and_then(|shell| shell.network.as_ref())
         {
-            gate.connect_prompts(approver.prompts());
+            gate.connect_prompts_with_wake(approver.prompts(), approver.wake());
         }
         self.with_approver(Box::new(approver))
     }

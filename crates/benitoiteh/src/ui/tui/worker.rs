@@ -13,7 +13,7 @@ use crate::rewind::{CheckpointInfo, RewindError, RewindReport, RewindScope};
 use crate::session::{Record, Session};
 use crate::session::{Summary, TokenCounts};
 
-use super::{Screen, selection::PendingMove};
+use super::{Screen, WakeNotifier, selection::PendingMove};
 
 // Agent の変更はすべて同じ働き手で直列に行う（設計書 06-01「スレッドと非同期」）。
 enum Job {
@@ -93,12 +93,13 @@ impl RunControl {
 /// 依頼ごとの取り消しと、上限付きイベント列の受け口。
 pub struct Worker {
     jobs: Option<mpsc::SyncSender<Job>>,
-    events: mpsc::Receiver<AgentEvent>,
+    events: Option<mpsc::Receiver<AgentEvent>>,
     completions: mpsc::Receiver<Completion>,
     control: Option<RunControl>,
     steering: Option<mpsc::Sender<String>>,
     pending_steering: std::collections::VecDeque<String>,
     thread: Option<JoinHandle<()>>,
+    relay: Option<JoinHandle<()>>,
     approvals: Option<mpsc::Receiver<crate::approval::ApprovalPrompt>>,
     secrets: Option<mpsc::Receiver<crate::askpass::Prompt>>,
     askpass: Option<Arc<crate::askpass::Broker>>,
@@ -111,14 +112,46 @@ pub struct Worker {
 
 impl Worker {
     /// Agent とセッションを移し、仕事が届くまで待つ。
-    pub fn start(mut agent: Agent, session: Session) -> io::Result<Self> {
+    pub fn start(agent: Agent, session: Session) -> io::Result<Self> {
+        Self::start_with_wake(agent, session, None)
+    }
+
+    /// Agent・完了・秘密の通知を送り出した直後に UI の待ちを起こす通知口付きで起動する（BH-106）。
+    pub fn start_with_wake(
+        mut agent: Agent,
+        session: Session,
+        wake: Option<WakeNotifier>,
+    ) -> io::Result<Self> {
         let (jobs, requests) = mpsc::sync_channel(1);
-        let (events, receiver) = mpsc::sync_channel(64);
+        let (events, raw_receiver) = mpsc::sync_channel(64);
+        let (receiver, relay) = match &wake {
+            Some(wake) => {
+                let (waking_events, waking_receiver) = mpsc::sync_channel(64);
+                let relay_wake = wake.clone();
+                let handle = thread::Builder::new()
+                    .name("agent-wake".into())
+                    .spawn(move || {
+                        while let Ok(event) = raw_receiver.recv() {
+                            if waking_events.send(event).is_err() {
+                                break;
+                            }
+                            relay_wake.notify();
+                        }
+                    })?;
+                (waking_receiver, Some(handle))
+            }
+            None => (raw_receiver, None),
+        };
         let (done, completions) = mpsc::sync_channel(1);
         let status = agent.status();
         let session_directory = session.directory().to_path_buf();
         let secrets = agent.take_secret_requests();
         let askpass = agent.askpass_broker();
+        if let (Some(broker), Some(wake)) = (&askpass, &wake) {
+            let wake = wake.clone();
+            broker.set_wake(Arc::new(move || wake.notify()));
+        }
+        let completion_wake = wake;
         let thread = thread::Builder::new().name("agent".into()).spawn(move || {
             let mut tokens = TokenCounts::default();
             while let Ok(job) = requests.recv() {
@@ -225,16 +258,20 @@ impl Worker {
                 if done.send(completion).is_err() {
                     break;
                 }
+                if let Some(wake) = &completion_wake {
+                    wake.notify();
+                }
             }
         })?;
         Ok(Self {
             jobs: Some(jobs),
-            events: receiver,
+            events: Some(receiver),
             completions,
             control: None,
             steering: None,
             pending_steering: std::collections::VecDeque::new(),
             thread: Some(thread),
+            relay,
             approvals: None,
             secrets,
             askpass,
@@ -457,6 +494,15 @@ impl Worker {
         screen.event(&event);
     }
 
+    fn drain_events(&mut self, screen: &mut Screen) -> bool {
+        let mut changed = false;
+        while let Some(event) = self.events.as_ref().and_then(|rx| rx.try_recv().ok()) {
+            self.event(screen, event);
+            changed = true;
+        }
+        changed
+    }
+
     /// 処理中かどうか。
     pub fn is_running(&self) -> bool {
         self.control.is_some()
@@ -464,17 +510,11 @@ impl Worker {
 
     /// その時点で届いたイベントをすべて読む。終了前にも必ず呼び続ける。
     pub fn drain(&mut self, screen: &mut Screen) -> Result<bool, AgentError> {
-        let mut changed = false;
-        while let Ok(event) = self.events.try_recv() {
-            self.event(screen, event);
-            changed = true;
-        }
+        let mut changed = self.drain_events(screen);
         match self.completions.try_recv() {
             Ok(completion) => {
                 // 別のチャネルの完了が、最後のイベントの受信より先に見える場合を処理する。
-                while let Ok(event) = self.events.try_recv() {
-                    self.event(screen, event);
-                }
+                let _more = self.drain_events(screen);
                 screen.complete(completion.estimate);
                 self.control = None;
                 // 受け口が閉じる前に UI の送り手を外す。
@@ -548,9 +588,7 @@ impl Worker {
             && let Some(requests) = &self.secrets
             && let Some(prompt) = next_open_secret(requests)
         {
-            while let Ok(event) = self.events.try_recv() {
-                self.event(screen, event);
-            }
+            let _more = self.drain_events(screen);
             screen.open_secret(prompt);
             changed = true;
         }
@@ -559,9 +597,7 @@ impl Worker {
             && let Ok(prompt) = requests.try_recv()
         {
             // 確認の要求より先に送られたイベントを必ず表示へ反映する。
-            while let Ok(event) = self.events.try_recv() {
-                self.event(screen, event);
-            }
+            let _more = self.drain_events(screen);
             screen.open_approval(prompt);
             changed = true;
         }
@@ -573,6 +609,11 @@ impl Worker {
         self.jobs.take();
         if let Some(thread) = self.thread.take() {
             thread.join().map_err(|_| AgentError::Worker)?;
+        }
+        // 中継スレッドが満杯の送信用チャネルで待たないよう、受信側を先に手放す。
+        self.events.take();
+        if let Some(relay) = self.relay.take() {
+            relay.join().map_err(|_| AgentError::Worker)?;
         }
         Ok(())
     }

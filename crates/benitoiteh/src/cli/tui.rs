@@ -1,33 +1,215 @@
 //! 対話の起動だけが端末の有無と大きさを調べる（設計書 05-01、05-02）。
 
+use std::collections::VecDeque;
 use std::io::{self, IsTerminal};
-use std::sync::Arc;
+use std::sync::{Arc, Condvar, Mutex, PoisonError};
+use std::time::{Duration, Instant};
+
+use rustix::event::{PollFd, PollFlags, Timespec, poll};
 
 use crate::config::paths::DataPaths;
 use crate::ui::tui::{
-    InputSource, RunControl, Screen, TerminalGuard, TerminalRestore, TuiError, Worker,
+    InputSource, RunControl, Screen, TerminalGuard, TerminalRestore, TuiError, WakeNotifier,
+    WakeReceiver, Worker, wake_channel,
 };
 
 use super::{CliError, args::ExecArgs, exec, panic, signals::Signals, text};
 
+#[derive(Default)]
+struct ReaderControl {
+    paused: bool,
+    polling: bool,
+    stop: bool,
+}
+
+struct InputShared {
+    control: Mutex<ReaderControl>,
+    condvar: Condvar,
+    queue: Mutex<VecDeque<(crossterm::event::Event, Instant)>>,
+    error: Mutex<Option<io::Error>>,
+}
+
+struct ReaderPause<'a>(&'a InputShared);
+
+impl Drop for ReaderPause<'_> {
+    fn drop(&mut self) {
+        let mut ctrl = self
+            .0
+            .control
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        ctrl.paused = false;
+        self.0.condvar.notify_all();
+    }
+}
+
+fn read_crossterm_batch() -> io::Result<Vec<(crossterm::event::Event, Instant)>> {
+    let mut batch = Vec::new();
+    let ready = match crossterm::event::poll(Duration::from_millis(25)) {
+        Ok(ready) => ready,
+        Err(error) if error.kind() == io::ErrorKind::Interrupted => return Ok(batch),
+        Err(error) => return Err(error),
+    };
+    if ready {
+        batch.push((crossterm::event::read()?, Instant::now()));
+        while crossterm::event::poll(Duration::ZERO)? {
+            batch.push((crossterm::event::read()?, Instant::now()));
+        }
+    }
+    Ok(batch)
+}
+
+fn keep_after_present(event: &crossterm::event::Event) -> bool {
+    matches!(event, crossterm::event::Event::Resize(_, _))
+        || matches!(
+            event,
+            crossterm::event::Event::Key(key)
+                if key.kind == crossterm::event::KeyEventKind::Press
+                    && key
+                        .modifiers
+                        .contains(crossterm::event::KeyModifiers::CONTROL)
+                    && matches!(key.code, crossterm::event::KeyCode::Char('c' | 'C'))
+        )
+}
+
 struct TerminalInput<'a> {
     signals: &'a mut Signals,
+    worker_wake_rx: WakeReceiver,
+    worker_wake_tx: WakeNotifier,
+    input_wake_rx: WakeReceiver,
+    shared: Arc<InputShared>,
+    reader: Option<std::thread::JoinHandle<()>>,
+}
+
+impl<'a> TerminalInput<'a> {
+    fn new(signals: &'a mut Signals) -> io::Result<Self> {
+        let (worker_wake_tx, worker_wake_rx) = wake_channel()?;
+        let (input_wake_tx, input_wake_rx) = wake_channel()?;
+        let shared = Arc::new(InputShared {
+            control: Mutex::new(ReaderControl::default()),
+            condvar: Condvar::new(),
+            queue: Mutex::new(VecDeque::new()),
+            error: Mutex::new(None),
+        });
+        let reader_shared = Arc::clone(&shared);
+        let reader = std::thread::Builder::new()
+            .name("tui-input".into())
+            .spawn(move || {
+                loop {
+                    {
+                        let mut ctrl = reader_shared
+                            .control
+                            .lock()
+                            .unwrap_or_else(PoisonError::into_inner);
+                        while ctrl.paused && !ctrl.stop {
+                            ctrl = reader_shared
+                                .condvar
+                                .wait(ctrl)
+                                .unwrap_or_else(PoisonError::into_inner);
+                        }
+                        if ctrl.stop {
+                            break;
+                        }
+                        ctrl.polling = true;
+                    }
+                    let result = read_crossterm_batch();
+                    {
+                        let mut ctrl = reader_shared
+                            .control
+                            .lock()
+                            .unwrap_or_else(PoisonError::into_inner);
+                        ctrl.polling = false;
+                        reader_shared.condvar.notify_all();
+                    }
+                    match result {
+                        Ok(batch) if !batch.is_empty() => {
+                            let mut queue = reader_shared
+                                .queue
+                                .lock()
+                                .unwrap_or_else(PoisonError::into_inner);
+                            queue.extend(batch);
+                            drop(queue);
+                            input_wake_tx.notify();
+                        }
+                        Ok(_) => {}
+                        Err(error) => {
+                            *reader_shared
+                                .error
+                                .lock()
+                                .unwrap_or_else(PoisonError::into_inner) = Some(error);
+                            input_wake_tx.notify();
+                            break;
+                        }
+                    }
+                }
+            })?;
+        Ok(Self {
+            signals,
+            worker_wake_rx,
+            worker_wake_tx,
+            input_wake_rx,
+            shared,
+            reader: Some(reader),
+        })
+    }
+
+    fn pause_reader(&self) -> ReaderPause<'_> {
+        let mut ctrl = self
+            .shared
+            .control
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        ctrl.paused = true;
+        while ctrl.polling {
+            ctrl = self
+                .shared
+                .condvar
+                .wait(ctrl)
+                .unwrap_or_else(PoisonError::into_inner);
+        }
+        ReaderPause(&self.shared)
+    }
+}
+
+impl Drop for TerminalInput<'_> {
+    fn drop(&mut self) {
+        {
+            let mut ctrl = self
+                .shared
+                .control
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner);
+            ctrl.stop = true;
+            ctrl.paused = false;
+            self.shared.condvar.notify_all();
+        }
+        if let Some(reader) = self.reader.take() {
+            let _joined = reader.join();
+        }
+    }
 }
 
 impl InputSource for TerminalInput<'_> {
+    fn worker_waker(&self) -> Option<WakeNotifier> {
+        Some(self.worker_wake_tx.clone())
+    }
+    fn clear_worker_wake(&mut self) {
+        self.worker_wake_rx.drain();
+    }
     fn termination_count(&mut self) -> io::Result<usize> {
         self.signals.termination_count()
     }
     /// raw のモードを戻してエディタを動かし、終えたら raw に戻して残った入力を捨てる
     /// （設計書 05-02「入力の操作」）。
     fn suspend(&mut self, task: &mut dyn FnMut() -> io::Result<bool>) -> io::Result<bool> {
+        let _pause = self.pause_reader();
         crossterm::terminal::disable_raw_mode()?;
         let result = task();
         crossterm::terminal::enable_raw_mode()?;
         rustix::termios::tcflush(io::stdin(), rustix::termios::QueueSelector::IFlush)?;
         result
     }
-    fn poll(&mut self, wait: std::time::Duration) -> io::Result<Vec<crossterm::event::Event>> {
+    fn poll(&mut self, wait: Duration) -> io::Result<Vec<crossterm::event::Event>> {
         Ok(self
             .poll_timed(wait)?
             .into_iter()
@@ -36,25 +218,87 @@ impl InputSource for TerminalInput<'_> {
     }
     fn poll_timed(
         &mut self,
-        wait: std::time::Duration,
-    ) -> io::Result<Vec<(crossterm::event::Event, std::time::Instant)>> {
-        let mut events = Vec::new();
-        if crossterm::event::poll(wait)? {
-            events.push((crossterm::event::read()?, std::time::Instant::now()));
-            while crossterm::event::poll(std::time::Duration::ZERO)? {
-                events.push((crossterm::event::read()?, std::time::Instant::now()));
+        wait: Duration,
+    ) -> io::Result<Vec<(crossterm::event::Event, Instant)>> {
+        let mut wake_worker = false;
+        let deadline = Instant::now().checked_add(wait);
+        loop {
+            self.input_wake_rx.drain();
+            {
+                let mut queue = self
+                    .shared
+                    .queue
+                    .lock()
+                    .unwrap_or_else(PoisonError::into_inner);
+                if !queue.is_empty() {
+                    return Ok(queue.drain(..).collect());
+                }
+            }
+            if let Some(error) = self
+                .shared
+                .error
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .take()
+            {
+                return Err(error);
+            }
+            if wake_worker {
+                return Ok(Vec::new());
+            }
+            let remaining = deadline.map_or(Duration::ZERO, |end| {
+                end.saturating_duration_since(Instant::now())
+            });
+            if remaining.is_zero() {
+                return Ok(Vec::new());
+            }
+            let timeout = Timespec::try_from(remaining).map_err(|_| io::Error::other("timeout"))?;
+            let signal_fd = self.signals.wake_fd();
+            let mut fds = Vec::with_capacity(3);
+            fds.push(PollFd::new(&self.input_wake_rx, PollFlags::IN));
+            fds.push(PollFd::new(&self.worker_wake_rx, PollFlags::IN));
+            if let Some(signal_fd) = &signal_fd {
+                fds.push(PollFd::new(signal_fd, PollFlags::IN));
+            }
+            match poll(&mut fds, Some(&timeout)) {
+                Ok(_) => {
+                    let input_ready = fds.first().is_some_and(|fd| !fd.revents().is_empty());
+                    wake_worker = fds
+                        .get(1..)
+                        .unwrap_or_default()
+                        .iter()
+                        .any(|fd| !fd.revents().is_empty());
+                    if !input_ready {
+                        return Ok(Vec::new());
+                    }
+                }
+                Err(rustix::io::Errno::INTR) => return Ok(Vec::new()),
+                Err(error) => return Err(error.into()),
             }
         }
-        Ok(events)
     }
-    fn discard_pending(
-        &mut self,
-    ) -> io::Result<Vec<(crossterm::event::Event, std::time::Instant)>> {
-        // OS の待ち行列を先に捨て、次に crossterm の読み込み済みの列を空にする。
+    fn discard_pending(&mut self) -> io::Result<Vec<(crossterm::event::Event, Instant)>> {
+        // 先に入力スレッドを止めたうえで OS の待ち行列・キュー・内部バッファを順に捨てる。
+        let _pause = self.pause_reader();
+        let mut kept: Vec<_> = {
+            let mut queue = self
+                .shared
+                .queue
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner);
+            queue
+                .drain(..)
+                .filter(|(event, _)| keep_after_present(event))
+                .collect()
+        };
         rustix::termios::tcflush(io::stdin(), rustix::termios::QueueSelector::IFlush)?;
-        Ok(self.poll_timed(std::time::Duration::ZERO)?.into_iter().filter(|(event, _)| {
-            matches!(event, crossterm::event::Event::Resize(_, _)) || matches!(event, crossterm::event::Event::Key(key) if key.kind == crossterm::event::KeyEventKind::Press && key.modifiers.contains(crossterm::event::KeyModifiers::CONTROL) && matches!(key.code, crossterm::event::KeyCode::Char('c' | 'C')))
-        }).collect())
+        while crossterm::event::poll(Duration::ZERO)? {
+            let event = crossterm::event::read()?;
+            if keep_after_present(&event) {
+                kept.push((event, Instant::now()));
+            }
+        }
+        Ok(kept)
     }
 }
 
@@ -107,13 +351,16 @@ fn run_interactive(args: ExecArgs, signals: &mut Signals) -> Result<u8, CliError
         let ask = |screen: &mut Screen| {
             let mut shared = shared.borrow_mut();
             let (signals, output, error) = &mut *shared;
-            match crate::ui::tui::confirm(
-                screen,
-                &mut TerminalInput { signals },
-                output,
-                &terminated,
-                |rows| restore.set_rows_below(rows),
-            ) {
+            let mut input = match TerminalInput::new(signals) {
+                Ok(input) => input,
+                Err(failure) => {
+                    *error = Some(failure);
+                    return false;
+                }
+            };
+            match crate::ui::tui::confirm(screen, &mut input, output, &terminated, |rows| {
+                restore.set_rows_below(rows)
+            }) {
                 Ok(answer) => answer,
                 Err(failure) => {
                     *error = Some(failure);
@@ -194,10 +441,20 @@ fn run_interactive(args: ExecArgs, signals: &mut Signals) -> Result<u8, CliError
         }
         screen.draw(&mut output, None).map_err(CliError::Output)?;
         restore.set_rows_below(screen.rows_below_cursor());
-        let (approver, approvals) = crate::approval::InteractiveApprover::channel();
-        let mut worker = Worker::start(agent.with_interactive_approver(approver), session)
-            .map_err(CliError::Output)?
-            .with_approval_requests(approvals);
+        let mut input = TerminalInput::new(signals).map_err(CliError::Output)?;
+        let worker_wake = input.worker_waker();
+        let (mut approver, approvals) = crate::approval::InteractiveApprover::channel();
+        if let Some(wake) = &worker_wake {
+            let wake = wake.clone();
+            approver = approver.with_wake(Arc::new(move || wake.notify()));
+        }
+        let mut worker = Worker::start_with_wake(
+            agent.with_interactive_approver(approver),
+            session,
+            worker_wake,
+        )
+        .map_err(CliError::Output)?
+        .with_approval_requests(approvals);
         if let super::args::Request::Text(request) = &args.request
             && !request.trim().is_empty()
         {
@@ -209,7 +466,7 @@ fn run_interactive(args: ExecArgs, signals: &mut Signals) -> Result<u8, CliError
         let result = crate::ui::tui::run(
             &mut screen,
             worker,
-            &mut TerminalInput { signals },
+            &mut input,
             &mut output,
             &terminated,
             |rows| restore.set_rows_below(rows),

@@ -1,6 +1,7 @@
 //! シグナルの通知をループの取り消しの印へつなぐ（設計書 05-01「終了状態」）。
 
 use std::io::{self, Read};
+use std::os::fd::{AsFd, BorrowedFd};
 use std::os::unix::net::UnixStream;
 use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
@@ -90,6 +91,11 @@ impl Signals {
             }
         }
         Ok(self.received_count)
+    }
+
+    /// 対話の待ちで `poll` へ渡す通知の記述子。
+    pub(super) fn wake_fd(&self) -> Option<BorrowedFd<'_>> {
+        self.received.as_ref().map(AsFd::as_fd)
     }
 }
 

@@ -97,12 +97,26 @@ impl Default for State {
         }
     }
 }
+type WakeCallback = Arc<dyn Fn() + Send + Sync>;
+
+fn notify_wake(wake: &Mutex<Option<WakeCallback>>) {
+    let callback = wake
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+        .as_ref()
+        .map(Arc::clone);
+    if let Some(callback) = callback {
+        callback();
+    }
+}
+
 struct CallState {
     active: Arc<AtomicBool>,
     token: Zeroizing<String>,
     facts: Facts,
     rolling_base: Zeroizing<u64>,
     state: Mutex<State>,
+    wake: Arc<Mutex<Option<WakeCallback>>>,
 }
 
 /// 実行の間だけ有効な合言葉と、平文を保持しない結果の処理。
@@ -163,6 +177,7 @@ impl crate::sandbox::run::RunPause for CallGuard {
             .lock()
             .unwrap_or_else(PoisonError::into_inner);
         self.call.active.store(false, Ordering::Release);
+        notify_wake(&self.call.wake);
     }
 }
 impl Drop for CallGuard {
@@ -220,6 +235,7 @@ pub struct Broker {
     current: Arc<Mutex<Option<Arc<CallState>>>>,
     receiver: Mutex<Option<mpsc::Receiver<Prompt>>>,
     stop: Arc<StopSignal>,
+    wake: Arc<Mutex<Option<WakeCallback>>>,
     thread: Mutex<Option<JoinHandle<()>>>,
 }
 impl std::fmt::Debug for Broker {
@@ -326,6 +342,7 @@ impl Broker {
             current: Arc::new(Mutex::new(None)),
             receiver: Mutex::new(None),
             stop: Arc::new(StopSignal::default()),
+            wake: Arc::new(Mutex::new(None)),
             thread: Mutex::new(None),
         };
         // リンクとソケットの前に置く。失敗すれば broker の Drop が子を消す。
@@ -353,6 +370,7 @@ impl Broker {
         listener.set_nonblocking(true)?;
         let stop = Arc::clone(&self.stop);
         let current = Arc::clone(&self.current);
+        let wake = Arc::clone(&self.wake);
         let (sender, receiver) = mpsc::channel();
         self.receiver = Mutex::new(Some(receiver));
         let thread = thread::Builder::new()
@@ -363,6 +381,7 @@ impl Broker {
                     &current,
                     &sender,
                     &stop,
+                    &wake,
                 );
             })?;
         *self.thread.lock().unwrap_or_else(PoisonError::into_inner) = Some(thread);
@@ -438,6 +457,10 @@ impl Broker {
             .unwrap_or_else(PoisonError::into_inner)
             .take()
     }
+    /// 秘密の求めを送ったとき、画面の入力待ちを即座に起こす通知先を設定する。
+    pub(crate) fn set_wake(&self, wake: WakeCallback) {
+        *self.wake.lock().unwrap_or_else(PoisonError::into_inner) = Some(wake);
+    }
     pub(crate) fn begin(&self, facts: Facts) -> Result<Option<CallGuard>, AskpassError> {
         if !self.valid_directory() || self.stop.load(Ordering::Acquire) {
             return Err(AskpassError::ChangedDirectory);
@@ -461,6 +484,7 @@ impl Broker {
             facts,
             rolling_base,
             state: Mutex::new(State::default()),
+            wake: Arc::clone(&self.wake),
         });
         let mut current = self.current.lock().unwrap_or_else(PoisonError::into_inner);
         if let Some(previous) = current.replace(Arc::clone(&call)) {
@@ -611,11 +635,12 @@ fn accept_loop(
     current: &Mutex<Option<Arc<CallState>>>,
     sender: &mpsc::Sender<Prompt>,
     stop: &StopSignal,
+    wake: &Mutex<Option<WakeCallback>>,
 ) {
     while !stop.load(Ordering::Acquire) {
         match accept() {
             Ok(mut stream) => {
-                let _handled = serve(&mut stream, current, sender, stop);
+                let _handled = serve(&mut stream, current, sender, stop, wake);
             }
             Err(error)
                 if matches!(
@@ -659,6 +684,7 @@ fn serve(
     current: &Mutex<Option<Arc<CallState>>>,
     sender: &mpsc::Sender<Prompt>,
     stop: &StopSignal,
+    wake: &Mutex<Option<WakeCallback>>,
 ) -> io::Result<()> {
     stream.set_nonblocking(false)?;
     stream.set_read_timeout(Some(Duration::from_secs(5)))?;
@@ -715,6 +741,9 @@ fn serve(
             outcome: Arc::clone(&result),
         })
         .is_ok();
+    if sent {
+        notify_wake(wake);
+    }
     let mut outcome = "cancelled";
     let mut answer = None;
     while sent && call.active.load(Ordering::Acquire) && !stop.load(Ordering::Acquire) {
@@ -807,6 +836,7 @@ fn serve(
     state.events.push(text::event(request.kind.name(), outcome));
     *result.lock().unwrap_or_else(PoisonError::into_inner) = Some(outcome);
     open.store(false, Ordering::Release);
+    notify_wake(wake);
     Ok(())
 }
 

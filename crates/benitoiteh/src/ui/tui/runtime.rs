@@ -1,6 +1,9 @@
 //! 待ちと終了を一か所に置き、端末なしでもシグナルと受信の継続を確かめる（実装プラン P4-06）。
 
-use std::io::{self, Write};
+use std::io::{self, Read, Write};
+use std::os::fd::{AsFd, BorrowedFd};
+use std::os::unix::net::UnixStream;
+use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
@@ -9,6 +12,74 @@ use crossterm::event::Event;
 use super::selection::PendingMove;
 use super::{Action, Command, NewSession, RunControl, Screen, Worker};
 use crate::agent::AgentError;
+
+/// 働き手・承認・入力スレッドから UI の待ちを即座に起こす軽量な通知口（BH-106）。
+#[derive(Debug)]
+pub struct WakeNotifier {
+    write: Arc<UnixStream>,
+}
+
+impl Clone for WakeNotifier {
+    fn clone(&self) -> Self {
+        Self {
+            write: Arc::clone(&self.write),
+        }
+    }
+}
+
+impl WakeNotifier {
+    /// 非ブロックで一バイト書き込み、ポーリング待ちを即座に起床させる。
+    pub fn notify(&self) {
+        let mut stream = &*self.write;
+        let _ignored = stream.write(&[1]);
+    }
+}
+
+/// UI 側が `poll` で待つ自己パイプの読み取り口（BH-106）。
+#[derive(Debug)]
+pub struct WakeReceiver {
+    read: UnixStream,
+    notifier: WakeNotifier,
+}
+
+impl WakeReceiver {
+    /// 対応する通知口の複製を返す。
+    pub fn notifier(&self) -> WakeNotifier {
+        self.notifier.clone()
+    }
+
+    /// 溜まった起床の印を非ブロックで空にする。
+    pub fn drain(&self) {
+        let mut stream = &self.read;
+        let mut buffer = [0_u8; 64];
+        loop {
+            match stream.read(&mut buffer) {
+                Ok(0) => break,
+                Ok(_) => {}
+                Err(error) if error.kind() == io::ErrorKind::WouldBlock => break,
+                Err(error) if error.kind() == io::ErrorKind::Interrupted => {}
+                Err(_) => break,
+            }
+        }
+    }
+}
+
+impl AsFd for WakeReceiver {
+    fn as_fd(&self) -> BorrowedFd<'_> {
+        self.read.as_fd()
+    }
+}
+
+/// 端末入力と Worker 事象を一つの待ちで受けるための非ブロック自己パイプを作る。
+pub fn wake_channel() -> io::Result<(WakeNotifier, WakeReceiver)> {
+    let (read, write) = UnixStream::pair()?;
+    read.set_nonblocking(true)?;
+    write.set_nonblocking(true)?;
+    let notifier = WakeNotifier {
+        write: Arc::new(write),
+    };
+    Ok((notifier.clone(), WakeReceiver { read, notifier }))
+}
 
 /// 置き換える外部依存は端末の入力だけとする（設計書 07-01「テストの原則」）。
 pub trait InputSource {
@@ -22,6 +93,12 @@ pub trait InputSource {
             .map(|event| (event, Instant::now()))
             .collect())
     }
+    /// 働き手や承認からの割り込みで待ちを起こすための通知口。
+    fn worker_waker(&self) -> Option<WakeNotifier> {
+        None
+    }
+    /// 働き手を排水する直前に、溜まった起床の印を取り除く。
+    fn clear_worker_wake(&mut self) {}
     /// 表示直後のキーと貼り付けを捨て、Resize と Ctrl+C は受ける。
     fn discard_pending(&mut self) -> io::Result<Vec<(Event, Instant)>> {
         Ok(self
@@ -96,6 +173,8 @@ pub fn run(
     new_session: &mut SessionFactory<'_>,
 ) -> Result<u8, TuiError> {
     let mut pending_new: Option<PendingSession> = None;
+    let worker_wake = input.worker_waker();
+    let has_wake = worker_wake.is_some();
     let started = Instant::now();
     let mut processing_since = worker.is_running().then(Instant::now);
     let mut next_tick = Instant::now();
@@ -107,6 +186,8 @@ pub fn run(
     let mut redraw = true;
     let mut pending_input = Vec::new();
     loop {
+        // 働き手と秘密・承認を読む直前に起床の印を消し、描画中の通知を取りこぼさない。
+        input.clear_worker_wake();
         match input.termination_count() {
             // Worker の Drop は窓口を閉じるが Agent は join しない。二度目は記録を待たない。
             Ok(count) if count >= 2 => {
@@ -166,10 +247,15 @@ pub fn run(
             if let Some(request) = prepared.restored_request.take() {
                 screen.restore_request(&request);
             }
-            let (approver, approvals) = crate::approval::InteractiveApprover::channel();
-            worker = Worker::start(
+            let (mut approver, approvals) = crate::approval::InteractiveApprover::channel();
+            if let Some(wake) = &worker_wake {
+                let wake = wake.clone();
+                approver = approver.with_wake(Arc::new(move || wake.notify()));
+            }
+            worker = Worker::start_with_wake(
                 prepared.agent.with_interactive_approver(approver),
                 prepared.session,
+                worker_wake.clone(),
             )
             .map_err(TuiError::Io)?
             .with_approval_requests(approvals);
@@ -240,7 +326,13 @@ pub fn run(
         if exiting && !worker.is_running() {
             break;
         }
-        let interval = Duration::from_millis(if worker.is_running() { 33 } else { 250 });
+        let interval = Duration::from_millis(if has_wake && !input_failed {
+            250
+        } else if worker.is_running() {
+            33
+        } else {
+            250
+        });
         let wait = if worker.is_running() {
             interval.min(next_tick.saturating_duration_since(Instant::now()))
         } else {
