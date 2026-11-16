@@ -244,20 +244,25 @@ class SessionTests(unittest.TestCase):
                     f.write(part)
             records = [
                 {'type': 'tool_call', 'call': {'id': '呼び出し', 'arguments': {'path': 'main.bnt'}}},
+                {'type': 'tool_call', 'call': {'id': 'null_args', 'arguments': None, 'raw_arguments': '{"path": "fallback.bnt"}'}},
+                {'type': 'tool_call', 'call': {'id': 'bad_raw', 'arguments': None, 'raw_arguments': '{broken'}},
                 {'type': 'spilled', 'parts': ['spill/part1', 'spill/part2']},
                 result('write', 'error[E9998] before check\nCheck of main.bnt after this change:\n'
                        'warning[W0401] main.bnt:2:13: warning\n'),
                 result('benitoite_run', 'error[R0101] main.bnt:2:13: failed', spill={'path': 'spill/output'}),
+                {'type': 'tool_result', 'name': 'benitoite_check', 'result': {'id': 'null_args', 'text': 'error[E0100] fallback.bnt:1:1: err', 'is_error': False}},
+                {'type': 'tool_result', 'name': 'benitoite_check', 'result': {'id': 'bad_raw', 'text': 'error[E0101] bad raw', 'is_error': False}},
             ]
             write('session.jsonl', '\n'.join(json.dumps(record) for record in records))
             entries, seen = evaluation.benitoiteh_results(directory)
             self.assertTrue(seen)
             self.assertEqual([entry[4:] for entry in entries],
-                             [['check', 'main.bnt'], ['check', 'main.bnt'], ['run', '']])
+                             [['check', 'main.bnt'], ['check', 'main.bnt'], ['run', ''],
+                              ['check', 'fallback.bnt'], ['check', '']])
             stats = evaluation.diagnostic_stats(entries)
-            self.assertEqual(stats['counts'], {'E0405': 1, 'W0401': 1, 'R0101': 1})
+            self.assertEqual(stats['counts'], {'E0405': 1, 'W0401': 1, 'R0101': 1, 'E0100': 1, 'E0101': 1})
             self.assertEqual(stats['first_check'], ['E0405'])
-            self.assertEqual(stats['resolved'], {'E0405': 1, 'W0401': 1})
+            self.assertEqual(stats['resolved'], {'E0405': 1, 'W0401': 1, 'R0101': 1, 'E0100': 1})
 
     # 関門: 文だけの検査報告、結果だけの行、入力エラーの呼び出しを実行として数えない。
     def test_completion_metrics_use_exact_environment_prompt_and_valid_calls(self):

@@ -2954,13 +2954,46 @@ fn deep_nested_arguments_and_usage_round_trip_and_stay_readable_by_replay_scan_a
         drop(writer);
 
         // 書かれた session.jsonl の各行は既定の再帰上限（128）でもそのまま読める。
+        // 深い呼び出しは structured な `arguments` を省略し、通常の浅い呼び出しは保つ。
         let log_bytes = fs::read(session.directory().join("session.jsonl"))?;
         for line in log_bytes.split(|byte| *byte == b'\n') {
             if line.is_empty() {
                 continue;
             }
-            let _parsed: serde_json::Value = serde_json::from_slice(line)?;
+            let parsed: serde_json::Value = serde_json::from_slice(line)?;
+            if let Some(call_obj) = parsed.get("call") {
+                assert!(
+                    call_obj.get("arguments").is_none(),
+                    "deep call must omit arguments: {parsed}"
+                );
+            }
         }
+        let shallow_session = fixture.session()?;
+        let mut shallow_head = header(&shallow_session);
+        if let Record::Header(inner) = &mut shallow_head {
+            inner.project_dir = project.clone();
+        }
+        let mut shallow_writer = shallow_session.writer()?;
+        shallow_writer.append(&shallow_head)?;
+        shallow_writer.append(&Record::ToolCall {
+            turn: 1,
+            call: call("shallow"),
+            validation_error: None,
+        })?;
+        drop(shallow_writer);
+        let shallow_log = fs::read_to_string(shallow_session.directory().join("session.jsonl"))?;
+        let shallow_line = shallow_log.lines().last().ok_or("missing shallow line")?;
+        let shallow_parsed: serde_json::Value = serde_json::from_str(shallow_line)?;
+        assert_eq!(
+            shallow_parsed
+                .get("call")
+                .and_then(|c| c.get("arguments"))
+                .and_then(|a| a.get("path"))
+                .and_then(serde_json::Value::as_str),
+            Some("a.bnt"),
+            "shallow call must keep structured arguments: {shallow_parsed}"
+        );
+        drop(shallow_session);
 
         let conversation = replay(session.directory())?;
         let Item::AssistantTurn(replayed_turn) =

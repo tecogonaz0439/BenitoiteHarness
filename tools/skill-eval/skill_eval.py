@@ -791,9 +791,17 @@ def benitoiteh_results(directory: str, metrics: Optional[Dict[str, object]] = No
                     metrics['completion_prompts'] += 1
             if value.get('type') == 'tool_call':
                 call = value['call']
-                if not isinstance(call, dict) or not isinstance(call.get('arguments', {}), dict):
+                if not isinstance(call, dict):
                     raise TypeError('invalid tool call')
-                calls[call['id']] = call.get('arguments', {})
+                arguments = call.get('arguments')
+                if arguments is None:
+                    raw = call.get('raw_arguments')
+                    arguments = json_object(raw) if isinstance(raw, str) and raw else None
+                    if arguments is None:
+                        arguments = {}
+                if not isinstance(arguments, dict):
+                    raise TypeError('invalid tool call')
+                calls[call['id']] = arguments
                 if metrics is not None and value.get('validation_error') is None:
                     after = metrics['completion_prompts'] > 0
                     if call.get('name') in PROCESS_TOOLS:
