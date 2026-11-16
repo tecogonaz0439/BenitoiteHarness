@@ -87,6 +87,12 @@ impl AnthropicAdapter {
         if self.capabilities.cache_control {
             mark_cache(system.as_array_mut().and_then(|s| s.last_mut()))?;
         }
+        // Opus 4.7 以降の既定（"omitted"）で要約が欠けないよう、対応する口では要約を明示する（設計書 02-01）。
+        let thinking = if self.capabilities.thinking_display {
+            json!({"type": "adaptive", "display": "summarized"})
+        } else {
+            json!({"type": "adaptive"})
+        };
         let mut body = json!({
             "model": self.destination.model,
             "max_tokens": self.capabilities.max_output_tokens.unwrap_or(32_000),
@@ -94,7 +100,7 @@ impl AnthropicAdapter {
             "tools": tools.iter().map(|t| self.tool_definition(t)).collect::<Vec<_>>(),
             "messages": self.messages(conversation, options)?,
             "stream": true,
-            "thinking": {"type": "adaptive"},
+            "thinking": thinking,
             "output_config": {"effort": options.effort.unwrap_or("low")}
         });
         if !tools.is_empty() && options.disable_tools {

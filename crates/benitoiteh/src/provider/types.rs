@@ -367,6 +367,9 @@ pub struct Capabilities {
     pub parallel_tool_calls: bool,
     /// Chat Completions の要求に推論の深さを付けるか。
     pub reasoning_effort: bool,
+    /// Anthropic の thinking に要約の表示（`"display": "summarized"`）を指定するか。
+    #[serde(default)]
+    pub thinking_display: bool,
     /// モデルの文脈の上限。不明なら None。
     pub context_window: Option<u64>,
     /// モデルの出力の上限。不明なら None。
@@ -399,6 +402,7 @@ impl AdapterKind {
                 tool_choice_none: true,
                 reasoning_replay: ReasoningReplay::SameDestination,
                 parallel_tool_calls: true,
+                thinking_display: true,
                 ..Capabilities::default()
             }),
             Self::OpenAiChat => Some(Capabilities {
