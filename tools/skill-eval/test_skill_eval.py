@@ -370,16 +370,22 @@ class ConfigTests(unittest.TestCase):
 
     def test_strata_iq3s_harnesses_configure_local_openai_chat(self):
         harnesses = evaluation.load_harnesses()
-        for name, normal in (('benitoiteh-strata-iq3s', False), ('benitoiteh-strata-iq3s-normal', True)):
+        cases = (
+            ('benitoiteh-strata-iq3s', False, 'low', 900),
+            ('benitoiteh-strata-iq3s-normal', True, 'low', 900),
+            ('benitoiteh-strata-iq3s-effort-medium', False, 'medium', 1800),
+            ('benitoiteh-strata-iq3s-normal-effort-medium', True, 'medium', 1800),
+        )
+        for name, normal, effort, timeout in cases:
             with self.subTest(name=name):
                 harness = harnesses[name]
                 self.assertTrue(harness['verified'])
                 self.assertFalse(harness['default'])
                 self.assertEqual(harness['billing'], 'none')
                 self.assertEqual(harness['model'], 'qwen3.8-flash-next-iq3_s')
-                self.assertEqual(harness['effort'], 'low')
+                self.assertEqual(harness['effort'], effort)
                 self.assertEqual(harness['options'],
-                                 {'max_turns': 50, 'max_run_tokens': 2000000, 'harness_timeout': 900})
+                                 {'max_turns': 50, 'max_run_tokens': 2000000, 'harness_timeout': timeout})
                 self.assertEqual(harness['provider'], {
                     'kind': 'openai-chat',
                     'base_url': 'http://127.0.0.1:18081/v1',
@@ -390,7 +396,7 @@ class ConfigTests(unittest.TestCase):
                 text = evaluation.benitoiteh_config(harness, harness['model'], '/processor')
                 self.assertIn('base_url = "http://127.0.0.1:18081/v1"\n', text)
                 self.assertIn('context_window = 262144\n', text)
-                self.assertIn('effort = "low"\n', text)
+                self.assertIn('effort = "%s"\n' % effort, text)
                 self.assertIn('api_key = { env = "STRATA_API_KEY" }\n', text)
                 if normal:
                     self.assertIn('default_mode = "normal"\n', text)
