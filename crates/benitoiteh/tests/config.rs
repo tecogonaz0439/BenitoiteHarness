@@ -201,11 +201,13 @@ fn capabilities_use_official_defaults_only_at_the_exact_official_destination() -
     assert!(!official.resolved_capabilities().cache_control);
     assert!(official.resolved_capabilities().tool_choice_none);
     assert!(!official.resolved_capabilities().reasoning_effort);
+    assert!(official.resolved_capabilities().thinking_display);
     let compatible = provider(&config, "compatible")?.resolved_capabilities();
     assert!(!compatible.cache_control);
     assert!(!compatible.tool_choice_none);
     assert!(!compatible.parallel_tool_calls);
     assert!(!compatible.reasoning_effort);
+    assert!(!compatible.thinking_display);
     assert!(compatible.strict_tools);
     assert_eq!(compatible.reasoning_replay, ReasoningReplay::AllTurns);
     assert_eq!(compatible.context_window, Some(12345));
@@ -231,11 +233,17 @@ fn capabilities_use_official_defaults_only_at_the_exact_official_destination() -
     );
     assert!(official.resolved_capabilities().image_input);
     assert!(responses.resolved_capabilities().image_input);
+    assert!(!responses.resolved_capabilities().thinking_display);
     assert!(!compatible.image_input);
     assert!(
         !provider(&config, "chat")?
             .resolved_capabilities()
             .image_input
+    );
+    assert!(
+        !provider(&config, "chat")?
+            .resolved_capabilities()
+            .thinking_display
     );
     for (kind, base_url, value) in [
         ("anthropic-messages", "https://api.anthropic.com", false),
@@ -250,15 +258,12 @@ fn capabilities_use_official_defaults_only_at_the_exact_official_destination() -
             kind = "{kind}"
             base_url = "{base_url}"
             model = "m"
-            capabilities = {{ image_input = {value} }}
+            capabilities = {{ image_input = {value}, thinking_display = {value} }}
         "#
         ))?;
-        assert_eq!(
-            provider(&parsed, "images")?
-                .resolved_capabilities()
-                .image_input,
-            value
-        );
+        let caps = provider(&parsed, "images")?.resolved_capabilities();
+        assert_eq!(caps.image_input, value);
+        assert_eq!(caps.thinking_display, value);
     }
     Ok(())
 }

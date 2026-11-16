@@ -16,8 +16,7 @@ pub const PATH_NOT_UTF8: &str = "Skill directory or SKILL.md path is not valid U
 pub const FRONTMATTER: &str =
     "SKILL.md has no valid frontmatter with a nonempty name and description.";
 pub const MULTILINE: &str = "Skill name and description must be single-line values.";
-pub const NAME: &str =
-    "Skill name must contain 1 to 64 lowercase ASCII letters, digits, or hyphens.";
+pub const NAME: &str = "Skill name must contain 1 to 64 lowercase ASCII letters, digits, or hyphens, start and end with a letter or digit, and not contain --.";
 pub const DESCRIPTION: &str =
     "Skill description must contain 1 to 1024 Unicode scalar values without newlines.";
 pub const DIRECTORY_NAME: &str =

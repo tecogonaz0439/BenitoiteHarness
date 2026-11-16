@@ -327,11 +327,11 @@ fn cache_markers(value: &Value) -> usize {
 #[test]
 fn request_flags_follow_capabilities_and_effort_is_always_explicit() -> TestResult {
     let cases = [
-        (true, true, true),
-        (false, true, true),
-        (true, false, true),
-        (true, true, false),
-        (false, false, false),
+        (true, true, true, true),
+        (false, true, true, false),
+        (true, false, true, true),
+        (true, true, false, false),
+        (false, false, false, false),
     ];
     let mut server = MockProvider::start(
         cases
@@ -339,7 +339,7 @@ fn request_flags_follow_capabilities_and_effort_is_always_explicit() -> TestResu
             .map(|_| simple("end_turn", None).map(ResponseScript::sse))
             .collect::<Result<_, _>>()?,
     )?;
-    for (index, (cache, strict, eager)) in cases.into_iter().enumerate() {
+    for (index, (cache, strict, eager, thinking_display)) in cases.into_iter().enumerate() {
         let adapter = AnthropicAdapter::new(
             Destination {
                 base_url: format!("{}/gateway/", server.base_url()),
@@ -350,6 +350,7 @@ fn request_flags_follow_capabilities_and_effort_is_always_explicit() -> TestResu
                 strict_tools: strict,
                 eager_input_streaming: eager,
                 tool_choice_none: true,
+                thinking_display,
                 max_output_tokens: if index == 0 { Some(12345) } else { None },
                 ..Capabilities::default()
             },
@@ -387,7 +388,14 @@ fn request_flags_follow_capabilities_and_effort_is_always_explicit() -> TestResu
         let body = &record.body;
         assert_eq!(body.get("model"), Some(&json!("mock-model")));
         assert_eq!(body.get("stream"), Some(&json!(true)));
-        assert_eq!(body.get("thinking"), Some(&json!({"type":"adaptive"})));
+        assert_eq!(
+            body.get("thinking"),
+            Some(&if thinking_display {
+                json!({"type":"adaptive","display":"summarized"})
+            } else {
+                json!({"type":"adaptive"})
+            })
+        );
         assert_eq!(
             body.pointer("/output_config/effort"),
             Some(&json!(if index == 0 { "medium" } else { "low" }))

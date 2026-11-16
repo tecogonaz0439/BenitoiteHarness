@@ -229,6 +229,18 @@ fn validates_frontmatter_without_applying_processor_body_rules() -> TestResult {
             "1 to 64",
         ),
         (
+            valid.replace("name: sample", "name: -sample"),
+            "start and end with a letter or digit",
+        ),
+        (
+            valid.replace("name: sample", "name: sample-"),
+            "start and end with a letter or digit",
+        ),
+        (
+            valid.replace("name: sample", "name: s--a"),
+            "start and end with a letter or digit",
+        ),
+        (
             valid.replace("name: sample", "name: other"),
             "directory name",
         ),
@@ -274,6 +286,20 @@ fn validates_frontmatter_without_applying_processor_body_rules() -> TestResult {
             "{:?}: {reason}",
             skills.skipped
         );
+    }
+    fs::remove_dir_all(f.home.join(".agents/skills/sample"))?;
+    for bad_name in ["-bad", "bad-", "a--b"] {
+        f.skill("home/.agents/skills", bad_name, "single line")?;
+        let (skills, roots) = f.collect(&UserSkillsConfig::default());
+        assert!(skills.loaded.is_empty() && roots.is_empty(), "{bad_name}");
+        assert!(
+            skills.skipped.first().is_some_and(|entry| entry
+                .reason
+                .contains("start and end with a letter or digit")),
+            "{bad_name}: {:?}",
+            skills.skipped
+        );
+        fs::remove_dir_all(f.home.join(".agents/skills").join(bad_name))?;
     }
     f.write(candidate, [0xff])?;
     assert!(

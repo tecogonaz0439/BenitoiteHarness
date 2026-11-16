@@ -1020,11 +1020,12 @@ fn attributes(contents: &str) -> Result<(&str, &str), SkillError> {
 }
 
 fn valid_name(name: &str) -> bool {
-    !name.is_empty()
-        && name.len() <= 64
-        && name
-            .bytes()
-            .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'-')
+    let alphanumeric = |byte: &u8| byte.is_ascii_lowercase() || byte.is_ascii_digit();
+    (1..=64).contains(&name.len())
+        && name.as_bytes().first().is_some_and(alphanumeric)
+        && name.as_bytes().last().is_some_and(alphanumeric)
+        && name.bytes().all(|byte| alphanumeric(&byte) || byte == b'-')
+        && !name.contains("--")
 }
 
 fn single_line(value: &str) -> Result<&str, SkillError> {
