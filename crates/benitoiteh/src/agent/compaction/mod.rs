@@ -570,7 +570,9 @@ fn add_usage(total: &mut Usage, usage: &Usage) {
     total.cache_read_tokens = add(total.cache_read_tokens, usage.cache_read_tokens);
     total.cache_write_tokens = add(total.cache_write_tokens, usage.cache_write_tokens);
     total.reasoning_tokens = add(total.reasoning_tokens, usage.reasoning_tokens);
-    if !usage.raw.is_null() {
+    if !usage.raw.is_null()
+        && crate::session::value_depth(&usage.raw) < crate::session::MAX_RECORD_VALUE_DEPTH
+    {
         if total.raw.is_null() {
             total.raw = serde_json::json!([]);
         }

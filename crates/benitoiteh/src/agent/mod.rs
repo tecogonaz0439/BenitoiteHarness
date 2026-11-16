@@ -1032,6 +1032,7 @@ impl Agent {
             }
             summary.add_turn(&response.usage);
             self.note_usage(&response.usage);
+            crate::session::normalize_usage(&mut response.usage);
             self.append_node(Record::Assistant {
                 node: 0,
                 turn: self.turn,

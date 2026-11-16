@@ -126,7 +126,7 @@ fn scan(root: &File, entry: &mut SessionEntry) -> Result<(), SessionError> {
         if bytes.last() != Some(&b'\n') {
             break;
         }
-        let value: Value = serde_json::from_slice(&bytes)?;
+        let value: Value = super::record::deserialize_json(&bytes)?;
         if first {
             super::replay::check_format(&value)?;
         }
@@ -252,7 +252,7 @@ pub fn recorded_benitoite(
     if bytes.len() > MAX_BYTES || bytes.last() != Some(&b'\n') {
         return Err(SessionError::Invalid(text::INVALID_FORMAT));
     }
-    let value: Value = serde_json::from_slice(&bytes)?;
+    let value: Value = super::record::deserialize_json(&bytes)?;
     super::replay::check_format(&value)?;
     if string(&value, "type")? != "header" {
         return Err(SessionError::Invalid(text::INVALID_FORMAT));

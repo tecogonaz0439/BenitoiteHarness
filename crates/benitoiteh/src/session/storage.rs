@@ -11,6 +11,10 @@ use super::{
     FORMAT_VERSION, MAX_BYTES, Record, Session, SessionError, SpillInfo, create_file, id, text,
 };
 
+pub(super) fn encode_record(record: &Record) -> Result<Vec<u8>, serde_json::Error> {
+    serde_json::to_vec(&super::record::sanitize_record(record))
+}
+
 /// 追記の途中で失敗した後には追記を止め、壊れた行の後へ記録を連ねない。
 pub struct SessionWriter {
     session: Session,
@@ -74,7 +78,7 @@ impl SessionWriter {
         if matches!(record, Record::Spilled { .. }) {
             return Err(SessionError::Invalid(text::INVALID_SPILL));
         }
-        let mut bytes = serde_json::to_vec(record)?;
+        let mut bytes = encode_record(record)?;
         if bytes.len() >= MAX_BYTES {
             let mut random = [0; 8];
             getrandom::fill(&mut random).map_err(SessionError::Random)?;
