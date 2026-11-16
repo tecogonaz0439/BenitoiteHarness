@@ -161,8 +161,11 @@ impl SandboxPolicy {
                  ; 両方を許したときだけ sort が警告なしで通り、各一名だけでは足りなかった。\n\
                  (allow sysctl-read (sysctl-name \"hw.memsize\"))\n\
                  (allow sysctl-read (sysctl-name \"hw.pagesize\"))\n\
+                 ; 2026-11-16 に、macOS 27.2.1 で cargo build（std::thread::available_parallelism 等）が\n\
+                 ; 並列数取得で EPERM になることを実測し、hw.ncpu 単体で通過を確認した（BH-044）。\n\
+                 (allow sysctl-read (sysctl-name \"hw.ncpu\"))\n\
                  (allow signal (target pgrp))\n\
-                 ; mach-lookup と、上記三名以外の sysctl-read は必要性を実測できるまで許さない。\n",
+                 ; 上記四名以外の sysctl-read と、ネットワーク利用時の TLS 検証以外の mach-lookup は許さない。\n",
             ),
             parameters: vec![("DENIAL_TAG".to_owned(), tag.clone().into())],
             denial_tag: tag,
@@ -256,19 +259,27 @@ impl SandboxPolicy {
             }
         }
         if config.allow_ip {
-            // Unix の宛先を許す network* は使わない。名前解決の例外は BH-044 の対象である。
+            // IP 通信を許すときだけシステムの本物の mDNSResponder ソケットでの名前解決を許し、
+            // 他の外部 Unix IPC および非 IP / プロキシ経路での DNS 持ち出しは許さない（設計書 03-02、BH-044）。
             profile.source.push_str(
                 "(allow network-outbound (remote ip \"*:*\"))\n\
                  (allow network-inbound (local ip \"*:*\"))\n\
-                 (allow network-bind (local ip \"*:*\"))\n",
+                 (allow network-bind (local ip \"*:*\"))\n\
+                 (allow network-outbound (literal \"/private/var/run/mDNSResponder\"))\n",
             );
         }
         if let Some(port) = config.allow_loopback_port {
             // SBPL は localhost とポートで外向きの接続だけを絞る。
-            // bind・inbound・Unix IPC は既定の拒否を保つ（実装プラン P5-34）。
+            // bind・inbound・Unix IPC（mDNSResponder を含む）は既定の拒否を保つ（実装プラン P5-34）。
             profile.source.push_str(&format!(
                 "(allow network-outbound (remote ip \"localhost:{port}\"))\n"
             ));
+        }
+        if config.allow_ip || config.allow_loopback_port.is_some() {
+            // IP 通信とプロキシ経由 HTTPS で TLS 証明書検証に要るサービスだけ許す（2026-11-16 macOS 27.2.1 で実測、BH-044）。
+            profile.source.push_str(
+                "(allow mach-lookup (global-name \"com.apple.trustd\") (global-name \"com.apple.trustd.agent\") (global-name \"com.apple.TrustEvaluationAgent\"))\n",
+            );
         }
         profile
     }
