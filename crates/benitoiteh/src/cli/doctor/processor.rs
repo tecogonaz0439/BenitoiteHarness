@@ -57,6 +57,7 @@ pub(super) fn prepare(
                     Some(("restricted", false)),
                 ),
                 locations,
+                writable_roots: config.normal.writable_roots.clone(),
                 denied_candidates: super::super::denied_candidates(paths),
                 launcher: QueryLauncher::Sandboxed,
             },
@@ -87,7 +88,12 @@ pub(super) fn prepare(
         ));
         return Err(text::PROCESSOR_REQUIRED.into());
     };
-    let executable = benitoite::validate_executable(&path, &context.locations, false);
+    let executable = benitoite::validate_executable_with_roots(
+        &path,
+        &context.locations,
+        &context.writable_roots,
+        false,
+    );
     items.push(executable_item(executable.as_ref()));
     let (path, sha256) = executable.map_err(|_| text::PROCESSOR_REQUIRED.to_owned())?;
     Ok(Located {
@@ -341,6 +347,7 @@ mod tests {
                     temporary: PathBuf::new(),
                     additional: Vec::new(),
                 },
+                writable_roots: Vec::new(),
                 denied_candidates: Vec::new(),
                 launcher: QueryLauncher::Sandboxed,
             },

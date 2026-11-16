@@ -18,7 +18,7 @@ use std::io;
 use std::path::PathBuf;
 use std::sync::atomic::AtomicBool;
 
-pub use executable::{discover, validate_executable};
+pub use executable::{discover, validate_executable, validate_executable_with_roots};
 pub(crate) use query::{QueryContext, QueryLauncher};
 pub use query::{QueryLimits, QueryOutput, StderrLimit};
 
@@ -108,7 +108,12 @@ impl Processor {
         context: QueryContext,
     ) -> Result<Self, BenitoiteError> {
         let path = discover(configured, path, &context.locations)?;
-        let (path, sha256) = validate_executable(&path, &context.locations, false)?;
+        let (path, sha256) = validate_executable_with_roots(
+            &path,
+            &context.locations,
+            &context.writable_roots,
+            false,
+        )?;
         let mut processor = Self {
             path,
             sha256,

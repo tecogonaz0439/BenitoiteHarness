@@ -209,6 +209,11 @@ pub const TERMINAL_REQUIRED: &str =
     "Interactive mode requires terminal input and output; use benitoiteh exec instead.";
 /// モードの変更を拒否した通常終了。
 pub const MODE_CHANGE_DECLINED: &str = "Resume in normal mode was declined.";
+/// 制限モードで変化した処理系の確認を拒否した通常終了。
+pub const PROCESSOR_CHANGE_DECLINED: &str =
+    "Start with the changed benitoite executable was declined.";
+/// 非対話の制限モードで、前回と違う処理系の実行ファイルを拒む。
+pub const PROCESSOR_CHANGED: &str = "The benitoite executable SHA-256 differs from the previous session in this project; run interactively to confirm this change in restricted mode.";
 
 pub fn checkpoint_before_rewind(checkpoint: &str) -> String {
     format!("Checkpoint before rewind: {checkpoint}")

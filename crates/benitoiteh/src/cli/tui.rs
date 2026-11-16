@@ -324,13 +324,13 @@ fn run_interactive(args: ExecArgs, signals: &mut Signals) -> Result<u8, CliError
         .map_err(|error| CliError::Startup(exec::StartupError::Config(error)))?;
     let restore = TerminalRestore::capture().map_err(CliError::Output)?;
     panic::install(None, Some(Arc::clone(&restore)));
-    let mut mode_declined = false;
+    let mut declined_message: Option<&'static str> = None;
     let mut interrupted_before = None;
     let result = (|| {
         let _terminal = TerminalGuard::enter(Arc::clone(&restore)).map_err(CliError::Output)?;
         let output = restore.output().map_err(CliError::Output)?;
         let terminated = Arc::clone(&signals.cancelled);
-        // 起動のときの二つの確認（モードの変更とプロジェクトの信頼）が、同じ端末を順に使う。
+        // 起動のときの確認（モードの変更、処理系の変更、プロジェクトの信頼）が、同じ端末を順に使う。
         let shared = std::cell::RefCell::new((signals, output, None::<io::Error>));
         let startup_screen = || {
             Screen::new(
@@ -368,37 +368,52 @@ fn run_interactive(args: ExecArgs, signals: &mut Signals) -> Result<u8, CliError
                 }
             }
         };
+        let mut mode_change = |change: &exec::ModeChange| {
+            let mut screen = startup_screen();
+            screen.notice(change.session_id.as_str());
+            screen.open_mode_change();
+            ask(&mut screen)
+        };
+        let mut processor_change = |change: &exec::ProcessorChange| {
+            let mut screen = startup_screen();
+            screen.open_processor_change(
+                &change.path,
+                &change.previous_version,
+                &change.previous_sha256,
+                &change.current_version,
+                &change.current_sha256,
+            );
+            ask(&mut screen)
+        };
+        let mut trust = |request: &exec::TrustRequest| {
+            let mut screen = startup_screen();
+            screen.open_trust(&request.root, &trust_loads(request), &request.added);
+            let _answered = ask(&mut screen);
+            if terminated.load(std::sync::atomic::Ordering::Acquire) || shared.borrow().2.is_some()
+            {
+                return None;
+            }
+            // 断った答えと取り消し（Esc）は、この起動だけ信頼しない（設計書 03-01「プロジェクトの信頼」）。
+            Some(match screen.take_trust_result() {
+                Some(crate::ui::tui::TrustChoice::Remember(trusted)) => {
+                    exec::TrustAnswer::Remember(trusted)
+                }
+                Some(crate::ui::tui::TrustChoice::Session(trusted)) => {
+                    exec::TrustAnswer::Session(trusted)
+                }
+                None => exec::TrustAnswer::Session(false),
+            })
+        };
         let prepared = exec::prepare(
             &args,
             None,
             &paths,
             crate::sandbox::check_availability,
             crate::benitoite::QueryLauncher::Sandboxed,
-            &mut |change| {
-                let mut screen = startup_screen();
-                screen.notice(change.session_id.as_str());
-                screen.open_mode_change();
-                ask(&mut screen)
-            },
-            &mut |request| {
-                let mut screen = startup_screen();
-                screen.open_trust(&request.root, &trust_loads(request), &request.added);
-                let _answered = ask(&mut screen);
-                if terminated.load(std::sync::atomic::Ordering::Acquire)
-                    || shared.borrow().2.is_some()
-                {
-                    return None;
-                }
-                // 断った答えと取り消し（Esc）は、この起動だけ信頼しない（設計書 03-01「プロジェクトの信頼」）。
-                Some(match screen.take_trust_result() {
-                    Some(crate::ui::tui::TrustChoice::Remember(trusted)) => {
-                        exec::TrustAnswer::Remember(trusted)
-                    }
-                    Some(crate::ui::tui::TrustChoice::Session(trusted)) => {
-                        exec::TrustAnswer::Session(trusted)
-                    }
-                    None => exec::TrustAnswer::Session(false),
-                })
+            exec::StartupPrompts {
+                mode_change: &mut mode_change,
+                processor_change: &mut processor_change,
+                trust: &mut trust,
             },
         );
         let (signals, mut output, confirmation_error) = shared.into_inner();
@@ -419,8 +434,21 @@ fn run_interactive(args: ExecArgs, signals: &mut Signals) -> Result<u8, CliError
                 error: exec::StartupError::Declined,
                 ..
             }) => {
-                mode_declined = !terminated.load(std::sync::atomic::Ordering::Acquire);
-                return Ok(if mode_declined { 0 } else { 130 });
+                let cancelled = terminated.load(std::sync::atomic::Ordering::Acquire);
+                if !cancelled {
+                    declined_message = Some(text::MODE_CHANGE_DECLINED);
+                }
+                return Ok(if cancelled { 130 } else { 0 });
+            }
+            Err(exec::PreparationError {
+                error: exec::StartupError::ProcessorDeclined,
+                ..
+            }) => {
+                let cancelled = terminated.load(std::sync::atomic::Ordering::Acquire);
+                if !cancelled {
+                    declined_message = Some(text::PROCESSOR_CHANGE_DECLINED);
+                }
+                return Ok(if cancelled { 130 } else { 0 });
             }
             Err(error) => return Err(CliError::Preparation(error)),
         };
@@ -526,8 +554,8 @@ fn run_interactive(args: ExecArgs, signals: &mut Signals) -> Result<u8, CliError
     })();
     panic::install(None, None);
     // raw のモードを戻した後でだけ、断った旨を通常の診断の書き先へ出す。
-    if mode_declined {
-        crate::ui::ExecOutput::diagnostic(text::MODE_CHANGE_DECLINED).map_err(CliError::Output)?;
+    if let Some(message) = declined_message {
+        crate::ui::ExecOutput::diagnostic(message).map_err(CliError::Output)?;
     }
     if let Some(checkpoint) = interrupted_before {
         crate::ui::ExecOutput::diagnostic(&text::checkpoint_before_rewind(&checkpoint))

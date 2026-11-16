@@ -48,6 +48,7 @@ impl Fixture {
                 Some(("restricted", false)),
             ),
             locations: self.locations(),
+            writable_roots: vec![],
             denied_candidates: vec![],
             launcher: QueryLauncher::TestDirect,
         }
@@ -332,5 +333,69 @@ fn executable_fifo_is_rejected_without_waiting_for_a_writer() -> Result<(), Box<
         }
         Ok(())
     })?;
+    Ok(())
+}
+
+#[test]
+fn extra_writable_roots_and_ancestor_identities_are_rejected() -> Result<(), Box<dyn Error>> {
+    use std::os::unix::fs::MetadataExt;
+    let f = Fixture::new()?;
+    let artifact = std::env::current_exe()?
+        .parent()
+        .and_then(Path::parent)
+        .ok_or("no target directory")?
+        .join("sandbox-probe");
+    let root_dir = f.0.join("normal_writable");
+    let sub_dir = root_dir.join("nested");
+    let external_dir = f.0.join("external_bin");
+    fs::create_dir_all(&sub_dir)?;
+    fs::create_dir_all(&external_dir)?;
+    let in_writable = sub_dir.join("tool");
+    let external_tool = external_dir.join("tool");
+    fs::copy(&artifact, &in_writable)?;
+    fs::copy(&artifact, &external_tool)?;
+    let link_root = f.0.join("writable_alias");
+    symlink(&root_dir, &link_root)?;
+
+    let locations = f.locations();
+    // (1) 追加の書ける場所（文字列・シンボリックリンク経由とも）にある処理系と許可プログラムを拒否する。
+    for extra in [&root_dir, &link_root] {
+        for allowed_program in [false, true] {
+            let result = validate_executable_with_roots(
+                &in_writable,
+                &locations,
+                std::slice::from_ref(extra),
+                allowed_program,
+            );
+            assert!(matches!(
+                result,
+                Err(BenitoiteError::Invalid(text::INVALID_PROGRAM))
+            ));
+        }
+    }
+    let nonexistent = f.0.join("missing_writable");
+    let ok = validate_executable_with_roots(
+        &external_tool,
+        &locations,
+        &[root_dir.clone(), nonexistent],
+        true,
+    )?;
+    assert_eq!(ok.0, external_tool);
+
+    // (2) パス接頭辞が一致しない場合でも、祖先ディレクトリの (dev, ino) 一致で拒否できる。
+    let alias_meta = fs::metadata(&sub_dir)?;
+    let other_meta = fs::metadata(&external_dir)?;
+    assert!(executable::ancestor_matches_identities(
+        &in_writable,
+        &[(alias_meta.dev(), alias_meta.ino())],
+    )?);
+    assert!(!executable::ancestor_matches_identities(
+        &external_tool,
+        &[(alias_meta.dev(), alias_meta.ino())],
+    )?);
+    assert!(executable::ancestor_matches_identities(
+        &external_tool,
+        &[(other_meta.dev(), other_meta.ino())],
+    )?);
     Ok(())
 }

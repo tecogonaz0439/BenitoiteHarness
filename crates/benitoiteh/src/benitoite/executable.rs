@@ -47,14 +47,18 @@ pub fn validate_executable(
     locations: &WritableLocations,
     allowed_program: bool,
 ) -> Result<(PathBuf, String), BenitoiteError> {
+    validate_executable_with_roots(path, locations, &[], allowed_program)
+}
+
+/// 別のセッションで書ける場所（`normal.writable_roots` 等）と祖先ディレクトリの `(dev, ino)` も拒否する。
+pub fn validate_executable_with_roots(
+    path: &Path,
+    locations: &WritableLocations,
+    extra_roots: &[PathBuf],
+    allowed_program: bool,
+) -> Result<(PathBuf, String), BenitoiteError> {
     let path = fs::canonicalize(path)?;
-    if path.starts_with(&locations.project)
-        || path.starts_with(&locations.temporary)
-        || locations
-            .additional
-            .iter()
-            .any(|root| path.starts_with(root))
-    {
+    if in_writable_roots(&path, locations, extra_roots)? {
         return Err(BenitoiteError::Invalid(text::INVALID_PROGRAM));
     }
     if allowed_program && path.file_name().is_some_and(banned) {
@@ -96,6 +100,51 @@ pub fn validate_executable(
         .map(|byte| format!("{byte:02x}"))
         .collect();
     Ok((path, hash))
+}
+
+fn in_writable_roots(
+    path: &Path,
+    locations: &WritableLocations,
+    extra_roots: &[PathBuf],
+) -> Result<bool, BenitoiteError> {
+    let mut roots = vec![locations.project.clone(), locations.temporary.clone()];
+    roots.extend(locations.additional.iter().cloned());
+    for root in extra_roots {
+        match fs::canonicalize(root) {
+            Ok(canonical) => roots.push(canonical),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => return Err(error.into()),
+        }
+    }
+    if roots.iter().any(|root| path.starts_with(root)) {
+        return Ok(true);
+    }
+    let mut identities = Vec::new();
+    for root in &roots {
+        match fs::metadata(root) {
+            Ok(metadata) if metadata.is_dir() => identities.push((metadata.dev(), metadata.ino())),
+            Ok(_) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => return Err(error.into()),
+        }
+    }
+    Ok(ancestor_matches_identities(path, &identities)?)
+}
+
+pub(super) fn ancestor_matches_identities(
+    path: &Path,
+    root_identities: &[(u64, u64)],
+) -> std::io::Result<bool> {
+    if root_identities.is_empty() {
+        return Ok(false);
+    }
+    for ancestor in path.ancestors().skip(1) {
+        let metadata = fs::metadata(ancestor)?;
+        if root_identities.contains(&(metadata.dev(), metadata.ino())) {
+            return Ok(true);
+        }
+    }
+    Ok(false)
 }
 
 fn banned(name: &OsStr) -> bool {
