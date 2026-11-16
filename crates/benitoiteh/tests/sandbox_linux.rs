@@ -1035,15 +1035,17 @@ fn dynamic_loader_must_be_denied_to_confine_execution() -> TestResult {
     )
 }
 
-// 作成時の関門: IP を許したときに Unix の socket/sendto まで通る退行を捕まえる。
+// 作成時の関門: IP を許したときに Unix の socket/sendto まで通る退行と、許した socketpair からの宛先付き送信を捕まえる。
 #[test]
 fn external_unix_ipc_is_denied_but_stream_socketpairs_work() -> TestResult {
     let f = Fixture::new()?;
     let sockets = socket_directory::SocketDirectory::new()?;
     let stream = sockets.path().join("s");
     let datagram = sockets.path().join("d");
-    let _listener = UnixListener::bind(&stream)?;
-    let _datagram = UnixDatagram::bind(&datagram)?;
+    let listener = UnixListener::bind(&stream)?;
+    listener.set_nonblocking(true)?;
+    let receiver = UnixDatagram::bind(&datagram)?;
+    receiver.set_nonblocking(true)?;
     for allow_ip in [false, true] {
         let mut config = f.config();
         config.allow_ip = allow_ip;
@@ -1057,8 +1059,28 @@ fn external_unix_ipc_is_denied_but_stream_socketpairs_work() -> TestResult {
             &[OsStr::new("unix-dgram-send"), datagram.as_os_str()],
             10,
         )?;
+        f.run(
+            config.clone(),
+            &[OsStr::new("socketpair-send"), stream.as_os_str()],
+            0,
+        )?;
+        f.run(
+            config.clone(),
+            &[OsStr::new("socketpair-send"), datagram.as_os_str()],
+            0,
+        )?;
+        f.run(config.clone(), &[OsStr::new("socketpair-dgram")], 10)?;
         f.run(config, &[OsStr::new("socketpair")], 0)?;
     }
+    let mut buffer = [0_u8; 16];
+    assert!(matches!(
+        listener.accept(),
+        Err(error) if error.kind() == std::io::ErrorKind::WouldBlock
+    ));
+    assert!(matches!(
+        receiver.recv_from(&mut buffer),
+        Err(error) if error.kind() == std::io::ErrorKind::WouldBlock
+    ));
     Ok(())
 }
 

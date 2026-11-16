@@ -696,8 +696,10 @@ fn external_unix_ipc_is_denied_with_and_without_ip_permission() -> TestResult {
     let f = Fixture::new(true)?;
     let stream_path = f.root.join("s");
     let datagram_path = f.root.join("d");
-    let _stream = UnixListener::bind(&stream_path)?;
-    let _datagram = UnixDatagram::bind(&datagram_path)?;
+    let listener = UnixListener::bind(&stream_path)?;
+    listener.set_nonblocking(true)?;
+    let receiver = UnixDatagram::bind(&datagram_path)?;
+    receiver.set_nonblocking(true)?;
     for allow_ip in [false, true] {
         let mut config = f.config();
         config.allow_ip = allow_ip;
@@ -711,8 +713,27 @@ fn external_unix_ipc_is_denied_with_and_without_ip_permission() -> TestResult {
             &[OsStr::new("unix-dgram-send"), datagram_path.as_os_str()],
             10,
         )?;
+        f.run(
+            config.clone(),
+            &[OsStr::new("socketpair-send"), stream_path.as_os_str()],
+            0,
+        )?;
+        f.run(
+            config.clone(),
+            &[OsStr::new("socketpair-send"), datagram_path.as_os_str()],
+            0,
+        )?;
         f.run(config, &[OsStr::new("socketpair")], 0)?;
     }
+    let mut buffer = [0_u8; 16];
+    assert!(matches!(
+        listener.accept(),
+        Err(error) if error.kind() == std::io::ErrorKind::WouldBlock
+    ));
+    assert!(matches!(
+        receiver.recv_from(&mut buffer),
+        Err(error) if error.kind() == std::io::ErrorKind::WouldBlock
+    ));
     Ok(())
 }
 
