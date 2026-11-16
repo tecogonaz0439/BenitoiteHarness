@@ -368,6 +368,36 @@ class ConfigTests(unittest.TestCase):
                 self.assertEqual(header['completion_check_sha256'],
                                  '65e20f220a2700e09b7ae6b7f8e2861c6b9d9fbf73bc05c80b420511317e216e')
 
+    def test_strata_iq3s_harnesses_configure_local_openai_chat(self):
+        harnesses = evaluation.load_harnesses()
+        for name, normal in (('benitoiteh-strata-iq3s', False), ('benitoiteh-strata-iq3s-normal', True)):
+            with self.subTest(name=name):
+                harness = harnesses[name]
+                self.assertTrue(harness['verified'])
+                self.assertFalse(harness['default'])
+                self.assertEqual(harness['billing'], 'none')
+                self.assertEqual(harness['model'], 'qwen3.8-flash-next-iq3_s')
+                self.assertEqual(harness['effort'], 'low')
+                self.assertEqual(harness['options'],
+                                 {'max_turns': 50, 'max_run_tokens': 2000000, 'harness_timeout': 900})
+                self.assertEqual(harness['provider'], {
+                    'kind': 'openai-chat',
+                    'base_url': 'http://127.0.0.1:18081/v1',
+                    'api_key': {'env': 'STRATA_API_KEY'},
+                    'context_window': 262144,
+                    'capabilities': {'reasoning_effort': True},
+                })
+                text = evaluation.benitoiteh_config(harness, harness['model'], '/processor')
+                self.assertIn('base_url = "http://127.0.0.1:18081/v1"\n', text)
+                self.assertIn('context_window = 262144\n', text)
+                self.assertIn('effort = "low"\n', text)
+                self.assertIn('api_key = { env = "STRATA_API_KEY" }\n', text)
+                if normal:
+                    self.assertIn('default_mode = "normal"\n', text)
+                    self.assertIn('[agent]\ncompletion_check = false\n', text)
+                else:
+                    self.assertIn('default_mode = "restricted"\n', text)
+
     def test_invalid_evaluation_config_is_rejected_while_loading(self):
         with tempfile.TemporaryDirectory(prefix='skill-eval-invalid-config-') as directory:
             path = os.path.join(directory, 'harnesses.json')

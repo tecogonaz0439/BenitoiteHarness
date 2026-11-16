@@ -29,6 +29,8 @@ python3 -I tools/skill-eval/skill_eval.py \
 
 `benitoiteh-gemini` と `benitoiteh-opus` も同じ形で指定する。三つとも未検証の項目なので `--allow-unverified` を要する。API のキーは、macOS のログインのキーチェーンから `/usr/bin/security find-generic-password` で読む。既定のサービス名はそれぞれ `benitoiteh-deepseek`、`benitoiteh-gemini`、`benitoiteh-anthropic` である。サービス名を変えるときは、`harnesses.json` の該当する項目の `api_key.command` を直す。キーの値は設定や記録に書かない。
 
+手元の推論サーバ（`BH-072`、Debian 13 の Strata 上の `iq3s`）向けに、`benitoiteh-strata-iq3s`（制限モード）と `benitoiteh-strata-iq3s-normal`（`--suite normal`）を用意している（どちらも `verified: true`）。`http://127.0.0.1:18081/v1` への SSH ポート転送（サーバ側 `8081`）を張り、環境変数 `STRATA_API_KEY` に `~/.config/strata/api-key` の値を渡して実行する（詳細は [strata-models.md](../../docs/local-llm/strata-models.md)）。
+
 DeepSeek Harness は、次の形で走らせる。評価の道具はサンドボックスの外で起動する。macOS で `sandbox-exec` を入れ子にすると、DeepSeek Harness がシェルの呼び出しをすべて拒む。
 
 ```sh
