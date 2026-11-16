@@ -1,7 +1,7 @@
 # 提供者の層
 
 - 状態: 草稿
-- 未決事項: BH-030, BH-031, BH-032, BH-033, BH-036, BH-120, BH-122
+- 未決事項: BH-030, BH-031, BH-033, BH-036, BH-120, BH-122
 
 ## 目的と範囲
 
@@ -17,7 +17,7 @@
 
 ### 層の分け方
 
-【方針】提供者の層は、次の二段に分ける。
+【決定】提供者の層は、次の二段に分ける。
 
 1. **共通の形**: 会話、道具の定義、ストリーミングのイベント、使ったトークンの量、終わりの理由を、提供者に依らない Rust の型で表す。エージェントのループと文脈の管理は、この形だけを扱う。
 2. **アダプタ**: 通信の形ごとに一つ置き、共通の形と提供者の要求・応答を相互に変える。
@@ -36,7 +36,7 @@ Gemini の API の専用のアダプタ（ADR 0340 の E）は、三つのアダ
 
 ### 共通の形
 
-【方針】共通の形は次の要素から成る。
+【決定】共通の形は次の要素から成る。
 
 - **会話の項目**: 利用者の発言（文）、応答（文、推論の内容、道具の呼び出しの並び）、道具の結果（呼び出しの ID、文、誤りの印）。
 - **提供者の元の項目**: 応答ごとに、提供者が返した項目（Anthropic の content block、Responses の output の item）を、順序と識別子と署名などの不透明なデータを変えずに、JSON の値として持つ。作った送り先（提供者の設定の名前、ベースの URL、モデル）とアダプタの種類も持つ。同じ送り先への要求では、この元の項目から送る内容を作る。共通の形の会話の項目は、画面、道具の実行、別の送り先へ送るときに使う、元の項目から作った写しである。理由: 文、推論、道具の呼び出しを別々の欄に分けると、文と推論と道具の呼び出しが交互に並ぶ応答の順序が失われる。Anthropic の thinking のブロックは前の内容に結び付けて検査されるので（[文脈の管理](../01-agent/01-04-context.md)の「推論の内容の扱い」）、順序が変わった応答を送ると拒まれうる。
@@ -54,13 +54,13 @@ Gemini の API の専用のアダプタ（ADR 0340 の E）は、三つのアダ
 - 道具の定義に `strict: true` を付ける（引数が形どおりになることを提供者が保証する）。厳密な形の生成が要求する JSON Schema の形（省略できる引数の書き方など）は提供者ごとに違うので、道具の引数の型から、アダプタごとに道具の定義を作る（後述の「道具の定義の変換」）。ストリーミングで大きな引数（ファイルの中身）を早く受け取るため、`eager_input_streaming: true` を付け、受け取った引数を `benitoiteh` の側で JSON Schema で検証する（[エージェントのループ](../01-agent/01-01-agent-loop.md)の「道具の実行」）。
 - 道具の呼び出しを強いる `tool_choice`（`any`・`tool`）を使わない。理由: Claude Opus 5.5、Claude Sonnet 5.5、Claude Fable 5.1 では 400 の誤りになる。圧縮で道具を呼ばせない `tool_choice: none` は使える。
 - 思考は `thinking: {type: "adaptive"}` とし、深さを `output_config.effort` で指定する。effort の値は設定ファイルで指定し、指定がなければ `low` とする（2026-10-19 に設計者が決めた。BH-034 を閉じた）。Claude Opus 5.5 の effort の既定は `medium` であり、省くと既定が使われるので、`benitoiteh` は常に値を明示する。理由: 評価の比較（`tools/skill-eval/results/2026-10-19-p5-option-comparison.md`。DeepSeek-V4.1-Flash を Anthropic の口で使った）で、`low` は `high` と同じく全試行が成功し、1 回あたりの時間が約 4 割、費用の見積もりが約 2 割少なかった。`max` は時間とトークンが増えただけだった。比べた課題はどれも数番で終わる大きさであり、難しい課題で `low` が成功率を落とすかは確かめていない。利用者は設定の `effort` で上げられる。`openai-responses` の既定（`high`）は変えない（比べていない）。`openai-chat` は、機能の表の `reasoning_effort` が真のときだけ effort を要求に付ける（後述の「OpenAI の Chat Completions API」）。
-- thinking のブロックは生の思考を一切返さず、`thinking.display` で表示の形を選ぶ（2026-11-16 に [Thinking](https://platform.claude.com/docs/en/build-with-claude/thinking) で確かめ、BH-096 を閉じた）。`display` の値は `"summarized"`（別モデルによる要約）、`"omitted"`（空の `thinking` 文字列と署名だけ）、`"updates"`（ベータ、見出しの進捗だけ）があり、`display` を省いた既定は Claude Opus 4.6・Claude Sonnet 4.6 以前では `"summarized"` である一方、Claude Opus 4.7・4.8・5・5.5・Claude Sonnet 5・5.5・Claude Haiku 5.5・Claude Fable 5・5.1・5.2・Claude Mythos 5・5.1・5.2・Claude Mythos Preview では `"omitted"` である（課金はいずれも内部の思考トークン全体に対して行われる）。2026-11-16 時点の実装（`provider/anthropic/request.rs`）は `thinking` に `"display"` を付けていないため、Opus 4.7 以降や 5 系のモデルで[文脈の管理](../01-agent/01-04-context.md)の決定（画面に要約を示す）を満たすには `"display": "summarized"` の指定が要る。一方、DeepSeek の Anthropic 互換の口の一次資料（2026-11-16 に再確認）には `display` の記載がないため、本家の URL にだけ付けるか、提供者ごとの機能の表（BH-032）に含めるかを、実装の直しとあわせて決める。
+- thinking のブロックは生の思考を一切返さず、`thinking.display` で表示の形を選ぶ（2026-11-16 に [Thinking](https://platform.claude.com/docs/en/build-with-claude/thinking) で確かめ、BH-096 を閉じた）。`display` の値は `"summarized"`（別モデルによる要約）、`"omitted"`（空の `thinking` 文字列と署名だけ）、`"updates"`（ベータ、見出しの進捗だけ）があり、`display` を省いた既定は Claude Opus 4.6・Claude Sonnet 4.6 以前では `"summarized"` である一方、Claude Opus 4.7・4.8・5・5.5・Claude Sonnet 5・5.5・Claude Haiku 5.5・Claude Fable 5・5.1・5.2・Claude Mythos 5・5.1・5.2・Claude Mythos Preview では `"omitted"` である（課金はいずれも内部の思考トークン全体に対して行われる）。一方、DeepSeek の Anthropic 互換の口の一次資料（2026-11-16 に再確認）には `display` の記載がない。このため、2026-11-16 に提供者ごとの機能の表へ `thinking_display` を加え、本家の Anthropic の URL だけ既定を `true` にして `"thinking": {"type": "adaptive", "display": "summarized"}` を送り、互換の口では利用者が設定の `capabilities` で有効にしない限り付けない形に実装を直した（BH-032・BH-096 を閉じた）。
 - プロンプトのキャッシュは、`cache_control` の区切りを三か所に置く。システムプロンプトの最後（その前の道具の定義も含めてキャッシュされる）、前の要求の会話の最後の項目、今の要求の会話の最後の項目である。理由: 区切りは一つの要求で最大 4 か所であり、キャッシュに合う位置を探すのは、区切りから前へ 20 のブロックまでである（[プロンプトのキャッシュ](https://platform.claude.com/docs/en/build-with-claude/prompt-caching)。2026-10-16 に確かめた）。一つの番で多くの道具を並べて呼ぶと、一つの番で 20 を超えるブロックが加わり、今の最後の区切りだけでは前の要求のキャッシュに届かない。前の要求の最後に区切りを残せば、届く。区切りを動かしても、thinking のブロックの検査には関わらない（[preserved thinking](https://platform.claude.com/docs/en/build-with-claude/preserved-thinking)）。キャッシュの有効期間は既定の 5 分とする。理由: エージェントのループの要求の間隔は多くの場合 5 分より短く、5 分の期間は読むたびに延びる。1 時間の期間は書き込みの単価が 2 倍になる。
 - 終わりの理由が `refusal` のときは、応答の文を示さずに、拒否されたことと分類（`stop_details.category`）を利用者に示して一連の処理を止める。
 - thinking のブロックは、同じ送り先で、同じシステムプロンプトと道具の定義の要求ではそのまま送り返す（[文脈の管理](../01-agent/01-04-context.md)の「推論の内容の扱い」）。会話は追記だけで伸ばし、圧縮の後は残した番の thinking のブロックを送らない（同章の「圧縮」）。Claude Sonnet 5.5 と Haiku 5.5 の thinking のブロックは、作ったアカウント（と結び付いたアカウント）でだけ使え、ほかのアカウントへ送ると、誤りにはならずに捨てられる（[preserved thinking](https://platform.claude.com/docs/en/build-with-claude/preserved-thinking)）。
 - 前の内容が変わった thinking のブロックを、誤りにせずに捨てさせる指定（`thinking.block_binding.prefix_mismatch_behavior` の `drop_block`）は、ベータの機能なので使わない。thinking のブロックの検査で拒まれたら、やり直せない誤りとして示す。
 - HTTP の状態が 429・500・529（`overloaded_error`）のときと、ストリームの中の `error` のイベントが `overloaded_error` のときは、やり直せる誤りとして扱う（[エージェントのループ](../01-agent/01-01-agent-loop.md)の「やり直し」）。
-- DeepSeek の Anthropic 互換の口を使うときは、`cache_control`・`strict`・`eager_input_streaming` を付けない（後述の「提供者ごとの機能の表」。既知の提供者の表を持つときは、その DeepSeek の既定とする。BH-032）。DeepSeek の文書の互換の表では、`cache_control` は無視され、`thinking`（`enabled`・`disabled`、`adaptive` は `enabled` 扱い、`budget_tokens` は無視）は使え、`redacted_thinking` は使えない。`strict`・`eager_input_streaming`・`thinking.display` は表にない（[DeepSeek の文書の Anthropic 互換の口](https://api-docs.deepseek.com/guides/anthropic_api/)。2026-10-16 に確かめ、2026-11-16 に再確認した）。この口で thinking のブロックの送り返しが Anthropic と同じ規則で扱われるかは確かめる（【要検証】BH-031）。
+- DeepSeek の Anthropic 互換の口を使うときは、`cache_control`・`strict`・`eager_input_streaming`・`thinking_display` を付けない（後述の「提供者ごとの機能の表」。互換の口では既定で偽であり、利用者の設定の `capabilities` で上書きする）。DeepSeek の文書の互換の表では、`cache_control` は無視され、`thinking`（`enabled`・`disabled`、`adaptive` は `enabled` 扱い、`budget_tokens` は無視）は使え、`redacted_thinking` は使えない。`strict`・`eager_input_streaming`・`thinking.display` は表にない（[DeepSeek の文書の Anthropic 互換の口](https://api-docs.deepseek.com/guides/anthropic_api/)。2026-10-16 に確かめ、2026-11-16 に再確認した）。この口で thinking のブロックの送り返しが Anthropic と同じ規則で扱われるかは確かめる（【要検証】BH-031）。
 
 ### OpenAI の Responses API
 
@@ -82,20 +82,20 @@ Gemini の API の専用のアダプタ（ADR 0340 の E）は、三つのアダ
 
 ### OpenAI の Chat Completions API
 
-【方針】`openai-chat` は次のように作る。
+【決定】`openai-chat` は次のように作る。
 
 - `POST {base_url}/chat/completions` に `stream: true` と `stream_options: {include_usage: true}` で要求する。
 - 道具の呼び出しは、差分の中の `tool_calls` の `index` ごとに引数の断片をつないで組み立てる。
-- 【方針】`index` のない `tool_calls` の要素は、断片でなく完全な呼び出しとみなし、届いた順に別々の呼び出しとして受け取る。`[DONE]` まで届き、道具の呼び出しが揃っていれば、`finish_reason` が `stop` でも道具の呼び出しの番として扱う（途中で切れた応答と出力の上限では、今までどおり道具を実行しない）。差分と道具の呼び出しの要素に `extra_content` があれば、元の発言の一部として保ち、同じ送り先へ送り返すときにだけ、受け取ったとおりに付けて送る。`extra_content` が `null` のときは欄がないものとして扱う。`extra_content` の値は、入れ子の深さ 16 まで、直列化した大きさ 64 KiB まで（一つの応答の合計）とし、超えたら読めない応答とする。理由: 深い入れ子はセッションの記録を読み直せなくし（JSON の読み取りの再帰の上限）、大きな値は毎回の要求で送り返される。Gemini の値は深さ 2、数百バイトである（2026-10-18 の P1-12 の点検）。`extra_content` は、推論の内容（[文脈の管理](../01-agent/01-04-context.md)の「推論の内容の扱い」）と違い、同じ送り先へ送るときには `reasoning_replay` によらず送り返す。理由: Gemini は推論の印を送り返すよう求め、印は作った提供者にだけ送られ、画面にも LLM の文脈にも示さない。差分ごとに繰り返される `usage` は、最後の値を使う。理由: 2026-10-18 に、Gemini の OpenAI 互換の口（`https://generativelanguage.googleapis.com/v1beta/openai/`、`gemini-3.8-flash`）に要求を送って確かめると、道具の呼び出しを `index` なしの一つの断片で送り、道具を呼んだ応答の `finish_reason` を `stop` とし、推論の印（thought signature）を `delta.extra_content.google.thought_signature` と `tool_calls[].extra_content.google.thought_signature` に入れて返した。Gemini は推論の印を次の要求で送り返すよう求めている（[Gemini の文書の推論](https://ai.google.dev/gemini-api/docs/thinking)）。
+- 【決定】`index` のない `tool_calls` の要素は、断片でなく完全な呼び出しとみなし、届いた順に別々の呼び出しとして受け取る。`[DONE]` まで届き、道具の呼び出しが揃っていれば、`finish_reason` が `stop` でも道具の呼び出しの番として扱う（途中で切れた応答と出力の上限では、今までどおり道具を実行しない）。差分と道具の呼び出しの要素に `extra_content` があれば、元の発言の一部として保ち、同じ送り先へ送り返すときにだけ、受け取ったとおりに付けて送る。`extra_content` が `null` のときは欄がないものとして扱う。`extra_content` の値は、入れ子の深さ 16 まで、直列化した大きさ 64 KiB まで（一つの応答の合計）とし、超えたら読めない応答とする。理由: 深い入れ子はセッションの記録を読み直せなくし（JSON の読み取りの再帰の上限）、大きな値は毎回の要求で送り返される。Gemini の値は深さ 2、数百バイトである（2026-10-18 の P1-12 の点検）。`extra_content` は、推論の内容（[文脈の管理](../01-agent/01-04-context.md)の「推論の内容の扱い」）と違い、同じ送り先へ送るときには `reasoning_replay` によらず送り返す。理由: Gemini は推論の印を送り返すよう求め、印は作った提供者にだけ送られ、画面にも LLM の文脈にも示さない。差分ごとに繰り返される `usage` は、最後の値を使う。理由: 2026-10-18 に、Gemini の OpenAI 互換の口（`https://generativelanguage.googleapis.com/v1beta/openai/`、`gemini-3.8-flash`）に要求を送って確かめると、道具の呼び出しを `index` なしの一つの断片で送り、道具を呼んだ応答の `finish_reason` を `stop` とし、推論の印（thought signature）を `delta.extra_content.google.thought_signature` と `tool_calls[].extra_content.google.thought_signature` に入れて返した。Gemini は推論の印を次の要求で送り返すよう求めている（[Gemini の文書の推論](https://ai.google.dev/gemini-api/docs/thinking)）。
 - 応答が読めない形のときは、ストリームが切れたときと分けて示す（`The provider returned a response that benitoiteh could not read.` の形）。理由: 2026-10-18 の Gemini の試しでは、読めない応答を「切れた」と示したので、原因を取り違えた。
 - 【決定】提供者ごとの機能の表の `reasoning_effort` が真のときだけ、要求に `reasoning_effort` を付け、値を解決した effort とする（2026-10-19 に設計者が決めた）。既定は偽とし、互換の口に知らない欄を送らない。理由: Google の Gemini の OpenAI 互換の口は `reasoning_effort` を受け付けて推論の量を変え（2026-10-19 に要求を送って確かめた。値は `none`・`minimal`・`low`・`medium`・`high` で、ほかの値は 400 の誤り）、付けなければ提供者の既定の深さで推論する。OpenAI 互換を名乗るほかの口は、この欄を知らずに誤りを返しうる。
 - 【決定】使ったトークンの量は、`prompt_tokens`・`prompt_tokens_details.cached_tokens`・`completion_tokens`・`completion_tokens_details.reasoning_tokens` から取る。`completion_tokens_details.reasoning_tokens` がなく、`total_tokens` が `prompt_tokens` と `completion_tokens` の和より大きいときは、その差を推論のトークンとし、出力の量（共通の形の出力全体）に足す（2026-10-19 に設計者が決めた）。理由: Google の Gemini の OpenAI 互換の口は、推論に使ったトークンを `completion_tokens` に含めず、`total_tokens` にだけ含めて返す（同日に確かめた）。数えないと、トークンの量の上限と費用の見積もりが推論の分だけ少なくなる。
 - 推論の文を `reasoning_content` などの欄で返す互換の口がある。受け取った推論の文は画面に示す。次の要求に送り返すかは、提供者ごとの機能の表で決める。
-- DeepSeek の推論のモードでは、要求が道具の定義を含むとき、前のすべての番の `reasoning_content` を送り返す。道具の定義を含まないときは送り返さなくてよく、送っても使われない。送り返すべきものが欠けると、400 の誤りになる（[DeepSeek の文書の推論のモード](https://api-docs.deepseek.com/guides/thinking_mode/)。2026-10-16 に確かめた）。`benitoiteh` の要求はいつも道具の定義を含むので、DeepSeek の Chat Completions の口の `reasoning_replay` は `all-turns` とする（既知の提供者の表を持つときは、その既定とする。BH-032）。
+- DeepSeek の推論のモードでは、要求が道具の定義を含むとき、前のすべての番の `reasoning_content` を送り返す。道具の定義を含まないときは送り返さなくてよく、送っても使われない。送り返すべきものが欠けると、400 の誤りになる（[DeepSeek の文書の推論のモード](https://api-docs.deepseek.com/guides/thinking_mode/)。2026-10-16 に確かめた）。`benitoiteh` の要求はいつも道具の定義を含むので、DeepSeek の Chat Completions の口の `reasoning_replay` は `all-turns` とする（互換の口では利用者の設定の `capabilities` で指定する。BH-032 を閉じた）。
 
 ### 提供者ごとの機能の表
 
-【方針】「互換」の口が持つ機能は提供者によって違う。設定ファイルの提供者ごとの欄で、次の機能の有無を指定できるようにし、既知の提供者には既定の値を持たせる。
+【決定】「互換」の口が持つ機能は提供者によって違う。設定ファイルの提供者ごとの欄（`capabilities`）で、次の機能の有無を指定でき、実行ファイルには本家の URL のアダプタごとの既定だけを持たせる（2026-11-16 に設計者が承認し、BH-032 を閉じた）。
 
 | 機能 | 内容 |
 |---|---|
@@ -106,14 +106,15 @@ Gemini の API の専用のアダプタ（ADR 0340 の E）は、三つのアダ
 | `reasoning_replay` | 推論の内容を送り返す規則。`none`（送らない）、`same-destination`（同じ送り先でそのまま送る。圧縮の後は残した番から除く）、`all-turns`（すべての番の推論の文を送る。圧縮の後も残した番の分を送る）のどれか |
 | `parallel_tool_calls` | 一つの応答で複数の道具を呼ばせるか |
 | `reasoning_effort` | `openai-chat` で、要求に `reasoning_effort` を付けるか（既定は偽） |
+| `thinking_display` | `anthropic-messages` で適応的な思考の要求に `"display": "summarized"` を付けるか（既定は偽。本家の Anthropic の URL の既定は真） |
 | `image_input` | 道具の結果の画像を送るか（既定は偽。本家の Anthropic と Responses の既定は真。モデルが画像を受け付けないときは利用者が偽にする） |
 | `context_window`・`max_output_tokens` | モデルの文脈の上限と出力の上限（圧縮の判定に使う） |
 
-既知の提供者とモデルの表を実行ファイルに持つか、設定ファイルだけで与えるかは BH-032 で決める。どちらでも、表にない「互換」の口は、本家の提供者と同じ機能を持つと推し量らず、表の既定（使わない側）で扱う。モデルの文脈の上限は、Anthropic では Models API（`GET /v1/models/{id}` の `max_input_tokens`）で得られる。
+本家の URL（`https://api.anthropic.com`、`https://api.openai.com` / `https://api.openai.com/v1`）には対応するアダプタの本家の既定を当て、表にない「互換」の口は本家の提供者と同じ機能を持つと推し量らず、表の既定（追加の機能を使わない側）で扱う（BH-032 を閉じた）。モデルの文脈の上限は、Anthropic では Models API（`GET /v1/models/{id}` の `max_input_tokens`）で得られる。
 
 ### 画像の受け渡し
 
-【方針】共通の形の道具の結果は、文の部分に加えて、画像の部分（MIME の型と、画像のバイト列）を持てるようにする。画像の部分は、機能の表の `image_input` が真のときだけ作る（[道具](../01-agent/01-03-tools.md)の「画像のファイルの読み取り」）。アダプタは次のとおり送る。
+【決定】共通の形の道具の結果は、文の部分に加えて、画像の部分（MIME の型と、画像のバイト列）を持てるようにする。画像の部分は、機能の表の `image_input` が真のときだけ作る（[道具](../01-agent/01-03-tools.md)の「画像のファイルの読み取り」）。アダプタは次のとおり送る。
 
 - `anthropic-messages`: `tool_result` の `content` を、文の塊と画像の塊（`{"type":"image","source":{"type":"base64","media_type":...,"data":...}}`）の並びにする。`tool_result` の `content` に画像を入れられること、形式が JPEG・PNG・GIF・WebP であることは、2026-10-19 に Anthropic の文書（tool use の結果の扱いと Vision）で確かめた。誤りの結果（`is_error`）には画像を入れない（画像を含む結果は誤りでない結果だけである）。
 - `openai-responses`: `function_call_output` の `output` を、`input_text` と `input_image`（`image_url` に data URL、`detail` は `auto`）の並びにする。`output` がこの並びを受け付けることは、2026-10-19 に OpenAI の Python の SDK（API の仕様から生成した型。openai/openai-python のコミット `6eaa90ee`）と関数の呼び出しの文書で確かめた。
@@ -144,7 +145,7 @@ Gemini の API の専用のアダプタ（ADR 0340 の E）は、三つのアダ
 
 ### 認証の情報
 
-【方針】API キーは、利用者の設定ファイルに、キーそのものではなく参照として書く。参照は次の二つとする。
+【決定】API キーは、利用者の設定ファイルに、キーそのものではなく参照として書く。参照は次の二つとする。
 
 - `{ env = "ANTHROPIC_API_KEY" }`: 環境変数から読む。
 - `{ command = ["<プログラム>", "<引数>", ...] }`: プログラムを起動し、標準出力の一行目をキーとする（パスワードマネージャを使う利用者のため）。このプログラムはサンドボックスの外で、起動のときに一度だけ動かす。
@@ -162,24 +163,24 @@ Gemini の API の専用のアダプタ（ADR 0340 の E）は、三つのアダ
 
 - **ログイン**: `benitoiteh login chatgpt` で始める（[CLI と設定ファイル](../05-interface/05-01-cli.md)の「login と logout」）。LLM が呼べる道具からは始められない。
   - 認可の口 `https://auth.openai.com/api/accounts/authorize` に、PKCE（S256）、`state`、`nonce`、`response_type=code`、`scope=openid profile email offline_access resource.invoke chatgpt.tokens.use.direct`、`resource=https://api.openai.com/v1`、`ext_agent_host_id`、`client_id` を付けて、利用者のブラウザで開く（開けなければ URL を示す）。`client_id` は、初めては `dynamic_agent_client`（と `agent_name_hint=benitoiteh`）とし、発行された ID（`oaiapp_` で始まる）を保存して、以後はそれを使う。`ext_agent_host_id` は `urn:uuid:` の形の乱数とし、機械ごとに一度作って保存する。
-  - 戻り先は `http://127.0.0.1:<番号>/auth/callback` とし、`127.0.0.1` に、OS が選ぶ番号で待ち受ける（`localhost` と書かない。文書が求める）。待ち受けるのは `GET /auth/callback` だけとし、`Host` の値も確かめる。待つ時間の上限は 10 分とする。戻りの `client_id` は、code の交換が通るまで「確かめていない」値として保存し、確かめる前にログインが失敗したら（通信の失敗と、408・429・5xx の応答を除く）、次は `dynamic_agent_client` から始める。408 と 429 は、2026-10-20 の点検で除く側に加えた。理由: どちらも一時的な断りであり、発行された ID が無効であることを示さない。【方針】同じ機械を使うほかの利用者に対しては限界がある: 認可の URL はブラウザを開くプロセスの引数として見えうるので、それを読んだ者は、戻りを先に送ってログインを妨げたり、自分のアカウントの許可に結び付けたりしうる（ループバックの戻り先を使う形に共通の性質）。待ち受けの番号へ大量に接続して、ログインを妨げることもできる。成功のときに示すメールの宛先で、利用者が結び付いたアカウントを確かめられるようにする。【方針】待ち受けは一つのスレッドで行い、待ち受けのソケットと受けた接続を `poll` でまとめて待つ。要求の頭を読み終えていない接続は同時に 64 まで保ち、超えたら最も古いものを閉じる。一つの接続からは、5 秒と 8 KiB までで要求の頭を読む。完全な戻りを受けたら、200 の応答を書いて書く側を閉じてから、待ち受けと残りの接続を閉じる（2026-10-20 の点検で改めた）。理由: 接続ごとにスレッドを起こして未完の接続を 4 つまでに限る形では、少しの接続で、ブラウザの戻りの接続を読み終える前に閉じさせられる。一つのスレッドで扱えば、古い接続を閉じる処理と戻りを受け終える処理が競合しない。
+  - 戻り先は `http://127.0.0.1:<番号>/auth/callback` とし、`127.0.0.1` に、OS が選ぶ番号で待ち受ける（`localhost` と書かない。文書が求める）。待ち受けるのは `GET /auth/callback` だけとし、`Host` の値も確かめる。待つ時間の上限は 10 分とする。戻りの `client_id` は、code の交換が通るまで「確かめていない」値として保存し、確かめる前にログインが失敗したら（通信の失敗と、408・429・5xx の応答を除く）、次は `dynamic_agent_client` から始める。408 と 429 は、2026-10-20 の点検で除く側に加えた。理由: どちらも一時的な断りであり、発行された ID が無効であることを示さない。【決定】同じ機械を使うほかの利用者に対しては限界がある: 認可の URL はブラウザを開くプロセスの引数として見えうるので、それを読んだ者は、戻りを先に送ってログインを妨げたり、自分のアカウントの許可に結び付けたりしうる（ループバックの戻り先を使う形に共通の性質）。待ち受けの番号へ大量に接続して、ログインを妨げることもできる。成功のときに示すメールの宛先で、利用者が結び付いたアカウントを確かめられるようにする。【決定】待ち受けは一つのスレッドで行い、待ち受けのソケットと受けた接続を `poll` でまとめて待つ。要求の頭を読み終えていない接続は同時に 64 まで保ち、超えたら最も古いものを閉じる。一つの接続からは、5 秒と 8 KiB までで要求の頭を読む。完全な戻りを受けたら、200 の応答を書いて書く側を閉じてから、待ち受けと残りの接続を閉じる（2026-10-20 の点検で改めた）。理由: 接続ごとにスレッドを起こして未完の接続を 4 つまでに限る形では、少しの接続で、ブラウザの戻りの接続を読み終える前に閉じさせられる。一つのスレッドで扱えば、古い接続を閉じる処理と戻りを受け終える処理が競合しない。
   - 戻りの `state` を、時間の一定な比べ方で確かめる。違えばその戻りを捨てて待ち続ける。戻りに含まれる `client_id` が保存した ID と違えば断る。`error=access_denied` なら、`state` を確かめたうえで、交換せずに終える。
   - トークンの口 `https://auth.openai.com/api/accounts/oauth/token` に、フォームの形で、`grant_type=authorization_code`、`client_id`、`code`、`code_verifier`、同じ `redirect_uri`、同じ `resource` を送る。クライアントの秘密は使わない。
   - ID トークンは、`https://auth.openai.com/.well-known/openid-configuration` から得た JWKS の公開鍵で、RS256 の署名を確かめ、発行者、宛先（発行された `client_id`）、期限、`nonce` を確かめる。署名を確かめる処理は、TLS のために既に持つ `graviola` の RSA の検証（RSASSA-PKCS1-v1_5、SHA-256）を使う（JWKS の `n`・`e` から PKCS#1 の DER を組み立て、`graviola` 0.4.1 の公開の口 `signing::rsa::VerifyingKey::from_pkcs1_der` と `verify_pkcs1_sha256` で確かめる。P5-21 で、`graviola` の `to_pkcs1_der` の出力と一致することを確かめた。BH-114 を閉じた。`graviola` は確かめないので、署名の長さが法の長さと等しいことと、指数が 3 以上の奇数であることは自前で確かめる）。加えて、得た許可に `chatgpt.tokens.use.direct` があることを確かめる（文書: 「A valid ID token alone does not authorize ChatGPT plan usage.」）。
   - 【決定】code の交換でトークンを受け取った後にログインが失敗したら（ID トークンの確かめ、許可の範囲、アカウントの違い、保存の失敗、2xx の本文の形の誤りなど）、受け取ったリフレッシュトークンの取り消しを、ログアウトと同じ形（`revocation_endpoint`、10 秒の上限）で一度だけ送り、取り消しの結果によらず元の誤りを返す。取り消しの結果は利用者に示さない。保存に同じ `client_id` のトークンがあり、それが受け取ったトークンと同じアカウント（ID トークンの `sub` が同じ）のものか、受け取ったトークンのアカウントを確かめられなかったときは、送らない（2026-10-20 に設計者が決めた）。理由: 保存せずに捨てたリフレッシュトークンは、取り消さなければ、期限（30 日）まで使える形で残る。保存したトークンと同じ許可に属しうるときに送らないのは、取り消しが同じ許可のほかのトークンに及ぶなら、保存したトークンまで使えなくなるからである。2026-11-16 に OpenAI の一次資料（<https://developers.openai.com/siwc/llms-full.txt>・<https://auth.openai.com/.well-known/openid-configuration>）および [RFC 7009](https://www.rfc-editor.org/rfc/rfc7009.txt) 第 2.1 節を確かめたところ、Sign in with ChatGPT の文書は同じクライアント登録で複数のホストが動く構成を記す一方、一つのリフレッシュトークンの取り消しが同じ許可のほかのトークンに及ばない保証はなく、RFC 7009 も波及の有無を認可サーバの方針次第としている。したがってこの条件は外せないと判断し、保ったまま BH-117 を閉じた。
 - **保存**: 発行された `client_id`、`ext_agent_host_id`、アクセストークン、リフレッシュトークン、期限、`earliest_refresh_at`、アカウントの表示用の情報（メールの宛先など）を、`$XDG_STATE_HOME/benitoiteh/auth/chatgpt.json` に置く。ディレクトリは 0700、ファイルは 0600 とし、一時ファイルに書いてから名前を替える（途中で止まっても壊れたファイルを残さない）。トークンは、診断・ログ・セッションの記録・LLM に送る文脈・URL に含めない。子プロセスの環境にも渡さない。OS のキーストアに置く形は、API キーと同じく後に回す（BH-033）。
-- **更新**: アクセストークンは 1 時間、リフレッシュトークンは 30 日で切れ、更新のたびにリフレッシュトークンが替わる（文書）。要求の前に、アクセストークンの期限まで 60 秒を切っていれば（`earliest_refresh_at` より後なら）更新する。更新は、`auth/` の錠のファイルに排他の錠を掛けて、プロセスをまたいで一つずつ行い、錠を取った後に保存の内容を読み直して、ほかのプロセスが既に更新していれば使う。更新の要求はフォームの形で `grant_type=refresh_token`、`client_id`、`refresh_token`、`resource` を送る。受け取ったトークンは、すぐに保存する（使い終えたリフレッシュトークンを失わないため）。更新が `invalid_grant`・`refresh_token_reused` などで断られたら、保存したトークンを消し、`benitoiteh login chatgpt` をやり直すよう示す。【方針】更新の応答が 2xx で、中身の確かめに通らない（期限の欄がないなど）ときも、空でないリフレッシュトークンを読めれば、それを保存してから誤りを返す。このとき、アクセストークンと期限は前の値を残し、`earliest_refresh_at` は消す（2026-10-20 の点検で加えた）。理由: リフレッシュトークンは更新のたびに替わるので、読めた新しいものを捨てると、前のもので更新し直せる保証がなく、ログインのやり直しになりうる。【方針】要求の取り消しは、更新の錠を待つ間と、トークンの口へ送る前に受ける。錠は待たずに取る試しを繰り返し、その合間に取り消しの印を見る。トークンの口へ送った後は、取り消しを受けず、受け取ったトークンを保存するまで待つ。待つのは最長 60 秒（HTTP の通信の上限）であり、この待ちのことは画面に示さない（2026-10-20 の点検で改めた）。理由: 錠を待つ間に限りがない形では、ほかのプロセスが錠を持ち続けると、取り消しが返らない。送った後に止めると、替わったリフレッシュトークンを失う。
+- **更新**: アクセストークンは 1 時間、リフレッシュトークンは 30 日で切れ、更新のたびにリフレッシュトークンが替わる（文書）。要求の前に、アクセストークンの期限まで 60 秒を切っていれば（`earliest_refresh_at` より後なら）更新する。更新は、`auth/` の錠のファイルに排他の錠を掛けて、プロセスをまたいで一つずつ行い、錠を取った後に保存の内容を読み直して、ほかのプロセスが既に更新していれば使う。更新の要求はフォームの形で `grant_type=refresh_token`、`client_id`、`refresh_token`、`resource` を送る。受け取ったトークンは、すぐに保存する（使い終えたリフレッシュトークンを失わないため）。更新が `invalid_grant`・`refresh_token_reused` などで断られたら、保存したトークンを消し、`benitoiteh login chatgpt` をやり直すよう示す。【決定】更新の応答が 2xx で、中身の確かめに通らない（期限の欄がないなど）ときも、空でないリフレッシュトークンを読めれば、それを保存してから誤りを返す。このとき、アクセストークンと期限は前の値を残し、`earliest_refresh_at` は消す（2026-10-20 の点検で加えた）。理由: リフレッシュトークンは更新のたびに替わるので、読めた新しいものを捨てると、前のもので更新し直せる保証がなく、ログインのやり直しになりうる。【決定】要求の取り消しは、更新の錠を待つ間と、トークンの口へ送る前に受ける。錠は待たずに取る試しを繰り返し、その合間に取り消しの印を見る。トークンの口へ送った後は、取り消しを受けず、受け取ったトークンを保存するまで待つ。待つのは最長 60 秒（HTTP の通信の上限）であり、この待ちのことは画面に示さない（2026-10-20 の点検で改めた）。理由: 錠を待つ間に限りがない形では、ほかのプロセスが錠を持ち続けると、取り消しが返らない。送った後に止めると、替わったリフレッシュトークンを失う。
 - **要求**: 提供者の設定で `kind = "openai-responses"` と `auth = "chatgpt"` を指定すると、API キーの代わりに保存したトークンを使い、送り先を `https://api.openai.com/v1/responses` に固定する。要求は今の `openai-responses` のアダプタで作り、次の点を変える。文書が受け付けないとする欄（`background`、`conversation`、`max_output_tokens`、`max_tool_calls`、`metadata`、`moderation`、`prompt`、`prompt_cache_retention`、`safety_identifier`、`temperature`、`top_logprobs`、`top_p`、`truncation`、`user`、`previous_response_id` など）を送らない。システムプロンプトは `instructions` で送り、`role: "system"` の項目を送らない。`store: false`、`stream: true` とする。
 
   2026-10-20 に、設計者の了承を得て、`benitoiteh exec`（通常モード、`--sandbox read-only`、`--max-turns 2`）で、上の設定の提供者（モデル `gpt-6.1-sol`、effort `low`）に短い要求を 2 回送った。ChatGPT plan usage を使い、API の利用料はかからなかった。道具の定義を今の形（最上位の `function`）のまま送り、1 回目の応答で `read` の呼び出し（引数 `{"path":"hello.txt"}`）、2 回目の応答でファイルの中身をそのまま答える文を受け取った。誤りは返らなかった。トークンの量は、1 回目が入力 1,002・出力 26、2 回目が入力 1,052・出力 13 だった。この結果から、道具の定義は最上位の `function` の形のまま受け付けられ、名前空間にまとめる必要はないと確かめた。文書は引き続き名前空間にまとめることを勧める。
-- **誤り**: `subscription_sharing_usage_limit_exceeded`（429）は、やり直さずに止め、利用の上限に達したことと <https://chatgpt.com/settings/usage> を示す。`subscription_sharing_user_not_eligible`（403）と `subscription_sharing_unsupported_capability`（400）も、やり直さずに止める。401 は一度だけ更新してやり直す。【方針】`auth = "chatgpt"` の提供者では、誤りの詳しい内容を LLM・画面・記録に示すとき、提供者の文（`message`）を示さない。`code` と `type` は、トークンを伏せた後に `^[a-z0-9_.]{1,64}$` に合うときだけ示し、`Retry-After` は数字だけのときに示す（2026-10-20 の点検で加えた）。理由: 今の伏せ方は、トークンの全体と一致する並びだけを置き換えるので、提供者の文がトークンの一部を含むと、その部分が残る。API キーの提供者では、提供者の文が設定の誤りを直す手がかりになるので、今の形を保つ。【方針】ログインと更新の失敗の後片付け（確かめていない `client_id` を `dynamic_agent_client` に戻す保存と、断られた更新の後にトークンを消す保存）が失敗しても、後片付けの誤りではなく元の誤りを返す（2026-10-20 の点検で改めた）。理由: 後片付けの誤り（保存の失敗）を返すと、利用者は、ログインや更新がなぜ失敗したかを知れない。
+- **誤り**: `subscription_sharing_usage_limit_exceeded`（429）は、やり直さずに止め、利用の上限に達したことと <https://chatgpt.com/settings/usage> を示す。`subscription_sharing_user_not_eligible`（403）と `subscription_sharing_unsupported_capability`（400）も、やり直さずに止める。401 は一度だけ更新してやり直す。【決定】`auth = "chatgpt"` の提供者では、誤りの詳しい内容を LLM・画面・記録に示すとき、提供者の文（`message`）を示さない。`code` と `type` は、トークンを伏せた後に `^[a-z0-9_.]{1,64}$` に合うときだけ示し、`Retry-After` は数字だけのときに示す（2026-10-20 の点検で加えた）。理由: 今の伏せ方は、トークンの全体と一致する並びだけを置き換えるので、提供者の文がトークンの一部を含むと、その部分が残る。API キーの提供者では、提供者の文が設定の誤りを直す手がかりになるので、今の形を保つ。【決定】ログインと更新の失敗の後片付け（確かめていない `client_id` を `dynamic_agent_client` に戻す保存と、断られた更新の後にトークンを消す保存）が失敗しても、後片付けの誤りではなく元の誤りを返す（2026-10-20 の点検で改めた）。理由: 後片付けの誤り（保存の失敗）を返すと、利用者は、ログインや更新がなぜ失敗したかを知れない。
 - **ログアウト**: `benitoiteh logout chatgpt` は、`openid-configuration` の `revocation_endpoint` にリフレッシュトークンの取り消しを 10 秒の上限で求め、保存したトークンを消す（`client_id` と `ext_agent_host_id` は残す）。取り消しを確かめられなければ、そのことを示す。
 - **端末だけの環境**: 文書はデバイスコードの形を示さず、別の機械でログインした資格のファイルを写す形を示す。`benitoiteh` も、ログインの URL を示し、戻りを同じ機械の `127.0.0.1` で受ける形だけを作る。写すときは `ext_agent_host_id` を写さない（文書: 移した先の機械の値を保つ）。
 - **画面の文言**: ログインの操作は「Continue with ChatGPT」と示す（文書の UI の指針）。
 
 ### HTTP の通信
 
-【方針】HTTP の通信は、Benitoite の処理系と同じ系統のクレート（`ureq` と、`rustls` に `rustls-graviola` の暗号の実装を組み合わせたもの）で行う（[クレートの構成](../06-impl/06-01-crate-structure.md)）。理由: 非同期の実行時（tokio など）を使わずにすみ、実行ファイルが小さくなる。試作を Benitoite の処理系にマージするときに、依存が増えない。
+【決定】HTTP の通信は、Benitoite の処理系と同じ系統のクレート（`ureq` と、`rustls` に `rustls-graviola` の暗号の実装を組み合わせたもの）で行う（[クレートの構成](../06-impl/06-01-crate-structure.md)）。理由: 非同期の実行時（tokio など）を使わずにすみ、実行ファイルが小さくなる。試作を Benitoite の処理系にマージするときに、依存が増えない。
 
 - ストリーミングの応答は、受け取ったバイト列を行に分け、Server-Sent Events の `event:` と `data:` の行を自前で読む。一つのイベントの大きさの上限は 16 MiB とし、超えたら誤りとして受け取りを止める。理由: 上限なく読むと、壊れた応答や悪意のある互換の口で、主のプロセスのメモリを使い尽くす。
 - 時間の上限を、接続（10 秒）、応答のヘッダが届くまで（120 秒）、ストリームで次のデータが届かない時間（300 秒）、一つの要求の全体（30 分）に分ける。300 秒は Codex CLI の値である。`ureq` の時間の上限は、どれも段階ごとの合計の時間であり、データが届かない時間の上限を持たない（`timeout_recv_body` は本文の受け取りの合計の時間である。[ureq 3.4.2 の文書](https://docs.rs/ureq/latest/ureq/config/struct.ConfigBuilder.html)。2026-10-16 に確かめた）。このため、データが届かない時間は、ストリームのスレッドが最後にデータを受け取った時刻を記録し、エージェントのスレッドが見張って判定する。超えたら、その要求を打ち切るか切り離し（後述）、やり直せる誤り（ストリームの途中の切断）として扱う。全体の上限は `ureq` の要求の全体の上限で掛ける。
