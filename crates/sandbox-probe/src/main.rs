@@ -190,6 +190,29 @@ fn run(operation: &OsStr, args: &[OsString]) -> io::Result<Option<u8>> {
             std::io::stdout().write_all(&response)
         }
         ("socketpair", []) => UnixStream::pair().map(|_| ()),
+        ("socketpair-send", [path]) => {
+            let address = rustix::net::SocketAddrUnix::new(path)
+                .map_err(|error| io::Error::new(io::ErrorKind::InvalidInput, error))?;
+            probe_socketpair_send(
+                rustix::net::SocketType::STREAM,
+                &address,
+                cfg!(not(target_os = "linux")),
+            )?;
+            #[cfg(target_os = "linux")]
+            probe_socketpair_send(rustix::net::SocketType::SEQPACKET, &address, true)?;
+            #[cfg(not(target_os = "linux"))]
+            probe_socketpair_send(rustix::net::SocketType::DGRAM, &address, false)?;
+            Ok(())
+        }
+        #[cfg(target_os = "linux")]
+        ("socketpair-dgram", []) => rustix::net::socketpair(
+            rustix::net::AddressFamily::UNIX,
+            rustix::net::SocketType::DGRAM,
+            rustix::net::SocketFlags::CLOEXEC,
+            None,
+        )
+        .map(|_| ())
+        .map_err(Into::into),
         ("fd-open", [number]) => return descriptor(number),
         ("exec", [program, rest @ ..]) => {
             let status = Command::new(program).args(rest).status()?;
@@ -260,4 +283,37 @@ fn descriptor(number: &OsStr) -> io::Result<Option<u8>> {
         }
         Err(error) => Err(error),
     }
+}
+
+fn probe_socketpair_send(
+    kind: rustix::net::SocketType,
+    address: &rustix::net::SocketAddrUnix,
+    allow_local_delivery: bool,
+) -> io::Result<()> {
+    // Linux では SOCK_NONBLOCK と SOCK_CLOEXEC を付けても対の相手へしか送れないことを確かめる
+    // （設計書 03-02「方針の要素」、BH-091）。macOS には SocketFlags::CLOEXEC/NONBLOCK がない。
+    #[cfg(target_os = "linux")]
+    let flags = rustix::net::SocketFlags::CLOEXEC | rustix::net::SocketFlags::NONBLOCK;
+    #[cfg(not(target_os = "linux"))]
+    let flags = rustix::net::SocketFlags::empty();
+    let (left, right) =
+        rustix::net::socketpair(rustix::net::AddressFamily::UNIX, kind, flags, None)?;
+    if rustix::net::connect(&left, address).is_ok() {
+        return Err(io::Error::other(text::SOCKETPAIR_CONNECT_ALLOWED));
+    }
+    if let Ok(sent) = rustix::net::sendto(&left, b"probe", rustix::net::SendFlags::empty(), address)
+    {
+        if !allow_local_delivery {
+            return Err(io::Error::other(text::SOCKETPAIR_SEND_REDIRECTED));
+        }
+        // 接続済みの対は msg_name を無視し、対の相手にだけ届く（macOS STREAM / Linux SEQPACKET）。
+        let mut peer = UnixStream::from(right);
+        peer.set_nonblocking(true)?;
+        let mut buf = [0_u8; 8];
+        let received = peer.read(&mut buf)?;
+        if received != sent {
+            return Err(io::Error::other(text::SOCKETPAIR_SEND_REDIRECTED));
+        }
+    }
+    Ok(())
 }
