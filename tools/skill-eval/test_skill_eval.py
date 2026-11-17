@@ -375,6 +375,8 @@ class ConfigTests(unittest.TestCase):
             ('benitoiteh-strata-iq3s-normal', True, 'low', 900),
             ('benitoiteh-strata-iq3s-effort-medium', False, 'medium', 1800),
             ('benitoiteh-strata-iq3s-normal-effort-medium', True, 'medium', 1800),
+            ('benitoiteh-strata-iq3s-effort-high', False, 'high', 1800),
+            ('benitoiteh-strata-iq3s-normal-effort-high', True, 'high', 1800),
         )
         for name, normal, effort, timeout in cases:
             with self.subTest(name=name):
