@@ -636,6 +636,12 @@ fn child_process_environment_removes_all_provider_keys_and_replaces_inherited_ma
         ("GEMINI_API_KEY", "provider-gemini"),
         ("DEEPSEEK_API_KEY", "provider-deepseek"),
         ("CUSTOM_PROVIDER_KEY", "provider-custom"),
+        ("T3_ACP_MCP_ENDPOINT", "acp-mcp-endpoint"),
+        ("T3_ACP_MCP_AUTHORIZATION", "acp-mcp-bearer"),
+        ("T3_ACP_MCP_NODE", "acp-mcp-node"),
+        ("T3CODE_THREAD_ID", "acp-mcp-thread"),
+        ("t3_acp_mcp_entrypoint", "acp-mcp-lower-entrypoint"),
+        ("t3code_session", "acp-mcp-lower-session"),
         ("BENITOITEH_SANDBOX", "outer"),
         ("BENITOITEH_SANDBOX_NETWORK_DISABLED", "outer"),
         ("TMPDIR", "/outer/tmp"),
@@ -744,6 +750,17 @@ fn child_process_environment_removes_all_provider_keys_and_replaces_inherited_ma
         vec![],
         vec!["KEEP_ME=inherited"],
     ));
+    // `*` を含む allow で ACP クライアントの MCP 用変数を狙っても、規則の後に必ず除かれる。
+    cases.push((
+        "rules = ['allow T3_ACP_MCP_*', 'allow T3CODE_*', 'allow KEEP_ME']".into(),
+        vec!["KEEP_ME=inherited"],
+        vec![],
+    ));
+    cases.push((
+        "rules = ['allow T3_*', 'allow KEEP_ME']".into(),
+        vec!["KEEP_ME=inherited"],
+        vec![],
+    ));
     for (rules, present, absent) in &cases {
         let user = UserConfig::parse(&format!(
             "[providers.p]\nkind='openai-chat'\nmodel='m'\napi_key={{env='CUSTOM_PROVIDER_KEY'}}\n[environment]\n{rules}"
@@ -760,7 +777,7 @@ fn child_process_environment_removes_all_provider_keys_and_replaces_inherited_ma
                 &temporary,
                 sandbox,
             );
-            // 実際の子に渡し、外での起動でも提供者のキーを除く安全の契約を守る。
+            // 実際の子に渡し、外での起動でも提供者のキーと ACP の MCP 用変数を除く安全の契約を守る。
             let output = Command::new("/usr/bin/env")
                 .env_clear()
                 .envs(env)
@@ -770,6 +787,11 @@ fn child_process_environment_removes_all_provider_keys_and_replaces_inherited_ma
             let output = String::from_utf8(output.stdout)?;
             let context = format!("{rules}\n{output}");
             assert!(!output.contains("provider-"), "{context}");
+            assert!(!output.contains("acp-mcp-"), "{context}");
+            assert!(!output.contains("T3_ACP_MCP_"), "{context}");
+            assert!(!output.contains("t3_acp_mcp_"), "{context}");
+            assert!(!output.contains("T3CODE_"), "{context}");
+            assert!(!output.contains("t3code_"), "{context}");
             assert!(!output.contains("outer"), "{context}");
             assert!(!output.contains("BENITOITEH_ASKPASS_"), "{context}");
             for expected in [
@@ -957,6 +979,7 @@ fn askpass_is_enabled_by_default_and_only_user_config_can_disable_it() -> TestRe
     let malformed = "malformed rule";
     let fixed = "set cannot name";
     let provider = "allow without * cannot name";
+    let acp_mcp = "allow without * cannot name an ACP client MCP variable";
     for (rule, reason) in [
         ("permit *", unknown),
         ("Allow *", unknown),
@@ -976,6 +999,10 @@ fn askpass_is_enabled_by_default_and_only_user_config_can_disable_it() -> TestRe
         ("set NAME=a\\u0000b", malformed),
         ("set OPENAI_API_KEY=secret-marker", fixed),
         ("set custom_provider_key=x", fixed),
+        ("set T3_ACP_MCP_ENDPOINT=secret-marker", fixed),
+        ("set t3_acp_mcp_authorization=secret-marker", fixed),
+        ("set T3CODE_THREAD_ID=secret-marker", fixed),
+        ("set t3code_thread_id=secret-marker", fixed),
         ("set TMPDIR=/x", fixed),
         ("set BENITOITEH_SANDBOX=none", fixed),
         ("set benitoiteh_anything=x", fixed),
@@ -988,6 +1015,10 @@ fn askpass_is_enabled_by_default_and_only_user_config_can_disable_it() -> TestRe
         ("allow OPENAI_API_KEY", provider),
         ("allow anthropic_api_key", provider),
         ("allow CUSTOM_PROVIDER_KEY", provider),
+        ("allow T3_ACP_MCP_AUTHORIZATION", acp_mcp),
+        ("allow t3_acp_mcp_endpoint", acp_mcp),
+        ("allow T3CODE_THREAD_ID", acp_mcp),
+        ("allow t3code_thread_id", acp_mcp),
     ] {
         let input = format!(
             "[providers.p]\nkind='openai-chat'\nmodel='m'\napi_key={{env='CUSTOM_PROVIDER_KEY'}}\n[environment]\nrules = [\"allow *\", \"{rule}\"]"

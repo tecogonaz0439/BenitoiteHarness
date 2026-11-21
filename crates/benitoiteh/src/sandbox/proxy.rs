@@ -130,16 +130,24 @@ impl NetworkGate {
     }
 }
 
+/// コマンドの終了状態と、このコマンドに限った許可・拒否の集合。
+/// 終了の確定と確認応答の採用（セッション許可の更新を含む）を同じ錠で直列化する
+/// （設計書 03-02「通信の中継」、05-03「通信の中継と秘密の入力の扱い」）。
+#[derive(Default)]
+struct RunState {
+    finished: bool,
+    allowed: BTreeSet<String>,
+    declined: BTreeSet<String>,
+}
+
 /// 一回のコマンドの間の中継の状態。このコマンドだけに許したドメイン、断ったドメイン、断った記録を持つ。
 pub struct ProxyRun {
     gate: Arc<NetworkGate>,
     command: String,
     cwd: PathBuf,
-    allowed: Mutex<BTreeSet<String>>,
-    declined: Mutex<BTreeSet<String>>,
+    state: Mutex<RunState>,
     denials: Mutex<Vec<String>>,
     active: AtomicUsize,
-    finished: AtomicBool,
     token: Option<String>,
 }
 
@@ -170,11 +178,9 @@ impl ProxyRun {
             gate,
             command,
             cwd,
-            allowed: Mutex::new(BTreeSet::new()),
-            declined: Mutex::new(BTreeSet::new()),
+            state: Mutex::new(RunState::default()),
             denials: Mutex::new(Vec::new()),
             active: AtomicUsize::new(0),
-            finished: AtomicBool::new(false),
             token,
         })
     }
@@ -187,14 +193,21 @@ impl ProxyRun {
         }
     }
 
-    /// コマンドが終わった印を立てる。後に残った接続は、もう尋ねずに断る。コマンドの後に古い確認へ答えて、
-    /// そのドメインをセッションの許可に加えることを防ぐ（設計書 03-02「通信の中継」）。
+    /// コマンドが終わった印を立てる。後に残った接続は、もう尋ねずに断る。コマンドの終了と確認応答の採用を
+    /// 同じ錠で直列化し、終了後に届いた答えでセッションやコマンドの許可が広がることを防ぐ
+    /// （設計書 03-02「通信の中継」、05-03「通信の中継と秘密の入力の扱い」）。
     pub fn finish(&self) {
-        self.finished.store(true, Ordering::Release);
+        self.state
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .finished = true;
     }
 
     fn is_finished(&self) -> bool {
-        self.finished.load(Ordering::Acquire)
+        self.state
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .finished
     }
 
     /// 断った宛先と理由。同じものは一度だけ挙げる。
@@ -214,27 +227,36 @@ impl ProxyRun {
         line
     }
 
-    fn permitted(&self, host: &str) -> bool {
-        self.gate.allowed.contains(host)
+    /// 既存の許可・拒否と終了状態を調べる。
+    /// 複数の錠を取る順序は常に `ProxyRun` の状態の錠 → `NetworkGate.session` の錠とする
+    /// （設計書 03-02「通信の中継」）。
+    fn check_state(&self, host: &str) -> Option<Result<(), Denied>> {
+        if self.gate.allowed.contains(host) {
+            return Some(Ok(()));
+        }
+        let state = self.state.lock().unwrap_or_else(PoisonError::into_inner);
+        if state.allowed.contains(host)
             || self
                 .gate
                 .session
                 .lock()
                 .unwrap_or_else(PoisonError::into_inner)
                 .contains(host)
-            || self
-                .allowed
-                .lock()
-                .unwrap_or_else(PoisonError::into_inner)
-                .contains(host)
+        {
+            return Some(Ok(()));
+        }
+        if state.declined.contains(host) {
+            return Some(Err(Denied::UserDeclined));
+        }
+        if state.finished {
+            return Some(Err(Denied::NotAllowed));
+        }
+        None
     }
 
     fn decide(&self, host: &str, port: u16) -> Result<(), Denied> {
-        if self.permitted(host) {
-            return Ok(());
-        }
-        if self.was_declined(host) {
-            return Err(Denied::UserDeclined);
+        if let Some(decision) = self.check_state(host) {
+            return decision;
         }
         let prompts = self
             .gate
@@ -259,15 +281,9 @@ impl ProxyRun {
                 Err(std::sync::TryLockError::WouldBlock) => std::thread::sleep(DECIDE_POLL),
             }
         };
-        if self.permitted(host) {
-            return Ok(());
-        }
-        // 同じコマンドの中で断ったドメインは、再試行でも尋ね直さない。
-        if self.was_declined(host) {
-            return Err(Denied::UserDeclined);
-        }
-        if self.is_finished() {
-            return Err(Denied::NotAllowed);
+        // 同じコマンドの中で断ったドメインは、再試行でも尋ね直さない。終了済みなら尋ねない。
+        if let Some(decision) = self.check_state(host) {
+            return decision;
         }
         let (reply, response) = std::sync::mpsc::sync_channel(1);
         let request = ApprovalRecord {
@@ -298,7 +314,7 @@ impl ProxyRun {
         if let Some(wake) = wake {
             wake();
         }
-        // コマンドが終われば答えを待たない。後から届いた答えは、どの許可にも加えない。
+        // コマンドが終われば答えを待たない。錠を持たずに待ち、受領後に終了状態と直列化して反映する。
         let answer = loop {
             match response.recv_timeout(DECIDE_POLL) {
                 Ok(answer) => break Some(answer),
@@ -306,12 +322,16 @@ impl ProxyRun {
                 Err(_) => break None,
             }
         };
+        // 終了の確定と応答の採用・許可集合の更新を同じ錠で直列化する。
+        // 複数の錠を取る順序は常に ProxyRun の状態の錠 → NetworkGate.session の錠とする
+        // （設計書 03-02「通信の中継」、05-03「通信の中継と秘密の入力の扱い」）。
+        let mut state = self.state.lock().unwrap_or_else(PoisonError::into_inner);
+        if state.finished {
+            return Err(Denied::NotAllowed);
+        }
         match answer.map(|answer| answer.outcome) {
             Some(ApprovalOutcome::Approved) => {
-                self.allowed
-                    .lock()
-                    .unwrap_or_else(PoisonError::into_inner)
-                    .insert(host.to_owned());
+                state.allowed.insert(host.to_owned());
                 Ok(())
             }
             Some(ApprovalOutcome::ApprovedForSession) => {
@@ -323,21 +343,11 @@ impl ProxyRun {
                 Ok(())
             }
             Some(_) => {
-                self.declined
-                    .lock()
-                    .unwrap_or_else(PoisonError::into_inner)
-                    .insert(host.to_owned());
+                state.declined.insert(host.to_owned());
                 Err(Denied::UserDeclined)
             }
             None => Err(Denied::UserDeclined),
         }
-    }
-
-    fn was_declined(&self, host: &str) -> bool {
-        self.declined
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .contains(host)
     }
 }
 
