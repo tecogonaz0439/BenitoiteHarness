@@ -32,17 +32,85 @@ impl Request {
     }
 }
 
-/// P1 の exec が使う明示的な指定。既定の値は config で解決する。
+/// 起動の入口の種類（設計書 05-03「起動とセッションの準備の方針の分離」）。
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum Entrypoint {
+    /// 対話の画面（`benitoiteh`）。
+    Tui,
+    /// 非対話の単発実行（`benitoiteh exec`・`debug prompt-input`）。
+    #[default]
+    Exec,
+    /// 標準入出力の ACP エージェント（`benitoiteh acp`）。
+    Acp,
+}
+
+/// 実行時の承認の方針の決め方（設計書 05-01「オプション」、05-03「起動とセッションの準備の方針の分離」）。
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum RuntimeApprovalPolicy {
+    /// 対話の画面: 制限モードは `on-request`（`--approval` 不可）、通常モードは `--approval` または設定値。
+    Tui,
+    /// 非対話の実行: 常に `never`（`--approval` は `never` のみ、制限モードでは不可）。
+    NeverOnly,
+    /// ACP: 制限モードは `--approval`（`on-request` または `never`、既定 `on-request`、`untrusted` 不可）、
+    /// 通常モードは `--approval` または設定値（既定 `on-request`）。
+    Acp,
+}
+
+/// 起動とセッションの準備を切り替える五つの独立した方針（設計書 05-03「起動とセッションの準備の方針の分離」）。
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct PreparationPolicy {
+    /// 1. 起動・再開時の確認（プロジェクトの信頼、処理系の変化、モード変更の再開）を画面で尋ねるか。
+    pub startup_confirmations: bool,
+    /// 2. 実行時の承認の方針の決め方。
+    pub runtime_approval: RuntimeApprovalPolicy,
+    /// 3. 事前許可のオプション（`--allow`・`--allow-agents-write`・`--project-parent`・`--ephemeral`・`--trust-project`）を受け付けるか。
+    pub preapproval_options: bool,
+    /// 4. 通常モードの通信の中継（`network = "proxy"`）で未許可ドメインの確認を行うか（`never` でないとき）。
+    pub network_proxy_prompts: bool,
+    /// 5. 秘密の入力の仲介（`secrets.askpass`）を対話で有効にするか。
+    pub askpass: bool,
+}
+
+impl Entrypoint {
+    /// 入口ごとの準備の方針を返す（設計書 05-03「起動とセッションの準備の方針の分離」）。
+    pub const fn policy(self) -> PreparationPolicy {
+        match self {
+            Self::Tui => PreparationPolicy {
+                startup_confirmations: true,
+                runtime_approval: RuntimeApprovalPolicy::Tui,
+                preapproval_options: false,
+                network_proxy_prompts: true,
+                askpass: true,
+            },
+            Self::Exec => PreparationPolicy {
+                startup_confirmations: false,
+                runtime_approval: RuntimeApprovalPolicy::NeverOnly,
+                preapproval_options: true,
+                network_proxy_prompts: false,
+                askpass: false,
+            },
+            Self::Acp => PreparationPolicy {
+                startup_confirmations: false,
+                runtime_approval: RuntimeApprovalPolicy::Acp,
+                preapproval_options: true,
+                network_proxy_prompts: true,
+                askpass: false,
+            },
+        }
+    }
+}
+
+/// 起動時に明示された指定。既定の値は config で解決する。
 #[derive(Clone, Debug)]
 pub struct ExecArgs {
-    /// 対話の形では依頼を省略できる。
-    pub interactive: bool,
-    /// 非対話でプロジェクトの作成を許す親。起動時に実のパスへ変換する。
+    /// 起動の入口の種類。準備の五つの方針はここから決める（設計書 05-03）。
+    pub entrypoint: Entrypoint,
+    /// 事前許可でプロジェクトの作成を許す親。起動時に実のパスへ変換する。
     pub project_parent: Option<PathBuf>,
     pub allow: Option<BTreeSet<crate::benitoite::Effect>>,
-    /// 非対話で、.agents に書く要求を確認なしに許す（設計書 03-03「.agents への書き込み」）。
+    /// 事前許可で、.agents に書く要求を確認なしに許す（設計書 03-03「.agents への書き込み」）。
     pub allow_agents_write: bool,
-    /// 非対話で、この一回だけプロジェクトを信頼する（設計書 03-01「プロジェクトの信頼」）。
+    /// この一回だけプロジェクトを信頼する（設計書 03-01「プロジェクトの信頼」）。
     pub trust_project: bool,
     pub resume: Option<String>,
     pub continue_session: bool,
@@ -88,9 +156,14 @@ impl fmt::Display for ArgsError {
 impl std::error::Error for ArgsError {}
 
 impl ExecArgs {
+    /// 入口ごとの準備の方針を返す（設計書 05-03「起動とセッションの準備の方針の分離」）。
+    pub const fn policy(&self) -> PreparationPolicy {
+        self.entrypoint.policy()
+    }
+
     /// `exec` の後ろだけを渡して解釈する。パスの値は非 UTF-8 でも保つ。
     pub fn parse(args: impl IntoIterator<Item = impl Into<OsString>>) -> Result<Self, ArgsError> {
-        Self::parse_mode(args, false)
+        Self::parse_mode(args, Entrypoint::Exec)
     }
 
     /// `debug prompt-input` の後ろを解釈する。exec と同じ指定を受け付け、出力と記録の指定と
@@ -98,7 +171,7 @@ impl ExecArgs {
     pub fn parse_preview(
         args: impl IntoIterator<Item = impl Into<OsString>>,
     ) -> Result<Self, ArgsError> {
-        let mut result = Self::parse_mode(args, false)?;
+        let mut result = Self::parse_mode(args, Entrypoint::Exec)?;
         if result.json
             || result.output_last_message.is_some()
             || result.ephemeral
@@ -116,15 +189,22 @@ impl ExecArgs {
     pub fn parse_interactive(
         args: impl IntoIterator<Item = impl Into<OsString>>,
     ) -> Result<Self, ArgsError> {
-        Self::parse_mode(args, true)
+        Self::parse_mode(args, Entrypoint::Tui)
+    }
+
+    /// `acp` の後ろの引数を解釈する（設計書 05-01「オプション」、05-03「コマンドラインと入出力」）。
+    pub fn parse_acp(
+        args: impl IntoIterator<Item = impl Into<OsString>>,
+    ) -> Result<Self, ArgsError> {
+        Self::parse_mode(args, Entrypoint::Acp)
     }
 
     fn parse_mode(
         args: impl IntoIterator<Item = impl Into<OsString>>,
-        interactive: bool,
+        entrypoint: Entrypoint,
     ) -> Result<Self, ArgsError> {
         let mut result = Self {
-            interactive,
+            entrypoint,
             allow: None,
             project_parent: None,
             resume: None,
@@ -292,22 +372,41 @@ impl ExecArgs {
         {
             return Err(ArgsError::Invalid);
         }
-        if interactive {
-            if result.project_parent.is_some()
-                || result.allow.is_some()
-                || result.allow_agents_write
-                || result.trust_project
-                || result.json
-                || result.output_last_message.is_some()
-                || result.ephemeral
-                || result.output_schema.is_some()
-                || request == Some(Request::Stdin)
-            {
-                return Err(ArgsError::Invalid);
+        match entrypoint {
+            Entrypoint::Tui => {
+                if result.project_parent.is_some()
+                    || result.allow.is_some()
+                    || result.allow_agents_write
+                    || result.trust_project
+                    || result.json
+                    || result.output_last_message.is_some()
+                    || result.ephemeral
+                    || result.output_schema.is_some()
+                    || request == Some(Request::Stdin)
+                {
+                    return Err(ArgsError::Invalid);
+                }
+                result.request = request.unwrap_or(Request::Text(String::new()));
             }
-            result.request = request.unwrap_or(Request::Text(String::new()));
-        } else {
-            result.request = request.ok_or(ArgsError::Invalid)?;
+            Entrypoint::Exec => {
+                result.request = request.ok_or(ArgsError::Invalid)?;
+            }
+            Entrypoint::Acp => {
+                // ACP のメッセージと役割が重なる指定と、制限モードの untrusted は使い方の誤りとする
+                // （設計書 05-01「オプション」、05-03「コマンドラインと入出力」）。
+                if result.json
+                    || result.output_last_message.is_some()
+                    || result.output_schema.is_some()
+                    || result.resume.is_some()
+                    || result.continue_session
+                    || request.is_some()
+                    || (result.mode == Some(Mode::Restricted)
+                        && result.approval == Some(Approval::Untrusted))
+                {
+                    return Err(ArgsError::Invalid);
+                }
+                result.request = Request::Text(String::new());
+            }
         }
         Ok(result)
     }

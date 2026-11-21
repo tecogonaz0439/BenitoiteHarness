@@ -112,10 +112,7 @@ fn proxied_bash_reaches_allowed_and_approved_domains_and_reports_denials() -> Te
                 break;
             };
             asked.push(prompt.request.facts.domain.clone().unwrap_or_default());
-            let _sent = prompt.reply.send(ApprovalAnswer {
-                outcome,
-                message: None,
-            });
+            let _sent = prompt.reply.send(ApprovalAnswer::new(outcome, None));
         }
         asked
     });
@@ -194,10 +191,7 @@ fn macos_proxied_bash_needs_the_token_and_cannot_bypass_the_relay() -> TestResul
                 break;
             };
             asked.push(prompt.request.facts.domain.clone().unwrap_or_default());
-            let _sent = prompt.reply.send(ApprovalAnswer {
-                outcome,
-                message: None,
-            });
+            let _sent = prompt.reply.send(ApprovalAnswer::new(outcome, None));
         }
         asked
     });

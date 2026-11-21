@@ -52,6 +52,7 @@ fn steering_is_grouped_recorded_and_sent_after_results_in_all_three_adapters() -
         let (steering, receiver) = mpsc::channel();
         let control = RunControl {
             attachments: Vec::new(),
+            inline_images: Vec::new(),
             cancel_step: Arc::new(AtomicBool::new(false)),
             cancel_run: Arc::new(AtomicBool::new(false)),
             steering: receiver,
@@ -158,6 +159,7 @@ fn steering_before_final_answer_continues_and_unapplied_steering_is_returned_on_
         let run = Arc::new(AtomicBool::new(false));
         let control = RunControl {
             attachments: Vec::new(),
+            inline_images: Vec::new(),
             cancel_step: Arc::clone(&step),
             cancel_run: Arc::clone(&run),
             steering: receiver,

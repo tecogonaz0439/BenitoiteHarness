@@ -73,8 +73,7 @@ pub(super) fn execute(
     }
     // 大きいファイルが錠の前で最大八つ分たまらないよう、寸法を調べる前でも
     // 縮小すると分かるものは読み込みから直列にする（設計書 01-03「画像のファイルの読み取り」）。
-    let mut resize_guard = if matches!(format, Format::Png | Format::Jpeg) && size > MAX_IMAGE_BYTES
-    {
+    let resize_guard = if matches!(format, Format::Png | Format::Jpeg) && size > MAX_IMAGE_BYTES {
         Some(lock_resize(cancelled)?)
     } else {
         None
@@ -95,6 +94,93 @@ pub(super) fn execute(
     if size > limit {
         return Err(invalid(text::image_too_large(size, limit)));
     }
+    let prepared = prepare_bytes(context, bytes, resize_guard, cancelled)?;
+    context.record_read_version(opened.real_path, version)?;
+    let body = if prepared.resized {
+        text::read_resized_image(
+            prepared.media_type,
+            prepared.image.width,
+            prepared.image.height,
+            prepared.image.bytes,
+            prepared.original_width,
+            prepared.original_height,
+        )
+    } else {
+        text::read_image(
+            prepared.media_type,
+            prepared.image.width,
+            prepared.image.height,
+            prepared.image.bytes,
+        )
+    };
+    Ok(ToolOutput {
+        screen: Some(body.clone()),
+        images: vec![prepared.image],
+        ..ToolOutput::success(body)
+    })
+}
+
+/// メモリ上の画像バイト列と宣言された MIME 型を検証・縮小し、`objects/` に保存して返す
+/// （設計書 01-03「画像のファイルの読み取り」、05-03「依頼の受け取りと終わりの理由」）。
+/// パスの規則と読んだ版の記録は当てない。
+pub fn from_bytes(
+    context: &ToolContext,
+    bytes: Vec<u8>,
+    mime_type: &str,
+    cancelled: &AtomicBool,
+) -> Result<ToolImage, ToolError> {
+    if !context.image_input {
+        return Err(invalid(text::IMAGE_UNSUPPORTED));
+    }
+    let declared = match mime_type {
+        "image/png" => Format::Png,
+        "image/jpeg" => Format::Jpeg,
+        "image/gif" => Format::Gif,
+        "image/webp" => Format::Webp,
+        _ => return Err(invalid(text::IMAGE_MIME_UNSUPPORTED)),
+    };
+    let limit = if matches!(declared, Format::Png | Format::Jpeg) {
+        super::MAX_FILE_BYTES
+    } else {
+        MAX_IMAGE_BYTES
+    };
+    let size = u64::try_from(bytes.len()).unwrap_or(u64::MAX);
+    check_cancelled(cancelled)?;
+    if context.image_helper.is_none() && size > MAX_IMAGE_BYTES {
+        return Err(invalid(text::image_too_large(size, MAX_IMAGE_BYTES)));
+    }
+    if size > limit {
+        return Err(invalid(text::image_too_large(size, limit)));
+    }
+    let detected = detect(&bytes).ok_or_else(|| invalid(text::IMAGE_INVALID))?;
+    if !matches!(
+        (declared, detected),
+        (Format::Png, Format::Png)
+            | (Format::Jpeg, Format::Jpeg)
+            | (Format::Gif, Format::Gif)
+            | (Format::Webp, Format::Webp)
+    ) {
+        return Err(invalid(text::IMAGE_MIME_MISMATCH));
+    }
+    let prepared = prepare_bytes(context, bytes, None, cancelled)?;
+    Ok(prepared.image)
+}
+
+struct PreparedImage {
+    image: ToolImage,
+    media_type: &'static str,
+    resized: bool,
+    original_width: u32,
+    original_height: u32,
+}
+
+fn prepare_bytes(
+    context: &ToolContext,
+    mut bytes: Vec<u8>,
+    mut resize_guard: Option<MutexGuard<'static, ()>>,
+    cancelled: &AtomicBool,
+) -> Result<PreparedImage, ToolError> {
+    let size = u64::try_from(bytes.len()).unwrap_or(u64::MAX);
     let (format, _, original_width, original_height) = header(&bytes)?;
     let resized = matches!(format, Format::Png | Format::Jpeg)
         && (original_width > MAX_IMAGE_DIMENSION
@@ -141,6 +227,9 @@ pub(super) fn execute(
     // （設計書 01-03「画像のファイルの読み取り」）。
     let (media_type, width, height) = inspect(&bytes)?;
     let size = u64::try_from(bytes.len()).unwrap_or(u64::MAX);
+    if size > MAX_IMAGE_BYTES {
+        return Err(invalid(text::image_too_large(size, MAX_IMAGE_BYTES)));
+    }
     let sha256 = if let Some(session) = &context.session {
         let stored = session
             .store_object(&bytes)
@@ -154,30 +243,19 @@ pub(super) fn execute(
             .map(|byte| format!("{byte:02x}"))
             .collect()
     };
-    context.record_read_version(opened.real_path, version)?;
-    let body = if resized {
-        text::read_resized_image(
-            media_type,
-            width,
-            height,
-            size,
-            original_width,
-            original_height,
-        )
-    } else {
-        text::read_image(media_type, width, height, size)
-    };
-    Ok(ToolOutput {
-        screen: Some(body.clone()),
-        images: vec![ToolImage {
+    Ok(PreparedImage {
+        image: ToolImage {
             media_type: media_type.into(),
             sha256,
             width,
             height,
             bytes: size,
             data: Some(bytes.into()),
-        }],
-        ..ToolOutput::success(body)
+        },
+        media_type,
+        resized,
+        original_width,
+        original_height,
     })
 }
 

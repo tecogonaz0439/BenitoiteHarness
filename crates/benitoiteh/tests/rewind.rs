@@ -476,6 +476,7 @@ fn tool_checkpoints_are_written_only_at_execution_and_cancelled_capture_stops_wr
         ApprovalStatus::Unapproved,
         Invocation {
             confirmed_effects: &std::collections::BTreeMap::new(),
+            call_approved_effects: None,
             session_domains: &Default::default(),
             call_id: "cancelled",
             cancelled: &cancelled,
@@ -855,6 +856,7 @@ fn cancellation_during_capture_prevents_writes_and_bash_and_does_not_record_exec
                         ApprovalStatus::Approved,
                         Invocation {
                             confirmed_effects: &std::collections::BTreeMap::new(),
+                            call_approved_effects: None,
                             session_domains: &Default::default(),
                             call_id: "cancel-mid-capture",
                             cancelled: &worker_cancelled,
@@ -949,10 +951,7 @@ fn irreversible_operations_include_excluded_and_outside_writes_but_not_denied_ba
     struct Deny;
     impl Approver for Deny {
         fn approve(&mut self, _: &ApprovalRecord) -> ApprovalAnswer {
-            ApprovalAnswer {
-                outcome: ApprovalOutcome::Denied,
-                message: None,
-            }
+            ApprovalAnswer::new(ApprovalOutcome::Denied, None)
         }
     }
     let f = Fixture::new()?;

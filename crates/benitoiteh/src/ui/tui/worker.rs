@@ -317,6 +317,7 @@ impl Worker {
                     cancel_run: Arc::clone(&control.cancel_run),
                     steering: receiver,
                     attachments,
+                    inline_images: Vec::new(),
                 },
             })
             .map_err(|_| AgentError::Worker)?;

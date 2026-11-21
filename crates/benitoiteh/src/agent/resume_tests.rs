@@ -70,6 +70,7 @@ fn resume_starts_with_empty_session_command_approvals() -> Result<(), Box<dyn st
         agent: Default::default(),
         project_parent: None,
         allow_effects: None,
+        preapproval_overflow: crate::agent::PreapprovalOverflow::Deny,
         allow_agents_write: false,
         mode: Mode::Normal,
         destination: Destination {
@@ -196,10 +197,7 @@ fn web_session_answers_are_remembered_by_the_loop_before_cancelled_execution()
             assert_eq!(request.facts.domain.as_deref(), Some("mock.invalid"));
             self.cancelled
                 .store(true, std::sync::atomic::Ordering::Release);
-            ApprovalAnswer {
-                outcome: self.outcome,
-                message: None,
-            }
+            ApprovalAnswer::new(self.outcome, None)
         }
     }
     let id = session::SessionId::generate(std::time::SystemTime::now())?;
@@ -234,6 +232,7 @@ fn web_session_answers_are_remembered_by_the_loop_before_cancelled_execution()
             agent: Default::default(),
             project_parent: None,
             allow_effects: None,
+            preapproval_overflow: crate::agent::PreapprovalOverflow::Deny,
             allow_agents_write: false,
             mode: Mode::Normal,
             destination: Destination {
@@ -335,6 +334,7 @@ fn image_results_are_restored_only_when_enabled_and_metadata_and_hash_match()
         agent: Default::default(),
         project_parent: None,
         allow_effects: None,
+        preapproval_overflow: crate::agent::PreapprovalOverflow::Deny,
         allow_agents_write: false,
         mode: Mode::Normal,
         destination: Destination {
@@ -616,6 +616,7 @@ fn branch_preparation_failure_preserves_log_and_memory_until_commit()
         agent: Default::default(),
         project_parent: None,
         allow_effects: None,
+        preapproval_overflow: crate::agent::PreapprovalOverflow::Deny,
         allow_agents_write: false,
         mode: Mode::Normal,
         destination: Destination {
@@ -732,6 +733,7 @@ fn user_attachments_are_recorded_by_reference_and_restored_on_resume()
         agent: Default::default(),
         project_parent: None,
         allow_effects: None,
+        preapproval_overflow: crate::agent::PreapprovalOverflow::Deny,
         allow_agents_write: false,
         mode: Mode::Normal,
         destination: Destination {
@@ -887,6 +889,7 @@ fn switching_models_stops_reasoning_replay_and_records_the_new_destination()
             agent: Default::default(),
             project_parent: None,
             allow_effects: None,
+            preapproval_overflow: crate::agent::PreapprovalOverflow::Deny,
             allow_agents_write: false,
             mode: Mode::Normal,
             destination: Destination {

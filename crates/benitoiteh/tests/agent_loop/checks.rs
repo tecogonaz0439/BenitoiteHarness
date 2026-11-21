@@ -476,10 +476,7 @@ fn restricted_runs_need_trusted_approval_and_count_inspections_even_when_denied(
         let mut agent = agent.with_approvals(
             Box::new(ScriptedApprover {
                 requests: Arc::clone(&requests),
-                answer: ApprovalAnswer {
-                    outcome: answer,
-                    message: message.map(str::to_owned),
-                },
+                answer: ApprovalAnswer::new(answer, message.map(str::to_owned)),
             }),
             ApprovalPolicy {
                 approval,

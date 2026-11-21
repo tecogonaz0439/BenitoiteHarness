@@ -295,6 +295,7 @@ fn scratch_agent(
         agent: Default::default(),
         project_parent: None,
         allow_effects: Some(allowed),
+        preapproval_overflow: Default::default(),
         allow_agents_write: false,
         mode: Mode::Restricted,
         destination: Destination {

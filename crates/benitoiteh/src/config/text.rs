@@ -33,6 +33,8 @@ pub fn unknown_provider(name: &str) -> String {
 }
 
 pub const EXEC_APPROVAL: &str = "exec only supports --approval never";
+pub const ACP_RESTRICTED_APPROVAL: &str =
+    "acp in restricted mode only supports --approval on-request or never";
 pub const NORMAL_OPTIONS: &str = "--sandbox, --approval, and --no-sandbox require normal mode";
 pub const WRITABLE_EXECUTABLE: &str = "writable root contains the benitoiteh executable";
 pub const WRITABLE_TEMPORARY_ROOT: &str =

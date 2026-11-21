@@ -141,10 +141,7 @@ fn unknown_domains_follow_the_users_answer_and_record_denials() -> TestResult {
                 prompt.request.facts.domain.clone(),
                 prompt.request.facts.command.clone(),
             ));
-            let _sent = prompt.reply.send(ApprovalAnswer {
-                outcome,
-                message: None,
-            });
+            let _sent = prompt.reply.send(ApprovalAnswer::new(outcome, None));
         }
         seen
     });
@@ -283,10 +280,10 @@ fn finished_runs_drop_pending_confirmations_and_late_answers() -> TestResult {
     run.finish();
     let response = client.join().map_err(|_| "client")??;
     assert!(response.starts_with("HTTP/1.1 403"), "{response}");
-    let _late = prompt.reply.send(ApprovalAnswer {
-        outcome: ApprovalOutcome::ApprovedForSession,
-        message: None,
-    });
+    let _late = prompt.reply.send(ApprovalAnswer::new(
+        ApprovalOutcome::ApprovedForSession,
+        None,
+    ));
     let response = exchange(port, "CONNECT late.example.com:443 HTTP/1.1\r\n\r\n")?;
     assert!(response.starts_with("HTTP/1.1 403"), "{response}");
     assert!(requests.try_recv().is_err());
@@ -316,10 +313,10 @@ fn finish_before_session_approval_answer_never_grants_session_permission() -> Te
     let prompt = requests.recv_timeout(Duration::from_secs(10))?;
     // 終了の確定直後に、decide の待ちが終わる前へ ApprovedForSession を届かせる。
     first.finish();
-    let _late = prompt.reply.send(ApprovalAnswer {
-        outcome: ApprovalOutcome::ApprovedForSession,
-        message: None,
-    });
+    let _late = prompt.reply.send(ApprovalAnswer::new(
+        ApprovalOutcome::ApprovedForSession,
+        None,
+    ));
     let response = client.join().map_err(|_| "client")??;
     assert!(response.starts_with("HTTP/1.1 403"), "{response}");
     assert!(response.contains(text::NETWORK_NOT_ALLOWED), "{response}");
@@ -346,10 +343,9 @@ fn finish_before_session_approval_answer_never_grants_session_permission() -> Te
         next_prompt.request.facts.domain.as_deref(),
         Some("race.example.com")
     );
-    next_prompt.reply.send(ApprovalAnswer {
-        outcome: ApprovalOutcome::Denied,
-        message: None,
-    })?;
+    next_prompt
+        .reply
+        .send(ApprovalAnswer::new(ApprovalOutcome::Denied, None))?;
     let next_response = next_client.join().map_err(|_| "next_client")??;
     assert!(next_response.starts_with("HTTP/1.1 403"), "{next_response}");
     assert!(

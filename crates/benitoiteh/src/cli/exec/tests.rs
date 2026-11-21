@@ -692,7 +692,7 @@ fn declined_normal_resume_preserves_record_bytes_and_releases_lock() -> Result<(
         .write_all(b"{\"partial\":")?;
     let before = fs::read(&record)?;
     let mut args = f.args(&["--mode", "normal", "--resume", id.as_str()])?;
-    args.interactive = true;
+    args.entrypoint = super::super::args::Entrypoint::Tui;
     let confirmed = Cell::new(false);
     let result = prepare(
         &args,
@@ -716,7 +716,7 @@ fn declined_normal_resume_preserves_record_bytes_and_releases_lock() -> Result<(
     assert_eq!(fs::read(&record)?, before);
     drop(open_released(&paths, &id)?);
     assert_eq!(fs::read(&record)?, before);
-    args.interactive = false;
+    args.entrypoint = super::super::args::Entrypoint::Exec;
     let result = prepare(&args, None, &paths, |_, _| Ok(()), &mut |_| {
         confirmed.set(false);
         true
@@ -752,10 +752,7 @@ fn interactive_preparation_uses_configured_approval_and_restricted_web_confirmat
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner)
                 .push(request.clone());
-            ApprovalAnswer {
-                outcome: ApprovalOutcome::Denied,
-                message: None,
-            }
+            ApprovalAnswer::new(ApprovalOutcome::Denied, None)
         }
     }
     for (mode, normal, option, tool, arguments, asks) in [
@@ -818,7 +815,7 @@ fn interactive_preparation_uses_configured_approval_and_restricted_web_confirmat
         );
         fs::write(&paths.config_file, contents)?;
         let mut args = f.args(&["--mode", mode])?;
-        args.interactive = true;
+        args.entrypoint = super::super::args::Entrypoint::Tui;
         args.approval = option.map(|_| Approval::Untrusted);
         // OS の機能だけを差し替え、書く範囲の方針は workspace-write のままにする。
         args.no_sandbox = mode == "normal";
@@ -889,7 +886,7 @@ fn new_after_restricted_resume_preserves_mode_and_project_and_normal_preserves_p
                 "normal"
             },
         ])?;
-        original.interactive = true;
+        original.entrypoint = super::super::args::Entrypoint::Tui;
         let mut initial = prepare(&original, None, &paths, |_, _| Ok(()), &mut |_| false)
             .map_err(|error| io::Error::other(error.to_string()))?;
         let id = initial.session.id().to_string();
@@ -972,7 +969,7 @@ fn new_preserves_explicitly_disabled_sandbox_without_reprobing() -> Result<(), B
     let f = Fixture::new()?;
     let paths = f.paths("sandbox = 'workspace-write'\napproval = 'untrusted'")?;
     let mut args = f.args(&["--no-sandbox"])?;
-    args.interactive = true;
+    args.entrypoint = super::super::args::Entrypoint::Tui;
     let old = prepare(
         &args,
         None,
@@ -1014,7 +1011,7 @@ fn new_rejects_changed_allowed_program_path_before_creating_a_session() -> Resul
     ));
     fs::write(&paths.config_file, config)?;
     let mut args = f.args(&["--mode", "restricted"])?;
-    args.interactive = true;
+    args.entrypoint = super::super::args::Entrypoint::Tui;
     let old = prepare(&args, None, &paths, |_, _| Ok(()), &mut |_| false)
         .map_err(|error| io::Error::other(error.to_string()))?;
     let count = fs::read_dir(&paths.sessions_dir)?.count();
@@ -1528,7 +1525,11 @@ fn project_parent_is_resolved_only_for_restricted_exec_and_used_by_the_agent()
         ),
     ] {
         let mut args = f.args(&["--mode", mode])?;
-        args.interactive = interactive;
+        args.entrypoint = if interactive {
+            super::super::args::Entrypoint::Tui
+        } else {
+            super::super::args::Entrypoint::Exec
+        };
         args.project_parent = Some(f.0.join(parent));
         let error = prepare(&args, None, &paths, |_, _| Ok(()), &mut |_| false)
             .err()
@@ -1615,7 +1616,7 @@ fn fork_resumes_with_current_safety_and_retains_copy_if_preparation_fails()
         let f = Fixture::new()?;
         let paths = f.paths("sandbox = 'read-only'\napproval = 'untrusted'")?;
         let mut args = f.args(&["--mode", "restricted"])?;
-        args.interactive = true;
+        args.entrypoint = super::super::args::Entrypoint::Tui;
         let mut source = prepare(&args, None, &paths, |_, _| Ok(()), &mut |_| false)
             .map_err(|e| e.to_string())?;
         let (tx, _rx) = mpsc::sync_channel(64);
@@ -1759,7 +1760,7 @@ fn fork_after_returning_to_an_old_branch_keeps_the_current_destination()
         ),
     )?;
     let mut original = f.args(&[])?;
-    original.interactive = true;
+    original.entrypoint = super::super::args::Entrypoint::Tui;
     let mut first = prepare(&original, None, &paths, |_, _| Ok(()), &mut |_| false)
         .map_err(|e| e.to_string())?;
     let (events, _received) = mpsc::sync_channel(64);
@@ -1854,7 +1855,7 @@ fn fork_retains_copy_when_current_provider_was_removed() -> Result<(), Box<dyn E
     let f = Fixture::new()?;
     let paths = f.paths("sandbox = 'read-only'")?;
     let mut args = f.args(&[])?;
-    args.interactive = true;
+    args.entrypoint = super::super::args::Entrypoint::Tui;
     let mut source = prepare(&args, None, &paths, |_, _| Ok(()), &mut |_| false)
         .map_err(|error| error.to_string())?;
     let (events, _received) = mpsc::sync_channel(64);
@@ -1936,7 +1937,7 @@ fn fork_preparation_reuses_the_locked_session_and_cached_resume_state() -> Resul
     let f = Fixture::new()?;
     let paths = f.paths("sandbox = 'read-only'")?;
     let mut args = f.args(&[])?;
-    args.interactive = true;
+    args.entrypoint = super::super::args::Entrypoint::Tui;
     let mut source = prepare(&args, None, &paths, |_, _| Ok(()), &mut |_| false)
         .map_err(|error| error.to_string())?;
     let (events, _received) = mpsc::sync_channel(64);
@@ -1998,7 +1999,11 @@ fn startup_creates_secret_requests_only_for_enabled_interactive_normal_sessions(
             "sandbox = 'danger-full-access'\n[secrets]\naskpass = {enabled}"
         ))?;
         let mut args = fixture.args(&[])?;
-        args.interactive = interactive;
+        args.entrypoint = if interactive {
+            super::super::args::Entrypoint::Tui
+        } else {
+            super::super::args::Entrypoint::Exec
+        };
         let prepared = prepare(&args, None, &paths, |_, _| Ok(()), &mut |_| false)
             .map_err(|e| e.to_string())?;
         assert_eq!(
@@ -2178,7 +2183,7 @@ fn restricted_changed_processor_denies_noninteractive_and_requires_confirmation(
         .write_all(b"changed executable\n")?;
 
     // 非対話 exec では確認できないため起動を拒む。
-    args.interactive = false;
+    args.entrypoint = super::super::args::Entrypoint::Exec;
     let mut mode_change = |_: &ModeChange| false;
     let mut proc_accept = |_: &ProcessorChange| true;
     let mut trust_none = |_: &TrustRequest| Some(TrustAnswer::Session(false));
@@ -2209,7 +2214,7 @@ fn restricted_changed_processor_denies_noninteractive_and_requires_confirmation(
     );
 
     // 対話起動では確認を求め、拒否すると ProcessorDeclined で止める。
-    args.interactive = true;
+    args.entrypoint = super::super::args::Entrypoint::Tui;
     let mut seen_change = None;
     let mut proc_decline = |change: &ProcessorChange| {
         seen_change = Some((
@@ -2262,5 +2267,134 @@ fn restricted_changed_processor_denies_noninteractive_and_requires_confirmation(
             .iter()
             .any(|line| line.contains("executable changed"))
     );
+    Ok(())
+}
+
+// 作成時の関門: `Entrypoint::Acp` が 5 つの準備方針（起動時の確認なし、実行時の承認の方針、
+// 事前許可オプション、通信中継の確認接続、askpass 無効）を独立に適用する契約を守る。
+// 既存の TUI/exec のテストは `interactive` の二択しか通らないため、ACP の組み合わせの退行を捕まえない。
+#[test]
+fn acp_preparation_separates_five_policies_and_connects_network_prompts()
+-> Result<(), Box<dyn Error>> {
+    use std::io::Write;
+    let f = Fixture::new()?;
+    let copy = f.0.join("acp-benitoite");
+    fs::copy(test_processor()?, &copy)?;
+    let paths = f.paths(
+        "sandbox = 'workspace-write'\nnetwork = 'proxy'\napproval = 'on-request'\n[secrets]\naskpass = true\n",
+    )?;
+    let config = fs::read_to_string(&paths.config_file)?.replace(
+        &serde_json::to_string(&test_processor()?)?,
+        &serde_json::to_string(&copy)?,
+    );
+    fs::write(&paths.config_file, config)?;
+    let project = f.0.join("project");
+    let parent = f.0.join("parent");
+    fs::create_dir(&parent)?;
+
+    // 1. 通常モードの ACP: `askpass` は無効（ソケット受け口なし）だが、通信中継の確認は有効で
+    // `Agent::connect_network_prompts` で任意の受け手から接続できる。
+    let mut normal_acp = ExecArgs::parse_acp(["--mode", "normal"])?;
+    normal_acp.project = Some(project.clone());
+    let prepared = prepare(&normal_acp, None, &paths, |_, _| Ok(()), &mut |_| false)
+        .map_err(|e| e.to_string())?;
+    assert_eq!(prepared.agent.status().approval, Approval::OnRequest);
+    assert!(prepared.agent.take_secret_requests().is_none());
+    let (prompts_tx, _prompts_rx) = mpsc::channel();
+    let woke = Arc::new(AtomicBool::new(false));
+    let woke_clone = Arc::clone(&woke);
+    prepared.agent.connect_network_prompts(
+        prompts_tx,
+        Some(Arc::new(move || {
+            woke_clone.store(true, Ordering::Release);
+        })),
+    );
+    // `--approval never` の通常モード ACP では承認方針が Never になる。
+    let mut normal_never = ExecArgs::parse_acp(["--mode", "normal", "--approval", "never"])?;
+    normal_never.project = Some(project.clone());
+    let prepared_never = prepare(&normal_never, None, &paths, |_, _| Ok(()), &mut |_| false)
+        .map_err(|e| e.to_string())?;
+    assert_eq!(prepared_never.agent.status().approval, Approval::Never);
+    drop(prepared);
+    drop(prepared_never);
+
+    // 2. 制限モードの ACP: 事前許可オプション（--allow・--allow-agents-write・--project-parent・--ephemeral）
+    // を受理し、既定の承認方針は OnRequest、`--approval never` では Never になる。
+    let mut restricted_acp = ExecArgs::parse_acp([
+        "--mode",
+        "restricted",
+        "--allow",
+        "File.Read",
+        "--allow-agents-write",
+        "--project-parent",
+        parent.to_str().ok_or("parent")?,
+    ])?;
+    restricted_acp.project = Some(project.clone());
+    let first = prepare(&restricted_acp, None, &paths, |_, _| Ok(()), &mut |_| false)
+        .map_err(|e| e.to_string())?;
+    assert_eq!(first.agent.status().approval, Approval::OnRequest);
+    let session_id = first.session.id().clone();
+    drop(first);
+
+    let mut restricted_never =
+        ExecArgs::parse_acp(["--mode", "restricted", "--approval", "never", "--ephemeral"])?;
+    restricted_never.project = Some(project.clone());
+    let ephemeral = prepare(&restricted_never, None, &paths, |_, _| Ok(()), &mut |_| {
+        false
+    })
+    .map_err(|e| e.to_string())?;
+    assert_eq!(ephemeral.agent.status().approval, Approval::Never);
+    drop(ephemeral);
+
+    // 3. 起動・再開時の確認: 制限→通常への再開は ACP でも拒まれる（確認コールバックは呼ばれない）。
+    let mut resume_normal = ExecArgs::parse_acp(["--mode", "normal"])?;
+    resume_normal.project = Some(project.clone());
+    resume_normal.resume = Some(session_id.to_string());
+    let mode_called = Cell::new(false);
+    let resumed = prepare(&resume_normal, None, &paths, |_, _| Ok(()), &mut |_| {
+        mode_called.set(true);
+        true
+    });
+    assert!(matches!(
+        resumed,
+        Err(PreparationError {
+            error: StartupError::Config(_),
+            ..
+        })
+    ));
+    assert!(!mode_called.get());
+
+    // 4. 制限モードで処理系の SHA-256 が変わると、ACP でも確認せずに拒む。
+    OpenOptions::new()
+        .append(true)
+        .open(&copy)?
+        .write_all(b"acp changed\n")?;
+    let mut proc_called = false;
+    let mut mode_cb = |_: &ModeChange| false;
+    let mut proc_cb = |_: &ProcessorChange| {
+        proc_called = true;
+        true
+    };
+    let mut trust_cb = |_: &TrustRequest| Some(TrustAnswer::Session(false));
+    let changed = super::prepare(
+        &restricted_acp,
+        None,
+        &paths,
+        |_, _, _| Ok(()),
+        QueryLauncher::TestDirect,
+        StartupPrompts {
+            mode_change: &mut mode_cb,
+            processor_change: &mut proc_cb,
+            trust: &mut trust_cb,
+        },
+    );
+    assert!(matches!(
+        changed,
+        Err(PreparationError {
+            error: StartupError::Invalid(text::PROCESSOR_CHANGED),
+            ..
+        })
+    ));
+    assert!(!proc_called);
     Ok(())
 }

@@ -27,6 +27,7 @@ mod write;
 mod write_path;
 
 pub(crate) use read::inspect_image;
+pub use read::process_image_bytes;
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::ffi::OsString;
@@ -164,6 +165,9 @@ pub struct Invocation<'a> {
     pub cancelled: &'a AtomicBool,
     /// 信頼するループが単位ごとに確認したエフェクト。
     pub confirmed_effects: &'a BTreeMap<ConfirmKey, BTreeSet<crate::benitoite::Effect>>,
+    /// この呼び出し 1 回限りに承認されたエフェクトの集合（ACP の `allow_once` 向け。
+    /// セッションの `confirmed_effects` は更新せず、承認直後の再検査にだけ使う。設計書 05-03）。
+    pub call_approved_effects: Option<&'a BTreeSet<crate::benitoite::Effect>>,
     /// 信頼するループがこのセッションで許したドメイン。
     pub session_domains: &'a BTreeSet<String>,
 }
@@ -285,6 +289,7 @@ impl ToolSet {
                     cancelled: &AtomicBool::new(false),
                     session_domains: &BTreeSet::new(),
                     confirmed_effects: &BTreeMap::new(),
+                    call_approved_effects: None,
                 },
             ),
             Err(error) => ToolOutput::error(error.to_string()),
@@ -438,6 +443,8 @@ pub struct ToolContext {
     pub checkpoints: Option<crate::rewind::CheckpointRecorder>,
     search_limits: SearchLimits,
     scratch_state: Mutex<benitoite_scratch::ScratchState>,
+    /// `--allow` で確認なしに通過させた呼び出し ID。再検査で未読の取り込みが後から増えたときに拒む。
+    preapproved_no_unread: Mutex<Option<String>>,
     project_creation: Option<(crate::config::paths::DataPaths, PathBuf)>,
     pub(crate) project_candidates: Mutex<BTreeMap<String, create_project::Candidate>>,
     pub(crate) created_projects: Mutex<BTreeMap<String, ScopeRoot>>,
@@ -512,6 +519,38 @@ impl ToolContext {
             .ok_or_else(|| text::ATTACH_NOT_IMAGE.to_owned())
     }
 
+    /// メモリ上の画像バイト列と MIME 型を検証・縮小し、`objects/` に保存する
+    /// （設計書 01-03「画像のファイルの読み取り」、05-03「依頼の受け取りと終わりの理由」）。
+    pub fn attach_image_bytes(
+        &self,
+        bytes: Vec<u8>,
+        mime_type: &str,
+        cancelled: &AtomicBool,
+    ) -> Result<crate::provider::ToolImage, ToolError> {
+        read::process_image_bytes(self, bytes, mime_type, cancelled)
+    }
+
+    pub(crate) fn mark_preapproved_without_unread(&self, call_id: &str) -> Result<(), ToolError> {
+        *self
+            .preapproved_no_unread
+            .lock()
+            .map_err(|_| ToolError::State)? = Some(call_id.to_owned());
+        Ok(())
+    }
+
+    pub(crate) fn take_preapproved_without_unread(&self, call_id: &str) -> Result<bool, ToolError> {
+        let mut guard = self
+            .preapproved_no_unread
+            .lock()
+            .map_err(|_| ToolError::State)?;
+        if guard.as_deref() == Some(call_id) {
+            *guard = None;
+            Ok(true)
+        } else {
+            Ok(false)
+        }
+    }
+
     /// 起動時に開いた範囲と、除外の規則を受け取る。
     pub fn new(
         mode: Mode,
@@ -548,6 +587,7 @@ impl ToolContext {
             checkpoints: None,
             search_limits: SearchLimits::default(),
             scratch_state: Mutex::new(benitoite_scratch::ScratchState::default()),
+            preapproved_no_unread: Mutex::new(None),
         }
     }
 

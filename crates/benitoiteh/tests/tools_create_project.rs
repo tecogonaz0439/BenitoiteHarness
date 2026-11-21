@@ -79,6 +79,7 @@ impl Fixture {
                     call_id: id,
                     cancelled: &AtomicBool::new(false),
                     confirmed_effects: &Default::default(),
+                    call_approved_effects: None,
                     session_domains: &Default::default(),
                 },
             ),

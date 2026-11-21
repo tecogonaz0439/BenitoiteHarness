@@ -998,7 +998,7 @@ impl Screen {
             self.history.extend(confirmation.body(self.size, 0));
             self.explicit_history.extend(start..self.history.len());
             if let Some(prompt) = confirmation.prompt {
-                let _sent = prompt.reply.send(ApprovalAnswer { outcome, message });
+                let _sent = prompt.reply.send(ApprovalAnswer::new(outcome, message));
             } else {
                 self.confirmation_result = Some(outcome == ApprovalOutcome::Approved);
             }

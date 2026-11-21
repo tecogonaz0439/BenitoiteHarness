@@ -46,6 +46,7 @@ fn call(f: &Fixture, args: Value, approved: bool) -> ToolOutput {
             call_id: "test",
             cancelled: &stop,
             confirmed_effects: &f.confirmed,
+            call_approved_effects: None,
             session_domains: &BTreeSet::new(),
         },
     )

@@ -100,10 +100,7 @@ fn only_command_answers_remember_exact_strings_and_escalations_still_require_app
         sandbox: Sandbox::WorkspaceWrite,
         sandboxed: true,
     };
-    let answer = ApprovalAnswer {
-        outcome: ApprovalOutcome::ApprovedForSession,
-        message: None,
-    };
+    let answer = ApprovalAnswer::new(ApprovalOutcome::ApprovedForSession, None);
     for kind in [
         ApprovalKind::Command,
         ApprovalKind::Escalate,
@@ -253,25 +250,20 @@ fn interactive_replies_belong_to_one_request_and_disconnection_cancels()
             (first, second, third)
         });
         let first = requests.recv()?;
-        first.reply.send(ApprovalAnswer {
-            outcome: ApprovalOutcome::Approved,
-            message: None,
-        })?;
+        first
+            .reply
+            .send(ApprovalAnswer::new(ApprovalOutcome::Approved, None))?;
         let second = requests.recv()?;
         assert_eq!(second.request.call_id, "two");
         assert!(
             first
                 .reply
-                .send(ApprovalAnswer {
-                    outcome: ApprovalOutcome::Approved,
-                    message: None
-                })
+                .send(ApprovalAnswer::new(ApprovalOutcome::Approved, None))
                 .is_err()
         );
-        second.reply.send(ApprovalAnswer {
-            outcome: ApprovalOutcome::Denied,
-            message: None,
-        })?;
+        second
+            .reply
+            .send(ApprovalAnswer::new(ApprovalOutcome::Denied, None))?;
         drop(requests);
         let (first, second, third) = worker.join().map_err(|_| "approver panicked")?;
         assert_eq!(first.outcome, ApprovalOutcome::Approved);

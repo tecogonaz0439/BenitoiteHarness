@@ -3,6 +3,7 @@
 mod image;
 pub(crate) use image::helper::run_helper as run_image_helper;
 
+pub use image::from_bytes as process_image_bytes;
 pub(crate) use image::inspect as inspect_image;
 
 use super::{FileVersion, ToolContext, ToolError, ToolOutput, text, truncate};

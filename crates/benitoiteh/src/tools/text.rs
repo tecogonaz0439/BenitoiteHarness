@@ -634,6 +634,8 @@ pub fn project_switch_failed(path: &std::path::Path, error: &dyn std::fmt::Displ
 pub const IMAGE_LINES: &str = "offset and limit cannot be used when reading an image.";
 pub const IMAGE_UNSUPPORTED: &str =
     "The current provider does not accept images; this file cannot be shown.";
+pub const IMAGE_MIME_UNSUPPORTED: &str = "Unsupported image media type. Only image/png, image/jpeg, image/gif, and image/webp are supported.";
+pub const IMAGE_MIME_MISMATCH: &str = "The image bytes do not match the declared media type.";
 pub const IMAGE_INVALID: &str = "The image header is invalid or truncated.";
 pub const IMAGE_DECODE: &str = "The image could not be decoded.";
 pub const IMAGE_HELPER_UNAVAILABLE: &str = "The image resizing helper could not be started.";

@@ -686,3 +686,362 @@ fn scratch_retry_rejects_effects_added_after_the_initial_report() -> TestResult 
     }
     Ok(())
 }
+
+// 作成時の関門: ACP の `allow_once`（一回限りのエフェクト許可）の 4 つの契約
+// (1) 1 回目の再検査通過、(2) 2 回目の再確認、(3) 既存のセッション許可を消さず広げない、
+// (4) 確認直後・再検査前のエフェクト増加を `EFFECTS_CHANGED` で拒む、を `benitoite_run` と
+// `benitoite_test` の両方で本物の処理系報告を通して守る。既存のテストはセッション記憶しか通らない。
+#[test]
+fn one_shot_effect_approval_passes_reinspection_without_remembering_and_rejects_added_effects()
+-> TestResult {
+    type ApproveHook = Box<dyn FnMut(&ApprovalRecord) + Send>;
+    struct SequenceApprover {
+        requests: Arc<Mutex<Vec<ApprovalRecord>>>,
+        answers: std::collections::VecDeque<ApprovalAnswer>,
+        on_approve: Option<ApproveHook>,
+    }
+    impl Approver for SequenceApprover {
+        fn approve(&mut self, request: &ApprovalRecord) -> ApprovalAnswer {
+            self.requests
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .push(request.clone());
+            if let Some(hook) = &mut self.on_approve {
+                hook(request);
+            }
+            self.answers
+                .pop_front()
+                .unwrap_or_else(|| ApprovalAnswer::new(ApprovalOutcome::Denied, None))
+        }
+    }
+
+    let read_script = "import Benitoite.Unofficial.IO.File\nfunction main() -> Unit uses File.Read\n bind _ <- File.readText(\"input\")\n return ()\nend function\n";
+    let read_write_script = "import Benitoite.Unofficial.IO.File\nfunction main() -> Unit uses File.Read, File.Write\n bind _ <- File.readText(\"input\")\n bind _ <- File.writeText(path: \"out\", text: \"x\")\nend function\n";
+    let read_test = "import Benitoite.Unofficial.IO.File\n@test(\"read\")\nfunction testRead() -> Unit uses File.Read\n bind _ <- File.readText(\"input\")\n return ()\nend function\n";
+    let read_write_test = "import Benitoite.Unofficial.IO.File\n@test(\"rw\")\nfunction testReadWrite() -> Unit uses File.Read, File.Write\n bind _ <- File.readText(\"input\")\n bind _ <- File.writeText(path: \"out\", text: \"x\")\nend function\n";
+
+    // パターン 1・2: `benitoite_run` と `benitoite_test` で一回限り許可すると、
+    // 1 回目は再検査を通過し、2 回目は記憶されず再び確認を求められる。
+    for (tool, args, source, expected_ctx_err) in [
+        (
+            "benitoite_run",
+            json!({"path": "a.bnt"}),
+            read_script,
+            "script execution context is unavailable",
+        ),
+        (
+            "benitoite_test",
+            json!({"paths": ["a.bnt"]}),
+            read_test,
+            "test execution context is unavailable",
+        ),
+    ] {
+        let f = Fixture::new()?;
+        fs::write(f.project.join("a.bnt"), source)?;
+        let mut server = MockProvider::start(vec![
+            ResponseScript::sse(calls(
+                &[(tool, args.clone()), (tool, args.clone())],
+                "tool_calls",
+            )),
+            final_text(),
+        ])?;
+        let mut config = f.config(&server, AdapterKind::OpenAiChat);
+        config.mode = Mode::Restricted;
+        let (agent, _) =
+            f.agent_with_check(config, None, Some(support::checks(f.project.clone())?))?;
+        let requests = Arc::new(Mutex::new(Vec::new()));
+        let mut agent = agent.with_approvals(
+            Box::new(SequenceApprover {
+                requests: Arc::clone(&requests),
+                answers: [
+                    ApprovalAnswer::approved_once(),
+                    ApprovalAnswer::approved_once(),
+                ]
+                .into_iter()
+                .collect(),
+                on_approve: None,
+            }),
+            ApprovalPolicy {
+                approval: Approval::OnRequest,
+                sandbox: Sandbox::ReadOnly,
+                sandboxed: true,
+            },
+        );
+        let (report, _) = complete(&mut agent)?;
+        assert_eq!(report.outcome, Outcome::Completed);
+        assert_eq!(report.summary.checks, 4, "{tool}");
+        assert_eq!(
+            requests.lock().map_err(|_| "requests")?.len(),
+            2,
+            "{tool}: 2nd call must ask again"
+        );
+        for out in results(&agent) {
+            assert!(
+                out.text.contains(expected_ctx_err) && !out.text.contains("script changed"),
+                "{tool}: {out:?}"
+            );
+        }
+        server.shutdown()?;
+    }
+
+    // パターン 3: 既存の `confirmed_effects`（File.Read）がある状態で File.Read, File.Write を
+    // 一回限り許可しても、その 1 回は通過し、次の呼び出しで File.Read の記憶だけが保たれる
+    // （消えず、File.Write へも広がらない）。
+    {
+        let f = Fixture::new()?;
+        let script_path = f.project.join("a.bnt");
+        fs::write(&script_path, read_script)?;
+        let mut server = MockProvider::start(vec![
+            // 1 回目: File.Read をセッション記憶で許可
+            ResponseScript::sse(calls(
+                &[("benitoite_run", json!({"path": "a.bnt"}))],
+                "tool_calls",
+            )),
+            // 2 回目: スクリプトを File.Read, File.Write に変え、一回限りで許可
+            ResponseScript::sse(calls(
+                &[("benitoite_run", json!({"path": "a.bnt"}))],
+                "tool_calls",
+            )),
+            // 3 回目: File.Read に戻す → 確認なしで通過すること（記憶が消えていない）
+            ResponseScript::sse(calls(
+                &[("benitoite_run", json!({"path": "a.bnt"}))],
+                "tool_calls",
+            )),
+            // 4 回目: 再び File.Read, File.Write にする → 再確認になること（記憶が広がっていない）
+            ResponseScript::sse(calls(
+                &[("benitoite_run", json!({"path": "a.bnt"}))],
+                "tool_calls",
+            )),
+            final_text(),
+        ])?;
+        let mut config = f.config(&server, AdapterKind::OpenAiChat);
+        config.mode = Mode::Restricted;
+        let step = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let query = support::checks(f.project.clone())?;
+        let path_for_query = script_path.clone();
+        let step_for_query = Arc::clone(&step);
+        let query: Arc<benitoiteh::benitoite::CheckQuery> = Arc::new(move |args, limits, stop| {
+            // 検査の呼び出し回数に応じてスクリプトの内容を切り替える:
+            // 0,1: 1 回目(File.Read) / 2,3: 2 回目(File.Read+File.Write)
+            // 4: 3 回目(File.Read; 確認なしなので検査 1 回) / 5: 4 回目(File.Read+File.Write; 拒否するので検査 1 回)
+            let count = step_for_query.fetch_add(1, Ordering::AcqRel);
+            if count == 2 {
+                fs::write(&path_for_query, read_write_script)?;
+            } else if count == 4 {
+                fs::write(&path_for_query, read_script)?;
+            } else if count == 5 {
+                fs::write(&path_for_query, read_write_script)?;
+            }
+            query(args, limits, stop)
+        });
+        let (agent, _) = f.agent_with_check(config, None, Some(query))?;
+        let requests = Arc::new(Mutex::new(Vec::new()));
+        let mut agent = agent.with_approvals(
+            Box::new(SequenceApprover {
+                requests: Arc::clone(&requests),
+                answers: [
+                    ApprovalAnswer::new(ApprovalOutcome::Approved, None),
+                    ApprovalAnswer::approved_once(),
+                    ApprovalAnswer::new(ApprovalOutcome::Denied, None),
+                ]
+                .into_iter()
+                .collect(),
+                on_approve: None,
+            }),
+            ApprovalPolicy {
+                approval: Approval::OnRequest,
+                sandbox: Sandbox::ReadOnly,
+                sandboxed: true,
+            },
+        );
+        let (report, _) = complete(&mut agent)?;
+        assert_eq!(report.outcome, Outcome::Completed);
+        let asked = requests.lock().map_err(|_| "requests")?;
+        assert_eq!(asked.len(), 3, "expected prompts on calls 1, 2, and 4 only");
+        assert_eq!(
+            asked.first().map(|r| r.facts.effects.clone()),
+            Some(vec!["File.Read".into()])
+        );
+        assert_eq!(
+            asked.get(1).map(|r| r.facts.added_effects.clone()),
+            Some(vec!["File.Write".into()])
+        );
+        assert_eq!(
+            asked.get(2).map(|r| r.facts.added_effects.clone()),
+            Some(vec!["File.Write".into()])
+        );
+        drop(asked);
+        let outs = results(&agent);
+        assert_eq!(outs.len(), 4);
+        for index in 0..3 {
+            let out = outs.get(index).ok_or("missing result")?;
+            assert!(
+                out.text.contains("script execution context is unavailable")
+                    && !out.text.contains("script changed"),
+                "call {index}: {out:?}"
+            );
+        }
+        assert!(
+            outs.get(3)
+                .is_some_and(|out| out.is_error && out.text.contains("declined"))
+        );
+        server.shutdown()?;
+    }
+
+    // パターン 4: 確認直後・再検査前にエフェクトが増えたときは、一回限りの許可でも `EFFECTS_CHANGED` で拒む。
+    for (tool, args, initial, expanded) in [
+        (
+            "benitoite_run",
+            json!({"path": "a.bnt"}),
+            read_script,
+            read_write_script,
+        ),
+        (
+            "benitoite_test",
+            json!({"paths": ["a.bnt"]}),
+            read_test,
+            read_write_test,
+        ),
+    ] {
+        let f = Fixture::new()?;
+        let script_path = f.project.join("a.bnt");
+        fs::write(&script_path, initial)?;
+        let mut server = MockProvider::start(vec![
+            ResponseScript::sse(calls(&[(tool, args)], "tool_calls")),
+            final_text(),
+        ])?;
+        let mut config = f.config(&server, AdapterKind::OpenAiChat);
+        config.mode = Mode::Restricted;
+        let (agent, _) =
+            f.agent_with_check(config, None, Some(support::checks(f.project.clone())?))?;
+        let requests = Arc::new(Mutex::new(Vec::new()));
+        let path_for_hook = script_path.clone();
+        let expanded_owned = expanded.to_owned();
+        let mut agent = agent.with_approvals(
+            Box::new(SequenceApprover {
+                requests: Arc::clone(&requests),
+                answers: [ApprovalAnswer::approved_once()].into_iter().collect(),
+                on_approve: Some(Box::new(move |_| {
+                    let _written = fs::write(&path_for_hook, &expanded_owned);
+                })),
+            }),
+            ApprovalPolicy {
+                approval: Approval::OnRequest,
+                sandbox: Sandbox::ReadOnly,
+                sandboxed: true,
+            },
+        );
+        let (report, _) = complete(&mut agent)?;
+        assert_eq!(report.outcome, Outcome::Completed);
+        assert_eq!(report.summary.checks, 2, "{tool}");
+        let outs = results(&agent);
+        let out = outs.first().ok_or("missing result")?;
+        assert!(
+            out.is_error
+                && out
+                    .text
+                    .contains("The script changed after the effects were confirmed"),
+            "{tool}: {out:?}"
+        );
+        server.shutdown()?;
+    }
+    Ok(())
+}
+
+// 作成時の関門: `--allow File.Read` を持つ制限モードで、`PreapprovalOverflow::Ask`（ACP 既定の
+// `on-request`）と `PreapprovalOverflow::Deny`（`exec` / `acp --approval never`）の分岐を守る。
+// 既存の `allow.rs` のテストは `Deny` しか通らず、範囲超過時の確認フォールバックを捕まえない。
+#[test]
+fn preallowed_effects_with_on_request_ask_on_overflow_and_deny_with_never() -> TestResult {
+    use benitoiteh::agent::PreapprovalOverflow;
+    use benitoiteh::benitoite::Effect;
+
+    let read_script = "import Benitoite.Unofficial.IO.File\nfunction main() -> Unit uses File.Read\n bind _ <- File.readText(\"input\")\n return ()\nend function\n";
+    for ask_on_overflow in [true, false] {
+        let f = Fixture::new()?;
+        fs::write(f.project.join("read.bnt"), read_script)?;
+        fs::write(f.project.join("write.bnt"), WRITE)?;
+        let mut server = MockProvider::start(vec![
+            ResponseScript::sse(calls(
+                &[
+                    ("benitoite_run", json!({"path": "read.bnt"})),
+                    ("benitoite_run", json!({"path": "write.bnt"})),
+                    (
+                        "benitoite_run",
+                        json!({"path": "write.bnt", "write_agents": true}),
+                    ),
+                ],
+                "tool_calls",
+            )),
+            final_text(),
+        ])?;
+        let mut config = f.config(&server, AdapterKind::OpenAiChat);
+        config.mode = Mode::Restricted;
+        config.allow_effects = Some([Effect::FileRead].into_iter().collect());
+        config.preapproval_overflow = if ask_on_overflow {
+            PreapprovalOverflow::Ask
+        } else {
+            PreapprovalOverflow::Deny
+        };
+        let (agent, _) =
+            f.agent_with_check(config, None, Some(support::checks(f.project.clone())?))?;
+        let requests = Arc::new(Mutex::new(Vec::new()));
+        let mut agent = agent.with_approvals(
+            Box::new(ScriptedApprover {
+                requests: Arc::clone(&requests),
+                answer: ApprovalAnswer::approved_once(),
+            }),
+            ApprovalPolicy {
+                approval: if ask_on_overflow {
+                    Approval::OnRequest
+                } else {
+                    Approval::Never
+                },
+                sandbox: Sandbox::ReadOnly,
+                sandboxed: true,
+            },
+        );
+        let (report, _) = complete(&mut agent)?;
+        assert_eq!(report.outcome, Outcome::Completed);
+        let outs = results(&agent);
+        assert_eq!(outs.len(), 3);
+        // 1 つ目（File.Read）はどちらの方針でも確認なしで再検査まで通過する。
+        assert!(
+            outs.first()
+                .is_some_and(|o| o.text.contains("script execution context is unavailable")),
+            "{outs:?}"
+        );
+        if ask_on_overflow {
+            // 2 つ目（File.Write）と 3 つ目（write_agents）は Approver へ尋ね、一回限り許可で通過する。
+            let asked = requests.lock().map_err(|_| "requests")?;
+            assert_eq!(asked.len(), 2, "expected 2 prompts on overflow");
+            assert_eq!(
+                asked.first().map(|r| r.facts.effects.clone()),
+                Some(vec!["File.Write".into()])
+            );
+            assert!(asked.get(1).is_some_and(|r| r.facts.agents_write));
+            assert_eq!(report.summary.approvals.policy_denied, 0);
+            for index in [1, 2] {
+                let out = outs.get(index).ok_or("missing output")?;
+                assert!(
+                    out.text.contains("script execution context is unavailable")
+                        && !out.text.contains("script changed"),
+                    "index {index}: {out:?}"
+                );
+            }
+        } else {
+            // Never のときは Approver を一切呼ばずに allow_denied / AGENTS_WRITE_DENIED で拒む。
+            assert!(requests.lock().map_err(|_| "requests")?.is_empty());
+            assert_eq!(report.summary.approvals.policy_denied, 2);
+            assert!(outs.get(1).is_some_and(
+                |o| o.is_error && o.text.contains("allows only these effects: File.Read.")
+            ));
+            assert!(
+                outs.get(2)
+                    .is_some_and(|o| o.is_error && o.text.contains("--allow-agents-write"))
+            );
+        }
+        server.shutdown()?;
+    }
+    Ok(())
+}

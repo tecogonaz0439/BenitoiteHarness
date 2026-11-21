@@ -140,16 +140,31 @@ pub(super) fn execute(
     let key = ConfirmKey::from_facts(ApprovalKind::TestEffects, &facts).ok_or(ToolError::State)?;
     let previous = invocation.confirmed_effects.get(&key);
     facts.restricted = super::benitoite_process::restricted_facts(context, &confirmation, previous);
-    if facts.unread_imports > 0 && context.noninteractive && approval == ApprovalStatus::Approved {
-        return Ok(ToolOutput {
-            processor_launches: 1,
-            ..ToolOutput::error(approval::unread_imports_denied(
-                &facts,
-                context.project.real_path(),
-            ))
-        });
+    if facts.unread_imports > 0 && approval == ApprovalStatus::Approved {
+        if context.noninteractive {
+            return Ok(ToolOutput {
+                processor_launches: 1,
+                ..ToolOutput::error(approval::unread_imports_denied(
+                    &facts,
+                    context.project.real_path(),
+                ))
+            });
+        }
+        if context.take_preapproved_without_unread(invocation.call_id)? {
+            return Ok(ToolOutput {
+                processor_launches: 1,
+                ..ToolOutput::error(benitoite::text::EFFECTS_CHANGED)
+            });
+        }
     }
-    if !previous.is_some_and(|effects| confirmation.is_subset(effects))
+    let session_confirmed = previous.is_some_and(|effects| confirmation.is_subset(effects));
+    // ACP の allow_once ではセッションの confirmed_effects を広げず、この呼び出し限りの
+    // 承認済み集合に収まるかを再検査で照合する（設計書 03-03「制限モードの確認」、05-03）。
+    let call_confirmed = approval == ApprovalStatus::Approved
+        && invocation
+            .call_approved_effects
+            .is_some_and(|effects| confirmation.is_subset(effects));
+    if !(session_confirmed || call_confirmed)
         || ((facts.unread_imports > 0 || write_agents) && approval == ApprovalStatus::Unapproved)
     {
         if approval == ApprovalStatus::Approved {

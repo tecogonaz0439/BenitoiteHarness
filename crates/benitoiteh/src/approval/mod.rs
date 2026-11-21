@@ -2,7 +2,7 @@
 
 mod interactive;
 mod text;
-pub use interactive::{ApprovalPrompt, InteractiveApprover};
+pub use interactive::{ApprovalPrompt, InteractiveApprover, WakeCallback};
 pub use text::AGENTS_WRITE_DENIED;
 
 pub use crate::benitoite::report::{ApprovalSource, ContentHash};
@@ -208,9 +208,32 @@ pub struct ApprovalRecord {
 pub struct ApprovalAnswer {
     pub outcome: ApprovalOutcome,
     pub message: Option<String>,
+    /// `Effects`・`TestEffects` の許可をセッションの `confirmed_effects` に記憶するか
+    /// （設計書 03-03「制限モードの確認」、05-03「実行の前の確認」）。
+    /// TUI の `[y]` と ACP の `allow_always` は真、ACP の `allow_once` は偽とする。
+    pub remember_effects: bool,
 }
 
 impl ApprovalAnswer {
+    /// 通常の答えを作る。`ApprovalOutcome::Approved` は既定でエフェクトをセッションに記憶する。
+    pub fn new(outcome: ApprovalOutcome, message: Option<String>) -> Self {
+        Self {
+            remember_effects: outcome == ApprovalOutcome::Approved,
+            outcome,
+            message,
+        }
+    }
+
+    /// その呼び出し 1 回だけを許可し、セッションの `confirmed_effects` を更新しない答えを作る
+    /// （設計書 05-03「確認の種類ごとの選択肢と記憶の範囲の対応表」）。
+    pub fn approved_once() -> Self {
+        Self {
+            outcome: ApprovalOutcome::Approved,
+            message: None,
+            remember_effects: false,
+        }
+    }
+
     /// 通常のコマンドのセッション内許可だけを覚える。再開の記録からは呼ばない。
     pub(crate) fn remember_command(
         &self,
@@ -224,7 +247,7 @@ impl ApprovalAnswer {
             allowed.insert(command.clone());
         }
     }
-    /// 承認した今回の集合だけを広げる。記録の再開では呼ばない。
+    /// 承認した今回の集合だけを広げる。一回限りの許可と記録の再開では広げない。
     pub(crate) fn remember_effects(
         &self,
         request: &ApprovalRecord,
@@ -234,6 +257,7 @@ impl ApprovalAnswer {
         >,
     ) {
         if self.outcome == ApprovalOutcome::Approved
+            && self.remember_effects
             && let Some(key) = crate::tools::ConfirmKey::from_facts(request.kind, &request.facts)
         {
             confirmed.entry(key).or_default().extend(
@@ -268,10 +292,7 @@ pub struct NonInteractiveApprover;
 
 impl Approver for NonInteractiveApprover {
     fn approve(&mut self, _request: &ApprovalRecord) -> ApprovalAnswer {
-        ApprovalAnswer {
-            outcome: ApprovalOutcome::Denied,
-            message: None,
-        }
+        ApprovalAnswer::new(ApprovalOutcome::Denied, None)
     }
 }
 

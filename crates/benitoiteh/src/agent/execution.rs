@@ -129,6 +129,7 @@ impl Agent {
                                         cancelled,
                                         session_domains,
                                         confirmed_effects,
+                                        call_approved_effects: None,
                                     },
                                 )
                             }
@@ -173,6 +174,7 @@ impl Agent {
                                 cancelled,
                                 session_domains: &self.session_domains,
                                 confirmed_effects: &self.confirmed_effects,
+                                call_approved_effects: None,
                             },
                         );
                         self.approve(&first.call, validated, output, cancelled, events, summary)?
@@ -184,6 +186,12 @@ impl Agent {
             }
         }
         Ok(())
+    }
+
+    /// 事前許可の範囲を超える実行を、拒まずに `Approver` へ尋ねるか（設計書 05-03）。
+    fn asks_approver(&self) -> bool {
+        self.config.preapproval_overflow == super::PreapprovalOverflow::Ask
+            && self.approval_policy.approval != crate::config::Approval::Never
     }
 
     fn approve(
@@ -208,8 +216,9 @@ impl Agent {
             return Ok(output);
         };
         summary.checks = summary.checks.saturating_add(output.processor_launches);
-        // 非対話の .agents への書き込みは、--allow-agents-write があるときだけ許す。エフェクトの確認は、
-        // 続けて許可の集合でも確かめる（設計書 03-03「.agents への書き込み」）。
+        // .agents への書き込みは、--allow-agents-write があれば確認なしに許す（エフェクト確認は続ける）。
+        // 事前許可がなく尋ねられないとき（exec や acp --approval never）はここで拒む
+        // （設計書 03-03「.agents への書き込み」、05-03「起動とセッションの準備の方針の分離」）。
         if request.facts.agents_write
             && (self.tool_context.noninteractive || self.config.allow_agents_write)
         {
@@ -218,10 +227,11 @@ impl Agent {
                 return Ok(ToolOutput::error(approval::AGENTS_WRITE_DENIED));
             }
             if request.kind == approval::ApprovalKind::WriteScope {
-                return Ok(self.execute_approved(call, validated, cancelled));
+                return Ok(self.execute_approved(call, validated, cancelled, None));
             }
         }
-        if request.kind == approval::ApprovalKind::CreateProject && self.tool_context.noninteractive
+        if request.kind == approval::ApprovalKind::CreateProject
+            && (self.tool_context.noninteractive || self.config.project_parent.is_some())
         {
             let permitted = self.config.project_parent.as_deref().is_some_and(|parent| {
                 request
@@ -232,72 +242,99 @@ impl Agent {
                     == Some(parent)
             });
             if permitted {
-                return Ok(self.execute_approved(call, validated, cancelled));
+                return Ok(self.execute_approved(call, validated, cancelled, None));
             }
-            summary.approvals.policy_denied = summary.approvals.policy_denied.saturating_add(1);
-            return Ok(ToolOutput::error(approval::policy_denial_message(
-                request.kind,
-            )));
+            if !self.asks_approver() {
+                summary.approvals.policy_denied = summary.approvals.policy_denied.saturating_add(1);
+                return Ok(ToolOutput::error(approval::policy_denial_message(
+                    request.kind,
+                )));
+            }
         }
         if matches!(
             request.kind,
             approval::ApprovalKind::Effects | approval::ApprovalKind::TestEffects
         ) && let Some(allowed) = &self.config.allow_effects
         {
-            if request.facts.unread_imports > 0 {
-                summary.approvals.policy_denied = summary.approvals.policy_denied.saturating_add(1);
-                return Ok(ToolOutput::error(approval::unread_imports_denied(
-                    &request.facts,
-                    self.tool_context.project.real_path(),
-                )));
-            }
-            let explicitly_allowed = allowed;
-            let mut allowed = allowed.clone();
-            if validated.id() == crate::tools::ToolId::BenitoiteScratch {
-                allowed.extend(
-                    self.tool_context
-                        .run
-                        .as_ref()
-                        .map(|run| run.scratch_auto_effects.clone())
-                        .unwrap_or_else(|| crate::benitoite::effects::scratch_auto_effects(&[])),
-                );
-            }
-            let effects = request
-                .facts
-                .effects
-                .iter()
-                .map(|s| crate::benitoite::Effect::from_name(s))
-                .collect::<Option<std::collections::BTreeSet<_>>>();
-            if let Some(effects) = effects.filter(|set| {
-                set.iter().all(|effect| {
-                    *effect == crate::benitoite::Effect::AssertCheck || allowed.contains(effect)
-                })
-            }) {
-                let key = crate::tools::ConfirmKey::from_facts(request.kind, &request.facts)
-                    .ok_or(AgentError::Worker)?;
-                let confirmed = if validated.id() == crate::tools::ToolId::BenitoiteScratch {
-                    self.tool_context
-                        .remember_scratch_automatic(call.id.as_str(), &effects, explicitly_allowed)
-                        .map_err(|_| AgentError::Worker)?;
-                    effects.intersection(explicitly_allowed).copied().collect()
+            let asks = self.asks_approver();
+            let agents_needs_ask = request.facts.agents_write && !self.config.allow_agents_write;
+            if !agents_needs_ask {
+                if request.facts.unread_imports > 0 {
+                    if !asks {
+                        summary.approvals.policy_denied =
+                            summary.approvals.policy_denied.saturating_add(1);
+                        return Ok(ToolOutput::error(approval::unread_imports_denied(
+                            &request.facts,
+                            self.tool_context.project.real_path(),
+                        )));
+                    }
                 } else {
-                    allowed
-                };
-                self.confirmed_effects
-                    .entry(key)
-                    .or_default()
-                    .extend(confirmed);
-                self.effects_denied = 0;
-                return Ok(self.execute_approved(call, validated, cancelled));
+                    let explicitly_allowed = allowed;
+                    let mut allowed = allowed.clone();
+                    if validated.id() == crate::tools::ToolId::BenitoiteScratch {
+                        allowed.extend(
+                            self.tool_context
+                                .run
+                                .as_ref()
+                                .map(|run| run.scratch_auto_effects.clone())
+                                .unwrap_or_else(|| {
+                                    crate::benitoite::effects::scratch_auto_effects(&[])
+                                }),
+                        );
+                    }
+                    let effects = request
+                        .facts
+                        .effects
+                        .iter()
+                        .map(|s| crate::benitoite::Effect::from_name(s))
+                        .collect::<Option<std::collections::BTreeSet<_>>>();
+                    if let Some(effects) = effects.filter(|set| {
+                        set.iter().all(|effect| {
+                            *effect == crate::benitoite::Effect::AssertCheck
+                                || allowed.contains(effect)
+                        })
+                    }) {
+                        let key =
+                            crate::tools::ConfirmKey::from_facts(request.kind, &request.facts)
+                                .ok_or(AgentError::Worker)?;
+                        let confirmed = if validated.id() == crate::tools::ToolId::BenitoiteScratch
+                        {
+                            self.tool_context
+                                .remember_scratch_automatic(
+                                    call.id.as_str(),
+                                    &effects,
+                                    explicitly_allowed,
+                                )
+                                .map_err(|_| AgentError::Worker)?;
+                            effects.intersection(explicitly_allowed).copied().collect()
+                        } else {
+                            allowed
+                        };
+                        self.confirmed_effects
+                            .entry(key)
+                            .or_default()
+                            .extend(confirmed);
+                        if asks {
+                            self.tool_context
+                                .mark_preapproved_without_unread(call.id.as_str())
+                                .map_err(|_| AgentError::Worker)?;
+                        }
+                        self.effects_denied = 0;
+                        return Ok(self.execute_approved(call, validated, cancelled, None));
+                    }
+                    if !asks {
+                        self.effects_denied = self.effects_denied.saturating_add(1);
+                        summary.approvals.policy_denied =
+                            summary.approvals.policy_denied.saturating_add(1);
+                        return Ok(ToolOutput::error(approval::allow_denied(
+                            request.kind,
+                            &request.facts,
+                            self.tool_context.project.real_path(),
+                            &allowed,
+                        )));
+                    }
+                }
             }
-            self.effects_denied = self.effects_denied.saturating_add(1);
-            summary.approvals.policy_denied = summary.approvals.policy_denied.saturating_add(1);
-            return Ok(ToolOutput::error(approval::allow_denied(
-                request.kind,
-                &request.facts,
-                self.tool_context.project.real_path(),
-                &allowed,
-            )));
         }
         match approval::decide_in_mode(
             self.config.mode,
@@ -307,7 +344,7 @@ impl Agent {
             &self.allowed_commands,
             &self.session_domains,
         ) {
-            Decision::Allow => return Ok(self.execute_approved(call, validated, cancelled)),
+            Decision::Allow => return Ok(self.execute_approved(call, validated, cancelled, None)),
             Decision::Deny => {
                 summary.approvals.policy_denied = summary.approvals.policy_denied.saturating_add(1);
                 return Ok(ToolOutput::error(approval::policy_denial_message(
@@ -337,16 +374,28 @@ impl Agent {
             },
         )?;
         let answer = if cancelled.load(Ordering::Acquire) {
-            ApprovalAnswer {
-                outcome: ApprovalOutcome::Cancelled,
-                message: None,
-            }
+            ApprovalAnswer::new(ApprovalOutcome::Cancelled, None)
         } else {
             self.approver.approve(&record)
         };
         answer.remember_command(&record, &mut self.allowed_commands);
         answer.remember_domain(&record, &mut self.session_domains);
         answer.remember_effects(&record, &mut self.confirmed_effects);
+        let call_effects = if matches!(
+            record.kind,
+            approval::ApprovalKind::Effects | approval::ApprovalKind::TestEffects
+        ) && answer.outcome == ApprovalOutcome::Approved
+            && !answer.remember_effects
+        {
+            record
+                .facts
+                .effects
+                .iter()
+                .map(|name| crate::benitoite::Effect::from_name(name))
+                .collect::<Option<std::collections::BTreeSet<_>>>()
+        } else {
+            None
+        };
         summary.add_approval(answer.outcome);
         self.emit(
             events,
@@ -362,7 +411,7 @@ impl Agent {
         )?;
         Ok(match answer.outcome {
             ApprovalOutcome::Approved | ApprovalOutcome::ApprovedForSession => {
-                self.execute_approved(call, validated, cancelled)
+                self.execute_approved(call, validated, cancelled, call_effects.as_ref())
             }
             ApprovalOutcome::Denied => ToolOutput::error(approval::user_denial_message(
                 record.kind,
@@ -385,6 +434,7 @@ impl Agent {
         call: &ToolCall,
         validated: &ValidatedCall,
         cancelled: &AtomicBool,
+        call_approved_effects: Option<&std::collections::BTreeSet<crate::benitoite::Effect>>,
     ) -> ToolOutput {
         if cancelled.load(Ordering::Acquire) {
             ToolOutput::error(text::CANCELLED)
@@ -398,6 +448,7 @@ impl Agent {
                     cancelled,
                     session_domains: &self.session_domains,
                     confirmed_effects: &self.confirmed_effects,
+                    call_approved_effects,
                 },
             )
         }
@@ -718,6 +769,7 @@ mod tests {
             agent: Default::default(),
             project_parent: None,
             allow_effects: None,
+            preapproval_overflow: crate::agent::PreapprovalOverflow::Deny,
             allow_agents_write: false,
             mode: Mode::Normal,
             destination: Destination {

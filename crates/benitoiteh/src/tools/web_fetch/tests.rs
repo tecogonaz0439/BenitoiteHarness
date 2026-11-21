@@ -81,6 +81,7 @@ impl Fixture {
                 cancelled: &AtomicBool::new(false),
                 session_domains: domains,
                 confirmed_effects: &std::collections::BTreeMap::new(),
+                call_approved_effects: None,
             },
             options,
         )
@@ -988,6 +989,7 @@ fn total_deadline_and_cancellation_interrupt_resolution_and_slow_responses() -> 
                 call_id: "dns",
                 cancelled: &cancelled_dns,
                 confirmed_effects: &std::collections::BTreeMap::new(),
+                call_approved_effects: None,
                 session_domains: &BTreeSet::new(),
             },
             options,
@@ -1022,6 +1024,7 @@ fn total_deadline_and_cancellation_interrupt_resolution_and_slow_responses() -> 
                         call_id: "slow",
                         cancelled: &cancelled,
                         confirmed_effects: &std::collections::BTreeMap::new(),
+                        call_approved_effects: None,
                         session_domains: &BTreeSet::new(),
                     },
                     options,

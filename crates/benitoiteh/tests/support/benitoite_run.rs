@@ -169,6 +169,7 @@ impl Fixture {
                 call_id: id,
                 cancelled,
                 confirmed_effects: &self.confirmed,
+                call_approved_effects: None,
                 session_domains: &BTreeSet::new(),
             },
         )

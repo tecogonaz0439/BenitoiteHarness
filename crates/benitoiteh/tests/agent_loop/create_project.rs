@@ -152,10 +152,7 @@ fn creation_switches_scope_before_later_calls_and_records_before_result() -> Tes
     agent = agent.with_approvals(
         Box::new(ScriptedApprover {
             requests: Arc::clone(&requests),
-            answer: ApprovalAnswer {
-                outcome: ApprovalOutcome::Approved,
-                message: None,
-            },
+            answer: ApprovalAnswer::new(ApprovalOutcome::Approved, None),
         }),
         policy(),
     );
@@ -409,10 +406,7 @@ fn noninteractive_creation_allows_only_the_configured_immediate_parent() -> Test
         agent = agent.with_approvals(
             Box::new(ScriptedApprover {
                 requests: Arc::clone(&requests),
-                answer: ApprovalAnswer {
-                    outcome: ApprovalOutcome::Approved,
-                    message: None,
-                },
+                answer: ApprovalAnswer::new(ApprovalOutcome::Approved, None),
             }),
             policy(),
         );
@@ -453,19 +447,16 @@ impl Approver for ChangingApprover {
                 .and_then(|()| std::os::unix::fs::symlink(target, link))
                 .is_err()
             {
-                return ApprovalAnswer {
-                    outcome: ApprovalOutcome::DeniedWithMessage,
-                    message: Some("fixture swap failed".into()),
-                };
+                return ApprovalAnswer::new(
+                    ApprovalOutcome::DeniedWithMessage,
+                    Some("fixture swap failed".into()),
+                );
             }
         }
         if let Some(cancel) = &self.cancel {
             cancel.store(true, Ordering::Release);
         }
-        ApprovalAnswer {
-            outcome: self.outcome,
-            message: self.message.clone(),
-        }
+        ApprovalAnswer::new(self.outcome, self.message.clone())
     }
 }
 
@@ -592,10 +583,7 @@ fn switching_clears_read_versions_effects_and_check_failure_counters() -> TestRe
         .with_approvals(
             Box::new(ScriptedApprover {
                 requests: Arc::clone(&requests),
-                answer: ApprovalAnswer {
-                    outcome: ApprovalOutcome::Approved,
-                    message: None,
-                },
+                answer: ApprovalAnswer::new(ApprovalOutcome::Approved, None),
             }),
             policy(),
         );
