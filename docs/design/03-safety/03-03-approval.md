@@ -39,11 +39,11 @@
 
 【決定】`benitoite_run` と `benitoite_test` は、次のときに確認を受ける。
 
-- そのスクリプト（テストでは指定したファイルとディレクトリの組）を、セッションで初めて実行するとき。
-- `main`（テストでは、選んだテストの関数の和）の宣言したエフェクトが、そのスクリプトについて前に確認したときより増えたとき。エフェクトは、確認の直前に得た処理系の検査の報告から取る（[Benitoite の処理系との連携](../04-benitoite/04-01-benitoite-integration.md)の「実行の前の検査の報告」）。`Log` は独立した原子の名前として表示し、増えたかの判定に数える。`Assert.Check` は、増えたかの判定に数えず、確認の画面にも示さない（同節）。
+- そのスクリプト（テストでは指定したファイルとディレクトリの組）について、セッションに記憶した確認済みのエフェクトの集合がまだないとき（セッションで初めて実行するとき、または前に ACP の一回限りの許可 `allow_once` だけで実行したとき）。
+- `main`（テストでは、選んだテストの関数の和）の宣言したエフェクトが、そのスクリプトについてセッションに記憶したエフェクトの集合より増えたとき。エフェクトは、確認の直前に得た処理系の検査の報告から取る（[Benitoite の処理系との連携](../04-benitoite/04-01-benitoite-integration.md)の「実行の前の検査の報告」）。`Log` は独立した原子の名前として表示し、増えたかの判定に数える。`Assert.Check` は、増えたかの判定に数えず、確認の画面にも示さない（同節）。
 - 【決定】そのスクリプトが、`read` の開かないファイルを取り込むとき（毎回。一時的なスクリプトも含む）。確認の画面には、取り込む読まないファイルの数を示す（同節）。
 
-エフェクトが確認した範囲に収まるときは、スクリプトの中身が変わっていても確認しない。これは ADR 0345 の決定 1 のとおりである。理由: 検査を通ったスクリプトは、エフェクトにない組み込みの操作を行わず、OS のサンドボックスもエフェクトに応じて範囲を狭める（[OS のサンドボックス](03-02-sandbox.md)の「制限モードの方針」）。中身の変化ごとに確認すると、確認の回数が増えて確認を読まずに許可するようになる。
+宣言したエフェクトが、セッションに記憶した確認済みの範囲に収まるときは（`.agents` への書き込みと `read` の開かないファイルの取り込みがない限り）、スクリプトの中身が変わっていても確認しない。これは ADR 0345 の決定 1 のとおりである。理由: 検査を通ったスクリプトは、エフェクトにない組み込みの操作を行わず、OS のサンドボックスもエフェクトに応じて範囲を狭める（[OS のサンドボックス](03-02-sandbox.md)の「制限モードの方針」）。中身の変化ごとに確認すると、確認の回数が増えて確認を読まずに許可するようになる。対話の画面（TUI）の `[y]` は、その対象について確認したエフェクトの範囲をセッションに記憶することを兼ねる。ACP（`benitoiteh acp`）では、「今回だけ実行を許しセッションに記憶しない（`allow_once`）」と「このセッションの間、その対象に確認したエフェクトを記憶する（`allow_always`）」を選べる。`allow_once` は、既存のセッションの記憶を消すのでも広げるのでもなく、その一回の呼び出しの実行（承認直後の再検査を含む）にだけ効く（[ACP（エディタとの連携）](../05-interface/05-03-acp.md)の「確認の種類ごとの選択肢と記憶の範囲の対応表」）。
 
 【決定】確認の画面には次のものを示す。
 
@@ -97,9 +97,9 @@
 【決定】`.agents` の下に書く操作（[道具](../01-agent/01-03-tools.md)の「書く道具のパスの規則」の `write`・`edit`、`write_agents` を付けた `benitoite_run`・`benitoite_test`・`benitoite_scratch`）は、一回ごとに利用者の確認を受ける。
 
 - 確認の要求に `.agents` への書き込みであることを事実（`agents_write`）として載せ、画面には `This call may write agent skills and settings under .agents/. This approval covers this call only.` を別の行で示す。エフェクトの確認の要約には `, and let it write .agents/ (agent skills and settings) this time` を足す。
-- この確認は覚えない。同じスクリプトの同じエフェクトを前に確認していても、`write_agents` を付けた実行は毎回確認する。エフェクトの確認そのものは今までどおり覚える。
+- この確認は覚えない。同じスクリプトの同じエフェクトを前に確認していても、`write_agents` を付けた実行は毎回確認する。対話の画面（TUI）では、`[y]` がエフェクトのセッション記憶を兼ねるため、エフェクトの確認そのものは今までどおり覚え、`.agents` への書き込みの許可だけを覚えない。ACP（`benitoiteh acp`）では、`write_agents` を付けた実行（および `read` の開かないファイルを取り込む実行）には一回限りの選択肢（`allow_once` と `reject_once`）だけを出し、エフェクトの集合もその呼び出し限りとしてセッションには記憶しない（[ACP（エディタとの連携）](../05-interface/05-03-acp.md)の「確認の種類ごとの選択肢と記憶の範囲の対応表」）。
 - 制限モードでは、書く道具の確認は `.agents` の `.bnt` に書くときだけ求める。
-- 非対話（`benitoiteh exec`）では、`--allow-agents-write` を付けたときだけ、確認なしに許す。エフェクトの確認は、続けて `--allow` の範囲でも確かめる。付けないときは、`Writing under .agents/ (agent skills and settings) needs confirmation, and this non-interactive run does not allow it. Rerun exec with --allow-agents-write, or stop and report.` を道具の結果として返す。`--allow-agents-write` は対話の形では使い方の誤りとする。
+- 非対話（`benitoiteh exec`、および `--allow-agents-write` を付けた `benitoiteh acp`）では、`--allow-agents-write` を付けたときだけ、`.agents` への書き込みを確認なしに許す。エフェクトの確認は、続けて `--allow` の範囲（`acp` で範囲を超えるときは承認の方針）でも確かめる。`exec` で付けないときは、`Writing under .agents/ (agent skills and settings) needs confirmation, and this non-interactive run does not allow it. Rerun exec with --allow-agents-write, or stop and report.` を道具の結果として返す。`--allow-agents-write` は対話の画面（`tui`）の形では使い方の誤りとする。
 
 理由: [OS のサンドボックス](03-02-sandbox.md)の「.agents の守り」。覚えないのは、一度確認したスクリプトが、その後に利用者の知らないうちに `.agents` を書き換え続けることを防ぐためである。
 
