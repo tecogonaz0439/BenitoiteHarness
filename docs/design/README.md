@@ -104,6 +104,7 @@ Benitoite の設計書と事前検討へのリンクは、設計の前提にし�
 | [外部のレビューの記録](08-appendix/08-03-external-review.md) | 外部のレビューの指摘と、指摘ごとの扱い |
 | [Linux のサンドボックスの検討の記録](08-appendix/08-04-linux-sandbox.md) | Linux で守る場所と読ませない場所を実現する形の検討（BH-049）と、ほかのハーネスの作り |
 | [外部のレビューの資料](08-appendix/reviews/2026-10-16-chatgpt-pro/README.md) | 2026-10-16 の ChatGPT Pro のレビューの依頼の文面と結果の写し（参考資料） |
+| [ACP 対応の外部のレビューの資料](08-appendix/reviews/2026-11-21-chatgpt-pro/README.md) | 2026-11-21 の ChatGPT Pro の ACP 対応のレビューの依頼の文面と結果の写し（参考資料） |
 
 ### 未決事項
 
