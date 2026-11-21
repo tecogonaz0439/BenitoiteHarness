@@ -79,6 +79,7 @@ Benitoite の設計書と事前検討へのリンクは、設計の前提にし�
 |---|---|---|
 | [CLI と設定ファイル](05-interface/05-01-cli.md) | コマンドライン、終了状態、`exec` の出力、設定ファイル、データの置き場所 | 草稿 |
 | [対話の画面](05-interface/05-02-tui.md) | 画面の構成、出力、入力の操作、確認の画面、`/` のコマンド | 草稿 |
+| [ACP（エディタとの連携）](05-interface/05-03-acp.md) | `benitoiteh acp` の信頼の境界、JSON-RPC のメソッド、イベントと確認の受け渡し | 草稿 |
 
 ### 実装（`06-impl/`）
 
@@ -103,6 +104,7 @@ Benitoite の設計書と事前検討へのリンクは、設計の前提にし�
 | [外部のレビューの記録](08-appendix/08-03-external-review.md) | 外部のレビューの指摘と、指摘ごとの扱い |
 | [Linux のサンドボックスの検討の記録](08-appendix/08-04-linux-sandbox.md) | Linux で守る場所と読ませない場所を実現する形の検討（BH-049）と、ほかのハーネスの作り |
 | [外部のレビューの資料](08-appendix/reviews/2026-10-16-chatgpt-pro/README.md) | 2026-10-16 の ChatGPT Pro のレビューの依頼の文面と結果の写し（参考資料） |
+| [ACP 対応の外部のレビューの資料](08-appendix/reviews/2026-11-21-chatgpt-pro/README.md) | 2026-11-21 の ChatGPT Pro の ACP 対応のレビューの依頼の文面と結果の写し（参考資料） |
 
 ### 未決事項
 

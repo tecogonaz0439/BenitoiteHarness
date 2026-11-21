@@ -50,7 +50,7 @@
 - git の道具（BH-007）。
 - 役割ごとにモデルを分けること（ADR 0343）。
 - 手元の重みでの推論、クラウドの基盤の認証、Apple の Foundation Models（ADR 0340）。
-- IDE との連携、拡張の仕組み（プラグイン）。
+- 拡張の仕組み（プラグイン）。エディタおよび統合画面（T3Code など）との連携は、試作の P5 の後の追加として、標準入出力の ACP（Agent Client Protocol）による `benitoiteh acp`（[ACP（エディタとの連携）](../05-interface/05-03-acp.md)）で扱う【方針】。
 
 ### 性能の目標
 

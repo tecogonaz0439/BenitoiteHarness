@@ -294,6 +294,17 @@ P0-04 で作った型: 方針の入力 `PolicyConfig`（`readable: ReadAccess`�
 - 切り替えは、失敗しうる値（巻き戻しの記録の根、`Environment::with_project` の結果など）を先に作ってから、出来事の記録と `ToolContext` の切り替え（プロジェクト、`ExcludeRules::rebased`、読んだ版の消去、`RunContext.locations.project`、`Processor::set_project`）、`CheckpointRecorder::restart`、確認したエフェクトと検査の回数の消去、`environment_changes` を行う。`CheckpointRecorder::new` は最後の `ProjectDirChanged` より前の時点を捨てる。
 - 確認の前の判定は、場所の規則を有無より先に当て、範囲の外の有無や実のパスを誤りの文に出さない。
 
+### ACP 対応（P5-53〜P5-56）
+
+- `config::environment`（P5-53）: `T3_ACP_MCP_` と `T3CODE_`（ASCII の大小文字を区別しない）で始まる環境変数を `remark_child_environment` で強制除外し、`EnvironmentRules::parse` で `set` または `*` を含まない `allow` に書いたときは設定の誤りとして拒む。
+- `sandbox::proxy`（P5-53）: `ProxyRun` の終了状態（`finished`）と、確認の応答の採用・許可集合（`allowed`・`NetworkGate.session`・`declined`）の更新を同一の錠のもとで直列化し、`finish()` の後に届いた遅れた応答がセッションのドメイン許可を広げないようにする。錠を持ったまま確認の返事や I/O を待たない。
+- `cli::exec`・`agent`・`approval`・`tools`（P5-54）:
+  - 準備の方針を、起動時の確認、実行時の承認の方針、事前許可のオプション、通信の中継の確認、`askpass` の可否の 5 項目に分ける。`Agent::connect_network_prompts` で `Tui` と `Acp` の両方から `NetworkGate` へ確認のチャネルをつなぐ。
+  - `ApprovalAnswer` にエフェクトのセッション記憶の有無（TUI の `[y]` と ACP の `allow_always` は記憶し、ACP の `allow_once` は記憶しない）を持たせ、`Invocation.call_approved_effects: Option<&'a BTreeSet<Effect>>` でその呼び出し 1 回限りの承認済みエフェクト集合を承認直後の再実行（再検査）へ渡す。
+  - `RunReport.stop_reason: StopReason`（`Completed`・`Cancelled`・`MaxTurns`・`MaxRunTokens`・`Failed`）で、診断の英文を解析せずに ACP の `stopReason` を決める。
+  - `tools::read` に、base64 復号後の画像のバイト列と MIME 型を `benitoiteh __image` のサンドボックス補助に通して検証・縮小し `objects/` に保存する関数を加える。
+- `cli::acp`（P5-55）: `benitoiteh acp [オプション]`。ACP 版 1（`protocolVersion: 1`）の JSON-RPC 2.0 入出力（有界 256 行の非ブロッキング出力チャネル）、`AcpApprover`、確認の台帳（単調増加する要求 ID、未提示 `optionId` の `Denied` 処理、完了済み ID への遅延・重複応答の無視）、取り消し・EOF・出力障害の 5 段の終了手順。
+
 ### `provider`（P1-01、P1-02）
 
 - 共通の形（`provider::types`、`provider` から再公開）: `Destination { provider, base_url, model }`、`AdapterKind`、`Conversation { items }`、`Item::{UserMessage, AssistantTurn, ToolResult}`、`UserMessage { parts: Vec<UserPart> }`（`UserPartKind::{Environment, Request, Steering}`）、`AssistantTurn { parts, raw_items, finish_reason, usage }`、`AssistantPart::{Text, Reasoning, ToolCall}`、`RawItems { destination, adapter, items }`、`ToolCall { id, provider_id, provider_item_id, name, arguments, raw_arguments }`、`ToolResult { id, provider_id, text, is_error }`、`Usage`（各項目 `Option<u64>` と `raw`）、`FinishReason::{Completed, ToolCalls, OutputLimit, Refusal(String), Error, Cancelled, Disconnected}`、`StreamEvent`、`ProviderError`、`Capabilities`。

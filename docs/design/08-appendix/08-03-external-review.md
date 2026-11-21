@@ -93,3 +93,44 @@ BH-027（処理系に許すエフェクトの集合を渡す機能）、BH-036�
 - `escalate` の承認を、その一回だけに効かせる（03-03 の「通常モードの承認の方針」）。
 - プロジェクトの設定から、提供者を選ぶ欄を外す（05-01 の「プロジェクトの設定ファイル」）。
 - 処理系への要望の優先の順と内容（04-01 の「処理系への要望」）。
+
+## 2026-11-21 の ChatGPT Pro のレビュー（ACP 対応）
+
+### 対象と進め方
+
+- 対象: ブランチ `design/acp-support` のコミット `f04e5d9c2985c84da747491e17b14c548bef252e` の設計書（主に [05-03「ACP（エディタとの連携）」](../05-interface/05-03-acp.md) と `BH-054`〜`BH-057`）。
+- 資料: [依頼の文面と結果の写し](reviews/2026-11-21-chatgpt-pro/README.md)。
+- レビューした者: ChatGPT Pro（設計者が依頼した）。指摘は 12 件（重さ「実装の前に直すべき」10 件、「実装の中で直せばよい」2 件）と、`BH-054`〜`BH-057` への判断だった。
+- 参照した一次資料のコミット: ACP の仕様・スキーマ（<https://github.com/agentclientprotocol/agent-client-protocol> のコミット `5ce539f03d2750e7f58a3ffdfab6919c2d04445c`）、ACP の Rust SDK（<https://github.com/agentclientprotocol/rust-sdk> のコミット `8ac65cf6b0b3371ae4d8231760cb91dad99e92ef`）、T3Code（<https://github.com/pingdotgg/t3code> のコミット `d5f8a7573a3817d8c20f7491e7672443355c4083`）。
+
+### 指摘ごとの扱い
+
+| 番号 | 指摘の要点 | 扱い | 直した章 | 採らなかった点と理由 |
+|---|---|---|---|---|
+| 01 | `mcpServers` を無視しても、T3Code が起動環境に渡す `T3_ACP_MCP_ENDPOINT`・`T3_ACP_MCP_AUTHORIZATION`・`T3_ACP_MCP_NODE` などが子プロセスへ受け継がれ、子プロセスが T3Code の MCP HTTP サーバを直に呼んでサンドボックスの外の操作を行わせられる | 採る | 05-03、03-02、05-01 | — |
+| 02 | T3Code の `parsePermissionRequest` と `deriveToolActivityPresentation` は `command`・`title`・`detail` の優先順で一つの説明を選んで承認カードに出すため、`rawInput.command` に生のコマンドだけを入れて `content` に事実を置くと、承認カードからサンドボックスの範囲や `.agents` の警告が落ちる | 採る | 05-03 | — |
+| 03 | T3Code はクライアントの方針（`clientPolicy.ts`）に応じて確認要求へ自動で `selected` を返すことがあり、ACP の応答だけでは人間がその都度確認した証拠にならない。また 03-03 の共通規則が TUI の画面を前提に書かれている | 採る | 05-03、03-03 | — |
+| 04 | 既存の `ProxyRun::finish` と `decide`（`crates/benitoiteh/src/sandbox/proxy.rs`）で、コマンド終了と相前後して届いた遅れた確認の応答がセッションのドメイン許可（`gate.session`）へ加わる競合がある | 採る | 03-02、05-03 | — |
+| 05 | 取り消し（`session/cancel`）・標準入力の EOF・標準出力の障害のときに、上限付きイベントチャネル（長さ 64）の受信停止による `Agent::emit` の待ち、出力待ちによる確認解除の遅れ、開いたままの `stdin` 読み取りスレッドの `join` 待ちが起きない終了手順が要る | 採る | 05-03 | — |
+| 06 | `ApprovalKind` と `facts` の条件、ACP の `options`（`optionId`・`kind`）、内部の `ApprovalOutcome`、セッションに記憶する範囲の対応表が要る。T3Code の `Approve` ボタンは `allow_once` を探し、既存の `remember_effects` は `Approved` でセッションに記憶するため、通常のエフェクト確認にも今回限りの `allow_once` とセッション記憶の `allow_always` を分ける必要がある | 採る | 05-03 | — |
+| 07 | `ExecArgs.interactive` の一つの真偽値では ACP の準備の方針（起動時は非対話の案 A、実行時は `AcpApprover`、通信の確認は有効、`askpass` は無効）を表せず、`NetworkGate` の確認の接続も `InteractiveApprover` に縛られている | 採る | 05-03 | — |
+| 08 | 初版の通信契約を ACP 版 1（`protocolVersion: 1`）に固定し、版 2 の初期化要求から版 1 へ交渉する規則、各メソッドの `params` と `result`、`cwd` の絶対パス必須、`configOptions`、`session/request_permission` の正確な JSON の入れ子を仕様に確定させる必要がある | 採る | 05-03、open-issues | — |
+| 09 | `session/update` の `sessionUpdate` の種類（`user_message_chunk`・`agent_message_chunk`・`agent_thought_chunk`・`tool_call`・`tool_call_update`・`usage_update`）、承認待ちの道具の `status: "pending"`、`usage_update` の `used`（現在の文脈の見積もり）と `size`（`context_window`）、終了理由の型付けを確定させる必要がある | 採る | 05-03 | — |
+| 10 | ACP 版 1 は stdio の MCP 対応を MUST としているため、MCP を取り込まない `benitoiteh acp` は「MCP を利用しない ACP 版 1 の限定対応」であることを明記し、非空の `mcpServers` は拒まずに資格情報を伏せて無視を通知する形を明記する | 採る | 05-03 | — |
+| 11 | `session/prompt` の `ContentBlock` について、内容を持たない `resource_link`、埋め込みの `resource`（信頼しない内容として扱い、`read` の読んだ版にしない）、base64 のバイト列を持つ `image`（`benitoiteh __image` にバイト列を通して検証・縮小する）を分けて定める必要がある | 採る | 05-03 | — |
+| 12 | 公式の Rust SDK `agent-client-protocol`（5.4.0）の `Cargo.toml` では、`tokio` は `dev-dependencies` であり通常の依存は `futures` などであるため、使わない理由の記述を正確に改める | 採る | 05-03 | — |
+
+未決事項への判断（`BH-054` は案 A、`BH-055` は版 1 の仕様確定と実機検証の分離、`BH-056` は案 A、`BH-057` は通信確認の `session/request_permission` 統合と `elicitation/create` の秘密入力禁止に基づく `askpass` 無効化）もすべて採り、`05-03`・`07-01`・`open-issues.md` に反映した。
+
+### 第 2 回（改訂の確認）の残件と扱い
+
+改訂コミット `b3e42b56c8f749cff97668e82138a9ed344fb46d` に対する再レビュー（[round2-result.md](reviews/2026-11-21-chatgpt-pro/round2-result.md)）では、前回の指摘 01〜12 の方針が適切に反映されており実装プランの作成へ進めると判断されたうえで、章間の整合と実装上の境界条件として R01〜R06 の 6 件が挙げられた。すべて採り、設計書と実装プラン（P5-53〜P5-56）に反映した。
+
+| 番号 | 指摘の要点 | 扱い | 直した章・プラン |
+|---|---|---|---|
+| R01 | 03-03 のエフェクト記憶の説明と `.agents` の節（「エフェクトの確認そのものは今までどおり覚える」）が、ACP の `allow_once`（記憶しない）と整合していない。また、一回目の `allow_once` で承認後の再検査を通すため、セッションの `confirmed_effects` とは別に「その呼び出し限りの承認済みエフェクト集合」を再実行に渡す仕組みが要る | 採る | 03-03、05-03、実装プラン P5-54 |
+| R02 | 05-03 の準備方針の表で、項目 2 と項目 3 の `--allow` 超過時の扱いの文言が食い違っている。また 05-01 のオプション表でも `tui`・`exec`・`acp` の対象入口を明記する必要がある | 採る | 05-03、05-01、実装プラン P5-54 |
+| R03 | 終了手順で、主のスレッドから出力のスレッドへのキューが満杯のときや、クライアントが `stdout` を開いたまま読まずに `stdin` を閉じたときにも、取消とイベント回収・終了が止まらない規則を明記する | 採る | 05-03、07-01、実装プラン P5-55 |
+| R04 | `AgentEvent::Error`（`storage_limit` などの非致命的診断を含む）は診断として扱い、`session/prompt` の最終応答は残イベント回収後に型付きの `RunReport` と取消状態から一度だけ決めることを明記する | 採る | 05-03、実装プラン P5-54・P5-55 |
+| R05 | 非アクティブな `sessionId` への `session/cancel` は、正規の `id` なし通知なら応答せず無視し、`id` 付きの要求として届いたときだけ `-32602` を返すように分ける | 採る | 05-03、実装プラン P5-55 |
+| R06 | `startTurnUnlocked` の出典パスを `packages/provider-acp/src/server/adapter.ts` に訂正する。あわせて `session/request_permission` の `toolCall.kind` に自動許可対象の `read`・`search`・`think` を使わないこと、保留のない ID への重複・遅延応答は無視して確定済みの結果を変えないことを明記する | 採る | 05-03、07-01、open-issues、実装プラン P5-55 |

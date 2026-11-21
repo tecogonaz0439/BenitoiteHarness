@@ -112,6 +112,12 @@
 | [P5-50](tasks/P5-50-deferred-review-fixes.md) | 後回しにしたレビューの指摘を直す（macOS の gitdir の指す先、読ませないホームの場所、秘密の名前の探索、エディタと通知の環境）と、限界として書く（`.agents` のリンク、`escalate` の探す変数） | P5-49 | 完了 |
 | [P5-51](tasks/P5-51-agents-locations-trust.md) | 信頼した置き場所を覚え、置き場所が増えたら尋ね直す（Linux で作られうる入れ子の `.agents` を尋ねずに読まない） | P5-50 | 完了 |
 | [P5-52](tasks/P5-52-macos-denial-reasons.md) | macOS で、拒否と見なした `bash` の結果に、Seatbelt が記録した拒否の操作と対象を添える | P5-51 | 完了 |
+| [P5-53](tasks/P5-53-acp-env-and-proxy-serialization.md) | 子プロセスの環境からの ACP クライアントの MCP 資格情報（`T3_ACP_MCP_*`・`T3CODE_*`）の強制除外と、通信の中継（`ProxyRun`）の終了と確認応答の直列化 | P5-52 | 未着手 |
+| [P5-54](tasks/P5-54-prepare-policies-and-one-shot-effects.md) | 起動・準備の方針の 5 分離、呼び出し単位の一回限りのエフェクト許可、終了理由の分類と画像バイト列の縮小入口 | P5-53 | 未着手 |
+| [P5-55](tasks/P5-55-acp-protocol-and-approver.md) | `benitoiteh acp` のサブコマンド、ACP 版 1 の JSON-RPC 層、`AcpApprover`、取り消し・EOF・出力障害の終了手順 | P5-54 | 未着手 |
+| [P5-56](tasks/P5-56-acp-safety-and-t3code-verification.md) | `benitoiteh acp` の安全の性質の統合テスト（本物のサンドボックスと処理系）と T3Code 実機検証（BH-055） | P5-55 | 未着手 |
+
+P5-53〜P5-56 は、ACP（Agent Client Protocol）と T3Code 連携（`BH-054`〜`BH-057`）の改造の作業である。改造全体の概要、設計の判断とその理由（D1〜D8、外部レビュー 2 回分の処置）、段とレビューの区切り、および一括の実装プランと共通依頼文は [2026-11-21-BH-054_055_056_057-acp-support/](../2026-11-21-BH-054_055_056_057-acp-support/README.md) にまとめる。
 
 P5-42〜P5-46 は、2026-11-02〜03 にオーケストレータ（Claude Code）が設計者の指示でクラウドのセッションで行い、実装プランの外で進めた作業である。2026-11-04 に `gamou` へ取り込み（P5-47 で macOS の確かめと直しを行った）、作業の記録として本書に加えた。作業文書は事後の記録であり、確かめの経過は `results/` に置く。作業の一覧と残っていることの入口は [2026-11-02〜03 の作業のまとめ](../2026-11-02/README.md)にある。
 
