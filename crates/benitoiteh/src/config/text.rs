@@ -62,10 +62,10 @@ pub const RULE_UNKNOWN: &str =
     "unknown word; use allow <pattern>, deny <pattern> or set <NAME>=<value>";
 pub const RULE_MALFORMED: &str = "malformed rule; put one space after the word, use a pattern without whitespace, = or NUL, and a set name of letters, digits and _ not starting with a digit";
 pub const RULE_EMPTY_PATTERN: &str = "empty pattern";
-pub const RULE_SET_FIXED: &str =
-    "set cannot name a provider API key variable or a variable that benitoiteh sets itself";
+pub const RULE_SET_FIXED: &str = "set cannot name a provider API key variable, an ACP client MCP variable, or a variable that benitoiteh sets itself";
 pub const RULE_ALLOW_PROVIDER_KEY: &str =
     "allow without * cannot name a provider API key variable; benitoiteh never passes it";
+pub const RULE_ALLOW_ACP_MCP: &str = "allow without * cannot name an ACP client MCP variable (T3_ACP_MCP_* or T3CODE_*); benitoiteh never passes it";
 
 /// 値を含めないよう、行の位置と理由だけを示す。位置は 1 から数える。
 pub fn invalid_rule(index: usize, reason: &str) -> String {

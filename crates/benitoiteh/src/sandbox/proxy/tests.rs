@@ -300,6 +300,65 @@ fn finished_runs_drop_pending_confirmations_and_late_answers() -> TestResult {
     Ok(())
 }
 
+// 作成時の関門: コマンド終了（finish）の直後に返事チャネルへセッション許可が届く競合でも、
+// 終わった呼び出しを拒否し、同じ NetworkGate を使う次の ProxyRun にセッション許可を広げない
+// （設計書 03-02「通信の中継」、05-03「通信の中継と秘密の入力の扱い」）。
+#[test]
+fn finish_before_session_approval_answer_never_grants_session_permission() -> TestResult {
+    let gate = Arc::new(gate(&[], 9, true));
+    let (prompts, requests) = mpsc::channel::<ApprovalPrompt>();
+    gate.connect_prompts(prompts);
+    let first = ProxyRun::new(Arc::clone(&gate), "curl".into(), PathBuf::from("/project"));
+    let (port, server) = start(&first)?;
+    let client = std::thread::spawn(move || {
+        exchange(port, "CONNECT race.example.com:443 HTTP/1.1\r\n\r\n").map_err(|e| e.to_string())
+    });
+    let prompt = requests.recv_timeout(Duration::from_secs(10))?;
+    // 終了の確定直後に、decide の待ちが終わる前へ ApprovedForSession を届かせる。
+    first.finish();
+    let _late = prompt.reply.send(ApprovalAnswer {
+        outcome: ApprovalOutcome::ApprovedForSession,
+        message: None,
+    });
+    let response = client.join().map_err(|_| "client")??;
+    assert!(response.starts_with("HTTP/1.1 403"), "{response}");
+    assert!(response.contains(text::NETWORK_NOT_ALLOWED), "{response}");
+    drop(server);
+    assert!(
+        !gate
+            .session
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .contains("race.example.com")
+    );
+    // 同じ NetworkGate の次のコマンドでも、そのドメインは許可されておらず再び確認になる。
+    let second = ProxyRun::new(
+        Arc::clone(&gate),
+        "git fetch".into(),
+        PathBuf::from("/project"),
+    );
+    let (port, _server) = start(&second)?;
+    let next_client = std::thread::spawn(move || {
+        exchange(port, "CONNECT race.example.com:443 HTTP/1.1\r\n\r\n").map_err(|e| e.to_string())
+    });
+    let next_prompt = requests.recv_timeout(Duration::from_secs(10))?;
+    assert_eq!(
+        next_prompt.request.facts.domain.as_deref(),
+        Some("race.example.com")
+    );
+    next_prompt.reply.send(ApprovalAnswer {
+        outcome: ApprovalOutcome::Denied,
+        message: None,
+    })?;
+    let next_response = next_client.join().map_err(|_| "next_client")??;
+    assert!(next_response.starts_with("HTTP/1.1 403"), "{next_response}");
+    assert!(
+        next_response.contains(text::NETWORK_USER_DECLINED),
+        "{next_response}"
+    );
+    Ok(())
+}
+
 // 作成時の関門: 承認の方針が尋ねることを許さない門は、画面につながっていても尋ねずに断る。
 #[test]
 fn gates_that_must_not_ask_refuse_without_prompting() -> TestResult {

@@ -102,9 +102,15 @@ fn parse_line(
     match word {
         "allow" => {
             let pattern = pattern(argument)?;
-            // `*` のない allow は一つの名前を指す。提供者のキーなら、利用者は通したつもりになる。
-            if !pattern.contains('*') && provider_key(&pattern) {
-                return Err(text::RULE_ALLOW_PROVIDER_KEY);
+            // `*` のない allow は一つの名前を指す。提供者のキーや ACP クライアントの MCP 用変数なら、
+            // 利用者は通したつもりになる（設計書 05-01「設定ファイル」）。
+            if !pattern.contains('*') {
+                if provider_key(&pattern) {
+                    return Err(text::RULE_ALLOW_PROVIDER_KEY);
+                }
+                if is_acp_mcp_env(&pattern) {
+                    return Err(text::RULE_ALLOW_ACP_MCP);
+                }
             }
             Ok(EnvironmentRule::Allow(pattern))
         }
@@ -122,6 +128,7 @@ fn parse_line(
             }
             // 規則の後に benitoiteh が打ち消す名前は、黙って打ち消さずに断る。
             if provider_key(name)
+                || is_acp_mcp_env(name)
                 || FIXED_NAMES
                     .iter()
                     .any(|fixed| fixed.eq_ignore_ascii_case(name))
@@ -141,6 +148,22 @@ fn parse_line(
 }
 
 const BENITOITEH_PREFIX: &str = "BENITOITEH_";
+
+/// ACP クライアント（T3Code など）が起動環境に渡す MCP 接続・制御用の変数の接頭辞。
+/// 子プロセスからクライアント本体の MCP サーバを直に呼ばせないため、規則によらず必ず除く
+/// （設計書 03-02「規則の後に必ず当てる変更」、05-03「信頼の境界と安全の原則」）。
+const ACP_MCP_ENV_PREFIXES: &[&str] = &["T3_ACP_MCP_", "T3CODE_"];
+
+fn is_acp_mcp_env_bytes(name: &[u8]) -> bool {
+    ACP_MCP_ENV_PREFIXES.iter().any(|prefix| {
+        name.get(..prefix.len())
+            .is_some_and(|head| head.eq_ignore_ascii_case(prefix.as_bytes()))
+    })
+}
+
+fn is_acp_mcp_env(name: &str) -> bool {
+    is_acp_mcp_env_bytes(name.as_bytes())
+}
 
 fn pattern(argument: &str) -> Result<String, &'static str> {
     if argument.is_empty() {
@@ -259,13 +282,17 @@ pub fn ineffective_rules(
 }
 
 /// すでに [`child_environment`] で作った環境の、今回の起動の印と値だけを付け直す。
-/// 提供者のキーは、念のため改めて除く。
+/// 提供者のキーと ACP クライアントの MCP 用変数は、念のため改めて除く
+/// （設計書 03-02「規則の後に必ず当てる変更」、05-03「信頼の境界と安全の原則」）。
 pub fn remark_child_environment(
     mut environment: BTreeMap<OsString, OsString>,
     temporary: &Path,
     sandbox: Option<(&str, bool)>,
 ) -> BTreeMap<OsString, OsString> {
-    environment.retain(|name, _| !PROVIDER_KEY_ENV_VARS.iter().any(|key| name == key));
+    environment.retain(|name, _| {
+        !PROVIDER_KEY_ENV_VARS.iter().any(|key| name == key)
+            && !is_acp_mcp_env_bytes(name.as_encoded_bytes())
+    });
     // 外側の benitoiteh の印を引き継ぐと、今回の制限を誤って伝える。
     environment.remove(OsStr::new(crate::askpass::SOCKET_ENV));
     environment.remove(OsStr::new(crate::askpass::TOKEN_ENV));
