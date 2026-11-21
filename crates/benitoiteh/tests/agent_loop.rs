@@ -86,6 +86,7 @@ impl Fixture {
             agent: Default::default(),
             project_parent: None,
             allow_effects: None,
+            preapproval_overflow: Default::default(),
             allow_agents_write: false,
             mode: Mode::Normal,
             destination: Destination {
@@ -1342,10 +1343,7 @@ fn write_and_edit_follow_selected_roots_protection_and_approval_policy() -> Test
             let mut agent = agent.with_approvals(
                 Box::new(ScriptedApprover {
                     requests: Arc::clone(&requests),
-                    answer: ApprovalAnswer {
-                        outcome: ApprovalOutcome::Approved,
-                        message: None,
-                    },
+                    answer: ApprovalAnswer::new(ApprovalOutcome::Approved, None),
                 }),
                 ApprovalPolicy {
                     approval,
@@ -1477,10 +1475,7 @@ fn approval_answers_are_trusted_only_from_approver_and_write_permission_is_not_r
         let mut agent = agent.with_approvals(
             Box::new(ScriptedApprover {
                 requests: Arc::clone(&requests),
-                answer: ApprovalAnswer {
-                    outcome,
-                    message: message.clone(),
-                },
+                answer: ApprovalAnswer::new(outcome, message.clone()),
             }),
             ApprovalPolicy {
                 approval: Approval::OnRequest,
@@ -1602,10 +1597,7 @@ fn bash_approval_uses_actual_shell_policy_and_never_remembers_escalation() -> Te
         let mut agent = agent.with_approvals(
             Box::new(ScriptedApprover {
                 requests: Arc::clone(&requests),
-                answer: ApprovalAnswer {
-                    outcome,
-                    message: None,
-                },
+                answer: ApprovalAnswer::new(outcome, None),
             }),
             ApprovalPolicy {
                 approval,
@@ -1717,15 +1709,15 @@ fn web_approval_policy_and_denials_are_recorded() -> TestResult {
             if let Ok(mut records) = self.requests.lock() {
                 records.push(request.clone());
             }
-            ApprovalAnswer {
-                outcome: if request.facts.domain.as_deref() == Some("mock.invalid") {
+            ApprovalAnswer::new(
+                if request.facts.domain.as_deref() == Some("mock.invalid") {
                     self.outcome
                 } else {
                     ApprovalOutcome::Denied
                 },
-                message: (self.outcome == ApprovalOutcome::DeniedWithMessage)
+                (self.outcome == ApprovalOutcome::DeniedWithMessage)
                     .then(|| "Do not fetch this site.".into()),
-            }
+            )
         }
     }
     for mode in [Mode::Normal, Mode::Restricted] {
@@ -2008,5 +2000,134 @@ fn deep_provider_arguments_and_usage_survive_replay_resume_and_rewind() -> TestR
     drop(anthropic_agent);
     let _continued = continue_session(&f.paths, &f.project)?;
     anthropic_server.shutdown()?;
+    Ok(())
+}
+
+// 作成時の関門: `RunReport.stop_reason` が英語の診断文の解析なしに終了理由（Completed /
+// Cancelled / MaxTurns / MaxRunTokens / Failed）を分類する契約と、`RunControl.inline_images`
+// がメモリ上の画像を検証して `objects/` に保存し、壊れた画像は提供者へ送らず拒む契約を守る。
+#[test]
+fn run_report_classifies_stop_reasons_and_validates_inline_images() -> TestResult {
+    use benitoiteh::agent::{RunControl, StopReason};
+
+    // 1. MaxTurns
+    {
+        let f = Fixture::new()?;
+        let mut server = MockProvider::start(vec![ResponseScript::sse(calls(
+            &[("read", json!({"path": "a.bnt"}))],
+            "tool_calls",
+        ))])?;
+        let mut config = f.config(&server, AdapterKind::OpenAiChat);
+        config.limits.max_turns = 1;
+        let (mut agent, _) = f.agent(config)?;
+        let (report, _) = complete(&mut agent)?;
+        assert_eq!(report.outcome, Outcome::Failed);
+        assert_eq!(report.stop_reason, StopReason::MaxTurns);
+        server.shutdown()?;
+    }
+
+    // 2. MaxRunTokens
+    {
+        let f = Fixture::new()?;
+        let mut server = MockProvider::start(vec![ResponseScript::sse(calls(
+            &[("read", json!({"path": "a.bnt"}))],
+            "tool_calls",
+        ))])?;
+        let mut config = f.config(&server, AdapterKind::OpenAiChat);
+        config.limits.max_run_tokens = Some(12);
+        let (mut agent, _) = f.agent(config)?;
+        let (report, _) = complete(&mut agent)?;
+        assert_eq!(report.outcome, Outcome::Failed);
+        assert_eq!(report.stop_reason, StopReason::MaxRunTokens);
+        server.shutdown()?;
+    }
+
+    // 3. Completed & Cancelled & Failed (Refusal)
+    {
+        let f = Fixture::new()?;
+        let mut server = MockProvider::start(vec![
+            final_text(),
+            ResponseScript::sse(chat(&json!({"content": "blocked"}), "content_filter", true)),
+        ])?;
+        let (mut agent, _) = f.agent(f.config(&server, AdapterKind::OpenAiChat))?;
+        let (completed, _) = complete(&mut agent)?;
+        assert_eq!(completed.outcome, Outcome::Completed);
+        assert_eq!(completed.stop_reason, StopReason::Completed);
+        let (cancelled, _) = run(&mut agent, Arc::new(AtomicBool::new(true)), |_| {})?;
+        assert_eq!(cancelled.outcome, Outcome::Cancelled);
+        assert_eq!(cancelled.stop_reason, StopReason::Cancelled);
+        let (refused, _) = complete(&mut agent)?;
+        assert_eq!(refused.outcome, Outcome::Failed);
+        assert!(matches!(
+            refused.stop_reason,
+            StopReason::Failed { kind: "refusal", ref message } if message.contains("content_filter")
+        ));
+        server.shutdown()?;
+    }
+
+    // 4. `RunControl.inline_images`: 正常な PNG は `objects/` に保存して提供者へ送り、
+    // 壊れたバイト列は提供者へ一切送らず `StopReason::Failed { kind: "attachment", .. }` にする。
+    {
+        let f = Fixture::new()?;
+        let mut server = MockProvider::start(vec![final_text()])?;
+        let mut config = f.config(&server, AdapterKind::OpenAiChat);
+        config.capabilities.image_input = true;
+        let (mut agent, directory) = f.agent(config)?;
+
+        let mut png_bytes = Vec::new();
+        image::DynamicImage::ImageRgb8(image::RgbImage::from_pixel(2, 2, image::Rgb([10, 20, 30])))
+            .write_with_encoder(image::codecs::png::PngEncoder::new(&mut png_bytes))?;
+
+        // 壊れたバイト列は提供者へ送らずに失敗する。
+        let mut bad_control = RunControl::without_steering(
+            Arc::new(AtomicBool::new(false)),
+            Arc::new(AtomicBool::new(false)),
+        );
+        bad_control
+            .inline_images
+            .push((b"not-a-png".to_vec(), "image/png".into()));
+        let (bad_report, _) = interaction::controlled(&mut agent, bad_control, |_| {})?;
+        assert_eq!(bad_report.outcome, Outcome::Failed);
+        assert!(matches!(
+            bad_report.stop_reason,
+            StopReason::Failed {
+                kind: "attachment",
+                ..
+            }
+        ));
+        assert_eq!(server.requests()?.len(), 0);
+        assert_eq!(fs::read_dir(directory.join("objects"))?.count(), 0);
+
+        // 正常な PNG は `objects/` に SHA-256 名で保存され、base64 として提供者へ送られる。
+        use sha2::{Digest, Sha256};
+        let expected_sha256: String = Sha256::digest(&png_bytes)
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect();
+        let mut ok_control = RunControl::without_steering(
+            Arc::new(AtomicBool::new(false)),
+            Arc::new(AtomicBool::new(false)),
+        );
+        ok_control
+            .inline_images
+            .push((png_bytes.clone(), "image/png".into()));
+        let (ok_report, _) = interaction::controlled(&mut agent, ok_control, |_| {})?;
+        assert_eq!(ok_report.outcome, Outcome::Completed);
+        assert_eq!(ok_report.stop_reason, StopReason::Completed);
+        assert_eq!(
+            fs::read(directory.join("objects").join(&expected_sha256))?,
+            png_bytes
+        );
+        assert!(
+            server
+                .requests()?
+                .first()
+                .ok_or("missing request")?
+                .body
+                .to_string()
+                .contains("data:image/png;base64,")
+        );
+        server.shutdown()?;
+    }
     Ok(())
 }

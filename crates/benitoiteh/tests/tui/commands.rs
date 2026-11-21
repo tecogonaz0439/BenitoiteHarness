@@ -1056,10 +1056,12 @@ fn new_and_fork_do_not_carry_allowed_commands_domains_or_read_versions() -> Test
             let prompt = approvals.recv_timeout(Duration::from_secs(5))?;
             assert_eq!(prompt.request.kind, ApprovalKind::WebFetch);
             cancelled.store(true, Ordering::Release);
-            prompt.reply.send(benitoiteh::approval::ApprovalAnswer {
-                outcome: benitoiteh::approval::ApprovalOutcome::ApprovedForSession,
-                message: None,
-            })?;
+            prompt
+                .reply
+                .send(benitoiteh::approval::ApprovalAnswer::new(
+                    benitoiteh::approval::ApprovalOutcome::ApprovedForSession,
+                    None,
+                ))?;
             Ok(running.join().map_err(|_| "agent thread")??)
         })?;
         assert_eq!(report.outcome, benitoiteh::agent::Outcome::Cancelled);

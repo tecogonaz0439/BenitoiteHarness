@@ -101,6 +101,7 @@ impl Fixture {
             agent: Default::default(),
             project_parent: None,
             allow_effects: None,
+            preapproval_overflow: Default::default(),
             allow_agents_write: false,
             mode: Mode::Normal,
             destination: Destination {

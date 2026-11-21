@@ -17,7 +17,7 @@ mod transport;
 
 pub use crate::session::CompactionReason;
 pub use compaction::{CompactOptions, CompactOutcome, CompactReport};
-pub use events::{AgentEvent, Outcome};
+pub use events::{AgentEvent, Outcome, StopReason};
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
@@ -45,14 +45,27 @@ use transport::{Adapter, Request, Stream};
 
 const TICK: Duration = Duration::from_millis(10);
 
+/// 事前許可（`--allow`・`--allow-agents-write`・`--project-parent`）の範囲を超える実行の扱い
+/// （設計書 05-03「起動とセッションの準備の方針の分離」）。
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum PreapprovalOverflow {
+    /// 事前許可の範囲を超える実行は確認を求めずに拒む（`exec` および `acp --approval never`）。
+    #[default]
+    Deny,
+    /// 事前許可の範囲を超える実行は `Approver` へ確認を求める（`acp` の既定の `--approval on-request`）。
+    Ask,
+}
+
 /// exec が解決した設定と、通信・やり直しの時間の上限。
 #[derive(Clone, Debug)]
 pub struct AgentConfig {
-    /// 非対話で作成を許す実の親ディレクトリ。
+    /// 事前許可で作成を許す実の親ディレクトリ。
     pub project_parent: Option<std::path::PathBuf>,
-    /// Some は非対話で許す集合、None は対話の確認。
+    /// Some は事前許可するエフェクトの集合、None は事前許可なし。
     pub allow_effects: Option<BTreeSet<crate::benitoite::Effect>>,
-    /// 非対話で、.agents に書く要求を確認なしに許す（設計書 03-03「.agents への書き込み」）。
+    /// 事前許可の範囲を超える実行を確認の受け手に尋ねるか拒むか（設計書 05-03）。
+    pub preapproval_overflow: PreapprovalOverflow,
+    /// 事前許可で、.agents に書く要求を確認なしに許す（設計書 03-03「.agents への書き込み」）。
     pub allow_agents_write: bool,
     pub mode: Mode,
     pub destination: Destination,
@@ -71,6 +84,7 @@ impl From<ResolvedExec> for AgentConfig {
     fn from(config: ResolvedExec) -> Self {
         Self {
             allow_effects: None,
+            preapproval_overflow: PreapprovalOverflow::Deny,
             allow_agents_write: false,
             project_parent: None,
             mode: config.mode,
@@ -105,6 +119,8 @@ pub struct RunControl {
     pub steering: Receiver<String>,
     /// 依頼に添える画像のパス（設計書 05-02「入力の操作」）。
     pub attachments: Vec<std::path::PathBuf>,
+    /// 依頼に添えるメモリ上の画像（バイト列と MIME 型の組。設計書 05-03）。
+    pub inline_images: Vec<(Vec<u8>, String)>,
 }
 
 impl RunControl {
@@ -116,6 +132,7 @@ impl RunControl {
             cancel_run,
             steering,
             attachments: Vec::new(),
+            inline_images: Vec::new(),
         }
     }
 }
@@ -124,6 +141,8 @@ impl RunControl {
 #[derive(Clone, Debug, PartialEq)]
 pub struct RunReport {
     pub outcome: Outcome,
+    /// 英語の診断文を解析せずに判別する終了理由の分類（設計書 05-03）。
+    pub stop_reason: StopReason,
     pub summary: Summary,
     /// 会話に加えられなかった操縦。
     pub remaining_steering: Vec<String>,
@@ -341,7 +360,8 @@ impl Agent {
             return Err(AgentError::InvalidConfiguration);
         }
         tool_context.image_input = config.capabilities.image_input;
-        tool_context.noninteractive = config.allow_effects.is_some();
+        tool_context.noninteractive = config.allow_effects.is_some()
+            && config.preapproval_overflow == PreapprovalOverflow::Deny;
         tool_context
             .project_parent
             .clone_from(&config.project_parent);
@@ -660,16 +680,26 @@ impl Agent {
         self
     }
 
-    /// 対話の確認の受け手をつなぎ、通信の中継にも同じ画面への口を渡す（設計書 03-02「通信の中継」）。
-    pub fn with_interactive_approver(self, approver: crate::approval::InteractiveApprover) -> Self {
+    /// 通常モードの通信の中継（`NetworkGate`）へ確認の受け口を接続する
+    /// （設計書 03-02「通信の中継」、05-03「起動とセッションの準備の方針の分離」）。
+    pub fn connect_network_prompts(
+        &self,
+        prompts: mpsc::Sender<crate::approval::ApprovalPrompt>,
+        wake: Option<crate::approval::WakeCallback>,
+    ) {
         if let Some(gate) = self
             .tool_context
             .shell
             .as_ref()
             .and_then(|shell| shell.network.as_ref())
         {
-            gate.connect_prompts_with_wake(approver.prompts(), approver.wake());
+            gate.connect_prompts_with_wake(prompts, wake);
         }
+    }
+
+    /// 対話の確認の受け手をつなぎ、通信の中継にも同じ画面への口を渡す（設計書 03-02「通信の中継」）。
+    pub fn with_interactive_approver(self, approver: crate::approval::InteractiveApprover) -> Self {
+        self.connect_network_prompts(approver.prompts(), approver.wake());
         self.with_approver(Box::new(approver))
     }
 
@@ -801,27 +831,62 @@ impl Agent {
                 },
             )?;
         }
-        let (outcome, reason) = match self.run_request(request, &control, &events, &mut summary) {
-            Ok(Outcome::Completed) => (Outcome::Completed, text::COMPLETED.into()),
-            Ok(Outcome::Cancelled) => (Outcome::Cancelled, text::RUN_CANCELLED.into()),
-            Ok(Outcome::Failed) => return Err(AgentError::Worker),
-            Err(error) => {
-                let message = error.to_string();
-                let reason = if matches!(error, AgentError::CheckFixLimit(_)) {
-                    message.lines().next().unwrap_or_default().to_owned()
-                } else {
-                    message.clone()
-                };
-                self.emit(
-                    &events,
-                    AgentEvent::Error {
-                        kind: error.kind().into(),
-                        message: message.clone(),
-                    },
-                )?;
-                (Outcome::Failed, reason)
-            }
-        };
+        let (outcome, stop_reason, reason) =
+            match self.run_request(request, &control, &events, &mut summary) {
+                Ok(Outcome::Completed) => (
+                    Outcome::Completed,
+                    StopReason::Completed,
+                    text::COMPLETED.into(),
+                ),
+                Ok(Outcome::Cancelled) => (
+                    Outcome::Cancelled,
+                    StopReason::Cancelled,
+                    text::RUN_CANCELLED.into(),
+                ),
+                Ok(Outcome::Failed) => return Err(AgentError::Worker),
+                Err(error) => {
+                    let message = error.to_string();
+                    let reason = if matches!(error, AgentError::CheckFixLimit(_)) {
+                        message.lines().next().unwrap_or_default().to_owned()
+                    } else {
+                        message.clone()
+                    };
+                    let stop_reason = match &error {
+                        AgentError::Limit(limit) if *limit == text::TURN_LIMIT => {
+                            StopReason::MaxTurns
+                        }
+                        AgentError::Limit(limit) if *limit == text::TOKEN_LIMIT => {
+                            StopReason::MaxRunTokens
+                        }
+                        AgentError::Session(_)
+                        | AgentError::Context(_)
+                        | AgentError::Provider(_)
+                        | AgentError::Compaction
+                        | AgentError::Rewind(_)
+                        | AgentError::Refusal(_)
+                        | AgentError::Limit(_)
+                        | AgentError::CheckFixLimit(_)
+                        | AgentError::EffectsNotAllowed(_)
+                        | AgentError::LeftoverProcesses(_)
+                        | AgentError::InvalidConfiguration
+                        | AgentError::ReceiverClosed
+                        | AgentError::Worker
+                        | AgentError::Random
+                        | AgentError::Attachment(_) => StopReason::Failed {
+                            kind: error.kind(),
+                            message: message.clone(),
+                        },
+                    };
+                    self.emit(
+                        &events,
+                        AgentEvent::Error {
+                            kind: error.kind().into(),
+                            message: message.clone(),
+                        },
+                    )?;
+                    (Outcome::Failed, stop_reason, reason)
+                }
+            };
         if let Some(message) = self.session.take_storage_notice() {
             self.emit(
                 &events,
@@ -836,6 +901,7 @@ impl Agent {
         self.emit(&events, AgentEvent::SessionEnd { outcome, reason })?;
         Ok(RunReport {
             outcome,
+            stop_reason,
             summary,
             remaining_steering: control.steering.try_iter().collect(),
         })
@@ -853,13 +919,27 @@ impl Agent {
         self.effects_denied = 0;
         let cancelled = &*control.cancel_step;
         // 添付は、記録と時点を残す前に read と同じ規則で読む。一つでも読めなければ依頼を送らない。
-        // 理由: 利用者が添えたつもりの画像を黙って欠いて送らない（設計書 05-02「入力の操作」）。
+        // 理由: 利用者が添えたつもりの画像を黙って欠いて送らない（設計書 05-02「入力の操作」、05-03）。
         let mut images = Vec::new();
         for path in &control.attachments {
             match self.tool_context.attach_image(path, cancelled) {
                 Ok(image) => images.push(image),
                 Err(reason) => {
                     return Err(AgentError::Attachment(text::attach_failed(path, &reason)));
+                }
+            }
+        }
+        for (bytes, mime_type) in &control.inline_images {
+            match self
+                .tool_context
+                .attach_image_bytes(bytes.clone(), mime_type, cancelled)
+            {
+                Ok(image) => images.push(image),
+                Err(error) => {
+                    return Err(AgentError::Attachment(text::attach_inline_failed(
+                        mime_type,
+                        &error.to_string(),
+                    )));
                 }
             }
         }

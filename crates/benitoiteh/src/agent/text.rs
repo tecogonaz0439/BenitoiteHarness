@@ -110,3 +110,8 @@ pub fn attach_failed(path: &std::path::Path, reason: &str) -> String {
         path.display()
     )
 }
+
+/// メモリ上の添付画像を検証・縮小できなかった（設計書 05-03「依頼の受け取りと終わりの理由」）。
+pub fn attach_inline_failed(mime_type: &str, reason: &str) -> String {
+    format!("Could not attach inline image ({mime_type}): {reason}. The request was not sent.")
+}

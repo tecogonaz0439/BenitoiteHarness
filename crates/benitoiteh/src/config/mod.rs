@@ -636,17 +636,37 @@ impl UserConfig {
         if args.max_check_fix.unwrap_or(self.limits.max_check_fix) == 0 {
             return Err(ConfigError::Invalid(text::CHECK_FIX_POSITIVE));
         }
-        if !args.interactive
-            && args
-                .approval
-                .is_some_and(|approval| approval != Approval::Never)
-        {
-            return Err(ConfigError::Invalid(text::EXEC_APPROVAL));
-        }
-        if mode == Mode::Restricted
-            && (args.sandbox.is_some() || args.approval.is_some() || args.no_sandbox)
-        {
-            return Err(ConfigError::Invalid(text::NORMAL_OPTIONS));
+        match args.policy().runtime_approval {
+            crate::cli::args::RuntimeApprovalPolicy::NeverOnly => {
+                if args
+                    .approval
+                    .is_some_and(|approval| approval != Approval::Never)
+                {
+                    return Err(ConfigError::Invalid(text::EXEC_APPROVAL));
+                }
+                if mode == Mode::Restricted
+                    && (args.sandbox.is_some() || args.approval.is_some() || args.no_sandbox)
+                {
+                    return Err(ConfigError::Invalid(text::NORMAL_OPTIONS));
+                }
+            }
+            crate::cli::args::RuntimeApprovalPolicy::Tui => {
+                if mode == Mode::Restricted
+                    && (args.sandbox.is_some() || args.approval.is_some() || args.no_sandbox)
+                {
+                    return Err(ConfigError::Invalid(text::NORMAL_OPTIONS));
+                }
+            }
+            crate::cli::args::RuntimeApprovalPolicy::Acp => {
+                if mode == Mode::Restricted {
+                    if args.sandbox.is_some() || args.no_sandbox {
+                        return Err(ConfigError::Invalid(text::NORMAL_OPTIONS));
+                    }
+                    if args.approval == Some(Approval::Untrusted) {
+                        return Err(ConfigError::Invalid(text::ACP_RESTRICTED_APPROVAL));
+                    }
+                }
+            }
         }
         let name = args
             .provider

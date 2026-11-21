@@ -312,6 +312,7 @@ fn restricted_writes_to_agents_scripts_need_one_time_approval() -> TestResult {
         ApprovalStatus::Approved,
         Invocation {
             confirmed_effects: &std::collections::BTreeMap::new(),
+            call_approved_effects: None,
             session_domains: &Default::default(),
             call_id: "agents-write",
             cancelled: &std::sync::atomic::AtomicBool::new(false),
@@ -411,6 +412,7 @@ fn normal_mode_requests_approval_before_any_mutation_and_accepts_trusted_approva
             ApprovalStatus::Approved,
             Invocation {
                 confirmed_effects: &std::collections::BTreeMap::new(),
+                call_approved_effects: None,
                 session_domains: &Default::default(),
                 call_id: "write-test",
                 cancelled: &std::sync::atomic::AtomicBool::new(false),
@@ -432,6 +434,7 @@ fn normal_mode_requests_approval_before_any_mutation_and_accepts_trusted_approva
             ApprovalStatus::Approved,
             Invocation {
                 confirmed_effects: &std::collections::BTreeMap::new(),
+                call_approved_effects: None,
                 session_domains: &Default::default(),
                 call_id: "write-test",
                 cancelled: &std::sync::atomic::AtomicBool::new(false),

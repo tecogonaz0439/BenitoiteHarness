@@ -35,6 +35,22 @@ impl Outcome {
     }
 }
 
+/// 一連の処理の終了理由の分類。英語の診断文を解析せずに ACP の `stopReason` 等を判定する
+/// （設計書 05-03「依頼の受け取りと終わりの理由」）。
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum StopReason {
+    /// 道具を呼ばない応答で正常に終わった。
+    Completed,
+    /// 利用者またはクライアントが取り消した。
+    Cancelled,
+    /// 一連の処理の番の数の上限（`max_turns`）に達した。
+    MaxTurns,
+    /// 一連の処理のトークンの量の上限（`max_run_tokens`）に達した。
+    MaxRunTokens,
+    /// そのほかの失敗（提供者の誤り、拒否、検査と修正の上限、子孫の残りなど）。
+    Failed { kind: &'static str, message: String },
+}
+
 /// JSON Lines と画面に共通のイベント。記録では差分を除き、応答全体を別途残す。
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]

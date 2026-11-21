@@ -5,7 +5,8 @@ use std::sync::mpsc::{self, Receiver, Sender, SyncSender};
 
 use super::{ApprovalAnswer, ApprovalOutcome, ApprovalRecord, Approver};
 
-pub(crate) type WakeCallback = Arc<dyn Fn() + Send + Sync>;
+/// 確認を送った直後に画面やイベントループの待ちを起こす通知先。
+pub type WakeCallback = Arc<dyn Fn() + Send + Sync>;
 
 /// 画面へ渡す一回の確認。返事を次の要求と共有しない。
 pub struct ApprovalPrompt {
@@ -64,9 +65,6 @@ impl Approver for InteractiveApprover {
         if sent && let Ok(answer) = response.recv() {
             return answer;
         }
-        ApprovalAnswer {
-            outcome: ApprovalOutcome::Cancelled,
-            message: None,
-        }
+        ApprovalAnswer::new(ApprovalOutcome::Cancelled, None)
     }
 }

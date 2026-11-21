@@ -84,6 +84,7 @@ fn cancelled_resizing_does_not_store_images_or_record_versions() -> TestResult {
                 call_id: "cancel-resize",
                 cancelled: &AtomicBool::new(true),
                 confirmed_effects: &BTreeMap::new(),
+                call_approved_effects: None,
                 session_domains: &BTreeSet::new(),
             },
         );
@@ -144,6 +145,115 @@ fn parent_rejects_pixel_and_file_limits_before_launching_helper() -> TestResult 
     );
     assert_eq!(
         fs::read_dir(fixture.session.directory().join("sandbox"))?.count(),
+        0
+    );
+    Ok(())
+}
+
+// 作成時の関門: ローカルパスを通さないメモリ上の画像バイト列（ACP の `image` ブロック向け）が、
+// PNG/JPEG の検証と `objects/` 保存を行い、壊れたバイト列・MIME 不一致・非対応形式・上限超過を
+// `objects/` に何も残さず拒む契約を守る。既存のファイル経由の `read` テストではこの入口を通らない。
+#[test]
+fn image_bytes_validate_and_store_png_and_jpeg_and_reject_corrupt_or_unsupported() -> TestResult {
+    let fixture = Fixture::new(Mode::Restricted, false)?;
+    let cancelled = AtomicBool::new(false);
+    let png_bytes = png(&DynamicImage::ImageRgb8(RgbImage::from_pixel(
+        3,
+        4,
+        Rgb([10, 20, 30]),
+    )))?;
+    let mut jpeg_bytes = Vec::new();
+    DynamicImage::ImageRgb8(RgbImage::from_pixel(5, 6, Rgb([40, 50, 60])))
+        .write_with_encoder(image::codecs::jpeg::JpegEncoder::new(&mut jpeg_bytes))?;
+
+    for (bytes, mime, dims) in [
+        (&png_bytes, "image/png", (3, 4)),
+        (&jpeg_bytes, "image/jpeg", (5, 6)),
+    ] {
+        let image = fixture
+            .context
+            .attach_image_bytes(bytes.clone(), mime, &cancelled)?;
+        assert_eq!(image.media_type, mime);
+        assert_eq!((image.width, image.height), dims);
+        assert_eq!(image.bytes, u64::try_from(bytes.len())?);
+        assert_eq!(image.data.as_deref(), Some(bytes.as_slice()));
+        assert_eq!(
+            fs::read(
+                fixture
+                    .session
+                    .directory()
+                    .join("objects")
+                    .join(&image.sha256)
+            )?,
+            *bytes
+        );
+    }
+    let stored_before = fs::read_dir(fixture.session.directory().join("objects"))?.count();
+    assert_eq!(stored_before, 2);
+
+    // 壊れたバイト列、MIME 不一致、非対応の MIME、動く PNG、補助不可時の超過はすべて拒む。
+    let mut animated_png = b"\x89PNG\r\n\x1a\n\0\0\0\rIHDR".to_vec();
+    animated_png.extend(1_u32.to_be_bytes());
+    animated_png.extend(1_u32.to_be_bytes());
+    animated_png.extend([8, 2, 0, 0, 0, 0, 0, 0, 0]);
+    animated_png.extend(b"\0\0\0\x08acTL\0\0\0\x02\0\0\0\0\0\0\0\0");
+    let large_png = png(&DynamicImage::ImageRgb8(RgbImage::from_pixel(
+        2400,
+        1,
+        Rgb([1, 2, 3]),
+    )))?;
+    for (bytes, mime, expected) in [
+        (b"corrupt".to_vec(), "image/png", "invalid or truncated"),
+        (
+            b"\x89PNG\r\n\x1a\n".to_vec(),
+            "image/png",
+            "invalid or truncated",
+        ),
+        (jpeg_bytes.clone(), "image/png", "do not match"),
+        (png_bytes.clone(), "image/jpeg", "do not match"),
+        (
+            png_bytes.clone(),
+            "image/svg+xml",
+            "Unsupported image media type",
+        ),
+        (
+            b"not-image".to_vec(),
+            "application/octet-stream",
+            "Unsupported image media type",
+        ),
+        (animated_png, "image/png", "Animated PNG"),
+        (large_png, "image/png", "2400x1"),
+    ] {
+        let error = fixture
+            .context
+            .attach_image_bytes(bytes, mime, &cancelled)
+            .err()
+            .ok_or_else(|| format!("expected rejection for {mime}"))?;
+        assert!(error.to_string().contains(expected), "{mime}: {error}");
+    }
+    assert_eq!(
+        fs::read_dir(fixture.session.directory().join("objects"))?.count(),
+        stored_before
+    );
+
+    // 提供者が画像を受け付けないときは拒む。
+    let no_image_dir = Fixture::new(Mode::Restricted, false)?;
+    let spill = no_image_dir.session.directory().join("spill");
+    let no_image_context = benitoiteh::tools::ToolContext::new(
+        Mode::Restricted,
+        benitoiteh::safe_fs::ScopeRoot::open(&no_image_dir.project)?,
+        benitoiteh::safe_fs::ScopeRoot::open(no_image_dir.session.temporary_dir())?,
+        benitoiteh::safe_fs::ScopeRoot::open(&spill)?,
+        no_image_dir.context.exclude.clone(),
+    )
+    .with_session(no_image_dir.session.clone());
+    let error = no_image_context
+        .attach_image_bytes(png_bytes, "image/png", &cancelled)
+        .err()
+        .ok_or("expected image_input=false rejection")?;
+    assert!(error.to_string().contains("does not accept images"));
+    assert_eq!(
+        fs::read_dir(no_image_dir.session.directory().join("objects"))?.count(),
         0
     );
     Ok(())

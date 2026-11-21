@@ -224,3 +224,134 @@ fn prompt_input_arguments_reject_output_and_session_options() -> Result<(), Args
     }
     Ok(())
 }
+
+// 作成時の関門: `ExecArgs::parse_acp` と 5 分離の方針が、ACP 専用の許容・拒否オプションと
+// 制限モードの `--approval on-request|never`（`untrusted` 拒否）を設計書 05-01・05-03 のとおり
+// 判定する契約を守る。`ExecArgs::parse` / `parse_interactive` のテストでは ACP の組み合わせを捕まえない。
+#[test]
+fn acp_arguments_enforce_policy_and_restricted_approval_rules() -> Result<(), Box<dyn Error>> {
+    use benitoiteh::benitoite::Effect;
+    use benitoiteh::cli::args::{Entrypoint, RuntimeApprovalPolicy};
+    use benitoiteh::config::{ProjectConfig, UserConfig};
+    use std::path::Path;
+
+    let args = ExecArgs::parse_acp([
+        "--mode",
+        "restricted",
+        "--approval",
+        "on-request",
+        "--allow",
+        "File.Read,Console.Write",
+        "--allow-agents-write",
+        "--trust-project",
+        "--project-parent",
+        "/tmp/projects",
+        "--ephemeral",
+        "--max-turns",
+        "20",
+        "--max-check-fix",
+        "4",
+        "--max-run-tokens",
+        "8000",
+    ])?;
+    assert_eq!(args.entrypoint, Entrypoint::Acp);
+    let policy = args.policy();
+    assert!(!policy.startup_confirmations);
+    assert_eq!(policy.runtime_approval, RuntimeApprovalPolicy::Acp);
+    assert!(policy.preapproval_options);
+    assert!(policy.network_proxy_prompts);
+    assert!(!policy.askpass);
+    assert_eq!(args.mode, Some(Mode::Restricted));
+    assert_eq!(args.approval, Some(Approval::OnRequest));
+    assert_eq!(
+        args.allow,
+        Some(
+            [Effect::FileRead, Effect::ConsoleWrite]
+                .into_iter()
+                .collect()
+        )
+    );
+    assert!(args.allow_agents_write);
+    assert!(args.trust_project);
+    assert_eq!(args.project_parent, Some(PathBuf::from("/tmp/projects")));
+    assert!(args.ephemeral);
+    assert_eq!(args.max_turns, Some(20));
+    assert_eq!(args.max_check_fix, Some(4));
+    assert_eq!(args.max_run_tokens, Some(8000));
+
+    let never_args = ExecArgs::parse_acp(["--mode", "restricted", "--approval", "never"])?;
+    assert_eq!(never_args.approval, Some(Approval::Never));
+
+    let normal_untrusted = ExecArgs::parse_acp([
+        "--mode",
+        "normal",
+        "--approval",
+        "untrusted",
+        "--sandbox",
+        "read-only",
+        "--no-sandbox",
+    ])?;
+    assert_eq!(normal_untrusted.mode, Some(Mode::Normal));
+    assert_eq!(normal_untrusted.approval, Some(Approval::Untrusted));
+    assert_eq!(normal_untrusted.sandbox, Some(Sandbox::ReadOnly));
+    assert!(normal_untrusted.no_sandbox);
+
+    // ACP で禁止された指定と、制限モードでの `--approval untrusted` を拒む。
+    for invalid in [
+        vec!["--mode", "restricted", "--approval", "untrusted"],
+        vec!["--json"],
+        vec!["--output-last-message", "out.txt"],
+        vec!["--output-schema", "schema.json"],
+        vec!["--resume", "session-id"],
+        vec!["--continue"],
+        vec!["request"],
+        vec!["-"],
+        vec!["--", "request"],
+    ] {
+        assert!(
+            matches!(
+                ExecArgs::parse_acp(invalid.clone()),
+                Err(ArgsError::Invalid)
+            ),
+            "{invalid:?}"
+        );
+    }
+
+    // `--mode` 省略時は `UserConfig.default_mode` で解決し、制限モードなら `untrusted` を拒み、
+    // 通常モードなら受理する。制限モードの `on-request` と `never` は受理する。
+    let restricted_user: UserConfig = toml::from_str(
+        "default_mode = 'restricted'\ndefault_provider = 'p'\n[providers.p]\nkind = 'openai-chat'\nmodel = 'm'\n",
+    )?;
+    let normal_user: UserConfig = toml::from_str(
+        "default_mode = 'normal'\ndefault_provider = 'p'\n[providers.p]\nkind = 'openai-chat'\nmodel = 'm'\n",
+    )?;
+    let untrusted_default_mode = ExecArgs::parse_acp(["--approval", "untrusted"])?;
+    assert!(
+        restricted_user
+            .resolve_exec(
+                &untrusted_default_mode,
+                &ProjectConfig::default(),
+                Path::new("/project")
+            )
+            .is_err()
+    );
+    assert!(
+        normal_user
+            .resolve_exec(
+                &untrusted_default_mode,
+                &ProjectConfig::default(),
+                Path::new("/project")
+            )
+            .is_ok()
+    );
+    for approval in ["on-request", "never"] {
+        let parsed = ExecArgs::parse_acp(["--approval", approval])?;
+        assert!(
+            restricted_user
+                .resolve_exec(&parsed, &ProjectConfig::default(), Path::new("/project"))
+                .is_ok(),
+            "{approval}"
+        );
+    }
+    Ok(())
+}

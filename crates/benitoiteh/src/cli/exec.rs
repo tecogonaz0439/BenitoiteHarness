@@ -180,7 +180,7 @@ pub(super) struct StartupPrompts<'a> {
     pub trust: &'a mut dyn FnMut(&TrustRequest) -> Option<TrustAnswer>,
 }
 
-fn with_noninteractive_prompts<T>(run: impl FnOnce(StartupPrompts<'_>) -> T) -> T {
+pub(super) fn with_noninteractive_prompts<T>(run: impl FnOnce(StartupPrompts<'_>) -> T) -> T {
     let mut mode_change = |_: &ModeChange| false;
     let mut processor_change = |_: &ProcessorChange| false;
     let mut trust = |_: &TrustRequest| Some(TrustAnswer::Session(false));
@@ -315,6 +315,7 @@ pub(super) fn prepare(
             }
         }
         let args = &args;
+        let policy = args.policy();
         // 出力の型は、セッションを作る前に読んで確かめる（設計書 05-01「exec の出力」）。
         let output_schema = args
             .output_schema
@@ -408,18 +409,22 @@ pub(super) fn prepare(
             None
         };
         let resolved = match &resume {
-            Some(state) => {
-                user.resolve_resume(args, &project.config, &cwd, state, args.interactive)
-            }
+            Some(state) => user.resolve_resume(
+                args,
+                &project.config,
+                &cwd,
+                state,
+                policy.startup_confirmations,
+            ),
             None => user.resolve_exec(args, &project.config, &cwd),
         }
         .map_err(StartupError::Config)?;
-        if resolved.mode == Mode::Normal && args.allow.is_some() {
+        if (resolved.mode == Mode::Normal || !policy.preapproval_options) && args.allow.is_some() {
             return Err(StartupError::Invalid(text::ALLOW_RESTRICTED));
         }
         let project_parent = match &args.project_parent {
             Some(parent) => {
-                if args.interactive || resolved.mode != Mode::Restricted {
+                if !policy.preapproval_options || resolved.mode != Mode::Restricted {
                     return Err(StartupError::Invalid(text::PROJECT_PARENT_RESTRICTED));
                 }
                 Some(
@@ -445,14 +450,22 @@ pub(super) fn prepare(
         {
             return Err(StartupError::Declined);
         }
-        let approval = if args.interactive {
-            if resolved.mode == Mode::Restricted {
-                Approval::OnRequest
-            } else {
-                args.approval.unwrap_or(user.normal.approval)
+        let approval = match policy.runtime_approval {
+            super::args::RuntimeApprovalPolicy::Tui => {
+                if resolved.mode == Mode::Restricted {
+                    Approval::OnRequest
+                } else {
+                    args.approval.unwrap_or(user.normal.approval)
+                }
             }
-        } else {
-            Approval::Never
+            super::args::RuntimeApprovalPolicy::NeverOnly => Approval::Never,
+            super::args::RuntimeApprovalPolicy::Acp => {
+                if resolved.mode == Mode::Restricted {
+                    args.approval.unwrap_or(Approval::OnRequest)
+                } else {
+                    args.approval.unwrap_or(user.normal.approval)
+                }
+            }
         };
         // 送らない要求には、認証の値を読まない（設計書 05-01「debug prompt-input」）。
         let chatgpt = if args.preview {
@@ -661,7 +674,7 @@ pub(super) fn prepare(
                         current_version: processor.version.clone(),
                         current_sha256: processor.sha256.clone(),
                     };
-                    if !args.interactive || overrides.is_some() {
+                    if !policy.startup_confirmations || overrides.is_some() {
                         diagnostics.push(notice);
                         return Err(StartupError::Invalid(text::PROCESSOR_CHANGED));
                     }
@@ -695,11 +708,11 @@ pub(super) fn prepare(
                 }),
             );
             // 中継の門はセッションの間で一つにし、このセッションに許したドメインを覚える。尋ねられるのは、
-            // 対話の起動で、承認の方針が尋ねることを許すときだけ（設計書 03-02「通信の中継」）。
+            // 方針が中継の確認を許し、承認の方針が never でないときだけ（設計書 03-02「通信の中継」、05-03）。
             let network = policy
                 .as_ref()
                 .filter(|policy| policy.config().network_proxy)
-                .map(|_| network_gate(&user, args.interactive, approval))
+                .map(|_| network_gate(&user, args.policy().network_proxy_prompts, approval))
                 .transpose()?;
             // OS の制限が使えなくても、書く道具の確認には選んだ方針を使う。
             // （設計書 03-03「通常モードの承認の方針」）。
@@ -721,7 +734,7 @@ pub(super) fn prepare(
                     session.id().as_str(),
                     &helper,
                     &roots,
-                    args.interactive,
+                    args.policy().askpass,
                 ) {
                     Ok(broker) => {
                         if let Some(message) = broker.diagnostic() {
@@ -805,8 +818,8 @@ pub(super) fn prepare(
             &resolved.plugins,
             &exclude,
         );
-        // 雛形は対話の画面のコマンドなので、exec では読まない。
-        let templates = if args.interactive {
+        // 雛形は対話の画面のコマンドなので、exec と acp では読まない。
+        let templates = if args.entrypoint == super::args::Entrypoint::Tui {
             crate::context::prompts::collect(
                 &paths.config_dir.join("prompts"),
                 root.real_path(),
@@ -937,8 +950,28 @@ pub(super) fn prepare(
             && user.normal.network == crate::config::NetworkAccess::Proxy;
         let mut config: crate::agent::AgentConfig = resolved.into();
         config.project_parent = project_parent;
-        config.allow_effects = (!args.interactive && config.mode == Mode::Restricted)
-            .then(|| args.allow.clone().unwrap_or_default());
+        config.preapproval_overflow = if approval == Approval::Never {
+            crate::agent::PreapprovalOverflow::Deny
+        } else {
+            crate::agent::PreapprovalOverflow::Ask
+        };
+        config.allow_effects = if config.mode == Mode::Restricted {
+            match policy.runtime_approval {
+                super::args::RuntimeApprovalPolicy::Tui => None,
+                super::args::RuntimeApprovalPolicy::NeverOnly => {
+                    Some(args.allow.clone().unwrap_or_default())
+                }
+                super::args::RuntimeApprovalPolicy::Acp => {
+                    if approval == Approval::Never {
+                        Some(args.allow.clone().unwrap_or_default())
+                    } else {
+                        args.allow.clone()
+                    }
+                }
+            }
+        } else {
+            None
+        };
         config.allow_agents_write = args.allow_agents_write;
         let mut agent = match resume {
             Some(state) => Agent::resume(

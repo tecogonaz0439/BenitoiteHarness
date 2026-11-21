@@ -45,6 +45,7 @@ fn call(f: &Fixture, paths: Value, approved: bool, id: &str, stop: &AtomicBool) 
             call_id: id,
             cancelled: stop,
             confirmed_effects: &f.confirmed,
+            call_approved_effects: None,
             session_domains: &BTreeSet::new(),
         },
     )
@@ -91,6 +92,7 @@ fn tests_write_agents_only_after_a_write_agents_confirmation() -> TestResult {
                 call_id: "agents",
                 cancelled: &stop,
                 confirmed_effects: &f.confirmed,
+                call_approved_effects: None,
                 session_domains: &BTreeSet::new(),
             },
         ))
@@ -384,6 +386,7 @@ fn noninteractive_execution_resets_denials_counts_launches_and_records_rewind_po
         agent: Default::default(),
         project_parent: None,
         allow_effects: Some(Default::default()),
+        preapproval_overflow: Default::default(),
         allow_agents_write: false,
         mode: Mode::Restricted,
         destination: Destination {

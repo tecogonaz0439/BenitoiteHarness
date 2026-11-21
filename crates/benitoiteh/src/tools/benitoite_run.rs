@@ -148,14 +148,22 @@ pub(super) fn execute_script(
     let key = ConfirmKey::from_facts(ApprovalKind::Effects, &facts).ok_or(ToolError::State)?;
     let previous = invocation.confirmed_effects.get(&key);
     facts.restricted = super::benitoite_process::restricted_facts(context, &confirmation, previous);
-    if facts.unread_imports > 0 && context.noninteractive && approval == ApprovalStatus::Approved {
-        return Ok(ToolOutput {
-            processor_launches: 1,
-            ..ToolOutput::error(approval::unread_imports_denied(
-                &facts,
-                context.project.real_path(),
-            ))
-        });
+    if facts.unread_imports > 0 && approval == ApprovalStatus::Approved {
+        if context.noninteractive {
+            return Ok(ToolOutput {
+                processor_launches: 1,
+                ..ToolOutput::error(approval::unread_imports_denied(
+                    &facts,
+                    context.project.real_path(),
+                ))
+            });
+        }
+        if context.take_preapproved_without_unread(invocation.call_id)? {
+            return Ok(ToolOutput {
+                processor_launches: 1,
+                ..ToolOutput::error(benitoite::text::EFFECTS_CHANGED)
+            });
+        }
     }
     let automatic = scratch
         && !write_agents
@@ -168,17 +176,23 @@ pub(super) fn execute_script(
                 .map(|run| run.scratch_auto_effects.clone())
                 .unwrap_or_else(|| effects::scratch_auto_effects(&[])),
         );
-    let retry_automatic =
-        if scratch && context.noninteractive && approval == ApprovalStatus::Approved {
-            context.take_scratch_automatic(invocation.call_id)?
-        } else {
-            BTreeSet::new()
-        };
-    let confirmed = previous.is_some_and(|effects| {
+    let retry_automatic = if scratch && approval == ApprovalStatus::Approved {
+        context.take_scratch_automatic(invocation.call_id)?
+    } else {
+        BTreeSet::new()
+    };
+    let session_confirmed = previous.is_some_and(|effects| {
         confirmation
             .iter()
             .all(|effect| effects.contains(effect) || retry_automatic.contains(effect))
     });
+    // ACP の allow_once ではセッションの confirmed_effects を広げず、この呼び出し限りの
+    // 承認済み集合に収まるかを再検査で照合する（設計書 03-03「制限モードの確認」、05-03）。
+    let call_confirmed = approval == ApprovalStatus::Approved
+        && invocation
+            .call_approved_effects
+            .is_some_and(|effects| confirmation.is_subset(effects));
+    let confirmed = session_confirmed || call_confirmed;
     let needs_confirmation = if scratch && approval == ApprovalStatus::Unapproved {
         !automatic
     } else {

@@ -569,10 +569,7 @@ impl Approver for Accept {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .push(request.clone());
-        ApprovalAnswer {
-            outcome: ApprovalOutcome::Approved,
-            message: None,
-        }
+        ApprovalAnswer::new(ApprovalOutcome::Approved, None)
     }
 }
 fn response(calls: &[(&str, Value)]) -> ResponseScript {
@@ -594,6 +591,7 @@ fn agent(
         agent: Default::default(),
         project_parent: None,
         allow_effects: None,
+        preapproval_overflow: Default::default(),
         allow_agents_write: false,
         mode: Mode::Restricted,
         destination: Destination {
@@ -774,10 +772,7 @@ fn processor_output_cannot_approve_a_later_effect_increase() -> TestResult {
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner)
                 .push(request.clone());
-            ApprovalAnswer {
-                outcome: ApprovalOutcome::Denied,
-                message: None,
-            }
+            ApprovalAnswer::new(ApprovalOutcome::Denied, None)
         }
     }
     let mut f = Fixture::new()?;

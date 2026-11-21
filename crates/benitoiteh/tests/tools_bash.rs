@@ -255,6 +255,7 @@ fn bash_never_falls_back_when_sandbox_preparation_fails() -> TestResult {
             ApprovalStatus::Approved,
             Invocation {
                 confirmed_effects: &std::collections::BTreeMap::new(),
+                call_approved_effects: None,
                 session_domains: &Default::default(),
                 call_id: "missing",
                 cancelled: &AtomicBool::new(false),

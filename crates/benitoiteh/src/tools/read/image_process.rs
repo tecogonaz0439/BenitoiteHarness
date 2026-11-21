@@ -347,6 +347,7 @@ mod tests {
                         call_id: "image-helper",
                         cancelled,
                         confirmed_effects: &BTreeMap::new(),
+                        call_approved_effects: None,
                         session_domains: &BTreeSet::new(),
                     },
                 ),
@@ -439,6 +440,35 @@ mod tests {
                 .is_some()
         );
         assert_eq!(fs::read_dir(&fixture.private)?.count(), 0);
+        // 同じ補助経路がメモリ上のバイト列（`attach_image_bytes`）でも縮小と `objects/` 保存を行う。
+        let bytes_fixture = Fixture::new(
+            format!("printf '%s\\n' '{correct}'; printf '{octal}'"),
+            Duration::from_secs(3),
+        )?;
+        let oversized = fs::read(bytes_fixture.project.join("picture"))?;
+        let resized = bytes_fixture.context.attach_image_bytes(
+            oversized,
+            "image/png",
+            &AtomicBool::new(false),
+        )?;
+        assert_eq!(resized.media_type, "image/png");
+        assert_eq!((resized.width, resized.height), (1, 1));
+        assert_eq!(
+            fs::read(
+                bytes_fixture
+                    .session
+                    .directory()
+                    .join("objects")
+                    .join(&resized.sha256)
+            )?,
+            payload
+        );
+        assert_eq!(
+            bytes_fixture
+                .context
+                .read_version(&bytes_fixture.project.join("picture"))?,
+            None
+        );
         let fixture = Fixture::new(
             "printf 'too-large 4000000\\n' >&2; exit 1".into(),
             Duration::from_secs(2),

@@ -298,11 +298,11 @@ P0-04 で作った型: 方針の入力 `PolicyConfig`（`readable: ReadAccess`�
 
 - `config::environment`（P5-53）: `T3_ACP_MCP_` と `T3CODE_`（ASCII の大小文字を区別しない）で始まる環境変数を `remark_child_environment` で強制除外し、`EnvironmentRules::parse` で `set` または `*` を含まない `allow` に書いたときは設定の誤りとして拒む。
 - `sandbox::proxy`（P5-53）: `ProxyRun` の終了状態（`finished`）と、確認の応答の採用・許可集合（`allowed`・`NetworkGate.session`・`declined`）の更新を同一の錠のもとで直列化し、`finish()` の後に届いた遅れた応答がセッションのドメイン許可を広げないようにする。錠を持ったまま確認の返事や I/O を待たない。
-- `cli::exec`・`agent`・`approval`・`tools`（P5-54）:
-  - 準備の方針を、起動時の確認、実行時の承認の方針、事前許可のオプション、通信の中継の確認、`askpass` の可否の 5 項目に分ける。`Agent::connect_network_prompts` で `Tui` と `Acp` の両方から `NetworkGate` へ確認のチャネルをつなぐ。
-  - `ApprovalAnswer` にエフェクトのセッション記憶の有無（TUI の `[y]` と ACP の `allow_always` は記憶し、ACP の `allow_once` は記憶しない）を持たせ、`Invocation.call_approved_effects: Option<&'a BTreeSet<Effect>>` でその呼び出し 1 回限りの承認済みエフェクト集合を承認直後の再実行（再検査）へ渡す。
-  - `RunReport.stop_reason: StopReason`（`Completed`・`Cancelled`・`MaxTurns`・`MaxRunTokens`・`Failed`）で、診断の英文を解析せずに ACP の `stopReason` を決める。
-  - `tools::read` に、base64 復号後の画像のバイト列と MIME 型を `benitoiteh __image` のサンドボックス補助に通して検証・縮小し `objects/` に保存する関数を加える。
+- `cli::args`・`cli::exec`・`agent`・`approval`・`tools`（P5-54）:
+  - `cli::args::Entrypoint::{Tui, Exec, Acp}`、`RuntimeApprovalPolicy::{Tui, NeverOnly, Acp}`、`PreparationPolicy { startup_confirmations, runtime_approval, preapproval_options, network_proxy_prompts, askpass }`、`ExecArgs.entrypoint`、`ExecArgs::parse_acp` で準備の方針を 5 項目に分離する。`agent::PreapprovalOverflow::{Deny, Ask}` を `AgentConfig.preapproval_overflow` に持ち、`Agent::connect_network_prompts(&self, prompts, wake: Option<approval::WakeCallback>)` で `Tui` と `Acp` の両方から `NetworkGate` へ確認のチャネルをつなぐ。
+  - `approval::ApprovalAnswer` に `pub remember_effects: bool`、`ApprovalAnswer::new`、`ApprovalAnswer::approved_once` を加え（TUI の `[y]` と ACP の `allow_always` は真、ACP の `allow_once` は偽）、`tools::Invocation.call_approved_effects: Option<&'a BTreeSet<Effect>>` でその呼び出し 1 回限りの承認済みエフェクト集合を承認直後の再実行（再検査）へ渡す。
+  - `agent::StopReason::{Completed, Cancelled, MaxTurns, MaxRunTokens, Failed { kind, message }}` を `RunReport.stop_reason` に持たせ、診断の英文を解析せずに ACP の `stopReason` を決める。
+  - `tools::process_image_bytes`・`ToolContext::attach_image_bytes` および `RunControl.inline_images: Vec<(Vec<u8>, String)>` で、base64 復号後の画像のバイト列と MIME 型を `benitoiteh __image` のサンドボックス補助に通して検証・縮小し `objects/` に保存する。
 - `cli::acp`（P5-55）: `benitoiteh acp [オプション]`。ACP 版 1（`protocolVersion: 1`）の JSON-RPC 2.0 入出力（有界 256 行の非ブロッキング出力チャネル）、`AcpApprover`、確認の台帳（単調増加する要求 ID、未提示 `optionId` の `Denied` 処理、完了済み ID への遅延・重複応答の無視）、取り消し・EOF・出力障害の 5 段の終了手順。
 
 ### `provider`（P1-01、P1-02）
