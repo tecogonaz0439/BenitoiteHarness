@@ -79,6 +79,10 @@
 | BH-051 | 閉じた | プロジェクトの設定ファイルで書ける欄を増やすか（提供者の選択は、信頼しないリポジトリが送り先を選ぶことになるので外した）。2026-11-16 に設計者が承認し、試作では `model`（信頼したときだけ）と `read.exclude` の二つに限る現行の形（05-01 の「プロジェクトの設定ファイル」）に決めて閉じた | P5 | 05-01 |
 | BH-052 | 閉じた | 画面の描画を自前で続けるか、`ratatui` に切り替えるか。2026-11-16 に設計者が承認し、`crossterm` の上でインラインの描画を自前で行う現行の形（05-02 の「画面の構成」）に決めて閉じた | P4 | 05-02 |
 | BH-053 | 閉じた | 確認の画面のエフェクトの説明を、利用者の言語で示すか。2026-10-17 に、設計者が、試作では英語だけとし、日本語などへの対応は処理系を含めた多言語化の検討と合わせて行うと決めて閉じた（05-02 の「確認の画面」） | P4 | 05-02 |
+| BH-054 | 未決 | `benitoiteh acp` の `session/new`・`session/load` でセッションを準備するときの確認（プロジェクトの信頼、制限モードでの処理系の SHA-256 の変化、制限モードの記録を通常モードで再開するときの確認）の扱い。案 A（【方針】）は、非対話の `exec` と同じく、保存された信頼の決定または起動のオプション `--trust-project` に従い、処理系の SHA-256 の変化（制限モード）とモードの変更は拒む形。案 B は、最初の `session/prompt` を受けた直後に `session/request_permission` で尋ねる形 | P5 の後 | 05-03、03-01、04-01 |
+| BH-055 | 要検証 | ACP（Agent Client Protocol）の版 1（および T3Code が使う版 2 preview の拡張）と T3Code（`pingdotgg/t3code`）の `Local ACP command` の要求・応答・通知の欄の細部（`initialize`、`authenticate`、`session/new`、`session/load`、`session/prompt`、`session/cancel`、`session/set_config_option`、`session/update`、`session/request_permission`）を、一次資料（`agentclientprotocol/agent-client-protocol` と `pingdotgg/t3code` のソースコード）と実機の T3Code で確かめること | P5 の後 | 05-03 |
+| BH-056 | 未決 | 一つの `benitoiteh acp` のプロセスが同時に複数のアクティブなセッションを持つことを許すか。案 A（【方針】）は、TUI の `/new` と同じく一プロセスにつき同時に持つアクティブなセッションを一つ、同時に動かす `session/prompt` を一つに限る形。案 B は、セッションの ID ごとに `Agent` を並べて持つ形（Linux の塞ぐ場所の錠や作業ディレクトリの扱いの整理が要る） | P5 の後 | 05-03、06-01 |
+| BH-057 | 未決 | `benitoiteh acp` での通常モードの通信の中継（`normal.network = "proxy"`）と秘密の入力の仲介（`secrets.askpass`）の扱い。【方針】通信の中継のドメインの確認は `session/request_permission` で尋ね、伏せ字の文字列の入力を要する `askpass` は ACP に専用の入力の口がないため無効（非対話と同じ）とする | P5 の後 | 05-03、03-02、03-04 |
 
 ## 実装と性能
 
