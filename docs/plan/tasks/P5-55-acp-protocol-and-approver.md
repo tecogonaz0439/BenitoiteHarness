@@ -1,17 +1,22 @@
 # P5-55 `benitoiteh acp` のサブコマンド、ACP 版 1 の JSON-RPC 層、`AcpApprover`、終了手順
 
-- 状態: 未着手
-- 依存: P5-54
-
 ## 目的
 
 設計書 05-03「ACP（エディタとの連携）」に従い、`benitoiteh acp [オプション]` サブコマンド、標準入出力の JSON-RPC 2.0（ACP 版 1）の通信層、`AcpApprover` による `session/request_permission` の確認の受け渡し、および取り消し・EOF・出力障害の 5 段の終了手順を実装する。
 
-## 読む文書
+## 読む設計書
 
-- `AGENTS.md`、[作業の進め方](../00-common.md)、[作業の間の約束](../10-interfaces.md)。
-- 設計書 05-03「ACP（エディタとの連携）」、05-01「CLI と設定ファイル」、03-03「利用者の確認」、07-01「テスト」。
-- `.claude/skills/test-audit/SKILL.md`。
+- [ACP（エディタとの連携）](../../design/05-interface/05-03-acp.md)
+- [CLI と設定ファイル](../../design/05-interface/05-01-cli.md)の「コマンドラインの形」「オプション」「終了状態」
+- [対話の画面](../../design/05-interface/05-02-tui.md)の「出力の示し方」「確認の画面」
+- [利用者の確認](../../design/03-safety/03-03-approval.md)の「確認の共通の規則」「制限モードの確認」「.agents への書き込み」
+- [テスト](../../design/07-quality/07-01-testing.md)の「持ち主の境界」「安全の性質のテスト」、スキル `test-audit`
+- [P5-54](P5-54-prepare-policies-and-one-shot-effects.md)、既存の `crates/benitoiteh/src/cli/{mod.rs,args.rs,exec.rs,tui.rs}`、`src/ui/tui/{worker.rs,confirmation.rs}`、`src/approval/{mod.rs,interactive.rs}`
+
+## この作業が認める型の変更
+
+- `cli`: `acp` のサブコマンドのモジュール（`src/cli/acp.rs`、必要に応じて `src/ui/acp/`）を加え、`cli::run` から `"acp"` を振り分ける。
+- `ui::tui::confirmation`（または `approval`）: 確認の事実（`ApprovalFacts`）から、制御文字と 8 文字以上の空白を可視化した事実の行を組み立てる処理を、`tui` と `acp` で共有できるように関数を切り出してよい。
 
 ## 作るもの
 
@@ -36,9 +41,15 @@
 5. **5 段の終了手順**:
    - 設計書 05-03「スレッドの構成と終了の手順」の 1〜5 をそのまま実装する。特に、取消・EOF・出力障害のときに保留中の全確認（通常確認と通信確認）を `Cancelled` で即時解除し、`AgentEvent` チャネルを完了まで抜き続け、終了時は開いたままの `stdin` スレッドや停止した `stdout` スレッドを無期限に `join` しない。
 
+## 触るファイル
+
+- `crates/benitoiteh/src/cli/mod.rs`、`crates/benitoiteh/src/cli/args.rs`、`crates/benitoiteh/src/cli/text.rs`
+- `crates/benitoiteh/src/cli/acp.rs`（新）、必要に応じて `crates/benitoiteh/src/ui/acp/`（新）および `crates/benitoiteh/src/ui/tui/confirmation.rs`
+- `crates/benitoiteh/tests/acp.rs`（新）
+
 ## テスト
 
-`test-audit` の作成時の関門に従う。模擬の提供者とインメモリの入出力（またはパイプ）で、`crates/benitoiteh/tests/acp.rs` に次を確かめる統合テストを置く。
+`test-audit` の作成時の関門を通す。模擬の提供者とインメモリの入出力（またはパイプ）で、`crates/benitoiteh/tests/acp.rs` に次を確かめる統合テストを置く。
 
 - **版 1 の交渉と基本の往復**: `protocolVersion: 2`（および未知の欄）を含む `initialize` に `protocolVersion: 1` を返すこと。`session/new`（相対パス `cwd` の `-32602` 拒否と、非空 `mcpServers` の資格情報を伏せた無視を含む）→ `session/prompt` → `session/update`（`agent_thought_chunk`・`agent_message_chunk`・`tool_call` の `pending` から `in_progress`、`tool_call_update`、`usage_update`）→ `stopReason: "end_turn"`。`AgentEvent::Error`（`storage_limit` など）が出ても正常完了の応答が二重になったり失敗に変わったりしないこと。
 - **セッションの再開と切り替え**: `session/load` で会話の履歴が再生され、過去の承認記録から許可が復元されないこと。新しい `session/new` でセッションを切り替えたとき、前のセッションの許可や保留中の確認が漏れないこと。非アクティブな `sessionId` への通知 `session/cancel` は無応答で無視され、`id` 付き要求は `-32602` になること。
@@ -50,8 +61,12 @@
   - 通常の確認待ち中、通信の中継（`NetworkGate`）の確認待ち中、および `AgentEvent` チャネルが満杯の状態で、`session/cancel` を送ると、デッドロックせずに最後の `session/update` の後に一度だけ `stopReason: "cancelled"` が返ること。
   - クライアントが標準出力を閉じた状態（Broken pipe）、および標準出力の読み取り口を開いたまま一切読まずに出力キューを満杯にして標準入力だけを閉じた状態（EOF）で、`benitoiteh acp` がデッドロックせずに後始末を終えて終了すること。
 
-## 完了の条件
+## 確かめること
 
+- リリースのビルド（`cargo build --release -p benitoiteh`）の実行ファイルの大きさを測り、P5-52 からの増分と、8 MiB の目標に余裕を持って収まることを確かめて報告する。
+
+## 完了条件
+
+- `benitoiteh acp` が ACP 版 1 のハンドシェイク、セッション管理、イベント通知、確認、5 段の終了手順を満たす。
 - `scripts/check.sh --inside-codex` が通る。
-- リリースのビルドの実行ファイルの大きさを測り、8 MiB の目標に余裕を持って収まることを記録する。
-- [`docs/plan/10-interfaces.md`](../10-interfaces.md) を更新し、本書の「作ったもの」と「確かめた結果」を記録する。
+- オーケストレータが外で `scripts/check.sh`（macOS、aarch64 Linux、`BENITOITEH_X86_64_HOST` の x86_64 Linux）を通す。
