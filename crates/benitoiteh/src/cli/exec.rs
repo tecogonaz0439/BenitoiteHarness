@@ -74,7 +74,7 @@ impl fmt::Display for StartupError {
     }
 }
 
-fn chatgpt_tokens(
+pub(super) fn chatgpt_tokens(
     resolved: &crate::config::ResolvedExec,
     paths: &DataPaths,
 ) -> Result<Option<crate::provider::openai_responses::ChatGptTokens>, StartupError> {
@@ -134,6 +134,10 @@ pub(super) struct Prepared {
     pub notifications: crate::config::NotificationsConfig,
     /// 外部のエディタと通知のコマンドの環境から除く、提供者のキーの変数（設定で参照したものを含む）。
     pub provider_keys: Vec<String>,
+    /// ACP の `configOptions` や画像入力判定に使う提供者の通信の形・機能・承認方針。
+    pub kind: crate::provider::AdapterKind,
+    pub capabilities: crate::provider::Capabilities,
+    pub approval: Approval,
 }
 
 /// 起動のときに利用者へ尋ねる、プロジェクトの信頼（設計書 03-01「プロジェクトの信頼」）。
@@ -948,6 +952,8 @@ pub(super) fn prepare(
             && user.normal.network == crate::config::NetworkAccess::On;
         let normal_proxy = resolved.mode == Mode::Normal
             && user.normal.network == crate::config::NetworkAccess::Proxy;
+        let prepared_kind = resolved.kind;
+        let prepared_capabilities = resolved.capabilities.clone();
         let mut config: crate::agent::AgentConfig = resolved.into();
         config.project_parent = project_parent;
         config.preapproval_overflow = if approval == Approval::Never {
@@ -1017,6 +1023,9 @@ pub(super) fn prepare(
                 .map(|key| (*key).to_owned())
                 .chain(user.referenced_env_vars())
                 .collect(),
+            kind: prepared_kind,
+            capabilities: prepared_capabilities,
+            approval,
         })
     })();
     result.map_err(|error| PreparationError { error, diagnostics })

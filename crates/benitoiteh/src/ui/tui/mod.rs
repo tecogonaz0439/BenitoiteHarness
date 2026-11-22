@@ -7,6 +7,7 @@ pub use commands::{Command, NewSession};
 mod control;
 pub mod history;
 pub use confirmation::{ConfirmationGuard, TrustChoice};
+pub(crate) use confirmation::{approval_fact_entries, sanitize_fact_text};
 mod format;
 mod input;
 mod mention;

@@ -428,6 +428,7 @@ fn run_interactive(args: ExecArgs, signals: &mut Signals) -> Result<u8, CliError
             panic_record,
             notifications,
             provider_keys,
+            ..
         } = match prepared {
             Ok(prepared) => prepared,
             Err(exec::PreparationError {

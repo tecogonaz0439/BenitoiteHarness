@@ -1,5 +1,6 @@
 //! exec のイベントと端末に安全な文字列を出力する（設計書 05-01「exec の出力」、05-02「出力の示し方」）。
 
+pub mod acp;
 mod text;
 pub mod tui;
 
