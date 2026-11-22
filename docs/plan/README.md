@@ -115,7 +115,7 @@
 | [P5-53](tasks/P5-53-acp-env-and-proxy-serialization.md) | 子プロセスの環境からの ACP クライアントの MCP 資格情報（`T3_ACP_MCP_*`・`T3CODE_*`）の強制除外と、通信の中継（`ProxyRun`）の終了と確認応答の直列化 | P5-52 | 完了 |
 | [P5-54](tasks/P5-54-prepare-policies-and-one-shot-effects.md) | 起動・準備の方針の 5 分離、呼び出し単位の一回限りのエフェクト許可、終了理由の分類と画像バイト列の縮小入口 | P5-53 | 完了 |
 | [P5-55](tasks/P5-55-acp-protocol-and-approver.md) | `benitoiteh acp` のサブコマンド、ACP 版 1 の JSON-RPC 層、`AcpApprover`、取り消し・EOF・出力障害の終了手順 | P5-54 | 完了 |
-| [P5-56](tasks/P5-56-acp-safety-and-t3code-verification.md) | `benitoiteh acp` の安全の性質の統合テスト（本物のサンドボックスと処理系）と T3Code 実機検証（BH-055） | P5-55 | 未着手 |
+| [P5-56](tasks/P5-56-acp-safety-and-t3code-verification.md) | `benitoiteh acp` の安全の性質の統合テスト（本物のサンドボックスと処理系）と T3Code 実機検証（BH-055） | P5-55 | 完了（macOS 安全統合テスト済み・[結果](results/P5-56-acp.md)。BH-055 実機検証と x86_64 実実行は残件） |
 
 P5-53〜P5-56 は、ACP（Agent Client Protocol）と T3Code 連携（`BH-054`〜`BH-057`）の改造の作業である。改造全体の概要、設計の判断とその理由（D1〜D8、外部レビュー 2 回分の処置）、段とレビューの区切り、および一括の実装プランと共通依頼文は [2026-11-21-BH-054_055_056_057-acp-support/](../2026-11-21-BH-054_055_056_057-acp-support/README.md) にまとめる。
 
