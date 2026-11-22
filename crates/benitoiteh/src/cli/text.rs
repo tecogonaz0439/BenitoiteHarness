@@ -4,6 +4,7 @@
 pub const HELP: &str = "Usage:
     benitoiteh [options] [request]
     benitoiteh exec [options] <request>
+    benitoiteh acp [options]
     benitoiteh doctor [--project <dir>] [--json]
     benitoiteh sessions [--project <dir>] [--json]
     benitoiteh sessions export <ID>

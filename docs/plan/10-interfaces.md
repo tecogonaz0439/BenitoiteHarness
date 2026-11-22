@@ -303,7 +303,7 @@ P0-04 で作った型: 方針の入力 `PolicyConfig`（`readable: ReadAccess`�
   - `approval::ApprovalAnswer` に `pub remember_effects: bool`、`ApprovalAnswer::new`、`ApprovalAnswer::approved_once` を加え（TUI の `[y]` と ACP の `allow_always` は真、ACP の `allow_once` は偽）、`tools::Invocation.call_approved_effects: Option<&'a BTreeSet<Effect>>` でその呼び出し 1 回限りの承認済みエフェクト集合を承認直後の再実行（再検査）へ渡す。
   - `agent::StopReason::{Completed, Cancelled, MaxTurns, MaxRunTokens, Failed { kind, message }}` を `RunReport.stop_reason` に持たせ、診断の英文を解析せずに ACP の `stopReason` を決める。
   - `tools::process_image_bytes`・`ToolContext::attach_image_bytes` および `RunControl.inline_images: Vec<(Vec<u8>, String)>` で、base64 復号後の画像のバイト列と MIME 型を `benitoiteh __image` のサンドボックス補助に通して検証・縮小し `objects/` に保存する。
-- `cli::acp`（P5-55）: `benitoiteh acp [オプション]`。ACP 版 1（`protocolVersion: 1`）の JSON-RPC 2.0 入出力（有界 256 行の非ブロッキング出力チャネル）、`AcpApprover`、確認の台帳（単調増加する要求 ID、未提示 `optionId` の `Denied` 処理、完了済み ID への遅延・重複応答の無視）、取り消し・EOF・出力障害の 5 段の終了手順。
+- `cli::acp`・`ui::acp`（P5-55）: `benitoiteh acp [オプション]`（`cli::acp::run`）と CLI 非依存の ACP 版 1 通信層（`ui::acp::run`、`AcpBackend`、`AcpApprover`、`AuthMethod`、`InitializeInfo`、`PreparedSession`、`BackendError`）。1 行 16 MiB 上限の読み取り、有界 256 行の非ブロッキング出力チャネル（`try_send`）、確認の台帳（単調増加する要求 ID `"bh-perm-<n>"`、TUI と共有する `ui::tui::approval_fact_entries`・`sanitize_fact_text` による事実全文の `rawInput.command` と `content` 格納、`kind` の `execute`/`edit`/`fetch` 限定、未提示 `optionId` の `Denied` 処理、完了済み ID への遅延・重複応答の無視）、取り消し・EOF・出力障害の 5 段の終了手順。
 
 ### `provider`（P1-01、P1-02）
 

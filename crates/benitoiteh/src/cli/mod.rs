@@ -1,5 +1,6 @@
 //! 引数を解釈し、出力と終了状態を決める（設計書 05-01「コマンドラインの形」「終了状態」）。
 
+mod acp;
 pub mod args;
 mod doctor;
 mod exec;
@@ -108,6 +109,18 @@ fn run(
     }
     if argument == "login" || argument == "logout" {
         return login::run(args, argument == "logout");
+    }
+    if argument == "acp" {
+        let arguments = args.collect::<Vec<_>>();
+        if arguments.len() == 1 && arguments.first().is_some_and(|arg| arg == "--help") {
+            io::stdout()
+                .lock()
+                .write_all(text::HELP.as_bytes())
+                .map_err(CliError::Output)?;
+            return Ok(0);
+        }
+        let options = args::ExecArgs::parse_acp(arguments).map_err(CliError::Arguments)?;
+        return acp::run(options);
     }
     if argument == "exec" {
         let arguments = args.collect::<Vec<_>>();

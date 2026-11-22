@@ -173,93 +173,10 @@ impl Confirmation {
             return rows;
         }
         if let Some(prompt) = &self.prompt {
-            let request = &prompt.request;
-            let cwd = request.facts.cwd.as_deref().map(SafeText::path);
-            let path = request.facts.path.as_deref().map(SafeText::path);
-            let mut rows = Vec::new();
-            for (label, value) in [
-                (text::COMMAND, request.facts.command.as_deref()),
-                (text::DIRECTORY, cwd.as_ref().map(SafeText::as_str)),
-                (text::PATH, path.as_ref().map(SafeText::as_str)),
-                (text::SANDBOX, request.facts.sandbox_policy.as_deref()),
-                (text::URL, request.facts.url.as_deref()),
-                (text::DOMAIN, request.facts.domain.as_deref()),
-            ] {
-                if let Some(value) = value {
-                    rows.extend(fact(label, value, width, compact));
-                }
-            }
-            if matches!(
-                request.kind,
-                ApprovalKind::Effects | ApprovalKind::TestEffects
-            ) {
-                let targets = request
-                    .facts
-                    .targets
-                    .iter()
-                    .map(|path| SafeText::path(path).as_str().to_owned())
-                    .collect::<Vec<_>>()
-                    .join("\n");
-                rows.extend(fact(text::TARGETS, &targets, width, compact));
-                if request.facts.unread_imports > 0 {
-                    rows.extend(fact(
-                        text::UNREAD_IMPORTS,
-                        &request.facts.unread_imports.to_string(),
-                        width,
-                        compact,
-                    ));
-                }
-                let mut ordered: Vec<_> = request.facts.effects.iter().collect();
-                ordered.sort_by_key(|name| (!request.facts.added_effects.contains(name), *name));
-                let effects = if ordered.is_empty() {
-                    text::NO_EFFECTS.into()
-                } else {
-                    ordered
-                        .into_iter()
-                        .map(|name| {
-                            text::effect_line(name, request.facts.added_effects.contains(name))
-                        })
-                        .collect::<Vec<_>>()
-                        .join("\n")
-                };
-                rows.extend(fact(text::EFFECTS, &effects, width, compact));
-                if let Some(restricted) = &request.facts.restricted {
-                    rows.extend(fact(
-                        text::SANDBOX,
-                        &text::sandbox_scope(restricted),
-                        width,
-                        compact,
-                    ));
-                    if restricted.process_run {
-                        let mut programs = restricted
-                            .programs
-                            .iter()
-                            .map(|path| SafeText::path(path).as_str().to_owned())
-                            .collect::<Vec<_>>();
-                        programs.push(text::OTHER_PROGRAMS_BLOCKED.into());
-                        programs.push(text::PROCESS_RUN_SCOPE.into());
-                        if cfg!(target_os = "macos")
-                            && restricted.programs.first().is_some_and(|processor| {
-                                restricted
-                                    .programs
-                                    .iter()
-                                    .any(|program| program != processor)
-                            })
-                        {
-                            programs.push(text::MACOS_PROCESS_GROUPS.into());
-                        }
-                        rows.extend(fact(text::PROGRAMS, &programs.join("\n"), width, compact));
-                    }
-                }
-                if request.facts.shell_reference {
-                    rows.extend(fact(text::SHELL, text::SHELL_REFERENCE, width, compact));
-                }
-            }
-            // 一回だけの .agents への書き込みは、どの確認でも別の行で示す（設計書 03-03「.agents への書き込み」）。
-            if request.facts.agents_write {
-                rows.extend(fact(text::AGENTS, text::AGENTS_WRITE, width, compact));
-            }
-            rows
+            approval_fact_entries(&prompt.request)
+                .into_iter()
+                .flat_map(|(label, value)| fact(label, &value, width, compact))
+                .collect()
         } else if let Some(startup) = &self.startup {
             startup
                 .facts
@@ -601,6 +518,97 @@ fn content_width(width: u16, prefix: &str) -> u16 {
     width
         .saturating_sub(u16::try_from(columns).unwrap_or(u16::MAX))
         .max(1)
+}
+
+/// 確認の事実をラベルと文字列の組で組み立てる。TUI と ACP の両方で共有する
+/// （設計書 03-03「確認の共通の規則」、05-03「実行の前の確認」）。
+pub(crate) fn approval_fact_entries(
+    request: &crate::approval::ApprovalRecord,
+) -> Vec<(&'static str, String)> {
+    let cwd = request.facts.cwd.as_deref().map(SafeText::path);
+    let path = request.facts.path.as_deref().map(SafeText::path);
+    let mut entries = Vec::new();
+    for (label, value) in [
+        (text::COMMAND, request.facts.command.as_deref()),
+        (text::DIRECTORY, cwd.as_ref().map(SafeText::as_str)),
+        (text::PATH, path.as_ref().map(SafeText::as_str)),
+        (text::SANDBOX, request.facts.sandbox_policy.as_deref()),
+        (text::URL, request.facts.url.as_deref()),
+        (text::DOMAIN, request.facts.domain.as_deref()),
+    ] {
+        if let Some(value) = value {
+            entries.push((label, value.to_owned()));
+        }
+    }
+    if matches!(
+        request.kind,
+        ApprovalKind::Effects | ApprovalKind::TestEffects
+    ) {
+        let targets = request
+            .facts
+            .targets
+            .iter()
+            .map(|path| SafeText::path(path).as_str().to_owned())
+            .collect::<Vec<_>>()
+            .join("\n");
+        entries.push((text::TARGETS, targets));
+        if request.facts.unread_imports > 0 {
+            entries.push((
+                text::UNREAD_IMPORTS,
+                request.facts.unread_imports.to_string(),
+            ));
+        }
+        let mut ordered: Vec<_> = request.facts.effects.iter().collect();
+        ordered.sort_by_key(|name| (!request.facts.added_effects.contains(name), *name));
+        let effects = if ordered.is_empty() {
+            text::NO_EFFECTS.into()
+        } else {
+            ordered
+                .into_iter()
+                .map(|name| text::effect_line(name, request.facts.added_effects.contains(name)))
+                .collect::<Vec<_>>()
+                .join("\n")
+        };
+        entries.push((text::EFFECTS, effects));
+        if let Some(restricted) = &request.facts.restricted {
+            entries.push((text::SANDBOX, text::sandbox_scope(restricted)));
+            if restricted.process_run {
+                let mut programs = restricted
+                    .programs
+                    .iter()
+                    .map(|path| SafeText::path(path).as_str().to_owned())
+                    .collect::<Vec<_>>();
+                programs.push(text::OTHER_PROGRAMS_BLOCKED.into());
+                programs.push(text::PROCESS_RUN_SCOPE.into());
+                if cfg!(target_os = "macos")
+                    && restricted.programs.first().is_some_and(|processor| {
+                        restricted
+                            .programs
+                            .iter()
+                            .any(|program| program != processor)
+                    })
+                {
+                    programs.push(text::MACOS_PROCESS_GROUPS.into());
+                }
+                entries.push((text::PROGRAMS, programs.join("\n")));
+            }
+        }
+        if request.facts.shell_reference {
+            entries.push((text::SHELL, text::SHELL_REFERENCE.into()));
+        }
+    }
+    // 一回だけの .agents への書き込みは、どの確認でも別の行で示す（設計書 03-03「.agents への書き込み」）。
+    if request.facts.agents_write {
+        entries.push((text::AGENTS, text::AGENTS_WRITE.into()));
+    }
+    entries
+}
+
+/// 制御文字・双方向文字・不可視文字を可視化し、8 文字以上の空白を `␠×N` にまとめる
+/// （設計書 03-03「確認の共通の規則」、05-03「実行の前の確認」）。
+pub(crate) fn sanitize_fact_text(value: &str) -> String {
+    let safe = SafeText::strict(value, true);
+    compact_spaces(safe.as_str())
 }
 
 fn compact_spaces(value: &str) -> String {
